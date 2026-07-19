@@ -7,8 +7,20 @@ publish.workspace = true
 
 [dependencies]
 comet-proto.workspace = true
+comet-doc.workspace = true
+comet-engine.workspace = true
 comet-rpc.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
+gpui_tokio.workspace = true
+tokio.workspace = true
+futures.workspace = true
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
