@@ -20,6 +20,7 @@ use gpui::{
     Render, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
+use crate::composer::{Composer, ComposerEvent};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, RESIZE, SPLASH_OUT};
 use crate::settings::{
@@ -28,6 +29,7 @@ use crate::settings::{
 };
 use crate::state::{AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator};
 use crate::theme::Theme;
+use crate::transcript::{self, Transcript};
 
 /// Drag marker for the sidebar resize handle.
 struct SidebarResize;
@@ -61,6 +63,8 @@ enum SplashPhase {
 
 pub struct Shell {
     state: Entity<AppState>,
+    transcript: Entity<Transcript>,
+    composer: Entity<Composer>,
     /// Kept for the failed-gate "Retry" action.
     boot: EngineBootConfig,
     data_dir: PathBuf,
@@ -71,7 +75,10 @@ pub struct Shell {
     splash: SplashPhase,
     splash_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
+    /// 1s heartbeat re-rendering the working indicator (elapsed + flavour word).
+    _ticker: Task<()>,
     _state_observation: Subscription,
+    _composer_events: Subscription,
 }
 
 impl Shell {
@@ -80,10 +87,44 @@ impl Shell {
             this.on_state_changed(&state, cx);
             cx.notify();
         });
+        let transcript = cx.new(|cx| Transcript::new(state.clone(), cx));
+        let composer = cx.new(|cx| Composer::new(state.clone(), cx));
+        // Own-send re-engages the stick-to-bottom pin with a smooth scroll.
+        let composer_events = cx.subscribe(&composer, {
+            let transcript = transcript.clone();
+            move |_this: &mut Shell, _, event: &ComposerEvent, cx| match event {
+                ComposerEvent::Sent { .. } => {
+                    transcript.update(cx, |t, cx| t.on_own_send(cx));
+                }
+            }
+        });
+        // Working-indicator heartbeat: notify once a second while a session is
+        // live so elapsed time and the flavour word stay fresh.
+        let ticker = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_secs(1)).await;
+                let alive = this.update(cx, |shell: &mut Shell, cx| {
+                    let live = {
+                        let s = shell.state.read(cx);
+                        s.selected_chat.as_deref().is_some_and(|id| {
+                            s.indicator_for(id, Utc::now()) != Indicator::None
+                        })
+                    };
+                    if live {
+                        cx.notify();
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
         let data_dir = boot.data_dir.clone();
         let settings = UiSettings::load(&data_dir);
         Self {
             state,
+            transcript,
+            composer,
             boot,
             data_dir,
             settings,
@@ -93,7 +134,9 @@ impl Shell {
             splash: SplashPhase::Visible,
             splash_task: None,
             save_task: None,
+            _ticker: ticker,
             _state_observation: observation,
+            _composer_events: composer_events,
         }
     }
 
@@ -416,22 +459,54 @@ impl Shell {
             theme.text_faint,
             theme.element_hover,
         );
-        let (title, transcript_len, mode_line) = {
+        let title: SharedString = {
             let state = self.state.read(cx);
-            let title: SharedString = state
+            state
                 .selected_chat_row()
                 .and_then(|c| c.title.clone())
                 .unwrap_or_else(|| "comet".into())
-                .into();
-            let mode_line: SharedString = match state.engine().map(|e| e.mode()) {
-                Some(EngineMode::InProcess) => "engine: in-process".into(),
-                Some(EngineMode::Remote { url }) => format!("engine: {url}").into(),
-                None => "".into(),
-            };
-            (title, state.transcript.len(), mode_line)
+                .into()
         };
         let has_selection = self.state.read(cx).selected_chat.is_some();
 
+        // Content outlet: selected chat → transcript; nothing selected → the
+        // "Send a message to start" canvas with a watermark. The composer sits
+        // below either (new-chat mode mints the chat id on first send).
+        let outlet: AnyElement = if has_selection {
+            self.transcript.clone().into_any_element()
+        } else {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(px(Theme::SPACE_MD))
+                .child(motion::fade_in(
+                    "new-chat-canvas",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(px(Theme::SPACE_MD))
+                        .child(
+                            // Watermark.
+                            div()
+                                .text_size(px(28.0))
+                                .text_color(theme.border_strong)
+                                .child(SharedString::from("comet")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(faint)
+                                .child(SharedString::from("Send a message to start")),
+                        ),
+                ))
+                .into_any_element()
+        };
+
+        let status = self.render_status_strip(cx);
         div()
             .flex_1()
             .min_w_0()
@@ -465,34 +540,80 @@ impl Shell {
                         |this, _, _, cx| this.toggle_right_pane(cx),
                     ))),
             )
-            // Content outlet — conversation view arrives in M3b.
-            .child(
-                div().flex_1().min_h_0().flex().items_center().justify_center().child(
-                    motion::fade_in(
-                        "outlet-placeholder",
-                        div().text_size(px(13.0)).text_color(faint).child(SharedString::from(
-                            if has_selection {
-                                format!("{transcript_len} transcript entries")
-                            } else {
-                                "Send a message to start".to_string()
-                            },
-                        )),
-                    ),
-                ),
-            )
-            // Reserved status strip (h-6) — WorkingIndicator slot.
-            .child(
-                div()
-                    .h(px(Theme::STATUS_STRIP_HEIGHT))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .px(px(Theme::SPACE_MD))
-                    .text_size(px(11.0))
-                    .text_color(faint)
-                    .child(mode_line),
-            )
+            .child(div().flex_1().min_h_0().child(outlet))
+            // Reserved status strip (h-6) — the WorkingIndicator lives here so
+            // the composer below never shifts.
+            .child(status)
+            .child(self.composer.clone())
             .into_any_element()
+    }
+
+    /// Working indicator strip: gradient spinner + rotating flavour word (7s,
+    /// seeded per chat) + elapsed, staleness-gated via [`Indicator`]; falls back
+    /// to a "Sending…" bridge and then the engine mode line.
+    fn render_status_strip(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let now = Utc::now();
+        let state = self.state.read(cx);
+        let mode_line: SharedString = match state.engine().map(|e| e.mode()) {
+            Some(EngineMode::InProcess) => "engine: in-process".into(),
+            Some(EngineMode::Remote { url }) => format!("engine: {url}").into(),
+            None => "".into(),
+        };
+
+        let strip = div()
+            .h(px(Theme::STATUS_STRIP_HEIGHT))
+            .flex_none()
+            .flex()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
+            .px(px(Theme::SPACE_LG))
+            .text_size(px(11.0));
+
+        let Some(chat_id) = state.selected_chat.clone() else {
+            return strip.text_color(theme.text_faint).child(mode_line).into_any_element();
+        };
+        let indicator = state.indicator_for(&chat_id, now);
+        let elapsed_secs = state
+            .session_for(&chat_id)
+            .and_then(|s| s.started_at)
+            .map(|t| now.signed_duration_since(t).num_seconds())
+            .unwrap_or(0);
+        let sending = self.composer.read(cx).is_sending();
+
+        match indicator {
+            Indicator::Working => {
+                let word = transcript::flavour_word(transcript::flavour_seed(&chat_id), elapsed_secs);
+                strip
+                    .child(loaders::gradient_spinner("working-indicator", &theme, 3.0))
+                    .child(
+                        div()
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from(format!("{word}…"))),
+                    )
+                    .child(
+                        div()
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from(transcript::format_elapsed(elapsed_secs))),
+                    )
+                    .into_any_element()
+            }
+            Indicator::AwaitingInput => strip
+                .text_color(theme.warning)
+                .child(SharedString::from("Awaiting your input"))
+                .into_any_element(),
+            Indicator::Errored => strip
+                .text_color(theme.danger)
+                .child(SharedString::from("Run failed"))
+                .into_any_element(),
+            Indicator::None if sending => strip
+                .text_color(theme.text_muted)
+                .child(SharedString::from("Sending…"))
+                .into_any_element(),
+            Indicator::None => {
+                strip.text_color(theme.text_faint).child(mode_line).into_any_element()
+            }
+        }
     }
 
     /// Right "Changes" pane scaffold — hidden by default, drag-resizable.

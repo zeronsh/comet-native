@@ -12,12 +12,15 @@
 //! - [`shell`] — sidebar + main panel + right-pane scaffold + gate;
 //! - [`loaders`] — comet pulse loader, gradient spinner, boot splash.
 
+pub mod composer;
 pub mod loaders;
+pub mod markdown;
 pub mod motion;
 pub mod settings;
 pub mod shell;
 pub mod state;
 pub mod theme;
+pub mod transcript;
 
 use std::path::PathBuf;
 
@@ -62,6 +65,7 @@ pub fn run_app(config: UiConfig) {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
         cx.set_global(theme::Theme::dark());
+        composer::init(cx);
 
         let state = cx.new(|_| state::AppState::new());
         state::AppState::bootstrap(state.clone(), config.boot(), cx);

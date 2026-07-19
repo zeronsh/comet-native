@@ -17,6 +17,7 @@
 //! Pure logic (sort order, staleness, gate phase) lives in free functions with
 //! unit tests; rendering reads them.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -264,6 +265,9 @@ pub struct AppState {
     pub selected_chat: Option<String>,
     /// Joined transcript of the selected chat (continuations folded engine-side).
     pub transcript: Vec<SessionMessageEntry>,
+    /// Optimistic user echoes per chat id, shown until the doc frame carrying
+    /// the same message id arrives (client-minted ids make dedup exact).
+    echoes: HashMap<String, Vec<SessionMessageEntry>>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -285,6 +289,7 @@ impl AppState {
             sessions: Vec::new(),
             selected_chat: None,
             transcript: Vec::new(),
+            echoes: HashMap::new(),
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
@@ -319,7 +324,37 @@ impl AppState {
     }
 
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
+        // Doc frames supersede optimistic echoes carrying the same id.
+        if let Some(chat_id) = self.selected_chat.as_deref()
+            && let Some(echoes) = self.echoes.get_mut(chat_id)
+        {
+            echoes.retain(|echo| !entries.iter().any(|e| e.id == echo.id));
+        }
         self.transcript = entries;
+    }
+
+    /// Add an optimistic user echo (composer send path).
+    pub fn push_echo(&mut self, chat_id: &str, entry: SessionMessageEntry) {
+        let echoes = self.echoes.entry(chat_id.to_string()).or_default();
+        if !echoes.iter().any(|e| e.id == entry.id) {
+            echoes.push(entry);
+        }
+    }
+
+    /// Drop an echo (send failed — the prompt returns to the draft).
+    pub fn remove_echo(&mut self, chat_id: &str, message_id: &str) {
+        if let Some(echoes) = self.echoes.get_mut(chat_id) {
+            echoes.retain(|e| e.id != message_id);
+        }
+    }
+
+    /// Unconfirmed echoes for the selected chat, in send order.
+    pub fn pending_echoes(&self) -> &[SessionMessageEntry] {
+        self.selected_chat
+            .as_deref()
+            .and_then(|id| self.echoes.get(id))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     // ---- queries ----
@@ -659,6 +694,38 @@ mod tests {
         state.apply_chats(vec![archived, chat("b", 1, None)]);
         let visible: Vec<&str> = state.visible_chats().map(|c| c.id.as_str()).collect();
         assert_eq!(visible, ["b"]);
+    }
+
+    #[test]
+    fn echoes_show_until_doc_frame_confirms() {
+        let mut state = AppState::new();
+        state.selected_chat = Some("c1".into());
+        let echo = SessionMessageEntry {
+            id: "m1".into(),
+            role: comet_doc::MessageRole::User,
+            parts: vec![],
+            created_at: 0,
+            device_id: "local".into(),
+            status: None,
+            continuation_of: None,
+        };
+        state.push_echo("c1", echo.clone());
+        // Duplicate pushes dedupe.
+        state.push_echo("c1", echo.clone());
+        assert_eq!(state.pending_echoes().len(), 1);
+        // Frames without the id keep the echo.
+        state.apply_transcript(vec![]);
+        assert_eq!(state.pending_echoes().len(), 1);
+        // The confirming frame prunes it.
+        state.apply_transcript(vec![SessionMessageEntry { id: "m1".into(), ..echo.clone() }]);
+        assert!(state.pending_echoes().is_empty());
+        // Failure path: explicit removal.
+        state.push_echo("c1", SessionMessageEntry { id: "m2".into(), ..echo.clone() });
+        state.remove_echo("c1", "m2");
+        assert!(state.pending_echoes().is_empty());
+        // Echoes are per chat.
+        state.push_echo("other", SessionMessageEntry { id: "m3".into(), ..echo });
+        assert!(state.pending_echoes().is_empty());
     }
 
     #[test]
