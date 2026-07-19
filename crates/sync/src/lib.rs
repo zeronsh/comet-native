@@ -1,15 +1,16 @@
 //! comet-sync — Loro room client (loro-protocol over WebSocket against the TS edge),
 //! ephemeral presence, and the local `DocsStore` (SQLite snapshots + processed-command ledger).
 //!
-//! M1 deliverables:
-//! - `RoomClient`: join `wss://…/session/{chatId}/ws?token=`, VV backfill, fragment reassembly,
-//!   reconnect with backoff, local-update push, remote-update import.
-//! - `DocsStore`: snapshot persistence (doc IS the outbox — commands + user entries flush
-//!   immediately), processed-command ledger with mark-BEFORE-execute semantics.
+//! - [`RoomClient`]: joins a SessionRoom DO room (`wss://…/session/{chatId}/ws?token=`),
+//!   backfills via version-vector diff, pushes local commits, imports remote updates,
+//!   reassembles/produces fragments, relays `%EPH` presence, and reconnects with
+//!   exponential backoff. Wire format is the official `loro-protocol` crate — byte-identical
+//!   to the npm package the edge imports.
+//! - [`DocsStore`]: snapshot persistence (the doc IS the outbox — commands + user entries
+//!   flush immediately) and the processed-command ledger with mark-BEFORE-execute semantics.
 
-pub struct DocsStore;
+mod room;
+mod store;
 
-impl DocsStore {
-    // TODO(M1): open(path), load_snapshot(chat_id), save_snapshot(chat_id, bytes),
-    // is_processed(command_id), mark_processed(command_id).
-}
+pub use room::{RoomClient, RoomEvent, SyncError};
+pub use store::{DocsStore, StoreError};

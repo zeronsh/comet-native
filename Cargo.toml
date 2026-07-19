@@ -28,6 +28,10 @@ comet-ui = { path = "crates/ui" }
 
 # CRDT
 loro = "1.13"
+# Wire protocol for the SessionRoom DO rooms — official Rust twin of the npm
+# `loro-protocol` package the TS edge speaks (same monorepo, byte-identical
+# frames, cross-checked by its js_snapshots tests).
+loro-protocol = "0.3"
 
 # gpui — pinned to the same rev as the local ~/github/zed reference clone
 gpui = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
@@ -50,6 +54,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 
 # misc
 anyhow = "1"
+tempfile = "3"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

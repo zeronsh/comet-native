@@ -1178,17 +1178,17 @@ dependencies = [
 name = "comet-sync"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "comet-doc",
  "futures",
  "loro",
+ "loro-protocol",
  "rusqlite",
- "serde",
- "serde_json",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tokio-tungstenite",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -3747,6 +3747,12 @@ dependencies = [
  "tracing",
  "xxhash-rust",
 ]
+
+[[package]]
+name = "loro-protocol"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9f1697b501f505f286c411c38b062a73f080028157c766cd75f12e243239454"
 
 [[package]]
 name = "loro-rle"
