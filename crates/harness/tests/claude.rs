@@ -45,7 +45,9 @@ fn request(prompt: &str) -> RunRequest {
 }
 
 /// Controls whose `request_input` answers every question with `answer_label`.
-fn controls(answer_label: &'static str) -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
+fn controls(
+    answer_label: &'static str,
+) -> (RunControls, mpsc::Sender<SteerMessage>, CancellationToken) {
     let (steer_tx, steer_rx) = mpsc::channel(8);
     let token = CancellationToken::new();
     let controls = RunControls {
@@ -196,7 +198,10 @@ async fn ask_user_question_round_trips_through_the_control_channel() {
     assert_eq!(requested.1.len(), 1);
     assert_eq!(requested.1[0].header, "Choice");
     assert_eq!(requested.1[0].question, "Pick one");
-    assert_eq!(requested.1[0].options, vec!["A".to_string(), "B".to_string()]);
+    assert_eq!(
+        requested.1[0].options,
+        vec!["A".to_string(), "B".to_string()]
+    );
     assert!(events.contains(&AgentEvent::InputResolved {
         request_id: "cr-1".into()
     }));
@@ -233,7 +238,10 @@ async fn steering_lines_are_written_to_stdin_mid_run() {
             AgentEvent::Steered {
                 assistant_message_id,
                 next_assistant_message_id,
-            } => Some((assistant_message_id.clone(), next_assistant_message_id.clone())),
+            } => Some((
+                assistant_message_id.clone(),
+                next_assistant_message_id.clone(),
+            )),
             _ => None,
         })
         .expect("Steered emitted");

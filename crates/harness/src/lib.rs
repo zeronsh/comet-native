@@ -37,8 +37,9 @@ pub struct SteerMessage {
 /// Host-side controls handed to a run: input-request bridge + steering mailbox.
 pub struct RunControls {
     /// The run sends questions and awaits answers (blocks the agent, mirrors comet).
-    pub request_input:
-        Box<dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync>,
+    pub request_input: Box<
+        dyn Fn(Vec<UserInputQuestion>) -> oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync,
+    >,
     /// Steer prompts consumed at step/turn boundaries.
     pub steering: mpsc::Receiver<SteerMessage>,
     /// Cancel to interrupt the live run: the harness sends its protocol-level
@@ -64,6 +65,8 @@ pub trait Harness: Send + Sync {
 }
 
 pub mod claude;
+pub mod codex;
 pub mod mock;
 
 pub use claude::ClaudeHarness;
+pub use codex::CodexHarness;

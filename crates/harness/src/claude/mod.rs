@@ -49,7 +49,11 @@ fn resolve_claude_executable() -> Option<PathBuf> {
     {
         return Some(PathBuf::from(p));
     }
-    let exe = if cfg!(windows) { "claude.exe" } else { "claude" };
+    let exe = if cfg!(windows) {
+        "claude.exe"
+    } else {
+        "claude"
+    };
     let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|path| {
             std::env::split_paths(&path)
@@ -145,7 +149,10 @@ impl ClaudeHarness {
         // (`sonnet[1m]`), exactly how the CLI itself does it; fast mode and
         // always-on thinking are settings overrides.
         if let Some(model) = &request.model {
-            let one_m = request.model_options.get("contextWindow").and_then(Value::as_str)
+            let one_m = request
+                .model_options
+                .get("contextWindow")
+                .and_then(Value::as_str)
                 == Some("1m");
             cmd.arg("--model");
             cmd.arg(if one_m {
@@ -509,8 +516,11 @@ fn send_signal(_pid: u32, _signal: Signal) {
     // No SIGTERM off unix; `start_kill`/`kill_on_drop` handle termination.
 }
 
-type RequestInputFn =
-    Box<dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>> + Send + Sync>;
+type RequestInputFn = Box<
+    dyn Fn(Vec<UserInputQuestion>) -> tokio::sync::oneshot::Receiver<Vec<UserInputAnswer>>
+        + Send
+        + Sync,
+>;
 
 /// Serve one `can_use_tool` control request. Every tool is auto-approved;
 /// `AskUserQuestion` is intercepted — surface the questions, wait for the
@@ -658,7 +668,8 @@ mod tests {
 
     #[test]
     fn answers_key_by_question_text() {
-        let input = json!({"questions": [{"header": "H", "question": "Pick one", "options": ["A", "B"]}]});
+        let input =
+            json!({"questions": [{"header": "H", "question": "Pick one", "options": ["A", "B"]}]});
         let qs = parse_questions(&input);
         let answers = vec![UserInputAnswer {
             question_id: qs[0].id.clone(),

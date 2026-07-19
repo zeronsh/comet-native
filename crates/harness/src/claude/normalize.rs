@@ -44,9 +44,7 @@ fn result_error_text(subtype: &str) -> &'static str {
     match subtype {
         "error_max_turns" => "The run hit the maximum number of turns.",
         "error_max_budget_usd" => "The run hit its cost budget.",
-        "error_max_structured_output_retries" => {
-            "The run exhausted its structured-output retries."
-        }
+        "error_max_structured_output_retries" => "The run exhausted its structured-output retries.",
         _ => "The run ended with an error.",
     }
 }
@@ -245,7 +243,8 @@ impl Normalizer {
                 if f.rate_limit_info.status != "rejected" {
                     return Vec::new();
                 }
-                let window = rate_window_label(f.rate_limit_info.rate_limit_type.as_deref().unwrap_or(""));
+                let window =
+                    rate_window_label(f.rate_limit_info.rate_limit_type.as_deref().unwrap_or(""));
                 vec![AgentEvent::Error {
                     message: format!(
                         "Claude {window} limit reached — the turn was blocked. Try again after it resets."
@@ -323,7 +322,10 @@ mod tests {
             }
         );
         assert_eq!(
-            decode_tool_use("Edit", &json!({"file_path": "/a", "old_string": "x", "new_string": "y"})),
+            decode_tool_use(
+                "Edit",
+                &json!({"file_path": "/a", "old_string": "x", "new_string": "y"})
+            ),
             ToolCall::EditFile {
                 path: "/a".into(),
                 old_string: Some("x".into()),
@@ -331,7 +333,10 @@ mod tests {
             }
         );
         assert_eq!(
-            decode_tool_use("TodoWrite", &json!({"todos": [{"content": "t", "status": "completed"}]})),
+            decode_tool_use(
+                "TodoWrite",
+                &json!({"todos": [{"content": "t", "status": "completed"}]})
+            ),
             ToolCall::Todo {
                 items: vec![TodoItem {
                     text: "t".into(),
