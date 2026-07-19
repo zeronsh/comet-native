@@ -231,7 +231,7 @@ pub fn split_parts(parts: &[MessagePart]) -> Vec<Vec<MessagePart>> {
     let mut chunks: Vec<Vec<MessagePart>> = vec![Vec::new()];
     let mut current_bytes = 0usize;
 
-    let mut push_part = |chunks: &mut Vec<Vec<MessagePart>>, current: &mut usize, part: MessagePart| {
+    let push_part = |chunks: &mut Vec<Vec<MessagePart>>, current: &mut usize, part: MessagePart| {
         let len = part.byte_len();
         if *current > 0 && *current + len > MSG_INLINE_MAX {
             chunks.push(Vec::new());
