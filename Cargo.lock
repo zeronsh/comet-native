@@ -1113,6 +1113,7 @@ name = "comet-engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "comet-doc",
  "comet-harness",
@@ -1120,6 +1121,7 @@ dependencies = [
  "comet-rpc",
  "comet-sync",
  "futures",
+ "loro",
  "notify",
  "portable-pty",
  "reqwest",
@@ -1127,6 +1129,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "tempfile",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -1141,11 +1144,14 @@ dependencies = [
  "async-trait",
  "comet-proto",
  "futures",
+ "libc",
  "serde",
  "serde_json",
  "thiserror 2.0.19",
  "tokio",
+ "tokio-util",
  "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -1163,6 +1169,7 @@ name = "comet-rpc"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "comet-proto",
  "futures",
  "serde",

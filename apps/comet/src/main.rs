@@ -32,7 +32,13 @@ fn main() -> anyhow::Result<()> {
                     data_dir: dirs_data_dir(),
                     edge_url: std::env::var("COMET_EDGE_URL")
                         .unwrap_or_else(|_| "http://localhost:26640".into()),
-                    ipc_port: 26654,
+                    // TODO(M4): real auth; until then an explicit token enables sync.
+                    edge_token: std::env::var("COMET_EDGE_TOKEN").ok(),
+                    ipc_port: std::env::var("COMET_IPC_PORT")
+                        .ok()
+                        .and_then(|p| p.parse().ok())
+                        .unwrap_or(26654),
+                    default_harness: comet_engine::HarnessId::ClaudeCode,
                 });
                 engine.run().await
             })

@@ -40,6 +40,8 @@ gpui_tokio = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c
 
 # async / net
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+libc = "0.2"
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures = "0.3"
 async-trait = "0.1"

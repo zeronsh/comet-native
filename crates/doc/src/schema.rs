@@ -286,6 +286,33 @@ impl SessionDoc {
         Err(DocError::Schema(format!("command {command_id} not found")))
     }
 
+    /// Stamp a terminal status on an existing message entry by id (recovery:
+    /// abandoned `streaming` entries from a dead run are stamped `aborted`).
+    /// Returns `false` when no entry with that id exists.
+    pub fn set_message_status(
+        &self,
+        message_id: &str,
+        status: MessageStatus,
+    ) -> Result<bool, DocError> {
+        let messages = self.doc.get_list("messages");
+        for i in 0..messages.len() {
+            if let Some(loro::ValueOrContainer::Container(loro::Container::Map(map))) =
+                messages.get(i)
+            {
+                let id_matches = matches!(
+                    map.get("id"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == message_id
+                );
+                if id_matches {
+                    map.insert("status", status_str(status))?;
+                    self.doc.commit();
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// Export a snapshot (persistence) — `ExportMode::Snapshot`.
     pub fn export_snapshot(&self) -> Result<Vec<u8>, DocError> {
         self.doc
@@ -726,6 +753,20 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    #[test]
+    fn set_message_status_stamps_existing_entry() {
+        let doc = SessionDoc::init("chat-1").unwrap();
+        let mut entry = user_entry("m1", "hello");
+        entry.role = MessageRole::Assistant;
+        entry.status = Some(MessageStatus::Streaming);
+        doc.push_message(&entry).unwrap();
+
+        assert!(doc.set_message_status("m1", MessageStatus::Aborted).unwrap());
+        assert!(!doc.set_message_status("nope", MessageStatus::Aborted).unwrap());
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries[0].status, Some(MessageStatus::Aborted));
     }
 
     #[test]

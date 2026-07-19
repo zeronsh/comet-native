@@ -8,6 +8,8 @@ publish.workspace = true
 [dependencies]
 comet-proto.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
+uuid.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 serde.workspace = true
@@ -15,3 +17,6 @@ serde_json.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

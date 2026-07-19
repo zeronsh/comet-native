@@ -11,8 +11,10 @@ comet-doc.workspace = true
 comet-sync.workspace = true
 comet-harness.workspace = true
 comet-rpc.workspace = true
+loro.workspace = true
 tokio.workspace = true
 futures.workspace = true
+async-trait.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 rusqlite.workspace = true
@@ -25,3 +27,6 @@ notify.workspace = true
 portable-pty.workspace = true
 sha2.workspace = true
 reqwest.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
