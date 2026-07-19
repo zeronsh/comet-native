@@ -333,6 +333,18 @@ impl WorkspaceHost {
         Ok(self.inner.doc.rename_device(device_id, name)?)
     }
 
+    // ── git metadata (diff-sync host writes) ────────────────────────────────
+
+    /// HEAD-watcher reconciliation: the branch checked out at the chat's cwd.
+    pub fn set_chat_branch(&self, chat_id: &str, branch: &str) -> Result<bool, EngineError> {
+        Ok(self.inner.doc.set_chat_branch(chat_id, branch)?)
+    }
+
+    /// Canonical checkout identity for the chat's cwd (diff grouping key).
+    pub fn set_chat_checkout(&self, chat_id: &str, checkout_id: &str) -> Result<bool, EngineError> {
+        Ok(self.inner.doc.set_chat_checkout(chat_id, checkout_id)?)
+    }
+
     // ── persistence / teardown ──────────────────────────────────────────────
 
     /// Persist the snapshot now (shutdown path; bypasses the debounce).

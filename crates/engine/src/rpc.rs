@@ -15,6 +15,15 @@
 //! - AuthRpc (feature-inventory §2): `AuthStatus` (stream), `SignIn`/`SignInHeadless` →
 //!   `{url}`, `CompleteSignIn {code}`, `SignOut`, `ListOrgs`, `CreateOrg {name}`,
 //!   `SelectOrg {organizationId}`
+//! - Repos (§3.5): `ListRepos`, `AddRepo {path}`, `CloneRepo {url}`,
+//!   `CreateRepo {name}`, `ListBranches {repoPath}` (default branch first),
+//!   `ListFolders {path?}`, `CreateWorktree {repoPath, branch}`, `DeleteWorktree
+//!   {repoPath, worktreePath}`; `WatchCheckoutDiffs` → stream of `CheckoutDiff[]`
+//! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows}` → `TerminalSession`,
+//!   `SubscribeTerminal {terminalId, afterSeq?}` → stream of `TerminalEvent`
+//!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
+//!   `CloseTerminal`. M5 is single-user local: per-user owner checks land with
+//!   real multi-account auth in M6.
 //!
 //! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
 //!
@@ -38,9 +47,12 @@ use comet_proto::{ChatConfig, HarnessId};
 use comet_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
 
 use crate::auth::Auth;
+use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
 use crate::registry::HarnessRegistry;
+use crate::repos::{Repos, home_dir};
 use crate::sessions::SessionsEngine;
+use crate::terminals::Terminals;
 use crate::workspace_host::WorkspaceHost;
 
 #[derive(Debug, Deserialize)]
@@ -60,6 +72,76 @@ struct ListModelsParams {
 struct QueueCommandParams {
     chat_id: String,
     command: SessionCommandPayload,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RepoPathParams {
+    /// `repoPath` per §3.5 (the §2.1 shorthand `repo` is accepted as an alias).
+    #[serde(alias = "repo")]
+    repo_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateWorktreeParams {
+    #[serde(alias = "repo")]
+    repo_path: String,
+    branch: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DeleteWorktreeParams {
+    #[serde(alias = "repo")]
+    repo_path: String,
+    #[serde(alias = "path")]
+    worktree_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListFoldersParams {
+    #[serde(default)]
+    path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OpenTerminalParams {
+    chat_id: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TerminalIdParams {
+    terminal_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SubscribeTerminalParams {
+    terminal_id: String,
+    #[serde(default)]
+    after_seq: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct WriteTerminalParams {
+    terminal_id: String,
+    /// Base64 input bytes (plain UTF-8 accepted leniently).
+    data: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResizeTerminalParams {
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
 }
 
 /// The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
@@ -94,18 +176,35 @@ pub struct EngineRpc {
     doc_host: DocHost,
     workspace: WorkspaceHost,
     registry: std::sync::Arc<HarnessRegistry>,
+    repos: Repos,
+    terminals: Terminals,
+    diff_sync: CheckoutDiffSync,
     auth: Option<Auth>,
     links: Option<std::sync::Arc<LinkCache>>,
 }
 
 impl EngineRpc {
+    #[allow(clippy::too_many_arguments)] // engine assembly seam, not a public API
     pub fn new(
         sessions: SessionsEngine,
         doc_host: DocHost,
         workspace: WorkspaceHost,
         registry: std::sync::Arc<HarnessRegistry>,
+        repos: Repos,
+        terminals: Terminals,
+        diff_sync: CheckoutDiffSync,
     ) -> Self {
-        Self { sessions, doc_host, workspace, registry, auth: None, links: None }
+        Self {
+            sessions,
+            doc_host,
+            workspace,
+            registry,
+            repos,
+            terminals,
+            diff_sync,
+            auth: None,
+            links: None,
+        }
     }
 
     /// Attach the auth service (AuthStatus + AuthRpc mutations).
@@ -205,12 +304,27 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_MODELS
             | methods::QUEUE_COMMAND
             | methods::WATCH_DOC_MESSAGES
+            // Repos/worktrees/folders are device-local filesystem state.
+            | methods::LIST_REPOS
+            | methods::ADD_REPO
+            | methods::CLONE_REPO
+            | methods::CREATE_REPO
+            | methods::LIST_BRANCHES
+            | methods::LIST_FOLDERS
+            | methods::CREATE_WORKTREE
+            | methods::DELETE_WORKTREE
+            // Terminals live on the chat's host device.
+            | methods::OPEN_TERMINAL
+            | methods::SUBSCRIBE_TERMINAL
+            | methods::WRITE_TERMINAL
+            | methods::RESIZE_TERMINAL
+            | methods::CLOSE_TERMINAL
     )
 }
 
 /// Forwardable methods whose reply is a stream (proxied item-by-item).
 fn is_stream_method(method: &str) -> bool {
-    matches!(method, methods::WATCH_DOC_MESSAGES)
+    matches!(method, methods::WATCH_DOC_MESSAGES | methods::SUBSCRIBE_TERMINAL)
 }
 
 /// A watch receiver as a stream: current value first, then every change.
@@ -292,6 +406,136 @@ impl RpcService for EngineRpc {
             methods::MUTATE => {
                 let p: MutateParams = parse_params(params)?;
                 self.mutate(p)?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::WATCH_CHECKOUT_DIFFS => {
+                Ok(RpcReply::Stream(watch_stream(self.diff_sync.watch_diffs())))
+            }
+            methods::LIST_REPOS => RpcReply::value(&self.repos.list().await),
+            methods::ADD_REPO => {
+                #[derive(Deserialize)]
+                struct P {
+                    path: String,
+                }
+                let p: P = parse_params(params)?;
+                let repo =
+                    self.repos.add(&p.path).await.map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&repo)
+            }
+            methods::CLONE_REPO => {
+                #[derive(Deserialize)]
+                struct P {
+                    url: String,
+                }
+                let p: P = parse_params(params)?;
+                let repo = self
+                    .repos
+                    .clone_repo(&p.url)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&repo)
+            }
+            methods::CREATE_REPO => {
+                #[derive(Deserialize)]
+                struct P {
+                    name: String,
+                }
+                let p: P = parse_params(params)?;
+                let repo = self
+                    .repos
+                    .create(&p.name)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&repo)
+            }
+            methods::LIST_BRANCHES => {
+                let p: RepoPathParams = parse_params(params)?;
+                let branches = self
+                    .repos
+                    .branches(std::path::Path::new(&p.repo_path))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&branches)
+            }
+            methods::LIST_FOLDERS => {
+                let p: ListFoldersParams = parse_params(params)?;
+                let listing = self
+                    .repos
+                    .list_folders(p.path)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&listing)
+            }
+            methods::CREATE_WORKTREE => {
+                let p: CreateWorktreeParams = parse_params(params)?;
+                let worktree = self
+                    .repos
+                    .create_worktree(std::path::Path::new(&p.repo_path), &p.branch)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&worktree)
+            }
+            methods::DELETE_WORKTREE => {
+                let p: DeleteWorktreeParams = parse_params(params)?;
+                self.repos
+                    .delete_worktree(
+                        std::path::Path::new(&p.repo_path),
+                        std::path::Path::new(&p.worktree_path),
+                    )
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::OPEN_TERMINAL => {
+                let p: OpenTerminalParams = parse_params(params)?;
+                // The terminal runs in the chat's checkout; a chat with no cwd (or
+                // no row yet) gets the home directory.
+                let cwd = self
+                    .workspace
+                    .doc()
+                    .chat(&p.chat_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|chat| chat.cwd)
+                    .unwrap_or_else(|| home_dir().to_string_lossy().to_string());
+                let session = self
+                    .terminals
+                    .open(&cwd, p.cols, p.rows)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&session)
+            }
+            methods::SUBSCRIBE_TERMINAL => {
+                let p: SubscribeTerminalParams = parse_params(params)?;
+                let rx = self
+                    .terminals
+                    .subscribe(&p.terminal_id, p.after_seq)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                let stream = futures::stream::unfold(rx, |mut rx| async move {
+                    let event = rx.recv().await?;
+                    let value = serde_json::to_value(&event).ok()?;
+                    Some((value, rx))
+                });
+                Ok(RpcReply::Stream(stream.boxed()))
+            }
+            methods::WRITE_TERMINAL => {
+                let p: WriteTerminalParams = parse_params(params)?;
+                self.terminals
+                    .write(&p.terminal_id, &p.data)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::RESIZE_TERMINAL => {
+                let p: ResizeTerminalParams = parse_params(params)?;
+                self.terminals
+                    .resize(&p.terminal_id, p.cols, p.rows)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::CLOSE_TERMINAL => {
+                let p: TerminalIdParams = parse_params(params)?;
+                self.terminals
+                    .close(&p.terminal_id)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             methods::AUTH_STATUS => {

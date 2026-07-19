@@ -182,6 +182,28 @@ impl WorkspaceDoc {
         Ok(true)
     }
 
+    /// Host-side git metadata: the branch checked out at the chat's cwd (HEAD
+    /// watcher reconciliation). `false` when no such row.
+    pub fn set_chat_branch(&self, chat_id: &str, branch: &str) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        row.insert("branch", branch)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Host-side checkout identity for the chat's cwd (diff grouping key).
+    /// `false` when no such row.
+    pub fn set_chat_checkout(&self, chat_id: &str, checkout_id: &str) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        row.insert("checkoutId", checkout_id)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
     /// LWW config set. `false` when no such row.
     pub fn set_chat_config(&self, chat_id: &str, config: &ChatConfig) -> Result<bool, DocError> {
         let Some(row) = self.existing_row("chats", chat_id) else {

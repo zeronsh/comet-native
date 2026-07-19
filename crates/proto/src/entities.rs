@@ -82,6 +82,12 @@ pub struct Worktree {
     pub repo_path: String,
     pub path: String,
     pub branch: String,
+    /// Generated worktree folder name (`comet/<name>` is its branch).
+    #[serde(default)]
+    pub name: String,
+    /// Canonical checkout identity (device-scoped hash of the git dir).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -106,9 +112,14 @@ pub struct FolderListing {
 #[serde(rename_all = "camelCase")]
 pub struct DiffFileSummary {
     pub path: String,
+    /// Previous path for renames/copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
     pub status: String,
     pub additions: u32,
     pub deletions: u32,
+    #[serde(default)]
+    pub binary: bool,
 }
 
 /// Working-tree diff for a checkout — latest-only sidecar, 3MiB patch cap.
@@ -170,4 +181,30 @@ pub struct AgentUsageWindow {
     /// 0.0..=1.0
     pub used_fraction: f32,
     pub resets_at: Option<DateTime<Utc>>,
+}
+
+/// An open PTY session on the owning device (`OpenTerminal` reply).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSession {
+    pub id: String,
+    pub cwd: String,
+    /// Shell basename (`zsh`, `bash`, …) for the tab label.
+    pub shell: String,
+}
+
+/// One `SubscribeTerminal` stream item. `seq` is a per-terminal monotonic counter
+/// used for replay resumption (`afterSeq`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "camelCase")]
+pub enum TerminalEvent {
+    /// Output chunk; `data` is base64 (PTY output is raw bytes, not valid UTF-8).
+    Data { seq: u64, data: String },
+    #[serde(rename_all = "camelCase")]
+    Exit {
+        seq: u64,
+        exit_code: i32,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        signal: Option<String>,
+    },
 }

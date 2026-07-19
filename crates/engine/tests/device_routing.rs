@@ -286,6 +286,109 @@ async fn target_device_id_routes_over_the_relay() {
     core_b.shutdown().await;
 }
 
+/// M5: terminals are device-addressable — OpenTerminal/WriteTerminal forward as
+/// unary calls and SubscribeTerminal proxies its stream through the relay.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn terminal_stream_proxies_over_the_relay() {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::STANDARD as BASE64;
+
+    let (relay_url, _relay) = fake_device_room().await;
+    let dirs = tempfile::tempdir().expect("tempdir");
+    let cwd = dirs.path().join("work");
+    std::fs::create_dir_all(&cwd).expect("cwd");
+
+    // Engine B hosts its device room; its chat row pins the terminal cwd.
+    let core_b = assemble(&dirs.path().join("b"), "device-b");
+    core_b
+        .workspace
+        .create_chat("chat-term", "device-b", None, Some(cwd.to_string_lossy().into()))
+        .expect("chat row on B");
+    let _host = core_b.start_host_relay(&relay_url);
+
+    let core_a = assemble(&dirs.path().join("a"), "device-a");
+    let mut link_config =
+        LinkCacheConfig::new(relay_url.clone(), Arc::new(StaticToken("test-user".into())));
+    link_config.probe_timeout = Duration::from_secs(5);
+    core_a.set_links(LinkCache::new(link_config));
+    let client = comet_rpc::memory_client(core_a.rpc_service());
+
+    // OpenTerminal forwards to B once the relay session is up.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let session = loop {
+        match client
+            .call(
+                methods::OPEN_TERMINAL,
+                serde_json::json!({
+                    "chatId": "chat-term",
+                    "cols": 80,
+                    "rows": 24,
+                    "targetDeviceId": "device-b",
+                }),
+            )
+            .await
+        {
+            Ok(session) => break session,
+            Err(err) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "relay never came up: {err}"
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    let terminal_id = session["id"].as_str().expect("terminal id").to_string();
+    assert_eq!(session["cwd"].as_str(), Some(&*cwd.to_string_lossy()), "cwd from B's chat row");
+
+    // SubscribeTerminal: the stream is proxied item-by-item through the relay.
+    let mut stream = client
+        .subscribe(
+            methods::SUBSCRIBE_TERMINAL,
+            serde_json::json!({ "terminalId": terminal_id, "targetDeviceId": "device-b" }),
+        )
+        .await
+        .expect("remote subscribe");
+    client
+        .call(
+            methods::WRITE_TERMINAL,
+            serde_json::json!({
+                "terminalId": terminal_id,
+                "data": BASE64.encode("echo r3lay-$((20+2))\n"),
+                "targetDeviceId": "device-b",
+            }),
+        )
+        .await
+        .expect("remote write");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut transcript = Vec::new();
+    loop {
+        let item = tokio::time::timeout_at(deadline, stream.recv())
+            .await
+            .expect("proxied terminal output before timeout")
+            .expect("stream alive");
+        if item["type"] == "data" {
+            let bytes =
+                BASE64.decode(item["data"].as_str().expect("data")).expect("valid base64");
+            transcript.extend(bytes);
+        }
+        if String::from_utf8_lossy(&transcript).contains("r3lay-22") {
+            break;
+        }
+    }
+
+    client
+        .call(
+            methods::CLOSE_TERMINAL,
+            serde_json::json!({ "terminalId": terminal_id, "targetDeviceId": "device-b" }),
+        )
+        .await
+        .expect("remote close");
+
+    core_a.shutdown().await;
+    core_b.shutdown().await;
+}
+
 #[tokio::test]
 async fn remote_target_without_links_fails_clearly() {
     let dirs = tempfile::tempdir().expect("tempdir");

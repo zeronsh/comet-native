@@ -25,6 +25,7 @@ uuid.workspace = true
 chrono.workspace = true
 notify.workspace = true
 portable-pty.workspace = true
+base64 = "0.22"
 sha2.workspace = true
 reqwest.workspace = true
 

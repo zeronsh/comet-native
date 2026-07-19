@@ -13,19 +13,25 @@ pub use comet_proto::HarnessId;
 use comet_sync::DocsStore;
 
 pub mod auth;
+pub mod diff_sync;
 pub mod doc_host;
 pub mod registry;
+pub mod repos;
 pub mod rpc;
 pub mod run_journal;
 pub mod sessions;
+pub mod terminals;
 pub mod workspace_host;
 
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
+pub use diff_sync::{CheckoutDiffSync, DiffSidecar, DiffSnapshot, capture_diff};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
+pub use repos::{CheckoutIdentity, Repos};
 pub use rpc::EngineRpc;
 pub use run_journal::{JournalError, RunJournal};
 pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
+pub use terminals::Terminals;
 pub use workspace_host::{DEFAULT_ORG_ID, WORKSPACE_DOC_ID, WorkspaceHost, WorkspaceHostConfig};
 
 #[derive(Debug, thiserror::Error)]
@@ -78,6 +84,9 @@ pub struct EngineCore {
     pub doc_host: DocHost,
     pub workspace: WorkspaceHost,
     pub registry: Arc<HarnessRegistry>,
+    pub repos: Repos,
+    pub terminals: Terminals,
+    pub diff_sync: CheckoutDiffSync,
     pub device_id: String,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -125,7 +134,7 @@ impl EngineCore {
                 device_name: local_device_name(),
                 platform: std::env::consts::OS.to_string(),
                 org_id: org_id.to_string(),
-                edge,
+                edge: edge.clone(),
             },
         )?;
         doc_host.set_workspace(workspace.clone());
@@ -136,11 +145,18 @@ impl EngineCore {
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
+        let repos = Repos::new(data_dir, &device_id);
+        let terminals = Terminals::new();
+        let diff_sync =
+            CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
         Ok(Self {
             sessions,
             doc_host,
             workspace,
             registry,
+            repos,
+            terminals,
+            diff_sync,
             device_id,
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -219,6 +235,9 @@ impl EngineCore {
             self.doc_host.clone(),
             self.workspace.clone(),
             self.registry.clone(),
+            self.repos.clone(),
+            self.terminals.clone(),
+            self.diff_sync.clone(),
         )
         .with_auth(self.auth());
         if let Some(links) = self.links() {
@@ -228,9 +247,11 @@ impl EngineCore {
     }
 
     /// Graceful teardown: settle live runs (streaming entries stamped `aborted`),
-    /// stamp our workspace `lastSeenAt`, and flush every open doc snapshot.
+    /// kill live PTYs, stamp our workspace `lastSeenAt`, and flush every open doc
+    /// snapshot.
     pub async fn shutdown(&self) {
         self.sessions.shutdown().await;
+        self.terminals.shutdown();
         self.doc_host.flush_all();
         self.workspace.shutdown();
     }

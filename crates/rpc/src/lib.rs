@@ -53,7 +53,24 @@ pub mod methods {
     pub const LIST_ORGS: &str = "ListOrgs";
     pub const CREATE_ORG: &str = "CreateOrg";
     pub const SELECT_ORG: &str = "SelectOrg";
-    // TODO(M5): repos/folders/worktrees, uploads/attachments, terminals, agent accounts.
+    // Repos / worktrees / folders (ControlRpc, relay-forwardable).
+    pub const LIST_REPOS: &str = "ListRepos";
+    pub const ADD_REPO: &str = "AddRepo";
+    pub const CLONE_REPO: &str = "CloneRepo";
+    pub const CREATE_REPO: &str = "CreateRepo";
+    pub const LIST_BRANCHES: &str = "ListBranches";
+    pub const LIST_FOLDERS: &str = "ListFolders";
+    pub const CREATE_WORKTREE: &str = "CreateWorktree";
+    pub const DELETE_WORKTREE: &str = "DeleteWorktree";
+    // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
+    pub const OPEN_TERMINAL: &str = "OpenTerminal";
+    pub const SUBSCRIBE_TERMINAL: &str = "SubscribeTerminal";
+    pub const WRITE_TERMINAL: &str = "WriteTerminal";
+    pub const RESIZE_TERMINAL: &str = "ResizeTerminal";
+    pub const CLOSE_TERMINAL: &str = "CloseTerminal";
+    /// Checkout-diff stream for this device's chats (DataRpc, IPC-only).
+    pub const WATCH_CHECKOUT_DIFFS: &str = "WatchCheckoutDiffs";
+    // TODO(M6): uploads/attachments, agent accounts.
 }
 
 #[derive(Debug, thiserror::Error)]
