@@ -70,7 +70,18 @@ pub mod methods {
     pub const CLOSE_TERMINAL: &str = "CloseTerminal";
     /// Checkout-diff stream for this device's chats (DataRpc, IPC-only).
     pub const WATCH_CHECKOUT_DIFFS: &str = "WatchCheckoutDiffs";
-    // TODO(M6): uploads/attachments, agent accounts.
+    // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
+    pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";
+    pub const ACTIVATE_AGENT_ACCOUNT: &str = "ActivateAgentAccount";
+    pub const FORGET_AGENT_ACCOUNT: &str = "ForgetAgentAccount";
+    pub const START_AGENT_LOGIN: &str = "StartAgentLogin";
+    pub const COMPLETE_AGENT_LOGIN: &str = "CompleteAgentLogin";
+    pub const POLL_AGENT_LOGIN: &str = "PollAgentLogin";
+    pub const CANCEL_AGENT_LOGIN: &str = "CancelAgentLogin";
+    // Uploads / attachments (ControlRpc, relay-forwardable — target the chat's host device).
+    pub const UPLOAD_CHUNK: &str = "UploadChunk";
+    pub const UPLOAD_COMMIT: &str = "UploadCommit";
+    pub const READ_ATTACHMENT_CHUNK: &str = "ReadAttachmentChunk";
 }
 
 #[derive(Debug, thiserror::Error)]

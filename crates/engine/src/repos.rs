@@ -388,6 +388,57 @@ impl Repos {
         })
     }
 
+    async fn branch_exists(&self, path: &Path, branch: &str) -> bool {
+        self.git(
+            &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+            Some(path),
+        )
+        .await
+        .is_ok()
+    }
+
+    /// Rename a comet-created worktree branch after its chat's generated title
+    /// (port of comet's `renameWorktreeBranch`). Guards:
+    /// - respect an external checkout/rename: only act while the worktree is still
+    ///   on `expected_branch` AND that branch is the original `comet/<folderName>`;
+    /// - a title-slug collision gets a stable 6-hex suffix (hash of the worktree
+    ///   path); a collision on THAT too fails.
+    ///
+    /// Returns the branch the worktree ends up on (re-read after the rename so a
+    /// concurrent external checkout always wins the metadata race).
+    pub async fn rename_worktree_branch(
+        &self,
+        worktree_path: &Path,
+        expected_branch: &str,
+        title: &str,
+    ) -> Result<String, EngineError> {
+        let current = self.current_branch(worktree_path).await?;
+        let folder = worktree_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if current != expected_branch || expected_branch != format!("comet/{folder}") {
+            return Ok(current);
+        }
+        let preferred = worktree_branch_from_title(title);
+        if preferred == current {
+            return Ok(current);
+        }
+        let mut hasher = Sha256::new();
+        hasher.update(worktree_path.to_string_lossy().as_bytes());
+        let suffix = &hex(&hasher.finalize())[..6];
+        let target = if self.branch_exists(worktree_path, &preferred).await {
+            format!("{preferred}-{suffix}")
+        } else {
+            preferred
+        };
+        if self.branch_exists(worktree_path, &target).await {
+            return Err(EngineError::Other(format!("Branch already exists: {target}")));
+        }
+        self.git(&["branch", "-m", "--", &current, &target], Some(worktree_path)).await?;
+        self.current_branch(worktree_path).await
+    }
+
     /// Best-effort worktree removal (if it still exists), then prune stale refs.
     /// Deletes the worktree's branch ONLY when comet created it (`comet/…`) — the
     /// user may have checked out their own branch inside the worktree.
@@ -499,6 +550,27 @@ fn list_folders_blocking(target: &Path) -> Result<FolderListing, EngineError> {
     let truncated = entries.len() > FOLDER_LIST_MAX_ENTRIES;
     entries.truncate(FOLDER_LIST_MAX_ENTRIES);
     Ok(FolderListing { path: target.to_string_lossy().to_string(), entries, truncated })
+}
+
+/// Turn a generated chat title into the semantic portion of a Comet branch
+/// (port of comet's `worktreeBranchFromTitle`). Comet NFKD-normalizes accented
+/// letters first; native keeps it ASCII-only (generated titles are Title Case
+/// English), so non-ASCII characters collapse into the `-` separator.
+pub fn worktree_branch_from_title(title: &str) -> String {
+    let mut slug = String::new();
+    for c in title.trim().chars() {
+        if matches!(c, '\'' | '"' | '`') {
+            continue; // dropped entirely (cafe's → cafes), not a separator
+        }
+        if c.is_ascii_alphanumeric() {
+            slug.push(c.to_ascii_lowercase());
+        } else if !slug.is_empty() && !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.truncate(48);
+    let slug = slug.trim_matches('-');
+    format!("comet/{}", if slug.is_empty() { "update" } else { slug })
 }
 
 /// Absolute form of a possibly-relative path (no filesystem access).

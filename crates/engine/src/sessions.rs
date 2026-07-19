@@ -82,6 +82,8 @@ struct Inner {
     last_requests: Mutex<HashMap<String, RunRequest>>,
     /// Harness-native session ids per chat (resume continuity across turns).
     harness_sessions: Mutex<HashMap<String, String>>,
+    /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
+    titles: OnceLock<crate::titles::TitleGenerator>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -112,6 +114,7 @@ impl SessionsEngine {
                 sessions_tx,
                 last_requests: Mutex::new(HashMap::new()),
                 harness_sessions: Mutex::new(HashMap::new()),
+                titles: OnceLock::new(),
             }),
         }
     }
@@ -120,6 +123,12 @@ impl SessionsEngine {
     /// referential by design — sessions stream into docs, docs execute commands here).
     pub fn set_doc_host(&self, host: DocHost) {
         let _ = self.inner.doc_host.set(host);
+    }
+
+    /// Wire the chat auto-titler (called once at engine assembly). After each
+    /// completed exchange the run task fires it for still-untitled chats.
+    pub fn set_titles(&self, titles: crate::titles::TitleGenerator) {
+        let _ = self.inner.titles.set(titles);
     }
 
     fn doc_handle(&self, chat_id: &str) -> Result<Arc<ChatDocHandle>, EngineError> {
@@ -551,6 +560,10 @@ async fn drive_run(
     mut cancel_rx: watch::Receiver<bool>,
 ) {
     let device_id = inner.device_id.clone();
+    // Captured for post-run auto-titling (the request moves into the harness).
+    let harness_id = harness.id();
+    let user_prompt = request.prompt.clone();
+    let run_cwd = request.cwd.clone();
     let mut stream = match harness.run(request, controls).await {
         Ok(stream) => stream,
         Err(err) => {
@@ -701,6 +714,13 @@ async fn drive_run(
                 tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
             }
             inner.note_message(&chat_id, &folded_text(&folded));
+            // Exchange completed on an untitled chat → name it (fire-and-forget;
+            // interrupted/errored turns never trigger naming).
+            if *status == DoneStatus::Completed
+                && let Some(titles) = inner.titles.get()
+            {
+                titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);
+            }
             break match status {
                 DoneStatus::Errored => SessionStatus::Errored,
                 _ => SessionStatus::Idle,

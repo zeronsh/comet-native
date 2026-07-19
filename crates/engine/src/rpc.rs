@@ -24,6 +24,15 @@
 //!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
 //!   `CloseTerminal`. M5 is single-user local: per-user owner checks land with
 //!   real multi-account auth in M6.
+//! - Agent accounts (§3.7): `ListAgentAccounts {forceUsage?}` →
+//!   `AgentAccountsSnapshot`, `ActivateAgentAccount`/`ForgetAgentAccount`
+//!   `{harness, accountId}` → snapshot, `StartAgentLogin {harness}` →
+//!   `{loginId, url, mode}`, `CompleteAgentLogin {loginId, code}` → snapshot,
+//!   `PollAgentLogin {loginId}`, `CancelAgentLogin {loginId}`.
+//! - Uploads (§3.7): `UploadChunk {uploadId, data, seq?}`,
+//!   `UploadCommit {uploadId, fileName}` → `{path}`,
+//!   `ReadAttachmentChunk {path, offset}` → `{name, mimeType, data, nextOffset,
+//!   done}` (path-jailed to the uploads dir + workspace-known chat cwds).
 //!
 //! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
 //!
@@ -46,6 +55,7 @@ use comet_doc::SessionCommandPayload;
 use comet_proto::{ChatConfig, HarnessId};
 use comet_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
 
+use crate::agent_accounts::AgentAccounts;
 use crate::auth::Auth;
 use crate::diff_sync::CheckoutDiffSync;
 use crate::doc_host::DocHost;
@@ -53,6 +63,7 @@ use crate::registry::HarnessRegistry;
 use crate::repos::{Repos, home_dir};
 use crate::sessions::SessionsEngine;
 use crate::terminals::Terminals;
+use crate::uploads::Uploads;
 use crate::workspace_host::WorkspaceHost;
 
 #[derive(Debug, Deserialize)]
@@ -144,6 +155,64 @@ struct ResizeTerminalParams {
     rows: u16,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListAgentAccountsParams {
+    #[serde(default)]
+    force_usage: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentAccountParams {
+    harness: HarnessId,
+    account_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StartAgentLoginParams {
+    harness: HarnessId,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LoginIdParams {
+    login_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CompleteAgentLoginParams {
+    login_id: String,
+    code: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadChunkParams {
+    upload_id: String,
+    /// Base64 payload chunk.
+    data: String,
+    #[serde(default)]
+    seq: Option<u64>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadCommitParams {
+    upload_id: String,
+    file_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReadAttachmentChunkParams {
+    path: String,
+    #[serde(default)]
+    offset: u64,
+}
+
 /// The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
 #[derive(Debug, Deserialize)]
 #[serde(tag = "op", rename_all = "camelCase")]
@@ -179,6 +248,8 @@ pub struct EngineRpc {
     repos: Repos,
     terminals: Terminals,
     diff_sync: CheckoutDiffSync,
+    uploads: Uploads,
+    agent_accounts: AgentAccounts,
     auth: Option<Auth>,
     links: Option<std::sync::Arc<LinkCache>>,
 }
@@ -193,6 +264,8 @@ impl EngineRpc {
         repos: Repos,
         terminals: Terminals,
         diff_sync: CheckoutDiffSync,
+        uploads: Uploads,
+        agent_accounts: AgentAccounts,
     ) -> Self {
         Self {
             sessions,
@@ -202,6 +275,8 @@ impl EngineRpc {
             repos,
             terminals,
             diff_sync,
+            uploads,
+            agent_accounts,
             auth: None,
             links: None,
         }
@@ -319,6 +394,20 @@ fn forwardable(method: &str) -> bool {
             | methods::WRITE_TERMINAL
             | methods::RESIZE_TERMINAL
             | methods::CLOSE_TERMINAL
+            // Agent accounts are per-device CLI logins (the device switcher
+            // retargets which device's logins are shown).
+            | methods::LIST_AGENT_ACCOUNTS
+            | methods::ACTIVATE_AGENT_ACCOUNT
+            | methods::FORGET_AGENT_ACCOUNT
+            | methods::START_AGENT_LOGIN
+            | methods::COMPLETE_AGENT_LOGIN
+            | methods::POLL_AGENT_LOGIN
+            | methods::CANCEL_AGENT_LOGIN
+            // Uploads/attachments target the chat's host device (the agent reads
+            // the committed file from that device's disk).
+            | methods::UPLOAD_CHUNK
+            | methods::UPLOAD_COMMIT
+            | methods::READ_ATTACHMENT_CHUNK
     )
 }
 
@@ -537,6 +626,98 @@ impl RpcService for EngineRpc {
                     .close(&p.terminal_id)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::LIST_AGENT_ACCOUNTS => {
+                let p: ListAgentAccountsParams = parse_params(params)?;
+                let snapshot = self
+                    .agent_accounts
+                    .list(p.force_usage.unwrap_or(false))
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::ACTIVATE_AGENT_ACCOUNT => {
+                let p: AgentAccountParams = parse_params(params)?;
+                let snapshot = self
+                    .agent_accounts
+                    .activate(p.harness, &p.account_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::FORGET_AGENT_ACCOUNT => {
+                let p: AgentAccountParams = parse_params(params)?;
+                let snapshot = self
+                    .agent_accounts
+                    .forget(p.harness, &p.account_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::START_AGENT_LOGIN => {
+                let p: StartAgentLoginParams = parse_params(params)?;
+                let start = self
+                    .agent_accounts
+                    .start_login(p.harness)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&start)
+            }
+            methods::COMPLETE_AGENT_LOGIN => {
+                let p: CompleteAgentLoginParams = parse_params(params)?;
+                let snapshot = self
+                    .agent_accounts
+                    .complete_login(&p.login_id, &p.code)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&snapshot)
+            }
+            methods::POLL_AGENT_LOGIN => {
+                let p: LoginIdParams = parse_params(params)?;
+                let poll = self
+                    .agent_accounts
+                    .poll_login(&p.login_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&poll)
+            }
+            methods::CANCEL_AGENT_LOGIN => {
+                let p: LoginIdParams = parse_params(params)?;
+                self.agent_accounts.cancel_login(&p.login_id);
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::UPLOAD_CHUNK => {
+                let p: UploadChunkParams = parse_params(params)?;
+                self.uploads
+                    .append(&p.upload_id, &p.data, p.seq)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::UPLOAD_COMMIT => {
+                let p: UploadCommitParams = parse_params(params)?;
+                let path = self
+                    .uploads
+                    .commit(&p.upload_id, &p.file_name)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "path": path }))
+            }
+            methods::READ_ATTACHMENT_CHUNK => {
+                let p: ReadAttachmentChunkParams = parse_params(params)?;
+                // Path jail: the uploads dir plus every workspace-known chat cwd.
+                let roots: Vec<std::path::PathBuf> = self
+                    .workspace
+                    .doc()
+                    .read_chats()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|chat| chat.cwd)
+                    .map(std::path::PathBuf::from)
+                    .collect();
+                let chunk = self
+                    .uploads
+                    .read_chunk(&p.path, p.offset, &roots)
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&chunk)
             }
             methods::AUTH_STATUS => {
                 Ok(RpcReply::Stream(watch_stream(self.auth()?.watch_state())))

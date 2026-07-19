@@ -12,6 +12,7 @@ pub use comet_proto::HarnessId;
 
 use comet_sync::DocsStore;
 
+pub mod agent_accounts;
 pub mod auth;
 pub mod diff_sync;
 pub mod doc_host;
@@ -21,17 +22,22 @@ pub mod rpc;
 pub mod run_journal;
 pub mod sessions;
 pub mod terminals;
+pub mod titles;
+pub mod uploads;
 pub mod workspace_host;
 
+pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use diff_sync::{CheckoutDiffSync, DiffSidecar, DiffSnapshot, capture_diff};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
-pub use repos::{CheckoutIdentity, Repos};
+pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
 pub use run_journal::{JournalError, RunJournal};
 pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
 pub use terminals::Terminals;
+pub use titles::TitleGenerator;
+pub use uploads::{AttachmentChunk, Uploads};
 pub use workspace_host::{DEFAULT_ORG_ID, WORKSPACE_DOC_ID, WorkspaceHost, WorkspaceHostConfig};
 
 #[derive(Debug, thiserror::Error)]
@@ -87,6 +93,8 @@ pub struct EngineCore {
     pub repos: Repos,
     pub terminals: Terminals,
     pub diff_sync: CheckoutDiffSync,
+    pub uploads: Uploads,
+    pub agent_accounts: AgentAccounts,
     pub device_id: String,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -147,6 +155,13 @@ impl EngineCore {
         }
         let repos = Repos::new(data_dir, &device_id);
         let terminals = Terminals::new();
+        let uploads = Uploads::new(data_dir, edge.clone());
+        let agent_accounts = AgentAccounts::new(AgentAccountsConfig::detect(data_dir));
+        sessions.set_titles(TitleGenerator::new(
+            workspace.clone(),
+            registry.clone(),
+            repos.clone(),
+        ));
         let diff_sync =
             CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
         Ok(Self {
@@ -157,6 +172,8 @@ impl EngineCore {
             repos,
             terminals,
             diff_sync,
+            uploads,
+            agent_accounts,
             device_id,
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -238,6 +255,8 @@ impl EngineCore {
             self.repos.clone(),
             self.terminals.clone(),
             self.diff_sync.clone(),
+            self.uploads.clone(),
+            self.agent_accounts.clone(),
         )
         .with_auth(self.auth());
         if let Some(links) = self.links() {
@@ -252,6 +271,7 @@ impl EngineCore {
     pub async fn shutdown(&self) {
         self.sessions.shutdown().await;
         self.terminals.shutdown();
+        self.agent_accounts.shutdown();
         self.doc_host.flush_all();
         self.workspace.shutdown();
     }
