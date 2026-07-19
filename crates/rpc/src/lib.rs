@@ -1,5 +1,5 @@
 //! comet-rpc — the typed control plane (UiRpc / ControlRpc) over WebSocket + in-memory
-//! transports. (Device-room virtual sockets — {s,k,to,from} frames — land in M4.)
+//! transports, plus the device-room relay transport ({s,k,to,from} frames — [`device_room`]).
 //!
 //! Framing: ndjson envelopes, one JSON object per WebSocket text message (or per line on
 //! byte transports), matching the shape of comet's Effect RPC without the Effect runtime:
@@ -19,9 +19,15 @@ use futures::stream::BoxStream;
 use serde::{Deserialize, Serialize};
 
 mod client;
+pub mod device_room;
 mod server;
 
 pub use client::{RpcClient, connect_ws};
+pub use device_room::{
+    DeviceFrameHeader, DeviceLink, HostRelay, HostRelayConfig, LinkCache, LinkCacheConfig,
+    NudgeHandler, StaticToken, TokenSource, decode_device_frame, device_room_ws_url,
+    encode_device_frame,
+};
 pub use server::{serve_connection, serve_ws_listener};
 
 /// RPC method names — single source of truth for both ends.
@@ -39,8 +45,15 @@ pub mod methods {
     /// renameDevice|markChatSeen, …}`.
     pub const MUTATE: &str = "Mutate";
     pub const AUTH_STATUS: &str = "AuthStatus";
-    // TODO(M4+): repos/folders/worktrees, uploads/attachments, terminals, agent accounts,
-    // auth mutations.
+    // AuthRpc mutations (feature-inventory §2 AuthRpc; IPC-only).
+    pub const SIGN_IN: &str = "SignIn";
+    pub const SIGN_IN_HEADLESS: &str = "SignInHeadless";
+    pub const COMPLETE_SIGN_IN: &str = "CompleteSignIn";
+    pub const SIGN_OUT: &str = "SignOut";
+    pub const LIST_ORGS: &str = "ListOrgs";
+    pub const CREATE_ORG: &str = "CreateOrg";
+    pub const SELECT_ORG: &str = "SelectOrg";
+    // TODO(M5): repos/folders/worktrees, uploads/attachments, terminals, agent accounts.
 }
 
 #[derive(Debug, thiserror::Error)]

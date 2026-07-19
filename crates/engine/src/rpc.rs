@@ -12,6 +12,20 @@
 //!   remote devices' workspace session rows
 //! - `Mutate {op, …}` → `{ok}` — workspace entity mutations (createChat, renameChat,
 //!   setChatArchived, deleteChat, renameDevice, markChatSeen)
+//! - AuthRpc (feature-inventory §2): `AuthStatus` (stream), `SignIn`/`SignInHeadless` →
+//!   `{url}`, `CompleteSignIn {code}`, `SignOut`, `ListOrgs`, `CreateOrg {name}`,
+//!   `SelectOrg {organizationId}`
+//!
+//! ## Device-addressed routing (`targetDeviceId`, feature-inventory §2.1)
+//!
+//! ControlRpc methods are relay-forwardable: params may carry `targetDeviceId`. When it
+//! names another device, the call is forwarded verbatim over that device's relay DO via
+//! the [`LinkCache`] — the remote engine sees its own id and handles locally, so the
+//! forward can never loop. Streaming methods are proxied by re-subscribing remotely and
+//! piping items. To make another method device-addressable, nothing per-method is needed
+//! beyond listing it in [`forwardable`] (and [`is_stream_method`] if it streams);
+//! handlers stay transport-agnostic. Currently routed: `ListHarnesses`, `ListModels`,
+//! `QueueCommand`, and `WatchDocMessages`.
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -21,8 +35,9 @@ use tokio::sync::watch;
 
 use comet_doc::SessionCommandPayload;
 use comet_proto::{ChatConfig, HarnessId};
-use comet_rpc::{RpcError, RpcReply, RpcService, methods, parse_params};
+use comet_rpc::{LinkCache, RpcError, RpcReply, RpcService, methods, parse_params};
 
+use crate::auth::Auth;
 use crate::doc_host::DocHost;
 use crate::registry::HarnessRegistry;
 use crate::sessions::SessionsEngine;
@@ -79,6 +94,8 @@ pub struct EngineRpc {
     doc_host: DocHost,
     workspace: WorkspaceHost,
     registry: std::sync::Arc<HarnessRegistry>,
+    auth: Option<Auth>,
+    links: Option<std::sync::Arc<LinkCache>>,
 }
 
 impl EngineRpc {
@@ -88,7 +105,64 @@ impl EngineRpc {
         workspace: WorkspaceHost,
         registry: std::sync::Arc<HarnessRegistry>,
     ) -> Self {
-        Self { sessions, doc_host, workspace, registry }
+        Self { sessions, doc_host, workspace, registry, auth: None, links: None }
+    }
+
+    /// Attach the auth service (AuthStatus + AuthRpc mutations).
+    pub fn with_auth(mut self, auth: Auth) -> Self {
+        self.auth = Some(auth);
+        self
+    }
+
+    /// Attach the peer link cache — enables `targetDeviceId` relay forwarding.
+    pub fn with_links(mut self, links: std::sync::Arc<LinkCache>) -> Self {
+        self.links = Some(links);
+        self
+    }
+
+    fn auth(&self) -> Result<&Auth, RpcError> {
+        self.auth.as_ref().ok_or_else(|| RpcError::Failed("auth unavailable".into()))
+    }
+
+    /// Forward a device-addressed call over the target device's relay. On transport
+    /// failure the cached link is invalidated so the next call re-dials.
+    async fn forward(
+        &self,
+        target: &str,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<RpcReply, RpcError> {
+        let Some(links) = &self.links else {
+            return Err(RpcError::Failed(format!(
+                "cannot reach device {target}: remote routing unavailable (offline)"
+            )));
+        };
+        let client = links.client(target).await?;
+        if is_stream_method(method) {
+            let rx = match client.subscribe(method, params).await {
+                Ok(rx) => rx,
+                Err(err) => {
+                    links.invalidate(target);
+                    return Err(err);
+                }
+            };
+            // Pipe remote items; the held client keeps the link's RpcClient alive for
+            // the stream's lifetime. A remote error just ends the stream (the relay
+            // link-down path fails pending calls; stream receivers close).
+            let stream = futures::stream::unfold((rx, client), |(mut rx, client)| async move {
+                rx.recv().await.map(|item| (item, (rx, client)))
+            });
+            return Ok(RpcReply::Stream(stream.boxed()));
+        }
+        match client.call(method, params).await {
+            Ok(value) => Ok(RpcReply::Value(value)),
+            Err(err) => {
+                if matches!(err, RpcError::Closed | RpcError::Transport(_)) {
+                    links.invalidate(target);
+                }
+                Err(err)
+            }
+        }
     }
 
     fn mutate(&self, params: MutateParams) -> Result<(), RpcError> {
@@ -121,6 +195,24 @@ impl EngineRpc {
     }
 }
 
+/// ControlRpc methods that honor `targetDeviceId` (feature-inventory §2.1). Extend this
+/// list (plus [`is_stream_method`] for streams) to make more of the surface
+/// device-addressable — the handlers themselves need no changes.
+fn forwardable(method: &str) -> bool {
+    matches!(
+        method,
+        methods::LIST_HARNESSES
+            | methods::LIST_MODELS
+            | methods::QUEUE_COMMAND
+            | methods::WATCH_DOC_MESSAGES
+    )
+}
+
+/// Forwardable methods whose reply is a stream (proxied item-by-item).
+fn is_stream_method(method: &str) -> bool {
+    matches!(method, methods::WATCH_DOC_MESSAGES)
+}
+
 /// A watch receiver as a stream: current value first, then every change.
 fn watch_stream<T>(rx: watch::Receiver<T>) -> BoxStream<'static, serde_json::Value>
 where
@@ -146,6 +238,16 @@ impl RpcService for EngineRpc {
         method: &str,
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
+        // Device-addressed routing: forward calls that target another device over its
+        // relay. The target compares the id to its own, so forwards cannot loop.
+        if forwardable(method) {
+            if let Some(target) = params.get("targetDeviceId").and_then(|v| v.as_str()) {
+                if target != self.doc_host.device_id() {
+                    let target = target.to_string();
+                    return self.forward(&target, method, params).await;
+                }
+            }
+        }
         match method {
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
             methods::LIST_MODELS => {
@@ -190,6 +292,70 @@ impl RpcService for EngineRpc {
             methods::MUTATE => {
                 let p: MutateParams = parse_params(params)?;
                 self.mutate(p)?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::AUTH_STATUS => {
+                Ok(RpcReply::Stream(watch_stream(self.auth()?.watch_state())))
+            }
+            methods::SIGN_IN => {
+                let url = self
+                    .auth()?
+                    .start_sign_in()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "url": url }))
+            }
+            methods::SIGN_IN_HEADLESS => {
+                let url = self.auth()?.start_headless_sign_in();
+                RpcReply::value(&serde_json::json!({ "url": url }))
+            }
+            methods::COMPLETE_SIGN_IN => {
+                #[derive(Deserialize)]
+                struct P {
+                    code: String,
+                }
+                let p: P = parse_params(params)?;
+                self.auth()?
+                    .complete_sign_in(&p.code)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::SIGN_OUT => {
+                self.auth()?.sign_out();
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::LIST_ORGS => {
+                let orgs = self
+                    .auth()?
+                    .list_orgs()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "orgs": orgs }))
+            }
+            methods::CREATE_ORG => {
+                #[derive(Deserialize)]
+                struct P {
+                    name: String,
+                }
+                let p: P = parse_params(params)?;
+                self.auth()?
+                    .create_org(&p.name)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::SELECT_ORG => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    organization_id: String,
+                }
+                let p: P = parse_params(params)?;
+                self.auth()?
+                    .select_org(&p.organization_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             other => Err(RpcError::UnknownMethod(other.to_string())),

@@ -12,6 +12,7 @@ pub use comet_proto::HarnessId;
 
 use comet_sync::DocsStore;
 
+pub mod auth;
 pub mod doc_host;
 pub mod registry;
 pub mod rpc;
@@ -19,6 +20,7 @@ pub mod run_journal;
 pub mod sessions;
 pub mod workspace_host;
 
+pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
 pub use rpc::EngineRpc;
@@ -63,7 +65,10 @@ pub struct EngineConfig {
     /// Harness for doc-command runs on chats without a workspace `config` row.
     pub default_harness: HarnessId,
     /// Workspace-doc org (`ws/{orgId}` room). `None` = `$COMET_ORG_ID` or the dev default.
+    /// In WorkOS mode the signed-in session's org wins.
     pub org_id: Option<String>,
+    /// WorkOS client id — enables real auth; `None` = dev mode (bearer = `edge_token`).
+    pub workos_client_id: Option<String>,
 }
 
 /// The assembled engine core — also constructible without the IPC server for tests
@@ -74,6 +79,10 @@ pub struct EngineCore {
     pub workspace: WorkspaceHost,
     pub registry: Arc<HarnessRegistry>,
     pub device_id: String,
+    /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
+    auth: std::sync::Mutex<Option<Auth>>,
+    /// Peer link cache for `targetDeviceId` routing (attached when edge+auth are ready).
+    links: std::sync::Mutex<Option<Arc<comet_rpc::LinkCache>>>,
 }
 
 impl EngineCore {
@@ -127,16 +136,95 @@ impl EngineCore {
             Ok(recovered) => tracing::info!(recovered, "stale sessions recovered on boot"),
             Err(err) => tracing::error!(error = %err, "stale-session recovery failed"),
         }
-        Ok(Self { sessions, doc_host, workspace, registry, device_id })
+        Ok(Self {
+            sessions,
+            doc_host,
+            workspace,
+            registry,
+            device_id,
+            auth: std::sync::Mutex::new(None),
+            links: std::sync::Mutex::new(None),
+        })
+    }
+
+    /// Attach the auth service (before building the RPC service / relays).
+    pub fn set_auth(&self, auth: Auth) {
+        *self.auth.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(auth);
+    }
+
+    /// The attached auth service, or a lazily-created dev-mode one (in-process embeds
+    /// that never wired WorkOS still answer AuthStatus honestly).
+    pub fn auth(&self) -> Auth {
+        let mut slot = self.auth.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.get_or_insert_with(|| {
+            let dev_user = std::env::var("COMET_EDGE_TOKEN")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "dev-user".into());
+            let mut config = AuthConfig::new("http://localhost:26640", std::env::temp_dir());
+            config.dev_user_id = dev_user;
+            Auth::new(config)
+        })
+        .clone()
+    }
+
+    /// Attach the peer link cache — enables `targetDeviceId` routing and [`Self::dial_device`].
+    pub fn set_links(&self, links: Arc<comet_rpc::LinkCache>) {
+        *self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(links);
+    }
+
+    pub fn links(&self) -> Option<Arc<comet_rpc::LinkCache>> {
+        self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    /// A live RPC client to another device's engine through its relay DO (the router's
+    /// dial seam). Cached per device; invalidated + re-dialed on failure.
+    pub async fn dial_device(
+        &self,
+        device_id: &str,
+    ) -> Result<Arc<comet_rpc::RpcClient>, EngineError> {
+        let links = self
+            .links()
+            .ok_or_else(|| EngineError::Other("peer links unavailable (offline)".into()))?;
+        links.client(device_id).await.map_err(|e| EngineError::Other(e.to_string()))
+    }
+
+    /// Start hosting our device room: serve the full RPC surface to relay clients and
+    /// warm-open chat docs on nudges (§7 cold-chat command delivery). The token source
+    /// re-reads auth on every (re)dial, so token refreshes take effect at reconnect.
+    pub fn start_host_relay(&self, edge_url: &str) -> comet_rpc::HostRelay {
+        let auth = self.auth();
+        let config = comet_rpc::HostRelayConfig::new(
+            edge_url,
+            self.device_id.clone(),
+            Arc::new(auth),
+        );
+        let doc_host = self.doc_host.clone();
+        let on_nudge: comet_rpc::NudgeHandler = Arc::new(move |chat_id: String| {
+            // Opening the doc joins its room + syncs; drain fires on the change
+            // subscription — the command executes with no standing per-chat socket.
+            match doc_host.open(&chat_id) {
+                Ok(_) => tracing::info!(chat = %chat_id, "nudge: chat doc opened"),
+                Err(err) => {
+                    tracing::warn!(chat = %chat_id, error = %err, "nudge: open failed")
+                }
+            }
+        });
+        comet_rpc::HostRelay::spawn(config, self.rpc_service(), on_nudge)
     }
 
     pub fn rpc_service(&self) -> Arc<EngineRpc> {
-        Arc::new(EngineRpc::new(
+        let mut rpc = EngineRpc::new(
             self.sessions.clone(),
             self.doc_host.clone(),
             self.workspace.clone(),
             self.registry.clone(),
-        ))
+        )
+        .with_auth(self.auth());
+        if let Some(links) = self.links() {
+            rpc = rpc.with_links(links);
+        }
+        Arc::new(rpc)
     }
 
     /// Graceful teardown: settle live runs (streaming entries stamped `aborted`),
@@ -157,30 +245,71 @@ impl Engine {
         Self { config }
     }
 
-    /// Run until ctrl-c. M2: sessions engine + doc host + command executor + IPC server.
+    /// Run until ctrl-c: auth (dev or WorkOS), sessions engine + doc host + command
+    /// executor, IPC server, and — when edge+auth are ready — the device-room host
+    /// relay + peer link cache (targetDeviceId routing).
     pub async fn run(self) -> anyhow::Result<()> {
         let config = self.config;
         tracing::info!(data_dir = %config.data_dir.display(), "engine starting");
-        let edge = config.edge_token.as_ref().map(|token| EdgeConfig {
-            url: config.edge_url.clone(),
-            token: token.clone(),
+
+        std::fs::create_dir_all(&config.data_dir)?;
+        let mut auth_config = AuthConfig::new(config.edge_url.clone(), config.data_dir.clone());
+        auth_config.workos_client_id = config.workos_client_id.clone();
+        if let Ok(base) = std::env::var("COMET_WORKOS_API_BASE") {
+            if !base.trim().is_empty() {
+                auth_config.workos_api_base = base;
+            }
+        }
+        if let Some(token) = &config.edge_token {
+            auth_config.dev_user_id = token.clone();
+        }
+        let auth = Auth::detect(auth_config).await;
+        let _refresh_loop = auth.spawn_refresh_loop();
+
+        // WorkOS mode: gate edge features on a signed-in, org-scoped session. Headless
+        // sign-in prompt on TTY (paste-code flow) — CompleteSignIn over IPC also works.
+        if auth.workos_enabled() {
+            wait_for_sign_in(&auth).await;
+        }
+
+        // Edge sync token: WorkOS access token, or the configured dev bearer. `None`
+        // runs fully offline (no rooms, no relay) — M2 behavior preserved.
+        let edge_token = auth.access_token().await.filter(|_| {
+            auth.workos_enabled() || config.edge_token.is_some()
         });
-        let core = match &config.org_id {
+        let edge = edge_token.map(|token| EdgeConfig { url: config.edge_url.clone(), token });
+
+        // Workspace org: the session's org claim (WorkOS) beats the configured one.
+        let org_id = auth.state().org_id().map(str::to_string).or(config.org_id.clone());
+        let core = match &org_id {
             Some(org_id) => EngineCore::assemble_with_org(
                 &config.data_dir,
                 Arc::new(default_registry()),
                 config.default_harness,
-                edge,
+                edge.clone(),
                 org_id,
             )?,
             None => EngineCore::assemble(
                 &config.data_dir,
                 Arc::new(default_registry()),
                 config.default_harness,
-                edge,
+                edge.clone(),
             )?,
         };
+        core.set_auth(auth.clone());
         tracing::info!(device_id = %core.device_id, "engine core assembled");
+
+        // Device-room transport (edge + auth ready): host our relay room and enable
+        // peer dialing. Token refreshes take effect on every (re)dial via `Auth`'s
+        // TokenSource impl.
+        let _host_relay = edge.as_ref().map(|edge| {
+            let links = comet_rpc::LinkCache::new(comet_rpc::LinkCacheConfig::new(
+                edge.url.clone(),
+                Arc::new(auth.clone()),
+            ));
+            core.set_links(links);
+            core.start_host_relay(&edge.url)
+        });
 
         let listener =
             tokio::net::TcpListener::bind(("127.0.0.1", config.ipc_port)).await?;
@@ -192,6 +321,67 @@ impl Engine {
         server.abort();
         core.shutdown().await;
         Ok(())
+    }
+}
+
+/// Block until the WorkOS session is signed in AND org-scoped. On a TTY, print the
+/// headless (paste-code) sign-in URL and read the pasted `state.code` from stdin;
+/// `SignIn`/`CompleteSignIn`/`CreateOrg` over IPC drive the same state.
+async fn wait_for_sign_in(auth: &Auth) {
+    use std::io::IsTerminal;
+    let mut state_rx = auth.watch_state();
+    let mut stdin_reader: Option<tokio::task::JoinHandle<()>> = None;
+    loop {
+        let state = state_rx.borrow().clone();
+        match state {
+            AuthState::SignedIn { user, org_id } => {
+                tracing::info!(email = %user.email, org = org_id.as_deref().unwrap_or("<none>"),
+                    "auth: session ready");
+                break;
+            }
+            AuthState::NeedsOrganization { user } => {
+                println!(
+                    "Signed in as {} — create or select a workspace from the Comet UI to continue.",
+                    user.email
+                );
+            }
+            AuthState::SignedOut => {
+                if stdin_reader.is_none() {
+                    let url = auth.start_headless_sign_in();
+                    println!("Sign in to Comet:\n\n  {url}\n");
+                    if std::io::stdin().is_terminal() {
+                        println!("Then paste the code shown in the browser here and press enter.");
+                        let auth = auth.clone();
+                        stdin_reader = Some(tokio::spawn(async move {
+                            loop {
+                                let line = tokio::task::spawn_blocking(|| {
+                                    let mut line = String::new();
+                                    std::io::stdin().read_line(&mut line).ok().map(|_| line)
+                                })
+                                .await
+                                .ok()
+                                .flatten();
+                                let Some(line) = line else { return };
+                                let pasted = line.trim();
+                                if pasted.is_empty() {
+                                    continue;
+                                }
+                                match auth.complete_sign_in(pasted).await {
+                                    Ok(()) => return,
+                                    Err(err) => println!("Sign-in failed: {err}"),
+                                }
+                            }
+                        }));
+                    }
+                }
+            }
+        }
+        if state_rx.changed().await.is_err() {
+            break;
+        }
+    }
+    if let Some(reader) = stdin_reader {
+        reader.abort();
     }
 }
 

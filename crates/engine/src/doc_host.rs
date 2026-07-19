@@ -145,7 +145,9 @@ impl ChatDocHandle {
         match self.doc.read_entries() {
             Ok(entries) => {
                 let joined = join_continuation_entries(entries);
-                let _ = self.messages_tx.send(joined);
+                // send_replace: update the watch even with no subscribers yet, so a
+                // late subscriber's first borrow sees the current transcript.
+                self.messages_tx.send_replace(joined);
             }
             Err(err) => {
                 tracing::warn!(chat = %self.chat_id, error = %err, "transcript read failed");

@@ -34,16 +34,20 @@ fn main() -> anyhow::Result<()> {
                         .unwrap_or_else(dirs_data_dir),
                     edge_url: std::env::var("COMET_EDGE_URL")
                         .unwrap_or_else(|_| "http://localhost:26640".into()),
-                    // TODO(M4): real auth; until then an explicit token enables sync.
+                    // Dev-mode bearer (no WorkOS): an explicit token enables sync.
                     edge_token: std::env::var("COMET_EDGE_TOKEN").ok(),
                     ipc_port: std::env::var("COMET_IPC_PORT")
                         .ok()
                         .and_then(|p| p.parse().ok())
                         .unwrap_or(26654),
                     default_harness: comet_engine::HarnessId::ClaudeCode,
-                    // TODO(M4 auth): org comes from the signed-in session; until then
-                    // COMET_ORG_ID (dev default "dev-org") scopes the workspace room.
+                    // WorkOS mode: the signed-in session's org wins; COMET_ORG_ID (dev
+                    // default "dev-org") scopes the workspace room otherwise.
                     org_id: std::env::var("COMET_ORG_ID").ok(),
+                    // Real auth when a WorkOS client id is configured; dev mode otherwise.
+                    workos_client_id: std::env::var("COMET_WORKOS_CLIENT_ID")
+                        .ok()
+                        .filter(|s| !s.trim().is_empty()),
                 });
                 engine.run().await
             })
