@@ -25,6 +25,7 @@ use comet_proto::{RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion};
 use comet_rpc::methods;
 
 use crate::motion;
+use crate::pickers::Pickers;
 use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
@@ -1104,6 +1105,8 @@ pub enum ComposerEvent {
 pub struct Composer {
     state: Entity<AppState>,
     input: Entity<ComposerInput>,
+    /// Composer actions row: repo/branch/harness-model/traits (§1.7).
+    pickers: Entity<Pickers>,
     /// Draft text per chat key ("" = new-chat canvas), surviving navigation.
     drafts: HashMap<String, String>,
     current_key: String,
@@ -1125,6 +1128,7 @@ impl EventEmitter<ComposerEvent> for Composer {}
 impl Composer {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| ComposerInput::new("Send a message…", cx));
+        let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.on_state_changed(cx));
         let input_events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.on_submit(cx),
@@ -1134,6 +1138,7 @@ impl Composer {
         Self {
             state,
             input,
+            pickers,
             drafts: HashMap::new(),
             current_key,
             sending: false,
@@ -1228,7 +1233,10 @@ impl Composer {
         }
     }
 
-    /// Queue a Run (or Steer) doc command with an optimistic echo.
+    /// Queue a Run (or Steer) doc command with an optimistic echo. New chats
+    /// thread the picked config in: worktree creation (when the isolated toggle
+    /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
+    /// reasoning / options on the Run request itself (§1.7).
     fn send(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.failure = Some("Engine not connected".into());
@@ -1241,39 +1249,18 @@ impl Composer {
             Some(id) => (id, false),
             None => (uuid::Uuid::new_v4().to_string(), true),
         };
-        let cwd = self
-            .state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|c| c.cwd.clone())
-            .unwrap_or_else(|| ".".to_string());
+        let draft = self.pickers.read(cx).draft().clone();
+        let existing_cwd =
+            self.state.read(cx).selected_chat_row().and_then(|c| c.cwd.clone());
+        let device_id = {
+            let state = self.state.read(cx);
+            state
+                .local_device_id
+                .clone()
+                .or_else(|| state.devices.first().map(|d| d.id.clone()))
+                .unwrap_or_else(|| "local".to_string())
+        };
         let message_id = uuid::Uuid::new_v4().to_string();
-
-        let command = if steer && !is_new {
-            SessionCommandPayload::Steer { prompt: text.clone(), message_id: Some(message_id.clone()) }
-        } else {
-            SessionCommandPayload::Run {
-                request: RunRequest {
-                    prompt: text.clone(),
-                    model: None,
-                    reasoning: None,
-                    model_options: Default::default(),
-                    cwd,
-                    sandbox: SandboxLevel::WorkspaceWrite,
-                    auto_approve: false,
-                    resume: None,
-                },
-                message_id: message_id.clone(),
-            }
-        };
-        let params = match serde_json::to_value(&command) {
-            Ok(value) => serde_json::json!({ "chatId": chat_id, "command": value }),
-            Err(err) => {
-                self.failure = Some(format!("Send failed: {err}").into());
-                cx.notify();
-                return;
-            }
-        };
 
         // Optimistic echo (client-minted id doubles as the persisted message id,
         // so the doc frame dedups it away).
@@ -1301,39 +1288,98 @@ impl Composer {
         cx.emit(ComposerEvent::Sent { chat_id: chat_id.clone() });
         cx.notify();
 
-        // New-chat canvas: best-effort Mutate CreateChat (idempotent engine-side)
-        // so the sidebar row appears promptly; the doc host would materialize
-        // the chat on first command anyway, so failures are non-fatal.
-        let create_chat = is_new.then(|| {
-            let device_id = self
-                .state
-                .read(cx)
-                .devices
-                .first()
-                .map(|d| d.id.clone())
-                .unwrap_or_else(|| "local".to_string());
-            serde_json::json!({
-                "op": "createChat",
-                "chatId": chat_id,
-                "deviceId": device_id,
-            })
-        });
-
-        let restore_text = text;
+        let steer_cmd = steer && !is_new;
+        let restore_text = text.clone();
+        let err_chat_id = chat_id.clone();
+        let err_message_id = message_id.clone();
         self.send_task = Some(cx.spawn(async move |this, cx| {
-            if let Some(mutate_params) = create_chat
-                && let Err(err) = engine.client().call(methods::MUTATE, mutate_params).await
-            {
-                tracing::debug!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");
+            let result: Result<(), String> = async {
+                // Resolve the working directory: existing chats keep theirs;
+                // new chats use the picked repo — via a fresh isolated worktree
+                // when the toggle is on (CreateWorktree on send).
+                let mut cwd = if is_new {
+                    draft.repo.as_ref().map(|r| r.path.clone())
+                } else {
+                    existing_cwd
+                }
+                .unwrap_or_else(|| ".".to_string());
+                if is_new
+                    && draft.isolated_worktree
+                    && let (Some(repo), Some(branch)) = (&draft.repo, &draft.branch)
+                {
+                    let params = serde_json::json!({
+                        "repoPath": repo.path,
+                        "branch": branch,
+                    });
+                    let value = engine
+                        .client()
+                        .call(methods::CREATE_WORKTREE, params)
+                        .await
+                        .map_err(|e| format!("Worktree failed: {e}"))?;
+                    let worktree: comet_proto::Worktree = serde_json::from_value(value)
+                        .map_err(|e| format!("Worktree reply malformed: {e}"))?;
+                    cwd = worktree.path;
+                }
+
+                // Best-effort Mutate createChat with the picked config
+                // (idempotent engine-side; the doc host would materialize the
+                // chat on first command anyway, so failures are non-fatal).
+                if is_new {
+                    let mut mutate = serde_json::json!({
+                        "op": "createChat",
+                        "chatId": chat_id,
+                        "deviceId": device_id,
+                        "cwd": cwd,
+                    });
+                    if let (Some(config), Some(object)) =
+                        (draft.chat_config(), mutate.as_object_mut())
+                        && let Ok(config) = serde_json::to_value(&config)
+                    {
+                        object.insert("config".into(), config);
+                    }
+                    if let Err(err) = engine.client().call(methods::MUTATE, mutate).await {
+                        tracing::debug!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");
+                    }
+                }
+
+                let command = if steer_cmd {
+                    SessionCommandPayload::Steer {
+                        prompt: text.clone(),
+                        message_id: Some(message_id.clone()),
+                    }
+                } else {
+                    SessionCommandPayload::Run {
+                        request: RunRequest {
+                            prompt: text.clone(),
+                            model: draft.model.clone(),
+                            reasoning: draft.reasoning,
+                            model_options: draft.model_options.clone(),
+                            cwd,
+                            sandbox: SandboxLevel::WorkspaceWrite,
+                            auto_approve: false,
+                            resume: None,
+                        },
+                        message_id: message_id.clone(),
+                    }
+                };
+                let command = serde_json::to_value(&command)
+                    .map_err(|e| format!("Send failed: {e}"))?;
+                let params = serde_json::json!({ "chatId": chat_id, "command": command });
+                engine
+                    .client()
+                    .call(methods::QUEUE_COMMAND, params)
+                    .await
+                    .map_err(|e| format!("Send failed: {e}"))?;
+                Ok(())
             }
-            let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
+            .await;
             this.update(cx, |composer, cx| {
                 composer.sending = false;
-                if let Err(err) = result {
+                if let Err(message) = result {
                     // Failure: red banner, echo removed, prompt back in the draft.
-                    composer.failure = Some(format!("Send failed: {err}").into());
+                    composer.failure = Some(message.into());
                     composer.state.update(cx, |s, cx| {
-                        s.remove_echo(&chat_id, &message_id);
+                        s.remove_echo(&err_chat_id, &err_message_id);
                         cx.notify();
                     });
                     composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
@@ -1664,6 +1710,10 @@ impl Render for Composer {
             let wizard = self.render_wizard(cx);
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
+
+        // Composer actions row: repo/branch pickers (new-chat mode) +
+        // harness-model + traits (§1.7).
+        let container = container.child(div().flex().flex_row().items_center().child(self.pickers.clone()));
 
         let send_button = self.render_send_button(mode, cx);
         let body = if expanded {

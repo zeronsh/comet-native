@@ -529,6 +529,10 @@ pub struct Transcript {
     highlights: HighlightStore,
     show_jump_button: bool,
     scroll_anim: Option<Task<()>>,
+    /// MessageRail width gate (set by the shell from the container width).
+    rail_enabled: bool,
+    /// Hovered rail tick (grows + shows the preview card).
+    rail_hover: Option<usize>,
     _observe: Subscription,
 }
 
@@ -553,10 +557,52 @@ impl Transcript {
             highlights: HighlightStore::default(),
             show_jump_button: false,
             scroll_anim: None,
+            rail_enabled: true,
+            rail_hover: None,
             _observe: observe,
         };
         this.sync(cx);
         this
+    }
+
+    // ---- rail plumbing (rendering lives in crate::rail) ----
+
+    /// Shell-driven width gate: the rail hides below 48rem of container width.
+    pub fn set_rail_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.rail_enabled != enabled {
+            self.rail_enabled = enabled;
+            cx.notify();
+        }
+    }
+
+    pub(crate) fn rail_enabled(&self) -> bool {
+        self.rail_enabled
+    }
+
+    pub(crate) fn rail_hover(&self) -> Option<usize> {
+        self.rail_hover
+    }
+
+    pub(crate) fn set_rail_hover(&mut self, hover: Option<usize>) {
+        self.rail_hover = hover;
+    }
+
+    pub(crate) fn rows(&self) -> &[Row] {
+        &self.rows
+    }
+
+    pub(crate) fn list_state(&self) -> &ListState {
+        &self.list
+    }
+
+    pub(crate) fn state_entity(&self) -> &Entity<AppState> {
+        &self.state
+    }
+
+    /// Replace the transcript's scroll animation task (rail click / jump).
+    pub(crate) fn set_scroll_task(&mut self, task: Task<()>) {
+        self.list.set_follow_mode(FollowMode::Normal);
+        self.scroll_anim = Some(task);
     }
 
     fn distance_from_bottom(&self) -> f32 {
@@ -978,6 +1024,7 @@ impl Render for Transcript {
         let theme = Theme::of(cx);
         let (raised, border, text) = (theme.surface_raised, theme.border, theme.text);
         let jump = self.show_jump_button;
+        let rail = self.render_rail(cx);
         div()
             .relative()
             .size_full()
@@ -987,6 +1034,7 @@ impl Render for Transcript {
                     .size_full()
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
             )
+            .child(rail)
             .when(jump, |el| {
                 el.child(
                     div().absolute().bottom(px(16.0)).left_0().right_0().flex().justify_center().child(

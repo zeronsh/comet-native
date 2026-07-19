@@ -230,6 +230,8 @@ pub enum GatePhase {
     Failed(String),
     /// Engine up, but signed out — show the sign-in card (M4 wires the flow).
     SignIn,
+    /// Signed in but no organization selected — "Create your workspace".
+    OrgGate,
     /// Render the shell.
     Ready,
 }
@@ -242,9 +244,109 @@ pub fn gate_phase(connection: &ConnectionStatus, auth: Option<&AuthState>) -> Ga
         ConnectionStatus::Failed(err) => GatePhase::Failed(err.clone()),
         ConnectionStatus::Ready => match auth {
             Some(AuthState::SignedOut) => GatePhase::SignIn,
+            Some(AuthState::NeedsOrganization { .. }) => GatePhase::OrgGate,
             _ => GatePhase::Ready,
         },
     }
+}
+
+/// Parse an `AuthStatus` frame tolerantly. The engine currently serializes its
+/// own enum (`{"_tag": "SignedIn", ...}`) while the proto type expects
+/// `{"state": "signedIn", ...}` — accept both so either side can converge
+/// without breaking the viewport.
+pub fn parse_auth_state(value: &serde_json::Value) -> Option<AuthState> {
+    if let Ok(state) = serde_json::from_value::<AuthState>(value.clone()) {
+        return Some(state);
+    }
+    let tag = value.get("_tag").and_then(|t| t.as_str())?;
+    let user = || -> Option<comet_proto::UserProfile> {
+        let u = value.get("user")?;
+        Some(comet_proto::UserProfile {
+            id: u.get("id")?.as_str()?.to_string(),
+            email: u.get("email")?.as_str()?.to_string(),
+            name: u.get("name").and_then(|n| n.as_str()).map(str::to_string),
+        })
+    };
+    match tag {
+        "SignedOut" => Some(AuthState::SignedOut),
+        "NeedsOrganization" => Some(AuthState::NeedsOrganization { user: user()? }),
+        "SignedIn" => Some(AuthState::SignedIn {
+            user: user()?,
+            org_id: value.get("orgId").and_then(|v| v.as_str()).map(str::to_string),
+        }),
+        _ => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar grouping (pure)
+// ---------------------------------------------------------------------------
+
+/// One grouped-by-project sidebar section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChatGroup<'a> {
+    pub label: String,
+    pub chats: Vec<&'a Chat>,
+}
+
+/// Project label for a chat: the basename of its cwd, or "No project".
+pub fn project_label(cwd: Option<&str>) -> String {
+    let Some(cwd) = cwd.map(str::trim).filter(|c| !c.is_empty()) else {
+        return "No project".to_string();
+    };
+    std::path::Path::new(cwd.trim_end_matches(['/', '\\']))
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .filter(|n| !n.is_empty())
+        .unwrap_or_else(|| cwd.to_string())
+}
+
+/// Group chats by project label, preserving the incoming (recency) order both
+/// for groups (by their most recent chat) and rows within a group. Pure.
+pub fn group_chats<'a>(chats: impl IntoIterator<Item = &'a Chat>) -> Vec<ChatGroup<'a>> {
+    let mut groups: Vec<ChatGroup<'a>> = Vec::new();
+    for chat in chats {
+        let label = project_label(chat.cwd.as_deref());
+        match groups.iter_mut().find(|g| g.label == label) {
+            Some(group) => group.chats.push(chat),
+            None => groups.push(ChatGroup { label, chats: vec![chat] }),
+        }
+    }
+    groups
+}
+
+// ---------------------------------------------------------------------------
+// Org gate (pure)
+// ---------------------------------------------------------------------------
+
+/// One org membership row (tolerant local mirror of the engine's ListOrgs
+/// reply — `{orgs: [{id, organizationId, name}]}`).
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OrgRow {
+    pub organization_id: String,
+    pub name: String,
+}
+
+/// Parse a ListOrgs reply tolerantly (accepts a bare array too).
+pub fn parse_orgs(value: &serde_json::Value) -> Vec<OrgRow> {
+    let list = value.get("orgs").unwrap_or(value);
+    serde_json::from_value(list.clone()).unwrap_or_default()
+}
+
+/// Workspace names must be non-empty (trimmed) and reasonably short.
+pub fn org_name_valid(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty() && trimmed.chars().count() <= 64
+}
+
+/// Memberships sorted by name (case-insensitive), deduped by organization id.
+pub fn sort_memberships(mut orgs: Vec<OrgRow>) -> Vec<OrgRow> {
+    orgs.sort_by(|a, b| {
+        a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(&b.name))
+    });
+    orgs.dedup_by(|a, b| a.organization_id == b.organization_id);
+    orgs
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +370,9 @@ pub struct AppState {
     /// Optimistic user echoes per chat id, shown until the doc frame carrying
     /// the same message id arrives (client-minted ids make dedup exact).
     echoes: HashMap<String, Vec<SessionMessageEntry>>,
+    /// This engine's device id (best-effort `LocalDevice` probe; `None` until
+    /// the engine serves it — views degrade gracefully).
+    pub local_device_id: Option<String>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -290,6 +395,7 @@ impl AppState {
             selected_chat: None,
             transcript: Vec::new(),
             echoes: HashMap::new(),
+            local_device_id: None,
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
@@ -321,6 +427,22 @@ impl AppState {
 
     pub fn apply_auth(&mut self, auth: AuthState) {
         self.auth = Some(auth);
+    }
+
+    /// Tolerant AuthStatus frame reducer (see [`parse_auth_state`]).
+    pub fn apply_auth_value(&mut self, value: serde_json::Value) {
+        match parse_auth_state(&value) {
+            Some(auth) => self.apply_auth(auth),
+            None => tracing::warn!("dropping unrecognized AuthStatus frame"),
+        }
+    }
+
+    /// The signed-in user, if the engine reports one.
+    pub fn auth_user(&self) -> Option<&comet_proto::UserProfile> {
+        match self.auth.as_ref()? {
+            AuthState::SignedIn { user, .. } | AuthState::NeedsOrganization { user } => Some(user),
+            AuthState::SignedOut => None,
+        }
     }
 
     pub fn apply_transcript(&mut self, entries: Vec<SessionMessageEntry>) {
@@ -427,7 +549,9 @@ impl AppState {
             spawn_watch(cx, handle.clone(), methods::WATCH_SESSIONS, AppState::apply_sessions),
             spawn_watch(cx, handle.clone(), methods::WATCH_CHATS, AppState::apply_chats),
             spawn_watch(cx, handle.clone(), methods::WATCH_DEVICES, AppState::apply_devices),
-            spawn_watch(cx, handle.clone(), methods::AUTH_STATUS, AppState::apply_auth),
+            // Auth frames parse tolerantly — engine and proto tags differ today.
+            spawn_watch(cx, handle.clone(), methods::AUTH_STATUS, AppState::apply_auth_value),
+            spawn_local_device_probe(cx, handle.clone()),
         ];
         // Re-subscribe the transcript if a chat was already selected (reconnect path).
         if let Some(chat_id) = self.selected_chat.clone() {
@@ -484,6 +608,29 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
             if alive.is_err() {
                 break;
             }
+        }
+    })
+}
+
+/// Best-effort `LocalDevice` probe: fills `local_device_id` for the "This
+/// device" badge. Engines that don't serve the method leave it `None`.
+fn spawn_local_device_probe(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        let Ok(value) = handle.client().call("LocalDevice", serde_json::json!({})).await else {
+            tracing::debug!("LocalDevice unavailable; skipping this-device badge");
+            return;
+        };
+        let id = value
+            .get("id")
+            .or_else(|| value.get("deviceId"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if let Some(id) = id {
+            this.update(cx, |state, cx| {
+                state.local_device_id = Some(id);
+                cx.notify();
+            })
+            .ok();
         }
     })
 }
@@ -745,9 +892,99 @@ mod tests {
         assert_eq!(
             gate_phase(
                 &ConnectionStatus::Ready,
-                Some(&AuthState::SignedIn { user, org_id: None })
+                Some(&AuthState::SignedIn { user: user.clone(), org_id: None })
             ),
             GatePhase::Ready
         );
+        // No org yet → org gate.
+        assert_eq!(
+            gate_phase(&ConnectionStatus::Ready, Some(&AuthState::NeedsOrganization { user })),
+            GatePhase::OrgGate
+        );
+    }
+
+    #[test]
+    fn auth_frames_parse_both_wire_shapes() {
+        // Proto shape.
+        let proto = serde_json::json!({ "state": "signedOut" });
+        assert_eq!(parse_auth_state(&proto), Some(AuthState::SignedOut));
+        // Engine shape (`_tag`, PascalCase, orgId).
+        let engine = serde_json::json!({
+            "_tag": "SignedIn",
+            "user": { "id": "u1", "email": "w@example.com" },
+            "orgId": "org-1",
+        });
+        let Some(AuthState::SignedIn { user, org_id }) = parse_auth_state(&engine) else {
+            panic!("expected SignedIn");
+        };
+        assert_eq!(user.email, "w@example.com");
+        assert_eq!(org_id.as_deref(), Some("org-1"));
+        let needs = serde_json::json!({
+            "_tag": "NeedsOrganization",
+            "user": { "id": "u1", "email": "w@example.com", "name": "W" },
+        });
+        assert!(matches!(parse_auth_state(&needs), Some(AuthState::NeedsOrganization { .. })));
+        // Garbage → None (frame dropped, not a crash).
+        assert_eq!(parse_auth_state(&serde_json::json!({ "_tag": "Wat" })), None);
+        assert_eq!(parse_auth_state(&serde_json::json!(42)), None);
+    }
+
+    fn chat_with_cwd(id: &str, created_min: i64, cwd: Option<&str>) -> Chat {
+        let mut c = chat(id, created_min, None);
+        c.cwd = cwd.map(str::to_string);
+        c
+    }
+
+    #[test]
+    fn project_labels_from_cwd() {
+        assert_eq!(project_label(Some("/home/w/dev/comet")), "comet");
+        assert_eq!(project_label(Some("/home/w/dev/comet/")), "comet");
+        assert_eq!(project_label(None), "No project");
+        assert_eq!(project_label(Some("   ")), "No project");
+        assert_eq!(project_label(Some("/")), "/");
+    }
+
+    #[test]
+    fn grouped_sidebar_preserves_recency_order() {
+        // Input is sidebar-sorted (most recent first).
+        let chats = vec![
+            chat_with_cwd("a", 9, Some("/dev/comet")),
+            chat_with_cwd("b", 8, Some("/dev/zed")),
+            chat_with_cwd("c", 7, Some("/dev/comet")),
+            chat_with_cwd("d", 6, None),
+        ];
+        let groups = group_chats(chats.iter());
+        let labels: Vec<&str> = groups.iter().map(|g| g.label.as_str()).collect();
+        // Groups ordered by their most recent chat; rows keep order.
+        assert_eq!(labels, ["comet", "zed", "No project"]);
+        let comet_ids: Vec<&str> = groups[0].chats.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(comet_ids, ["a", "c"]);
+        assert!(group_chats(std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn org_gate_reducers() {
+        assert!(org_name_valid("Acme"));
+        assert!(org_name_valid("  padded  "));
+        assert!(!org_name_valid(""));
+        assert!(!org_name_valid("   "));
+        assert!(!org_name_valid(&"x".repeat(65)));
+
+        let rows = parse_orgs(&serde_json::json!({ "orgs": [
+            { "id": "m2", "organizationId": "o2", "name": "beta" },
+            { "id": "m1", "organizationId": "o1", "name": "Alpha" },
+            { "id": "m3", "organizationId": "o1", "name": "Alpha" },
+        ]}));
+        assert_eq!(rows.len(), 3);
+        let sorted = sort_memberships(rows);
+        let names: Vec<&str> = sorted.iter().map(|o| o.name.as_str()).collect();
+        assert_eq!(names, ["Alpha", "beta"], "case-insensitive sort + dedupe by org id");
+        // Bare-array replies parse too; garbage yields empty.
+        assert_eq!(
+            parse_orgs(&serde_json::json!([{ "id": "m", "organizationId": "o", "name": "n" }]))
+                .len(),
+            1
+        );
+        assert!(parse_orgs(&serde_json::json!("nope")).is_empty());
     }
 }

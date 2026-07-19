@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+pub mod accounts;
+pub mod archived;
+pub mod devices;
+pub mod shortcuts;
+
 /// Sidebar drag-resize bounds (px).
 pub const SIDEBAR_MIN: f32 = 208.0;
 pub const SIDEBAR_MAX: f32 = 400.0;
@@ -38,10 +43,14 @@ const FILE_NAME: &str = "ui-settings.json";
 pub struct UiSettings {
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
+    /// Sidebar grouped-by-project mode (feature-inventory §1.6).
+    pub sidebar_grouped: bool,
     pub right_pane_width: f32,
     pub right_pane_open: bool,
     pub terminal_height: f32,
     pub terminal_open: bool,
+    /// Customizable shortcut combos (feature-inventory §1.4).
+    pub keymap: KeymapConfig,
 }
 
 impl Default for UiSettings {
@@ -49,12 +58,167 @@ impl Default for UiSettings {
         Self {
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
+            sidebar_grouped: false,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
             terminal_open: false,
+            keymap: KeymapConfig::default(),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Keymap (customizable shortcuts, §1.4)
+// ---------------------------------------------------------------------------
+
+/// The rebindable app shortcuts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ShortcutId {
+    ToggleSidebar,
+    ToggleChanges,
+    ToggleTerminal,
+}
+
+impl ShortcutId {
+    pub const ALL: [ShortcutId; 3] =
+        [ShortcutId::ToggleSidebar, ShortcutId::ToggleChanges, ShortcutId::ToggleTerminal];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            ShortcutId::ToggleSidebar => "Toggle sidebar",
+            ShortcutId::ToggleChanges => "Toggle changes",
+            ShortcutId::ToggleTerminal => "Toggle terminal",
+        }
+    }
+
+    pub fn default_combo(self) -> &'static str {
+        match self {
+            ShortcutId::ToggleSidebar => "mod-s",
+            ShortcutId::ToggleChanges => "mod-b",
+            ShortcutId::ToggleTerminal => "mod-j",
+        }
+    }
+}
+
+/// Persisted shortcut combos. Stored platform-neutral ("mod-s"); translated to
+/// "cmd-s"/"ctrl-s" at bind time by [`platform_combo`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KeymapConfig {
+    pub toggle_sidebar: String,
+    pub toggle_changes: String,
+    pub toggle_terminal: String,
+}
+
+impl Default for KeymapConfig {
+    fn default() -> Self {
+        Self {
+            toggle_sidebar: ShortcutId::ToggleSidebar.default_combo().into(),
+            toggle_changes: ShortcutId::ToggleChanges.default_combo().into(),
+            toggle_terminal: ShortcutId::ToggleTerminal.default_combo().into(),
+        }
+    }
+}
+
+impl KeymapConfig {
+    pub fn get(&self, id: ShortcutId) -> &str {
+        match id {
+            ShortcutId::ToggleSidebar => &self.toggle_sidebar,
+            ShortcutId::ToggleChanges => &self.toggle_changes,
+            ShortcutId::ToggleTerminal => &self.toggle_terminal,
+        }
+    }
+
+    pub fn set(&mut self, id: ShortcutId, combo: String) {
+        match id {
+            ShortcutId::ToggleSidebar => self.toggle_sidebar = combo,
+            ShortcutId::ToggleChanges => self.toggle_changes = combo,
+            ShortcutId::ToggleTerminal => self.toggle_terminal = combo,
+        }
+    }
+
+    pub fn reset(&mut self, id: ShortcutId) {
+        self.set(id, id.default_combo().to_string());
+    }
+}
+
+/// Build a combo string from a recorded keystroke. The primary modifier
+/// (cmd on macOS, ctrl elsewhere — either recorded key maps in) becomes "mod";
+/// bare modifier presses record nothing.
+pub fn combo_from_keystroke(
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    cmd: bool,
+    key: &str,
+) -> Option<String> {
+    let key = key.trim().to_lowercase();
+    if key.is_empty()
+        || matches!(key.as_str(), "ctrl" | "control" | "alt" | "shift" | "cmd" | "platform" | "fn")
+    {
+        return None;
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    if ctrl || cmd {
+        parts.push("mod");
+    }
+    if alt {
+        parts.push("alt");
+    }
+    if shift {
+        parts.push("shift");
+    }
+    parts.push(&key);
+    Some(parts.join("-"))
+}
+
+/// Shortcut ids whose combos collide with another shortcut (conflict detection).
+pub fn conflicted_shortcuts(keymap: &KeymapConfig) -> Vec<ShortcutId> {
+    ShortcutId::ALL
+        .into_iter()
+        .filter(|&id| {
+            let combo = keymap.get(id);
+            !combo.is_empty()
+                && ShortcutId::ALL.into_iter().any(|other| other != id && keymap.get(other) == combo)
+        })
+        .collect()
+}
+
+/// Translate a stored combo into a bindable keystroke for this platform.
+pub fn platform_combo(combo: &str) -> String {
+    let primary = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+    combo
+        .split('-')
+        .map(|part| if part == "mod" { primary } else { part })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+/// Human-readable combo for the shortcuts table ("mod-s" → "Cmd+S"/"Ctrl+S").
+pub fn display_combo(combo: &str) -> String {
+    combo
+        .split('-')
+        .map(|part| match part {
+            "mod" => {
+                if cfg!(target_os = "macos") {
+                    "Cmd".to_string()
+                } else {
+                    "Ctrl".to_string()
+                }
+            }
+            "alt" => "Alt".to_string(),
+            "shift" => "Shift".to_string(),
+            other => {
+                let mut chars = other.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("+")
 }
 
 impl UiSettings {
@@ -116,10 +280,15 @@ mod tests {
         let settings = UiSettings {
             sidebar_width: 300.0,
             sidebar_collapsed: true,
+            sidebar_grouped: true,
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,
             terminal_open: true,
+            keymap: KeymapConfig {
+                toggle_sidebar: "mod-shift-s".into(),
+                ..KeymapConfig::default()
+            },
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);
@@ -159,6 +328,68 @@ mod tests {
         assert_eq!(d.right_pane_width, 520.0);
         assert_eq!(d.terminal_height, 280.0);
         assert!(!d.sidebar_collapsed && !d.right_pane_open && !d.terminal_open);
+    }
+
+    #[test]
+    fn keymap_defaults_and_reset() {
+        let mut keymap = KeymapConfig::default();
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-s");
+        assert_eq!(keymap.get(ShortcutId::ToggleChanges), "mod-b");
+        assert_eq!(keymap.get(ShortcutId::ToggleTerminal), "mod-j");
+        keymap.set(ShortcutId::ToggleSidebar, "mod-shift-x".into());
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-shift-x");
+        keymap.reset(ShortcutId::ToggleSidebar);
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-s");
+    }
+
+    #[test]
+    fn combo_recording() {
+        // Primary modifier (ctrl or cmd) normalizes to "mod".
+        assert_eq!(combo_from_keystroke(true, false, false, false, "s"), Some("mod-s".into()));
+        assert_eq!(combo_from_keystroke(false, false, false, true, "s"), Some("mod-s".into()));
+        assert_eq!(
+            combo_from_keystroke(true, true, true, false, "K"),
+            Some("mod-alt-shift-k".into())
+        );
+        // Plain keys record without modifiers (Esc is filtered by the caller).
+        assert_eq!(combo_from_keystroke(false, false, false, false, "f5"), Some("f5".into()));
+        // Bare modifier presses record nothing.
+        assert_eq!(combo_from_keystroke(true, false, false, false, "ctrl"), None);
+        assert_eq!(combo_from_keystroke(false, false, true, false, "shift"), None);
+        assert_eq!(combo_from_keystroke(false, false, false, false, ""), None);
+    }
+
+    #[test]
+    fn conflict_detection() {
+        let mut keymap = KeymapConfig::default();
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+        keymap.set(ShortcutId::ToggleChanges, "mod-s".into());
+        let conflicts = conflicted_shortcuts(&keymap);
+        assert!(conflicts.contains(&ShortcutId::ToggleSidebar));
+        assert!(conflicts.contains(&ShortcutId::ToggleChanges));
+        assert!(!conflicts.contains(&ShortcutId::ToggleTerminal));
+        keymap.reset(ShortcutId::ToggleChanges);
+        assert!(conflicted_shortcuts(&keymap).is_empty());
+    }
+
+    #[test]
+    fn combo_translation() {
+        let primary = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+        assert_eq!(platform_combo("mod-s"), format!("{primary}-s"));
+        assert_eq!(platform_combo("alt-f4"), "alt-f4");
+        let display_primary = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
+        assert_eq!(display_combo("mod-shift-s"), format!("{display_primary}+Shift+S"));
+        assert_eq!(display_combo("f5"), "F5");
+    }
+
+    #[test]
+    fn keymap_survives_old_settings_files() {
+        // Files written before the keymap existed load with defaults.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(UiSettings::path(dir.path()), r#"{"sidebarWidth": 300}"#).unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.keymap, KeymapConfig::default());
+        assert!(!loaded.sidebar_grouped);
     }
 
     #[test]
