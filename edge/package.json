@@ -1,0 +1,27 @@
+{
+  "name": "comet-native-edge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 26640 --var AUTH_MODE:dev",
+    "deploy": "wrangler deploy",
+    "build": "wrangler deploy --dry-run --outdir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "jose": "^6.0.11",
+    "loro-crdt": "^1.13.7",
+    "loro-protocol": "^0.3.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260714.1",
+    "loro-adaptors": "^0.6.1",
+    "loro-websocket": "^0.6.2",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.7",
+    "wrangler": "^4.111.0"
+  }
+}

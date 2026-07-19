@@ -1,0 +1,10 @@
+/target
+**/*.rs.bk
+*.pdb
+.DS_Store
+.env
+.env.local
+/dist
+node_modules
+.wrangler
+build/

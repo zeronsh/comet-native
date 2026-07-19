@@ -1,0 +1,47 @@
+{
+  // Comet-native edge: per-session + per-workspace Loro sync DOs, per-device
+  // relay DOs, R2 blobs, and the absorbed WorkOS auth routes.
+  // Design: loro-sessions §2 (topology), §3 (persistence), §6.1 (diff
+  // sidecar), §8 (device-room streams), §1.2 (R2 attachments), §3.3 (R2
+  // backups); comet-native ARCHITECTURE.md §6.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "comet-native-edge",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-01",
+  "workers_dev": true,
+  // loro-crdt's default entry loads its WASM via URL fetch, which workerd
+  // cannot do at runtime; the base64 entry inlines the module instead.
+  "alias": {
+    "loro-crdt": "loro-crdt/base64"
+  },
+  "durable_objects": {
+    "bindings": [
+      { "name": "SESSION_ROOMS", "class_name": "SessionRoom" },
+      { "name": "DEVICE_ROOMS", "class_name": "DeviceRoom" }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["SessionRoom", "DeviceRoom"]
+    }
+  ],
+  "r2_buckets": [
+    {
+      // Placeholder bucket — create it (or rename) before the first deploy.
+      "binding": "BLOBS",
+      "bucket_name": "comet-native-blobs"
+    }
+  ],
+  "vars": {
+    // WorkOS AuthKit client id — JWTs verified against its JWKS. Placeholder;
+    // set the real client id before deploying. Set AUTH_MODE=dev locally to
+    // accept bearer==userId. WORKOS_API_KEY is a wrangler secret
+    // (`wrangler secret put WORKOS_API_KEY`) powering the /auth/* routes.
+    "WORKOS_CLIENT_ID": "client_REPLACE_ME",
+    "AUTH_MODE": "workos"
+  },
+  "observability": {
+    "enabled": true
+  }
+}

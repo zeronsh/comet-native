@@ -1,0 +1,70 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/proto",
+    "crates/doc",
+    "crates/sync",
+    "crates/harness",
+    "crates/engine",
+    "crates/rpc",
+    "crates/ui",
+    "apps/comet",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "UNLICENSED"
+publish = false
+
+[workspace.dependencies]
+comet-proto = { path = "crates/proto" }
+comet-doc = { path = "crates/doc" }
+comet-sync = { path = "crates/sync" }
+comet-harness = { path = "crates/harness" }
+comet-engine = { path = "crates/engine" }
+comet-rpc = { path = "crates/rpc" }
+comet-ui = { path = "crates/ui" }
+
+# CRDT
+loro = "1.13"
+
+# gpui — pinned to the same rev as the local ~/github/zed reference clone
+gpui = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
+gpui_tokio = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
+
+# async / net
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+futures = "0.3"
+async-trait = "0.1"
+
+# serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+# storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# misc
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = "0.10"
+notify = "7"
+portable-pty = "0.8"
+alacritty_terminal = "0.24"
+pulldown-cmark = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
+
+[profile.dev]
+# gpui is slow unoptimized; match zed's approach for deps
+opt-level = 0
+
+[profile.dev.package."*"]
+opt-level = 2

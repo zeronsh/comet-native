@@ -1,0 +1,19 @@
+[package]
+name = "comet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "comet"
+path = "src/main.rs"
+
+[dependencies]
+comet-engine.workspace = true
+comet-ui.workspace = true
+tokio.workspace = true
+clap.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
