@@ -41,6 +41,9 @@ fn main() -> anyhow::Result<()> {
                         .and_then(|p| p.parse().ok())
                         .unwrap_or(26654),
                     default_harness: comet_engine::HarnessId::ClaudeCode,
+                    // TODO(M4 auth): org comes from the signed-in session; until then
+                    // COMET_ORG_ID (dev default "dev-org") scopes the workspace room.
+                    org_id: std::env::var("COMET_ORG_ID").ok(),
                 });
                 engine.run().await
             })

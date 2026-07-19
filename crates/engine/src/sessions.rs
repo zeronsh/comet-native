@@ -194,6 +194,7 @@ impl SessionsEngine {
                 let user_id = message_id.unwrap_or_else(new_id);
                 let handle = self.doc_handle(chat_id)?;
                 handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+                self.inner.note_message(chat_id, &request.prompt);
                 self.set_status(chat_id, SessionStatus::Working, false);
                 return Ok(run_id);
             }
@@ -205,6 +206,7 @@ impl SessionsEngine {
         let handle = self.doc_handle(chat_id)?;
         let user_id = message_id.unwrap_or_else(new_id);
         handle.write_user_message(&user_id, &request.prompt, now_ms())?;
+        self.inner.note_message(chat_id, &request.prompt);
 
         if request.resume.is_none() {
             request.resume = lock(&self.inner.harness_sessions).get(chat_id).cloned();
@@ -288,6 +290,7 @@ impl SessionsEngine {
         let user_id = message_id.unwrap_or_else(new_id);
         let handle = self.doc_handle(chat_id)?;
         handle.write_user_message(&user_id, prompt, now_ms())?;
+        self.inner.note_message(chat_id, prompt);
         Ok(SteerOutcome::Accepted)
     }
 
@@ -409,7 +412,7 @@ impl Inner {
 
     fn set_status(&self, chat_id: &str, status: SessionStatus, fresh_start: bool) {
         let now = Utc::now();
-        {
+        let session = {
             let mut statuses = lock(&self.statuses);
             let entry = statuses.entry(chat_id.to_string()).or_insert_with(|| Session {
                 chat_id: chat_id.to_string(),
@@ -423,9 +426,30 @@ impl Inner {
             if fresh_start {
                 entry.started_at = Some(now);
             }
+            let session = entry.clone();
             let mut list: Vec<Session> = statuses.values().cloned().collect();
             list.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
             let _ = self.sessions_tx.send(list);
+            session
+        };
+        // Mirror the transition into the workspace doc's session-status row so
+        // remote devices' sidebars show this run (staleness-checked client-side).
+        if let Some(ws) = self.workspace() {
+            ws.record_session(&session);
+        }
+    }
+
+    fn workspace(&self) -> Option<&crate::workspace_host::WorkspaceHost> {
+        self.doc_host.get().and_then(|host| host.workspace())
+    }
+
+    /// Sidebar freshness: push a message-persist preview into the chat's workspace row.
+    fn note_message(&self, chat_id: &str, text: &str) {
+        if text.is_empty() {
+            return;
+        }
+        if let Some(ws) = self.workspace() {
+            ws.note_message(chat_id, text);
         }
     }
 
@@ -460,6 +484,18 @@ fn render_parts(parts: &[MessagePart]) -> Vec<MessagePart> {
             other => other.clone(),
         })
         .collect()
+}
+
+/// The persisted assistant text of a folded segment (workspace preview source).
+fn folded_text(parts: &[MessagePart]) -> String {
+    parts
+        .iter()
+        .filter_map(|part| match part {
+            MessagePart::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn sync_segment<'a>(
@@ -614,6 +650,7 @@ async fn drive_run(
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "segment finish failed");
             }
+            inner.note_message(&chat_id, &folded_text(&folded));
             folded.clear();
             dirty = false;
             entry_id = next_assistant_message_id.clone().unwrap_or_else(new_id);
@@ -663,6 +700,7 @@ async fn drive_run(
             ) {
                 tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
             }
+            inner.note_message(&chat_id, &folded_text(&folded));
             break match status {
                 DoneStatus::Errored => SessionStatus::Errored,
                 _ => SessionStatus::Idle,

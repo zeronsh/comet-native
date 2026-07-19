@@ -34,9 +34,13 @@ pub mod methods {
     pub const WATCH_CHATS: &str = "WatchChats";
     pub const WATCH_DEVICES: &str = "WatchDevices";
     pub const WATCH_SESSIONS: &str = "WatchSessions";
+    /// Entity mutations against the workspace doc (feature-inventory §2 DataRpc).
+    /// Params are tagged `{op: createChat|renameChat|setChatArchived|deleteChat|
+    /// renameDevice|markChatSeen, …}`.
+    pub const MUTATE: &str = "Mutate";
     pub const AUTH_STATUS: &str = "AuthStatus";
     // TODO(M4+): repos/folders/worktrees, uploads/attachments, terminals, agent accounts,
-    // auth mutations, Mutate.
+    // auth mutations.
 }
 
 #[derive(Debug, thiserror::Error)]

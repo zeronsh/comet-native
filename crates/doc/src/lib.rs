@@ -12,8 +12,10 @@ pub mod commands;
 pub mod schema;
 pub mod constants;
 pub mod parts;
+pub mod workspace;
 
 pub use commands::*;
 pub use schema::*;
 pub use constants::*;
 pub use parts::*;
+pub use workspace::*;

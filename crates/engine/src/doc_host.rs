@@ -11,8 +11,8 @@
 //!   ledger), mark processed BEFORE execute, execute through the sessions engine, then
 //!   write the outcome status back into the doc as the sole outcome writer.
 //!
-//! M2 scope: this device hosts every chat it opens (chat-ownership rows arrive with the
-//! workspace doc in M4); warm-open/nudge delivery land there too.
+//! M4: chat ownership is gated on the workspace doc (`chats[chat_id].deviceId`), with
+//! claim-on-first-command for unknown chats; warm-open/nudge delivery land later.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
@@ -29,6 +29,7 @@ use comet_proto::HarnessId;
 use comet_sync::{DocsStore, RoomClient};
 
 use crate::sessions::{SessionsEngine, SteerOutcome};
+use crate::workspace_host::WorkspaceHost;
 use crate::{EngineError, new_id, now_ms};
 
 /// Debounce window for local snapshot saves after a doc change.
@@ -45,7 +46,7 @@ pub struct EdgeConfig {
 #[derive(Debug, Clone)]
 pub struct DocHostConfig {
     pub device_id: String,
-    /// Harness used for doc-command runs until per-chat config rows exist (M4).
+    /// Harness for doc-command runs on chats without a workspace `config` row.
     pub default_harness: HarnessId,
     /// When present, each opened chat joins its edge session room. `None` = fully
     /// offline operation (local snapshots only).
@@ -56,6 +57,7 @@ struct DocHostInner {
     store: Arc<DocsStore>,
     config: DocHostConfig,
     sessions: OnceLock<SessionsEngine>,
+    workspace: OnceLock<WorkspaceHost>,
     handles: Mutex<HashMap<String, Arc<ChatDocHandle>>>,
 }
 
@@ -159,6 +161,7 @@ impl DocHost {
                 store,
                 config,
                 sessions: OnceLock::new(),
+                workspace: OnceLock::new(),
                 handles: Mutex::new(HashMap::new()),
             }),
         }
@@ -173,6 +176,16 @@ impl DocHost {
             let host = self.clone();
             tokio::spawn(async move { host.drain_commands(&handle).await });
         }
+    }
+
+    /// Wire the workspace host (engine assembly) — the source of chat-ownership rows.
+    pub fn set_workspace(&self, workspace: WorkspaceHost) {
+        let _ = self.inner.workspace.set(workspace);
+    }
+
+    /// The workspace host, once wired (tests may assemble a DocHost without one).
+    pub fn workspace(&self) -> Option<&WorkspaceHost> {
+        self.inner.workspace.get()
     }
 
     pub fn device_id(&self) -> &str {
@@ -274,10 +287,20 @@ impl DocHost {
         Ok(id)
     }
 
-    /// §1.1 writer discipline hook. M2: no workspace doc yet — this device hosts every
-    /// chat it opens; ownership gating lands in M4.
-    fn is_host(&self, _chat_id: &str) -> bool {
-        true
+    /// §2.2 writer discipline: we host a chat iff its workspace row's `deviceId` is
+    /// ours; a chat with no row is claimable (claim-on-first-command). Without a
+    /// wired workspace host (bare-DocHost tests) every open chat is ours — M2's
+    /// behavior, now the degenerate case.
+    fn is_host(&self, chat_id: &str) -> bool {
+        self.workspace().is_none_or(|ws| ws.is_host(chat_id))
+    }
+
+    /// Chat-config harness when the workspace row carries one, else the default.
+    fn harness_for(&self, chat_id: &str) -> HarnessId {
+        self.workspace()
+            .and_then(|ws| ws.chat_config(chat_id))
+            .map(|config| config.harness)
+            .unwrap_or(self.inner.config.default_harness)
     }
 
     /// Drain pending commands (host-only): evaluate → mark processed BEFORE execute →
@@ -385,9 +408,14 @@ impl DocHost {
         entry: &SessionCommandEntry,
     ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
         let chat_id = &handle.chat_id;
-        let harness = self.inner.config.default_harness;
         match &entry.payload {
             SessionCommandPayload::Run { request, message_id } => {
+                // Claim-on-first-command: a run for a chat with no workspace row
+                // creates the row under our device id (we are about to host it).
+                if let Some(ws) = self.workspace() {
+                    ws.claim_chat(chat_id, Some(&request.cwd))?;
+                }
+                let harness = self.harness_for(chat_id);
                 sessions
                     .dispatch(chat_id, harness, request.clone(), Some(message_id.clone()))
                     .await?;
@@ -408,7 +436,7 @@ impl DocHost {
                         request.prompt = prompt.clone();
                         request.resume = None; // dispatch re-derives the harness session
                         sessions
-                            .dispatch(chat_id, harness, request, message_id.clone())
+                            .dispatch(chat_id, self.harness_for(chat_id), request, message_id.clone())
                             .await?;
                         Ok((SessionCommandStatus::Applied, Some("queued as new turn".into())))
                     }

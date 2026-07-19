@@ -67,6 +67,7 @@ notify = "7"
 portable-pty = "0.8"
 alacritty_terminal = "0.24"
 pulldown-cmark = "0.12"
+unicode-segmentation = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 
 [profile.dev]

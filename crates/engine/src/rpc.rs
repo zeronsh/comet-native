@@ -1,12 +1,17 @@
-//! EngineRpc — the engine-side `RpcService`: M2 surface over sessions + docs.
+//! EngineRpc — the engine-side `RpcService`: sessions + docs + the workspace-doc
+//! entity surface.
 //!
-//! Methods (feature-inventory §2, minimal M2 subset):
+//! Methods (feature-inventory §2):
 //! - `ListHarnesses` → `[HarnessDescriptor]`
 //! - `ListModels {harness}` → `[Model]`
 //! - `QueueCommand {chatId, command}` → `{commandId}` (durable doc command)
 //! - `WatchDocMessages {chatId}` → stream of joined `SessionMessageEntry[]`,
 //!   re-emitted on every doc change
-//! - `WatchSessions` → stream of the `Session[]` status list
+//! - `WatchChats` / `WatchDevices` → streams of the workspace doc's entity rows
+//! - `WatchSessions` → stream of `Session[]`: this engine's live statuses merged with
+//!   remote devices' workspace session rows
+//! - `Mutate {op, …}` → `{ok}` — workspace entity mutations (createChat, renameChat,
+//!   setChatArchived, deleteChat, renameDevice, markChatSeen)
 
 use async_trait::async_trait;
 use futures::StreamExt;
@@ -15,12 +20,13 @@ use serde::Deserialize;
 use tokio::sync::watch;
 
 use comet_doc::SessionCommandPayload;
-use comet_proto::HarnessId;
+use comet_proto::{ChatConfig, HarnessId};
 use comet_rpc::{RpcError, RpcReply, RpcService, methods, parse_params};
 
 use crate::doc_host::DocHost;
 use crate::registry::HarnessRegistry;
 use crate::sessions::SessionsEngine;
+use crate::workspace_host::WorkspaceHost;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -41,9 +47,37 @@ struct QueueCommandParams {
     command: SessionCommandPayload,
 }
 
+/// The Mutate surface (feature-inventory §2 DataRpc), tagged by `op`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "op", rename_all = "camelCase")]
+enum MutateParams {
+    #[serde(rename_all = "camelCase")]
+    CreateChat {
+        chat_id: String,
+        /// Host device for the new chat (the composer's target device).
+        device_id: String,
+        #[serde(default)]
+        config: Option<ChatConfig>,
+        #[serde(default)]
+        cwd: Option<String>,
+    },
+    #[serde(rename_all = "camelCase")]
+    RenameChat { chat_id: String, title: String },
+    #[serde(rename_all = "camelCase")]
+    SetChatArchived { chat_id: String, archived: bool },
+    /// Tombstone: removes the chats-map row; the session doc remains.
+    #[serde(rename_all = "camelCase")]
+    DeleteChat { chat_id: String },
+    #[serde(rename_all = "camelCase")]
+    RenameDevice { device_id: String, name: String },
+    /// Unseen markers are UI-local for now — accepted (chatId ignored) as a no-op.
+    MarkChatSeen {},
+}
+
 pub struct EngineRpc {
     sessions: SessionsEngine,
     doc_host: DocHost,
+    workspace: WorkspaceHost,
     registry: std::sync::Arc<HarnessRegistry>,
 }
 
@@ -51,9 +85,39 @@ impl EngineRpc {
     pub fn new(
         sessions: SessionsEngine,
         doc_host: DocHost,
+        workspace: WorkspaceHost,
         registry: std::sync::Arc<HarnessRegistry>,
     ) -> Self {
-        Self { sessions, doc_host, registry }
+        Self { sessions, doc_host, workspace, registry }
+    }
+
+    fn mutate(&self, params: MutateParams) -> Result<(), RpcError> {
+        let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
+        match params {
+            MutateParams::CreateChat { chat_id, device_id, config, cwd } => self
+                .workspace
+                .create_chat(&chat_id, &device_id, config, cwd)
+                .map_err(failed),
+            MutateParams::RenameChat { chat_id, title } => self
+                .workspace
+                .rename_chat(&chat_id, &title)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::SetChatArchived { chat_id, archived } => self
+                .workspace
+                .set_chat_archived(&chat_id, archived)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::DeleteChat { chat_id } => {
+                self.workspace.delete_chat(&chat_id).map_err(failed).map(drop)
+            }
+            MutateParams::RenameDevice { device_id, name } => self
+                .workspace
+                .rename_device(&device_id, &name)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::MarkChatSeen {} => Ok(()),
+        }
     }
 }
 
@@ -110,8 +174,23 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 Ok(RpcReply::Stream(watch_stream(handle.watch_messages())))
             }
+            methods::WATCH_CHATS => {
+                Ok(RpcReply::Stream(watch_stream(self.workspace.watch_chats())))
+            }
+            methods::WATCH_DEVICES => {
+                Ok(RpcReply::Stream(watch_stream(self.workspace.watch_devices())))
+            }
             methods::WATCH_SESSIONS => {
-                Ok(RpcReply::Stream(watch_stream(self.sessions.watch_sessions())))
+                // Local live statuses merged with remote devices' workspace rows.
+                let merged = self
+                    .workspace
+                    .merged_sessions_watch(self.sessions.watch_sessions());
+                Ok(RpcReply::Stream(watch_stream(merged)))
+            }
+            methods::MUTATE => {
+                let p: MutateParams = parse_params(params)?;
+                self.mutate(p)?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             other => Err(RpcError::UnknownMethod(other.to_string())),
         }
