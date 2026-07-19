@@ -12,6 +12,7 @@
 //! - [`shell`] — sidebar + main panel + right-pane scaffold + gate;
 //! - [`loaders`] — comet pulse loader, gradient spinner, boot splash.
 
+pub mod changes;
 pub mod composer;
 pub mod loaders;
 pub mod markdown;
@@ -19,6 +20,7 @@ pub mod motion;
 pub mod settings;
 pub mod shell;
 pub mod state;
+pub mod terminal;
 pub mod theme;
 pub mod transcript;
 
@@ -66,6 +68,7 @@ pub fn run_app(config: UiConfig) {
         gpui_tokio::init(cx);
         cx.set_global(theme::Theme::dark());
         composer::init(cx);
+        terminal::panel::init(cx);
 
         let state = cx.new(|_| state::AppState::new());
         state::AppState::bootstrap(state.clone(), config.boot(), cx);

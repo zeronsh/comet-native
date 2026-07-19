@@ -20,6 +20,14 @@ pub const RIGHT_PANE_MIN: f32 = 360.0;
 pub const RIGHT_PANE_MAX: f32 = 760.0;
 pub const RIGHT_PANE_DEFAULT: f32 = 520.0;
 
+/// Terminal panel height bounds: 160px … 55% of the viewport (§1.10). The
+/// viewport-relative cap applies at runtime; the absolute cap here only heals
+/// hand-edited files.
+pub const TERMINAL_MIN_HEIGHT: f32 = 160.0;
+pub const TERMINAL_MAX_VH: f32 = 0.55;
+pub const TERMINAL_ABS_MAX_HEIGHT: f32 = 2000.0;
+pub const TERMINAL_DEFAULT_HEIGHT: f32 = 280.0;
+
 /// Debounce for settings writes after a drag/toggle.
 pub const SAVE_DEBOUNCE_MS: u64 = 400;
 
@@ -32,6 +40,8 @@ pub struct UiSettings {
     pub sidebar_collapsed: bool,
     pub right_pane_width: f32,
     pub right_pane_open: bool,
+    pub terminal_height: f32,
+    pub terminal_open: bool,
 }
 
 impl Default for UiSettings {
@@ -41,6 +51,8 @@ impl Default for UiSettings {
             sidebar_collapsed: false,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
+            terminal_height: TERMINAL_DEFAULT_HEIGHT,
+            terminal_open: false,
         }
     }
 }
@@ -51,6 +63,12 @@ impl UiSettings {
         self.sidebar_width = clamp_or(self.sidebar_width, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT);
         self.right_pane_width =
             clamp_or(self.right_pane_width, RIGHT_PANE_MIN, RIGHT_PANE_MAX, RIGHT_PANE_DEFAULT);
+        self.terminal_height = clamp_or(
+            self.terminal_height,
+            TERMINAL_MIN_HEIGHT,
+            TERMINAL_ABS_MAX_HEIGHT,
+            TERMINAL_DEFAULT_HEIGHT,
+        );
         self
     }
 
@@ -100,6 +118,8 @@ mod tests {
             sidebar_collapsed: true,
             right_pane_width: 700.0,
             right_pane_open: true,
+            terminal_height: 320.0,
+            terminal_open: true,
         };
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()), settings);
@@ -137,6 +157,16 @@ mod tests {
         let d = UiSettings::default();
         assert_eq!(d.sidebar_width, 256.0);
         assert_eq!(d.right_pane_width, 520.0);
-        assert!(!d.sidebar_collapsed && !d.right_pane_open);
+        assert_eq!(d.terminal_height, 280.0);
+        assert!(!d.sidebar_collapsed && !d.right_pane_open && !d.terminal_open);
+    }
+
+    #[test]
+    fn terminal_height_clamps_on_load() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(UiSettings::path(dir.path()), r#"{"terminalHeight": 5}"#).unwrap();
+        assert_eq!(UiSettings::load(dir.path()).terminal_height, TERMINAL_MIN_HEIGHT);
+        std::fs::write(UiSettings::path(dir.path()), r#"{"terminalHeight": 99999}"#).unwrap();
+        assert_eq!(UiSettings::load(dir.path()).terminal_height, TERMINAL_ABS_MAX_HEIGHT);
     }
 }

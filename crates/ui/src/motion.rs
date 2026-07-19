@@ -191,6 +191,13 @@ pub const DIALOG_IN: MotionSpec = MotionSpec::new(180, EASE);
 pub const SPLASH_OUT: MotionSpec = MotionSpec::new(500, EASE).with_delay(150);
 /// Sidebar / pane width+height transitions: 200ms ease-out.
 pub const RESIZE: MotionSpec = MotionSpec::new(200, EASE_OUT);
+/// Terminal tab drag-reorder sliding transforms: 150ms (§1.10).
+pub const TAB_SLIDE: MotionSpec = MotionSpec::new(150, EASE_OUT);
+/// Diff-pane per-file collapse: 180ms height (§1.11).
+pub const COLLAPSE: MotionSpec = MotionSpec::new(180, EASE_OUT);
+/// Diff-pane chevron rotate: 200ms (§1.11; approximated as a crossfade — gpui
+/// divs have no rotation transform at the pinned rev, same caveat as scale).
+pub const CHEVRON: MotionSpec = MotionSpec::new(200, EASE);
 /// Comet loader pulse period: 2.4s.
 pub const COMET_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
 /// Gradient matrix spinner wave period: 750ms.
@@ -390,6 +397,9 @@ mod tests {
         assert_eq!(DIALOG_IN.duration_ms, 180);
         assert_eq!((SPLASH_OUT.duration_ms, SPLASH_OUT.delay_ms), (500, 150));
         assert_eq!(RESIZE.duration_ms, 200);
+        assert_eq!(TAB_SLIDE.duration_ms, 150);
+        assert_eq!(COLLAPSE.duration_ms, 180);
+        assert_eq!(CHEVRON.duration_ms, 200);
         assert_eq!(COMET_PULSE.duration_ms, 2400);
         assert_eq!(GRADIENT_SPIN.duration_ms, 750);
         assert_eq!(EASE_OUT_EXPO, CubicBezier::new(0.16, 1.0, 0.3, 1.0));

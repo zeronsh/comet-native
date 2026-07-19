@@ -20,14 +20,16 @@ use gpui::{
     Render, SharedString, Subscription, Task, Window, div, prelude::*, px,
 };
 
+use crate::changes::Changes;
 use crate::composer::{Composer, ComposerEvent};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, RESIZE, SPLASH_OUT};
 use crate::settings::{
     RIGHT_PANE_DEFAULT, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SAVE_DEBOUNCE_MS, SIDEBAR_DEFAULT,
-    SIDEBAR_MAX, SIDEBAR_MIN, UiSettings,
+    SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings,
 };
 use crate::state::{AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator};
+use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
 use crate::transcript::{self, Transcript};
 
@@ -35,6 +37,8 @@ use crate::transcript::{self, Transcript};
 struct SidebarResize;
 /// Drag marker for the right-pane resize handle.
 struct RightPaneResize;
+/// Drag marker for the terminal-panel height handle.
+struct TerminalResize;
 
 /// Invisible drag ghost — resize drags render nothing at the cursor.
 struct DragGhost;
@@ -65,12 +69,20 @@ pub struct Shell {
     state: Entity<AppState>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
+    /// Lazy panes: no entity (and no RPC) until first opened.
+    terminal: Option<Entity<TerminalPanel>>,
+    changes: Option<Entity<Changes>>,
     /// Kept for the failed-gate "Retry" action.
     boot: EngineBootConfig,
     data_dir: PathBuf,
     settings: UiSettings,
     sidebar_tween: Option<WidthTween>,
     right_tween: Option<WidthTween>,
+    terminal_tween: Option<WidthTween>,
+    /// Clears the height tween once it completes (so a closed panel unmounts).
+    terminal_tween_task: Option<Task<()>>,
+    /// Height-drag anchor: (pointer y, height) at mouse-down on the handle.
+    terminal_drag_anchor: Option<(f32, f32)>,
     tween_epoch: usize,
     splash: SplashPhase,
     splash_task: Option<Task<()>>,
@@ -125,11 +137,16 @@ impl Shell {
             state,
             transcript,
             composer,
+            terminal: None,
+            changes: None,
             boot,
             data_dir,
             settings,
             sidebar_tween: None,
             right_tween: None,
+            terminal_tween: None,
+            terminal_tween_task: None,
+            terminal_drag_anchor: None,
             tween_epoch: 0,
             splash: SplashPhase::Visible,
             splash_task: None,
@@ -191,6 +208,74 @@ impl Shell {
         self.tween_epoch += 1;
         self.right_tween =
             Some(WidthTween { from, to: self.right_target(), epoch: self.tween_epoch });
+        if self.settings.right_pane_open {
+            // Lazy: the Changes entity (and its WatchCheckoutDiffs) exists only
+            // once the pane has been opened.
+            let changes = self.changes_pane(cx);
+            changes.update(cx, |changes, cx| changes.ensure_watch(cx));
+        }
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    fn changes_pane(&mut self, cx: &mut Context<Self>) -> Entity<Changes> {
+        if let Some(changes) = &self.changes {
+            return changes.clone();
+        }
+        let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
+        self.changes = Some(changes.clone());
+        changes
+    }
+
+    fn terminal_panel(&mut self, cx: &mut Context<Self>) -> Entity<TerminalPanel> {
+        if let Some(terminal) = &self.terminal {
+            return terminal.clone();
+        }
+        let terminal = cx.new(|cx| TerminalPanel::new(self.state.clone(), cx));
+        self.terminal = Some(terminal.clone());
+        terminal
+    }
+
+    fn terminal_target(&self) -> f32 {
+        if self.settings.terminal_open { self.settings.terminal_height } else { 0.0 }
+    }
+
+    /// Cmd/Ctrl+J and the header button (feature-inventory §1.10). Height
+    /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
+    fn toggle_terminal(&mut self, cx: &mut Context<Self>) {
+        let from = self.terminal_target();
+        self.settings.terminal_open = !self.settings.terminal_open;
+        self.tween_epoch += 1;
+        self.terminal_tween =
+            Some(WidthTween { from, to: self.terminal_target(), epoch: self.tween_epoch });
+        let open = self.settings.terminal_open;
+        let panel = self.terminal_panel(cx);
+        panel.update(cx, |panel, cx| panel.set_open(open, cx));
+        self.terminal_tween_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(RESIZE.total() + Duration::from_millis(30))
+                .await;
+            this.update(cx, |shell, cx| {
+                shell.terminal_tween = None;
+                cx.notify();
+            })
+            .ok();
+        }));
+        self.schedule_save(cx);
+        cx.notify();
+    }
+
+    fn on_terminal_drag(
+        &mut self,
+        event: &gpui::DragMoveEvent<TerminalResize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((anchor_y, anchor_h)) = self.terminal_drag_anchor else { return };
+        let dy = anchor_y - f32::from(event.event.position.y);
+        let viewport_h = f32::from(window.viewport_size().height);
+        self.settings.terminal_height = clamp_terminal_height(anchor_h + dy, viewport_h);
+        self.terminal_tween = None; // live drag tracks the pointer
         self.schedule_save(cx);
         cx.notify();
     }
@@ -536,16 +621,97 @@ impl Shell {
                             .text_color(text)
                             .child(title),
                     )
+                    .child(header_button("toggle-terminal", "Terminal", hover, muted, cx.listener(
+                        |this, _, _, cx| this.toggle_terminal(cx),
+                    )))
                     .child(header_button("toggle-changes", "Changes", hover, muted, cx.listener(
                         |this, _, _, cx| this.toggle_right_pane(cx),
                     ))),
             )
             .child(div().flex_1().min_h_0().child(outlet))
+            .child(self.render_terminal_container(cx))
             // Reserved status strip (h-6) — the WorkingIndicator lives here so
             // the composer below never shifts.
             .child(status)
             .child(self.composer.clone())
             .into_any_element()
+    }
+
+    /// Terminal panel dock at the main-column bottom: a 5px height-drag handle
+    /// over the panel, the whole container height-animated 200 ms on toggle.
+    fn render_terminal_container(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let target = self.terminal_target();
+        let tween = self.terminal_tween;
+        if target <= 0.0 && tween.is_none() {
+            return gpui::Empty.into_any_element();
+        }
+        // Restore-on-boot: an open panel needs its entity (and set_open) even
+        // if toggle_terminal never ran this session.
+        if self.settings.terminal_open && self.terminal.is_none() {
+            let panel = self.terminal_panel(cx);
+            panel.update(cx, |panel, cx| panel.set_open(true, cx));
+        }
+        let Some(panel) = self.terminal.clone() else {
+            return gpui::Empty.into_any_element();
+        };
+        let border = Theme::of(cx).border;
+        let handle_hover = Theme::of(cx).border_strong;
+        let height = self.settings.terminal_height;
+
+        let handle = div()
+            .id("terminal-resize")
+            .h(px(5.0))
+            .w_full()
+            .flex_none()
+            .cursor_row_resize()
+            .hover(move |s| s.bg(handle_hover))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, event: &gpui::MouseDownEvent, _, _| {
+                    this.terminal_drag_anchor =
+                        Some((f32::from(event.position.y), this.settings.terminal_height));
+                }),
+            )
+            .on_drag(TerminalResize, |_, _point: Point<gpui::Pixels>, _, cx| {
+                cx.stop_propagation();
+                cx.new(|_| DragGhost)
+            })
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, event: &MouseUpEvent, _, cx| {
+                    if event.click_count == 2 {
+                        this.settings.terminal_height = TERMINAL_DEFAULT_HEIGHT;
+                        this.schedule_save(cx);
+                        cx.notify();
+                    }
+                }),
+            );
+
+        // Fixed-height inner clipped by the animated container: content never
+        // reflows mid-transition (same trick as the side panes).
+        let inner = div()
+            .h(px(height))
+            .w_full()
+            .flex()
+            .flex_col()
+            .child(handle)
+            .child(div().flex_1().min_h_0().child(panel));
+
+        let container = div()
+            .w_full()
+            .flex_none()
+            .overflow_hidden()
+            .border_t_1()
+            .border_color(border)
+            .child(inner);
+        match tween {
+            Some(WidthTween { from, to, epoch }) => container
+                .with_animation(("terminal-height", epoch), RESIZE.animation(), move |el, t| {
+                    el.h(px(motion::lerp(from, to, t)))
+                })
+                .into_any_element(),
+            None => container.h(px(target)).into_any_element(),
+        }
     }
 
     /// Working indicator strip: gradient spinner + rotating flavour word (7s,
@@ -616,19 +782,23 @@ impl Shell {
         }
     }
 
-    /// Right "Changes" pane scaffold — hidden by default, drag-resizable.
+    /// Right "Changes" pane — hidden by default, drag-resizable; content is the
+    /// lazy [`Changes`] diff viewer (created on first open).
     fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx);
-        let (bg, border, faint) = (theme.surface, theme.border, theme.text_faint);
+        let (bg, border) = (theme.surface, theme.border);
+        let content: AnyElement = if self.settings.right_pane_open {
+            let changes = self.changes_pane(cx);
+            // Idempotent — also covers a persisted-open pane on boot.
+            changes.update(cx, |changes, cx| changes.ensure_watch(cx));
+            changes.into_any_element()
+        } else {
+            gpui::Empty.into_any_element()
+        };
         let inner = div()
             .w(px(self.settings.right_pane_width))
             .h_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(13.0))
-            .text_color(faint)
-            .child(SharedString::from("Changes pane"));
+            .child(content);
         let target = self.right_target();
         self.pane_container(
             "right-pane-width",
@@ -733,7 +903,9 @@ impl Render for Shell {
             .font_family(font)
             .text_size(px(14.0))
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
-            .on_drag_move(cx.listener(Self::on_right_pane_drag));
+            .on_drag_move(cx.listener(Self::on_right_pane_drag))
+            .on_drag_move(cx.listener(Self::on_terminal_drag))
+            .on_action(cx.listener(|this, _: &ToggleTerminal, _, cx| this.toggle_terminal(cx)));
 
         let root = match &gate {
             GatePhase::Ready => {
