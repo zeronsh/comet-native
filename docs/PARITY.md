@@ -54,7 +54,7 @@ not built yet).
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| Claude Code adapter | done | stream-json, model discovery/effort ladders, AskUserQuestion → requestInput, steering via persistent input, init dedup, subagent filtering. |
+| Claude Code adapter | done | stream-json, model discovery/effort ladders, AskUserQuestion → requestInput, steering via persistent input, init dedup, subagent filtering. **Live-verified against the real `claude` CLI 2.1.215**: doc-queued run → host executor → subprocess → streamed reply landed complete in the doc. |
 | Codex adapter | done | `codex app-server` JSON-RPC (thread/start/resume, sandbox policy). |
 | Cursor adapter | deferred | Parity item scheduled after Codex; no CLI surface settled. |
 | Mock harness | done | Scripted event replay; powers tests + the e2e smoke. |
