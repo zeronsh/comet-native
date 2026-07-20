@@ -268,6 +268,7 @@ mod tests {
         Model {
             id: id.into(),
             label: label.into(),
+            description: None,
             reasoning_levels: vec![],
             options: vec![],
         }

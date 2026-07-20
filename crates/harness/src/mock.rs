@@ -66,6 +66,7 @@ impl Harness for MockHarness {
             Model {
                 id: "mock-1".into(),
                 label: "Mock 1".into(),
+                description: None,
                 reasoning_levels: vec![ReasoningLevel::Medium],
                 options: vec![],
             },
@@ -74,6 +75,7 @@ impl Harness for MockHarness {
             Model {
                 id: "mock-fable-5".into(),
                 label: "Fable 5".into(),
+                description: None,
                 reasoning_levels: vec![
                     ReasoningLevel::Low,
                     ReasoningLevel::Medium,

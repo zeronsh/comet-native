@@ -100,10 +100,11 @@ fn service_tier() -> ModelOption {
     }
 }
 
-fn model(id: &str, label: &str, ladder: &[ReasoningLevel]) -> Model {
+fn model(id: &str, label: &str, description: &str, ladder: &[ReasoningLevel]) -> Model {
     Model {
         id: id.into(),
         label: label.into(),
+        description: (!description.is_empty()).then(|| description.into()),
         reasoning_levels: ladder.to_vec(),
         options: vec![service_tier()],
     }
@@ -114,13 +115,33 @@ fn model(id: &str, label: &str, ladder: &[ReasoningLevel]) -> Model {
 /// `ultra`). Mirrors codex.ts's `CODEX_MODELS` fallback.
 pub(crate) fn static_models() -> Vec<Model> {
     vec![
-        model("gpt-5.6-sol", "GPT-5.6-Sol", ULTRA_LADDER),
-        model("gpt-5.6-terra", "GPT-5.6-Terra", ULTRA_LADDER),
-        model("gpt-5.6-luna", "GPT-5.6-Luna", MAX_LADDER),
-        model("gpt-5.5", "GPT-5.5", XHIGH_LADDER),
-        model("gpt-5.4", "GPT-5.4", XHIGH_LADDER),
-        model("gpt-5.4-mini", "GPT-5.4-Mini", XHIGH_LADDER),
-        model("gpt-5.3-codex-spark", "GPT-5.3-Codex-Spark", XHIGH_LADDER),
+        model(
+            "gpt-5.6-sol",
+            "GPT-5.6-Sol",
+            "Frontier reasoning flagship",
+            ULTRA_LADDER,
+        ),
+        model(
+            "gpt-5.6-terra",
+            "GPT-5.6-Terra",
+            "Deep multi-step agentic work",
+            ULTRA_LADDER,
+        ),
+        model(
+            "gpt-5.6-luna",
+            "GPT-5.6-Luna",
+            "Fast frontier model",
+            MAX_LADDER,
+        ),
+        model("gpt-5.5", "GPT-5.5", "Previous generation flagship", XHIGH_LADDER),
+        model("gpt-5.4", "GPT-5.4", "Reliable general coding", XHIGH_LADDER),
+        model("gpt-5.4-mini", "GPT-5.4-Mini", "Small, fast and capable", XHIGH_LADDER),
+        model(
+            "gpt-5.3-codex-spark",
+            "GPT-5.3-Codex-Spark",
+            "Ultra-fast lightweight coding",
+            XHIGH_LADDER,
+        ),
     ]
 }
 

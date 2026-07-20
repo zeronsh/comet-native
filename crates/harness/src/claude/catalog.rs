@@ -129,10 +129,17 @@ const BASE_LADDER: &[ReasoningLevel] = &[
     ReasoningLevel::Max,
 ];
 
-fn model(id: &str, label: &str, ladder: &[ReasoningLevel], options: Vec<ModelOption>) -> Model {
+fn model(
+    id: &str,
+    label: &str,
+    description: &str,
+    ladder: &[ReasoningLevel],
+    options: Vec<ModelOption>,
+) -> Model {
     Model {
         id: id.into(),
         label: label.into(),
+        description: (!description.is_empty()).then(|| description.into()),
         reasoning_levels: ladder.to_vec(),
         options,
     }
@@ -148,30 +155,35 @@ pub(crate) fn static_models() -> Vec<Model> {
         model(
             "claude-fable-5",
             "Fable 5",
+            "Most intelligent model for building agents",
             FULL_LADDER,
             vec![context_window()],
         ),
         model(
             "claude-opus-4-6",
             "Opus 4.6",
+            "Powerful model for complex work",
             MAX_LADDER,
             vec![context_window(), toggle("fastMode", "Fast Mode")],
         ),
         model(
             "claude-opus-4-5",
             "Opus 4.5",
+            "Previous generation flagship",
             BASE_LADDER,
             vec![toggle("fastMode", "Fast Mode")],
         ),
         model(
             "claude-sonnet-4-5",
             "Sonnet 4.5",
+            "Balanced speed and intelligence",
             BASE_LADDER,
             vec![context_window()],
         ),
         model(
             "claude-haiku-4-5",
             "Haiku 4.5",
+            "Fastest model for everyday tasks",
             &[],
             vec![toggle("thinking", "Thinking")],
         ),

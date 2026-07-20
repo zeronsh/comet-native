@@ -1674,6 +1674,8 @@ impl Pickers {
                     .overflow_y_scroll()
                     .children(models.into_iter().enumerate().map(|(ix, model)| {
                         let label: SharedString = model.label.clone().into();
+                        let description: Option<SharedString> =
+                            model.description.clone().map(Into::into);
                         let id = model.id.clone();
                         let is_selected = selected.as_deref() == Some(model.id.as_str())
                             || (selected.is_none() && ix == 0);
@@ -1682,7 +1684,26 @@ impl Pickers {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_model(id.clone(), cx);
                             }))
-                            .child(div().flex_1().min_w_0().truncate().child(label))
+                            .child(
+                                // Name + 11px muted description subline, per
+                                // harness-model-picker.tsx (`min-w-0 flex-1` column).
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .flex()
+                                    .flex_col()
+                                    .child(div().w_full().truncate().child(label))
+                                    .when_some(description, |el, description| {
+                                        el.child(
+                                            div()
+                                                .w_full()
+                                                .truncate()
+                                                .text_size(px(11.0))
+                                                .text_color(theme.text_muted.opacity(0.7))
+                                                .child(description),
+                                        )
+                                    }),
+                            )
                             .when(is_selected, |el| el.child(popover::menu_check(&theme)))
                     }))
                     .into_any_element()
@@ -2167,6 +2188,7 @@ mod tests {
         let model = Model {
             id: "opus".into(),
             label: "Opus".into(),
+            description: None,
             reasoning_levels: vec![ReasoningLevel::Medium, ReasoningLevel::High],
             options: vec![
                 ModelOption {

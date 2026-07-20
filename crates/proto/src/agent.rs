@@ -50,6 +50,10 @@ pub enum SteeringMode {
 pub struct Model {
     pub id: String,
     pub label: String,
+    /// Short tagline rendered under the name in the model picker (11px muted),
+    /// mirroring the Electron app's `ModelInfo.description`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(default)]
     pub reasoning_levels: Vec<ReasoningLevel>,
     #[serde(default)]
