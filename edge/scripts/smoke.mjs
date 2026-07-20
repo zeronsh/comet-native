@@ -11,14 +11,14 @@
  *   8. workspace room (`ws/{orgId}`): two org members converge; wrong org 403
  *   9. absorbed /auth routes: 501 without WORKOS_API_KEY; cli callback page
  *
- * Usage: node scripts/smoke.mjs [baseUrl]   (default http://127.0.0.1:26640)
+ * Usage: node scripts/smoke.mjs [baseUrl]   (default http://127.0.0.1:27640)
  */
 import { LoroDoc } from "loro-crdt";
 import { LoroWebsocketClient } from "loro-websocket";
 import { LoroAdaptor, LoroEphemeralAdaptor } from "loro-adaptors/loro";
 import { createHash, randomUUID } from "node:crypto";
 
-const base = process.argv[2] ?? "http://127.0.0.1:26640";
+const base = process.argv[2] ?? "http://127.0.0.1:27640";
 const wsBase = base.replace(/^http/, "ws");
 const token = "smoke-user";
 const chatId = `smoke-${randomUUID().slice(0, 8)}`;

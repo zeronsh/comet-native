@@ -123,15 +123,21 @@ pub fn run_app(config: UiConfig) {
                 window_min_size: Some(size(px(900.), px(600.))),
                 // macOS: frameless-inset chrome like the original Electron app
                 // (`titleBarStyle: "hiddenInset"`, traffic lights at 14,15 —
-                // feature-inventory §1.1). The original is deliberately OPAQUE
-                // (no vibrancy), so window_background stays default. On Linux/
-                // Windows `appears_transparent` hides the system titlebar for
-                // our custom-drawn chrome; harmless where unsupported.
+                // feature-inventory §1.1). No title text — the strip is
+                // custom-drawn (zed sets `title: None` the same way). The
+                // original is deliberately OPAQUE (no vibrancy), so
+                // window_background stays default. On Linux/Windows
+                // `appears_transparent` hides the system titlebar for our
+                // custom-drawn chrome; harmless where unsupported.
                 titlebar: Some(TitlebarOptions {
-                    title: Some("comet".into()),
+                    title: None,
                     appears_transparent: true,
                     traffic_light_position: Some(gpui::point(px(14.), px(15.))),
                 }),
+                // Our own titlebar strip drags the window (WindowControlArea::
+                // Drag + start_window_move) — mark the content view app-owned
+                // so AppKit neither dead-zones the strip nor delays clicks.
+                app_owns_titlebar_drag: true,
                 app_id: Some("comet".into()),
                 ..Default::default()
             },

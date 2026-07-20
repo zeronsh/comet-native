@@ -9,13 +9,13 @@
 # one-user-many-devices model; chat/device rooms are claim-on-first-join per user.
 #
 # Usage: scripts/e2e-smoke.sh
-# Env:   COMET_E2E_EDGE_PORT (default 26640), COMET_E2E_KEEP_LOGS=1 to keep logs.
+# Env:   COMET_E2E_EDGE_PORT (default 27640), COMET_E2E_KEEP_LOGS=1 to keep logs.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 command -v cargo >/dev/null 2>&1 || PATH="$HOME/.cargo/bin:$PATH"
-EDGE_PORT="${COMET_E2E_EDGE_PORT:-26640}"
+EDGE_PORT="${COMET_E2E_EDGE_PORT:-27640}"
 EDGE_URL="http://localhost:${EDGE_PORT}"
 TOKEN="alice@org1"
 ORG="org1"

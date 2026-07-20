@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev --port 26640 --var AUTH_MODE:dev",
+    "dev": "wrangler dev --port 27640 --var AUTH_MODE:dev",
     "deploy": "wrangler deploy",
     "build": "wrangler deploy --dry-run --outdir dist",
     "typecheck": "tsc --noEmit",

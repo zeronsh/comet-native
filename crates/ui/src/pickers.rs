@@ -979,7 +979,8 @@ impl Pickers {
         let theme = Theme::of(cx).clone();
         popover::popover_card(&theme)
             .w(px(width))
-            .max_h(px(380.0))
+            // comet caps its tallest picker at min(640px, 75vh).
+            .max_h(px(640.0))
             .track_focus(&self.focus)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_key_down(event, window, cx)
@@ -1093,7 +1094,7 @@ impl Pickers {
                                 let path: SharedString = repo.path.clone().into();
                                 let is_selected =
                                     selected_path.as_deref() == Some(repo.path.as_str());
-                                popover::menu_row(&theme, ix == active || is_selected)
+                                popover::menu_row_nav(&theme, is_selected, ix == active)
                                     .id(("repo-row", ix))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.pick_repo(repo.clone(), cx);
@@ -1163,25 +1164,29 @@ impl Pickers {
                     .flex_col()
                     .child(self.search_box(&theme))
                     .child(body)
-                    .child(popover::menu_separator())
-                    .child(action(
-                        "repo-open-folder",
-                        "Open folder…",
-                        crate::icons::FOLDER,
-                        RepoPane::Browser,
-                    ))
-                    .child(action(
-                        "repo-clone",
-                        "Clone from URL…",
-                        crate::icons::GLOBAL,
-                        RepoPane::CloneUrl,
-                    ))
-                    .child(action(
-                        "repo-create",
-                        "Create new repo…",
-                        crate::icons::PLUS,
-                        RepoPane::CreateName,
-                    ))
+                    // Action group under a full-width hairline (comet
+                    // repo-picker.tsx `mt-1 … border-t border-white/[0.06] pt-1`).
+                    .child(
+                        popover::menu_section()
+                            .child(action(
+                                "repo-open-folder",
+                                "Open folder…",
+                                crate::icons::FOLDER,
+                                RepoPane::Browser,
+                            ))
+                            .child(action(
+                                "repo-clone",
+                                "Clone from URL…",
+                                crate::icons::GLOBAL,
+                                RepoPane::CloneUrl,
+                            ))
+                            .child(action(
+                                "repo-create",
+                                "Create new repo…",
+                                crate::icons::PLUS,
+                                RepoPane::CreateName,
+                            )),
+                    )
                     .into_any_element()
             }
             RepoPane::Browser => self.render_browser(&theme, cx),
@@ -1327,7 +1332,7 @@ impl Pickers {
                     .children(rows.iter().enumerate().map(|(ix, entry)| {
                         let name: SharedString = entry.name.clone().into();
                         let is_repo = entry.is_repo;
-                        popover::menu_row(theme, ix == active)
+                        popover::menu_row_nav(theme, false, ix == active)
                             .id(("browser-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.active = ix;
@@ -1397,9 +1402,10 @@ impl Pickers {
                         .child(message),
                 )
             })
-            .child(popover::menu_separator())
             .child(
+                // comet's browse footer: `mt-1.5 flex gap-1`, no hairline.
                 div()
+                    .mt(px(6.0))
                     .flex()
                     .flex_row()
                     .justify_between()
@@ -1481,7 +1487,7 @@ impl Pickers {
                     .children(rows.into_iter().enumerate().map(|(ix, branch)| {
                         let label: SharedString = branch.clone().into();
                         let is_selected = selected.as_deref() == Some(branch.as_str());
-                        popover::menu_row(&theme, ix == active || is_selected)
+                        popover::menu_row_nav(&theme, is_selected, ix == active)
                             .id(("branch-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_branch(branch.clone(), cx);
@@ -1505,12 +1511,13 @@ impl Pickers {
             .child(popover::menu_heading(&theme, "Base branch"))
             .child(self.search_box(&theme))
             .child(body)
-            .child(popover::menu_separator())
-            // Isolated-worktree toggle row with a display-only switch (comet
-            // branch-picker.tsx `Toggle`).
+            // Isolated-worktree toggle row with a display-only switch under a
+            // full-width hairline (comet branch-picker.tsx `mt-1 border-t
+            // border-white/[0.06] pt-1`).
             .child(
-                popover::menu_row(&theme, false)
-                    .id("branch-isolated")
+                popover::menu_section().child(
+                    popover::menu_row(&theme, false)
+                        .id("branch-isolated")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.config.isolated_worktree = !this.config.isolated_worktree;
                         cx.notify();
@@ -1538,6 +1545,7 @@ impl Pickers {
                             ),
                     )
                     .child(toggle_switch(&theme, isolated)),
+                ),
             )
             .into_any_element()
     }
@@ -1669,7 +1677,7 @@ impl Pickers {
                         let id = model.id.clone();
                         let is_selected = selected.as_deref() == Some(model.id.as_str())
                             || (selected.is_none() && ix == 0);
-                        popover::menu_row(&theme, is_selected || ix == active)
+                        popover::menu_row_nav(&theme, is_selected, ix == active)
                             .id(("model-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_model(id.clone(), cx);
@@ -1755,7 +1763,7 @@ impl Pickers {
                 .child(popover::menu_heading(&theme, "Reasoning"))
                 .children(levels.into_iter().enumerate().map(|(ix, level)| {
                     let is_active = current == Some(level);
-                    popover::menu_row(&theme, is_active || ix == nav_active)
+                    popover::menu_row_nav(&theme, is_active, ix == nav_active)
                         .id(("reasoning-row", ix))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.pick_reasoning(level, cx);
@@ -1811,9 +1819,10 @@ impl Pickers {
                                 let choice_id = choice.id.clone();
                                 let option_id = option_id.clone();
                                 let is_default = choice.id == default_choice;
-                                popover::menu_row(
+                                popover::menu_row_nav(
                                     &theme,
-                                    is_active || option_base + choice_ix == nav_active,
+                                    is_active,
+                                    option_base + choice_ix == nav_active,
                                 )
                                     .id(("trait-choice", opt_ix * 32 + choice_ix))
                                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -1852,7 +1861,9 @@ impl Pickers {
             .flex()
             .flex_col()
             .gap(px(2.0))
-            .max_h(px(360.0))
+            // comet traits-picker.tsx `max-h-[min(640px,75vh)]` (the frame's
+            // own max-height caps it against short windows).
+            .max_h(px(640.0))
             .child(ladder)
             .child(options)
             .into_any_element()
@@ -1985,12 +1996,14 @@ impl Render for Pickers {
         // Render the open popover's body first (mutable borrow), then the chips.
         let mut overlay: Option<(PickerKind, AnyElement)> = match self.open {
             Some(PickerKind::Repo) => {
+                // comet repo-picker.tsx `w-72`.
                 let content = self.render_repo_popover(cx);
-                Some((PickerKind::Repo, self.popover_frame(300.0, content, cx)))
+                Some((PickerKind::Repo, self.popover_frame(288.0, content, cx)))
             }
             Some(PickerKind::Branch) => {
+                // comet branch-picker.tsx `w-72`.
                 let content = self.render_branch_popover(cx);
-                Some((PickerKind::Branch, self.popover_frame(260.0, content, cx)))
+                Some((PickerKind::Branch, self.popover_frame(288.0, content, cx)))
             }
             Some(PickerKind::HarnessModel) => {
                 let content = self.render_harness_model_popover(cx);

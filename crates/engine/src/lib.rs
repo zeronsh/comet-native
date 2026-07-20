@@ -203,7 +203,7 @@ impl EngineCore {
                 .ok()
                 .filter(|s| !s.trim().is_empty())
                 .unwrap_or_else(|| "dev-user".into());
-            let mut config = AuthConfig::new("http://localhost:26640", std::env::temp_dir());
+            let mut config = AuthConfig::new("http://localhost:27640", std::env::temp_dir());
             config.dev_user_id = dev_user;
             Auth::new(config)
         })

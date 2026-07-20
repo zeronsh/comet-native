@@ -275,6 +275,19 @@ pub fn menu_row(theme: &Theme, active: bool) -> gpui::Div {
     }
 }
 
+/// [`menu_row`] with a distinct keyboard-navigation highlight: a selected row
+/// carries the full `bg-white/10` wash, the keyboard cursor the lighter
+/// `bg-white/[0.08]` (comet's `data-[highlighted]` styling) — two selected-
+/// looking rows never appear at once.
+pub fn menu_row_nav(theme: &Theme, selected: bool, highlighted: bool) -> gpui::Div {
+    let row = menu_row(theme, selected);
+    if !selected && highlighted {
+        row.bg(white_alpha(0.08)).text_color(theme.text)
+    } else {
+        row
+    }
+}
+
 /// Small uppercase section heading inside a floating menu (comet
 /// `MenuHeading`): `px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase
 /// tracking-[0.1em] text-muted-foreground/60`. gpui has no letter-spacing at
@@ -334,17 +347,33 @@ pub fn kbd_hint(theme: &Theme, label: &str) -> gpui::Div {
 }
 
 /// The search/text input frame at the top of a picker popover (comet
-/// `searchInput`: `rounded-lg bg-white/[0.04] px-2.5 py-1.5 text-[13px]`,
-/// borderless).
+/// `searchInput`: `w-full rounded-lg bg-white/[0.04] px-2.5 py-1.5
+/// text-[13px]` + `mb-1`, borderless — full width inside the card's own
+/// p-1, only a 4px bottom margin).
 pub fn search_input_frame(_theme: &Theme, input: AnyElement) -> gpui::Div {
     div()
-        .m(px(4.0))
+        .mb(px(4.0))
         .px(px(10.0))
         .py(px(6.0))
         .rounded(px(8.0))
         .bg(white_alpha(0.04))
         .text_size(px(13.0))
         .child(input)
+}
+
+/// A bordered trailing menu section (comet picker action groups /
+/// branch-picker worktree block: `mt-1 flex flex-col gap-0.5 border-t
+/// border-white/[0.06] pt-1` — the hairline runs edge-to-edge of the card's
+/// p-1 inset, unlike [`menu_separator`]'s mx-1).
+pub fn menu_section() -> gpui::Div {
+    div()
+        .mt(px(4.0))
+        .pt(px(4.0))
+        .border_t_1()
+        .border_color(white_alpha(0.06))
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
 }
 
 // ---------------------------------------------------------------------------
@@ -443,9 +472,10 @@ pub fn btn_danger(_theme: &Theme, label: &str) -> gpui::Div {
         .child(SharedString::from(label.to_string()))
 }
 
-/// Pulsing skeleton rows shown while a list loads.
-pub fn skeleton_rows(id: &'static str, theme: &Theme, count: usize) -> AnyElement {
-    let wash = theme.element_hover;
+/// Pulsing skeleton rows shown while a list loads (comet:
+/// `h-7 animate-pulse rounded-md bg-white/[0.04]`).
+pub fn skeleton_rows(id: &'static str, _theme: &Theme, count: usize) -> AnyElement {
+    let wash = white_alpha(0.04);
     div()
         .flex()
         .flex_col()
@@ -453,7 +483,7 @@ pub fn skeleton_rows(id: &'static str, theme: &Theme, count: usize) -> AnyElemen
         .py(px(4.0))
         .children((0..count).map(move |i| {
             div()
-                .h(px(22.0))
+                .h(px(28.0))
                 .rounded(px(Theme::CONTROL_RADIUS))
                 .bg(wash)
                 .with_animation((id, i), COMET_PULSE.repeating(), move |el, delta| {

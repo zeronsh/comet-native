@@ -32,13 +32,13 @@ fn main() -> anyhow::Result<()> {
                         .map(std::path::PathBuf::from)
                         .unwrap_or_else(dirs_data_dir),
                     edge_url: std::env::var("COMET_EDGE_URL")
-                        .unwrap_or_else(|_| "http://localhost:26640".into()),
+                        .unwrap_or_else(|_| "http://localhost:27640".into()),
                     // Dev-mode bearer (no WorkOS): an explicit token enables sync.
                     edge_token: std::env::var("COMET_EDGE_TOKEN").ok(),
                     ipc_port: std::env::var("COMET_IPC_PORT")
                         .ok()
                         .and_then(|p| p.parse().ok())
-                        .unwrap_or(26654),
+                        .unwrap_or(27654),
                     default_harness: harness_from_env(),
                     // WorkOS mode: the signed-in session's org wins; COMET_ORG_ID (dev
                     // default "dev-org") scopes the workspace room otherwise.
@@ -61,9 +61,9 @@ fn main() -> anyhow::Result<()> {
                 ipc_port: std::env::var("COMET_IPC_PORT")
                     .ok()
                     .and_then(|p| p.parse().ok())
-                    .unwrap_or(26654),
+                    .unwrap_or(27654),
                 edge_url: std::env::var("COMET_EDGE_URL")
-                    .unwrap_or_else(|_| "http://localhost:26640".into()),
+                    .unwrap_or_else(|_| "http://localhost:27640".into()),
                 edge_token: std::env::var("COMET_EDGE_TOKEN").ok(),
                 default_harness: comet_ui::HarnessId::ClaudeCode,
             });

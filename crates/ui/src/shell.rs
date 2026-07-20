@@ -17,9 +17,8 @@ use std::time::Duration;
 use chrono::Utc;
 use gpui::{
     AnyElement, App, Context, Empty, Entity, Focusable as _, IntoElement, KeyBinding, Keystroke,
-    MouseButton,
-    MouseDownEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Subscription, Task, Window,
-    actions, div, prelude::*, px,
+    MouseButton, MouseDownEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Subscription,
+    Task, Window, WindowControlArea, actions, div, prelude::*, px,
 };
 
 use comet_rpc::methods;
@@ -48,6 +47,28 @@ use crate::theme::Theme;
 use crate::transcript::{self, Transcript};
 
 actions!(shell, [ToggleSidebar, ToggleChanges]);
+
+// ---------------------------------------------------------------------------
+// Traffic-light-aware titlebar layout (feature-inventory §1.1)
+// ---------------------------------------------------------------------------
+
+/// Where the top-left window-control cluster starts, in px from the window's
+/// left edge (comet window-controls.tsx: `left: fullscreen ? 12 : 88`). The
+/// frameless hiddenInset chrome puts the macOS traffic lights at {14,15};
+/// fullscreen hides them and the cluster reclaims the inset.
+pub fn titlebar_cluster_start(fullscreen: bool) -> f32 {
+    if fullscreen { 12.0 } else { 88.0 }
+}
+
+/// Width of the spacer ahead of the control cluster for a strip that already
+/// carries `container_pad` px of its own left padding. macOS only — on
+/// Linux/Windows there are no traffic lights and the cluster hugs the edge.
+pub fn titlebar_spacer_width(is_macos: bool, fullscreen: bool, container_pad: f32) -> f32 {
+    if !is_macos {
+        return 0.0;
+    }
+    (titlebar_cluster_start(fullscreen) - container_pad).max(0.0)
+}
 
 /// (Re-)apply the whole app keymap: clears every binding, restores the composer
 /// map, then binds the customizable shortcuts from `keymap` (feature-inventory
@@ -207,6 +228,14 @@ pub struct Shell {
     sidebar_tween: Option<WidthTween>,
     right_tween: Option<WidthTween>,
     terminal_tween: Option<WidthTween>,
+    /// Last observed `window.is_fullscreen()` (`None` before first paint) —
+    /// flips key the traffic-light inset tween.
+    fullscreen: Option<bool>,
+    /// 200ms ease-out tween of the cluster start on fullscreen toggles.
+    titlebar_tween: Option<WidthTween>,
+    /// Armed by mouse-down on a titlebar strip; the next mouse-move hands the
+    /// drag to the compositor (zed's platform-titlebar pattern).
+    titlebar_should_move: bool,
     /// Clears the height tween once it completes (so a closed panel unmounts).
     terminal_tween_task: Option<Task<()>>,
     /// Height-drag anchor: (pointer y, height) at mouse-down on the handle.
@@ -327,6 +356,9 @@ impl Shell {
             sidebar_tween: None,
             right_tween: None,
             terminal_tween: None,
+            fullscreen: None,
+            titlebar_tween: None,
+            titlebar_should_move: false,
             terminal_tween_task: None,
             terminal_drag_anchor: None,
             tween_epoch: 0,
@@ -902,6 +934,67 @@ impl Shell {
         }
     }
 
+    /// The animated spacer clearing the macOS traffic lights ahead of a
+    /// titlebar control cluster. Fullscreen toggles tween the cluster start
+    /// over 200ms ease-out ([`RESIZE`]; reduced motion snaps via
+    /// `with_animation`). `None` off macOS — no phantom flex child.
+    fn titlebar_spacer(&self, id: &'static str, container_pad: f32) -> Option<AnyElement> {
+        if !cfg!(target_os = "macos") {
+            return None;
+        }
+        let fullscreen = self.fullscreen.unwrap_or(false);
+        let target = titlebar_spacer_width(true, fullscreen, container_pad);
+        let spacer = div().flex_none().h_full();
+        Some(match self.titlebar_tween {
+            Some(WidthTween { from, to, epoch }) => spacer
+                .with_animation((id, epoch), RESIZE.animation(), move |el, t| {
+                    el.w(px((motion::lerp(from, to, t) - container_pad).max(0.0)))
+                })
+                .into_any_element(),
+            None => spacer.w(px(target)).into_any_element(),
+        })
+    }
+
+    /// Make a titlebar strip drag the window — zed's platform-titlebar
+    /// pattern (comet's `.drag` region): mark it a [`WindowControlArea::Drag`]
+    /// (macOS app-owned titlebar), hand the drag to the compositor once the
+    /// pointer moves with the button down, and double-click zooms.
+    fn titlebar_drag_region(
+        &self,
+        id: &'static str,
+        el: gpui::Div,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        el.id(id)
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.titlebar_should_move = false))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.titlebar_should_move = false),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.titlebar_should_move = true),
+            )
+            .on_mouse_move(cx.listener(|this, _, window, _| {
+                if this.titlebar_should_move {
+                    this.titlebar_should_move = false;
+                    window.start_window_move();
+                }
+            }))
+            .on_click(|event, window, _| {
+                if event.click_count() == 2 {
+                    if cfg!(target_os = "macos") {
+                        // Native titlebar double-click action (zoom/minimize
+                        // per system preference).
+                        window.titlebar_double_click();
+                    } else {
+                        window.zoom_window();
+                    }
+                }
+            })
+    }
+
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let inner: AnyElement = match self.route {
@@ -939,20 +1032,22 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
-            .child(
-                div()
+            .child({
+                let strip = div()
                     .h(px(Theme::HEADER_HEIGHT))
                     .flex_none()
                     .flex()
                     .items_center()
                     .px(px(10.0))
+                    .children(self.titlebar_spacer("settings-titlebar-inset", 10.0))
                     .child(window_control_button(
                         "toggle-sidebar",
                         icons::SIDEBAR_MINIMALISTIC_LEFT,
                         theme,
                         cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                    )),
-            )
+                    ));
+                self.titlebar_drag_region("settings-titlebar", strip, cx)
+            })
             .child(
                 div()
                     .flex_1()
@@ -1334,18 +1429,19 @@ impl Shell {
             .flex()
             .flex_col()
             // Window-control strip in the h-11 titlebar area: sidebar toggle +
-            // back/forward (comet window-controls.tsx; traffic lights are macOS).
-            .child(
-                div()
+            // back/forward (comet window-controls.tsx). A drag region like
+            // comet's `.drag` strip; on macOS an animated spacer clears the
+            // traffic lights (cluster at 88px, 12px in fullscreen — §1.1).
+            .child({
+                let strip = div()
                     .h(px(Theme::HEADER_HEIGHT))
                     .flex_none()
                     .flex()
                     .items_center()
                     .gap(px(2.0))
-                    // macOS traffic lights occupy the left inset (frameless
-                    // hiddenInset chrome) — clear them like the original.
-                    .when(cfg!(target_os = "macos"), |strip| strip.pl(px(68.0)))
                     .px(px(10.0))
+                    // 10px padding + 2px gap ahead of the first button.
+                    .children(self.titlebar_spacer("sidebar-titlebar-inset", 12.0))
                     .child(window_control_button(
                         "toggle-sidebar",
                         icons::SIDEBAR_MINIMALISTIC_LEFT,
@@ -1365,8 +1461,9 @@ impl Shell {
                                 .size(px(16.0))
                                 .text_color(theme.text_muted.opacity(0.35)),
                         ),
-                    ),
-            )
+                    );
+                self.titlebar_drag_region("sidebar-titlebar", strip, cx)
+            })
             // Device switcher + "New session" (comet sidebar.tsx px-2 block).
             .child(
                 div()
@@ -1834,39 +1931,41 @@ impl Shell {
         // composer/terminal/status strip (feature-inventory §1.3 header variants).
         if let Route::Settings(section) = self.route {
             let outlet = self.settings_outlet(section, cx);
+            let header = div()
+                .h(px(Theme::HEADER_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(Theme::SPACE_LG))
+                .border_b_1()
+                .border_color(border)
+                .when(self.settings.sidebar_collapsed, |el| {
+                    // Full-bleed card: the header IS the titlebar — clear the
+                    // traffic lights (16px pad + 10px gap ahead of the button).
+                    el.children(self.titlebar_spacer("settings-header-inset", 26.0))
+                        .child(window_control_button(
+                            "toggle-sidebar",
+                            icons::SIDEBAR_MINIMALISTIC_LEFT,
+                            &theme_owned,
+                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                        ))
+                })
+                .child(
+                    div()
+                        .flex_1()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(text)
+                        .child(SharedString::from(section.label())),
+                );
             return div()
                 .flex_1()
                 .min_w_0()
                 .h_full()
                 .flex()
                 .flex_col()
-                .child(
-                    div()
-                        .h(px(Theme::HEADER_HEIGHT))
-                        .flex_none()
-                        .flex()
-                        .items_center()
-                        .gap(px(10.0))
-                        .px(px(Theme::SPACE_LG))
-                        .border_b_1()
-                        .border_color(border)
-                        .when(self.settings.sidebar_collapsed, |el| {
-                            el.child(window_control_button(
-                                "toggle-sidebar",
-                                icons::SIDEBAR_MINIMALISTIC_LEFT,
-                                &theme_owned,
-                                cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                            ))
-                        })
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(13.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(text)
-                                .child(SharedString::from(section.label())),
-                        ),
-                )
+                .child(self.titlebar_drag_region("settings-header-titlebar", header, cx))
                 .child(div().flex_1().min_h_0().child(outlet))
                 .into_any_element();
         }
@@ -1934,7 +2033,7 @@ impl Shell {
         // pane carries its own collapse button); the new-chat canvas shows a
         // bare h-11 strip with no border and no chrome.
         let header: AnyElement = if has_selection {
-            div()
+            let bar = div()
                 .h(px(Theme::HEADER_HEIGHT))
                 .flex_none()
                 .flex()
@@ -1944,12 +2043,15 @@ impl Shell {
                 .border_b_1()
                 .border_color(border)
                 .when(self.settings.sidebar_collapsed, |el| {
-                    el.child(window_control_button(
-                        "toggle-sidebar",
-                        icons::SIDEBAR_MINIMALISTIC_LEFT,
-                        theme,
-                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                    ))
+                    // Full-bleed card: this header is the titlebar — clear the
+                    // traffic lights (16px pad + 10px gap ahead of the button).
+                    el.children(self.titlebar_spacer("chat-header-inset", 26.0))
+                        .child(window_control_button(
+                            "toggle-sidebar",
+                            icons::SIDEBAR_MINIMALISTIC_LEFT,
+                            theme,
+                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                        ))
                 })
                 .child(
                     div()
@@ -1982,23 +2084,26 @@ impl Shell {
                         theme,
                         cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
                     ))
-                })
+                });
+            self.titlebar_drag_region("chat-header-titlebar", bar, cx)
                 .into_any_element()
         } else {
-            div()
+            let bar = div()
                 .h(px(Theme::HEADER_HEIGHT))
                 .flex_none()
                 .flex()
                 .items_center()
                 .px(px(10.0))
                 .when(self.settings.sidebar_collapsed, |el| {
-                    el.child(window_control_button(
-                        "toggle-sidebar",
-                        icons::SIDEBAR_MINIMALISTIC_LEFT,
-                        theme,
-                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                    ))
-                })
+                    el.children(self.titlebar_spacer("empty-header-inset", 10.0))
+                        .child(window_control_button(
+                            "toggle-sidebar",
+                            icons::SIDEBAR_MINIMALISTIC_LEFT,
+                            theme,
+                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                        ))
+                });
+            self.titlebar_drag_region("empty-header-titlebar", bar, cx)
                 .into_any_element()
         };
         div()
@@ -2677,6 +2782,22 @@ impl Render for Shell {
             .clone()
             .unwrap_or_else(|| self.state.read(cx).gate());
 
+        // Fullscreen hides the macOS traffic lights — reflow the control
+        // cluster with a 200ms ease-out tween (§1.1). A fullscreen transition
+        // resizes the window, which re-renders us, so polling here is exact.
+        let fullscreen = window.is_fullscreen();
+        if self.fullscreen != Some(fullscreen) {
+            if self.fullscreen.is_some() && cfg!(target_os = "macos") {
+                self.tween_epoch += 1;
+                self.titlebar_tween = Some(WidthTween {
+                    from: titlebar_cluster_start(!fullscreen),
+                    to: titlebar_cluster_start(fullscreen),
+                    epoch: self.tween_epoch,
+                });
+            }
+            self.fullscreen = Some(fullscreen);
+        }
+
         // Keyboard shortcuts (mod-s/b/j) dispatch through the window focus
         // chain — with nothing focused they go dead. Land initial focus on the
         // composer, and whenever focus is lost with no successor (e.g. the
@@ -2790,5 +2911,34 @@ impl Render for Shell {
             SplashPhase::FadingOut => root.child(loaders::splash_overlay(Theme::of(cx), true)),
             SplashPhase::Gone => root,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn titlebar_cluster_matches_comet_window_controls() {
+        // comet window-controls.tsx: `left: fullscreen ? 12 : 88` — the
+        // cluster clears the {14,15} traffic lights, and reclaims the inset
+        // when fullscreen hides them.
+        assert_eq!(titlebar_cluster_start(false), 88.0);
+        assert_eq!(titlebar_cluster_start(true), 12.0);
+    }
+
+    #[test]
+    fn titlebar_spacer_selects_per_platform_and_fullscreen() {
+        // macOS, lights visible: spacer fills up to the 88px cluster start.
+        assert_eq!(titlebar_spacer_width(true, false, 10.0), 78.0);
+        assert_eq!(titlebar_spacer_width(true, false, 12.0), 76.0);
+        assert_eq!(titlebar_spacer_width(true, false, 26.0), 62.0);
+        // macOS fullscreen: the inset animates away (clamped at zero when the
+        // strip's own padding already exceeds the 12px cluster start).
+        assert_eq!(titlebar_spacer_width(true, true, 10.0), 2.0);
+        assert_eq!(titlebar_spacer_width(true, true, 26.0), 0.0);
+        // Linux / Windows: never any inset.
+        assert_eq!(titlebar_spacer_width(false, false, 10.0), 0.0);
+        assert_eq!(titlebar_spacer_width(false, true, 10.0), 0.0);
     }
 }

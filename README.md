@@ -49,7 +49,7 @@ docs/        PARITY.md + research notes
 cargo build --workspace       # Linux: needs the gpui deps (see docs/research/gpui.md)
 cargo test  --workspace
 cargo clippy --workspace --all-targets && cargo fmt --all --check
-cd edge && npm install && npm run dev   # wrangler dev on :26640 (dev auth: bearer = user@org)
+cd edge && npm install && npm run dev   # wrangler dev on :27640 (dev auth: bearer = user@org)
 ```
 
 **macOS**: `xcode-select --install` (gpui needs the Metal toolchain; full Xcode 15+ if the
@@ -68,10 +68,10 @@ cargo run -p comet
 
 # Headless engine (VPS / second device):
 COMET_DATA_DIR=~/.comet-native \
-COMET_EDGE_URL=http://localhost:26640 \
+COMET_EDGE_URL=http://localhost:27640 \
 COMET_EDGE_TOKEN=alice@org1 \
 COMET_ORG_ID=org1 \
-COMET_IPC_PORT=26654 \
+COMET_IPC_PORT=27654 \
 cargo run -p comet -- headless
 ```
 
