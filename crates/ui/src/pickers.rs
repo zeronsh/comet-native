@@ -722,6 +722,79 @@ impl Pickers {
 
     // ---- keyboard ----
 
+    /// The traits popover's reasoning ladder (model levels, falling back to
+    /// the harness's advertised ladder) — shared by render and keyboard nav.
+    fn trait_ladder(&self, cx: &App) -> Vec<ReasoningLevel> {
+        let Some(model) = self.selected_model(cx) else {
+            return Vec::new();
+        };
+        if !model.reasoning_levels.is_empty() {
+            return model.reasoning_levels.clone();
+        }
+        self.effective_harness(cx)
+            .and_then(|h| {
+                self.harnesses
+                    .ready()
+                    .and_then(|list| list.iter().find(|d| d.id == h))
+                    .map(|d| d.reasoning_levels.clone())
+            })
+            .unwrap_or_default()
+    }
+
+    /// Keyboard-row count of the traits popover (ladder + all option choices).
+    fn trait_rows_len(&self, cx: &App) -> usize {
+        let ladder = self.trait_ladder(cx).len();
+        let choices = self
+            .selected_model(cx)
+            .map(|m| m.options.iter().map(|o| o.choices.len()).sum::<usize>())
+            .unwrap_or(0);
+        ladder + choices
+    }
+
+    /// Enter on the traits popover: ladder rows toggle, choices select.
+    fn activate_trait_row(&mut self, cx: &mut Context<Self>) {
+        let ladder = self.trait_ladder(cx);
+        if let Some(level) = ladder.get(self.active).copied() {
+            self.pick_reasoning(level, cx);
+            return;
+        }
+        let mut ix = self.active - ladder.len();
+        let Some(model) = self.selected_model(cx).cloned() else {
+            return;
+        };
+        for option in &model.options {
+            if let Some(choice) = option.choices.get(ix) {
+                let is_default = choice.id == option.default_choice;
+                self.pick_option(option.id.clone(), choice.id.clone(), is_default, cx);
+                return;
+            }
+            ix -= option.choices.len();
+        }
+    }
+
+    /// The viewed harness's model list, when loaded (keyboard nav rows).
+    fn model_rows_len(&self, cx: &App) -> usize {
+        self.effective_harness(cx)
+            .and_then(|h| self.models.get(&h))
+            .and_then(|l| l.ready())
+            .map(|m| m.len())
+            .unwrap_or(0)
+    }
+
+    /// Enter on the harness/model popover: pick the highlighted model.
+    fn activate_model_row(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self
+            .effective_harness(cx)
+            .and_then(|h| self.models.get(&h))
+            .and_then(|l| l.ready())
+            .and_then(|m| m.get(self.active))
+            .map(|m| m.id.clone())
+        else {
+            return;
+        };
+        self.pick_model(id, cx);
+    }
+
     fn filtered_repo_rows(&self, cx: &App) -> Vec<Repo> {
         let Some(repos) = self.repos.ready() else {
             return Vec::new();
@@ -796,6 +869,8 @@ impl Pickers {
                         .map(|l| browser_rows(l).len())
                         .unwrap_or(0),
                     (Some(PickerKind::Branch), _) => self.filtered_branch_rows(cx).len(),
+                    (Some(PickerKind::HarnessModel), _) => self.model_rows_len(cx),
+                    (Some(PickerKind::Traits), _) => self.trait_rows_len(cx),
                     _ => 0,
                 };
                 self.active = popover::menu_step(Some(self.active), count, delta).unwrap_or(0);
@@ -804,6 +879,10 @@ impl Pickers {
             MenuKey::Enter if !search_focused => {
                 if self.open == Some(PickerKind::Repo) && self.repo_pane == RepoPane::Browser {
                     self.browser_activate(cx);
+                } else if self.open == Some(PickerKind::HarnessModel) {
+                    self.activate_model_row(cx);
+                } else if self.open == Some(PickerKind::Traits) {
+                    self.activate_trait_row(cx);
                 } else {
                     self.on_search_submit(cx);
                 }
@@ -1572,7 +1651,10 @@ impl Pickers {
 
         let models: AnyElement = match effective.map(|h| (h, self.models.get(&h))) {
             Some((_, Some(Loadable::Ready(models)))) => {
-                let selected = self.config.model.clone();
+                // The check mirrors the chip: the draft pick, else the chat's
+                // configured model, else the harness default (first row).
+                let selected = self.effective_model_id(cx).map(str::to_string);
+                let active = self.active;
                 let models = models.clone();
                 div()
                     .id("model-list")
@@ -1587,7 +1669,7 @@ impl Pickers {
                         let id = model.id.clone();
                         let is_selected = selected.as_deref() == Some(model.id.as_str())
                             || (selected.is_none() && ix == 0);
-                        popover::menu_row(&theme, is_selected)
+                        popover::menu_row(&theme, is_selected || ix == active)
                             .id(("model-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_model(id.clone(), cx);
@@ -1654,23 +1736,14 @@ impl Pickers {
         let Some(model) = self.selected_model(cx).cloned() else {
             return popover::skeleton_rows("traits-skeleton", &theme, 3);
         };
-        let harness_levels = self
-            .effective_harness(cx)
-            .and_then(|h| {
-                self.harnesses
-                    .ready()
-                    .and_then(|list| list.iter().find(|d| d.id == h))
-                    .map(|d| d.reasoning_levels.clone())
-            })
-            .unwrap_or_default();
-        let levels = if model.reasoning_levels.is_empty() {
-            harness_levels
-        } else {
-            model.reasoning_levels.clone()
-        };
+        let levels = self.trait_ladder(cx);
         // Display the effective level (draft pick or the chat's config), so
         // the ladder check mirrors the chip summary.
         let current = self.effective_reasoning(cx);
+        // Keyboard nav: flat row index — ladder first, then option choices in
+        // render order.
+        let nav_active = self.active;
+        let ladder_len = levels.len();
 
         let ladder: AnyElement = if levels.is_empty() {
             gpui::Empty.into_any_element()
@@ -1682,7 +1755,7 @@ impl Pickers {
                 .child(popover::menu_heading(&theme, "Reasoning"))
                 .children(levels.into_iter().enumerate().map(|(ix, level)| {
                     let is_active = current == Some(level);
-                    popover::menu_row(&theme, is_active)
+                    popover::menu_row(&theme, is_active || ix == nav_active)
                         .id(("reasoning-row", ix))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.pick_reasoning(level, cx);
@@ -1700,12 +1773,26 @@ impl Pickers {
         };
 
         let selections = self.config.model_options.clone();
+        // Per-option flat-index bases for the keyboard highlight.
+        let option_bases: Vec<usize> = {
+            let mut offset = ladder_len;
+            model
+                .options
+                .iter()
+                .map(|o| {
+                    let base = offset;
+                    offset += o.choices.len();
+                    base
+                })
+                .collect()
+        };
         let options =
             div()
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
                 .children(model.options.iter().enumerate().map(|(opt_ix, option)| {
+                    let option_base = option_bases[opt_ix];
                     let selected_choice = selections
                         .get(&option.id)
                         .and_then(|v| v.as_str())
@@ -1724,7 +1811,10 @@ impl Pickers {
                                 let choice_id = choice.id.clone();
                                 let option_id = option_id.clone();
                                 let is_default = choice.id == default_choice;
-                                popover::menu_row(&theme, is_active)
+                                popover::menu_row(
+                                    &theme,
+                                    is_active || option_base + choice_ix == nav_active,
+                                )
                                     .id(("trait-choice", opt_ix * 32 + choice_ix))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.pick_option(

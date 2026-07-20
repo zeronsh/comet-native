@@ -17,10 +17,12 @@
 //! inside the list's own input path) plus our 70px re-engage band in the scroll
 //! handler; own-send re-engages with a smooth animated scroll.
 
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, Context, Entity, FollowMode, ListAlignment, ListScrollEvent, ListState,
@@ -33,6 +35,7 @@ use comet_proto::ToolCall;
 use crate::markdown::highlight::{Lang, LineCarry, Token, lang_for_tag, tokenize_line};
 use crate::markdown::parser::{Block, BlockTree, IncrementalParser, parse_full};
 use crate::markdown::render::{self, RenderOptions};
+use crate::markdown::veil::RowVeil;
 use crate::motion::{self, AnimationExt as _, RESIZE};
 use crate::state::AppState;
 use crate::theme::Theme;
@@ -292,6 +295,32 @@ pub fn rows_for_entry(
         first.turn_start = true;
     }
     rows
+}
+
+/// Markdown row ids are `{entry}#{part}.{blockIx}` — the part prefix is
+/// everything before the block index.
+fn part_prefix(id: &str) -> &str {
+    id.rsplit_once('.').map(|(p, _)| p).unwrap_or(id)
+}
+
+/// Vertical gap opening `row` given its predecessor: turn gap at turn starts;
+/// the markdown block gap between sibling block rows split from the same text
+/// part — matching the live row's internal spacing exactly, so the
+/// live→split handoff cannot shift a pixel; the block gap otherwise.
+pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
+    if row.turn_start {
+        return GAP_TURN;
+    }
+    let same_part_markdown = prev.is_some_and(|p| {
+        matches!(p.kind, RowKind::Markdown { .. })
+            && matches!(row.kind, RowKind::Markdown { .. })
+            && part_prefix(&p.id) == part_prefix(&row.id)
+    });
+    if same_part_markdown {
+        render::MD_BLOCK_GAP
+    } else {
+        GAP_BLOCK
+    }
 }
 
 /// Minimal splice for a row-set change: `Some((old_range, new_count))`, or
@@ -594,8 +623,10 @@ struct FoldState {
     open: Option<bool>,
     /// Bumped per toggle — keys the 200ms height tween.
     epoch: usize,
+    /// Height at the moment of the toggle (the tween's start). The destination
+    /// is always the *current* target height, so content growth after a toggle
+    /// snaps instead of replaying a stale tween.
     from: f32,
-    to: f32,
 }
 
 pub struct Transcript {
@@ -607,6 +638,8 @@ pub struct Transcript {
     live_parsers: HashMap<String, IncrementalParser>,
     tree_cache: HashMap<String, (usize, Arc<BlockTree>)>,
     folds: HashMap<SharedString, FoldState>,
+    /// Streaming fade veils, one per live markdown row (dropped on completion).
+    veils: HashMap<SharedString, Rc<RefCell<RowVeil>>>,
     highlights: HighlightStore,
     show_jump_button: bool,
     scroll_anim: Option<Task<()>>,
@@ -638,6 +671,7 @@ impl Transcript {
             live_parsers: HashMap::new(),
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
+            veils: HashMap::new(),
             highlights: HighlightStore::default(),
             show_jump_button: false,
             scroll_anim: None,
@@ -768,6 +802,7 @@ impl Transcript {
             self.live_parsers.clear();
             self.tree_cache.clear();
             self.folds.clear();
+            self.veils.clear();
             self.highlights.entries.clear();
             self.list.reset(0);
             self.list.set_follow_mode(FollowMode::Tail);
@@ -781,6 +816,15 @@ impl Transcript {
         for echo in &echoes {
             new_rows.extend(self.rows_for(echo, true));
         }
+
+        // Veils live exactly as long as their live row — drop them on the
+        // live→split handoff (any mid-fade chunk snaps to full, matching the
+        // flip's row splice).
+        self.veils.retain(|id, _| {
+            new_rows
+                .iter()
+                .any(|r| &r.id == id && matches!(r.kind, RowKind::LiveMarkdown { .. }))
+        });
 
         match diff_rows(&self.rows, &new_rows) {
             None => {
@@ -855,11 +899,6 @@ impl Transcript {
         } else {
             0.0
         };
-        entry.to = if currently_open {
-            0.0
-        } else {
-            chips_height(tool_count)
-        };
         entry.open = Some(!currently_open);
         entry.epoch += 1;
     }
@@ -869,7 +908,7 @@ impl Transcript {
     fn render_row(
         &mut self,
         ix: usize,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let Some(row) = self.rows.get(ix).cloned() else {
@@ -878,10 +917,8 @@ impl Transcript {
         let theme = Theme::of(cx).clone();
         let top_gap = if ix == 0 {
             GAP_TURN + 10.0
-        } else if row.turn_start {
-            GAP_TURN
         } else {
-            GAP_BLOCK
+            top_gap_for(ix.checked_sub(1).and_then(|i| self.rows.get(i)), &row)
         };
         let bottom_pad = if ix + 1 == self.rows.len() { 24.0 } else { 0.0 };
 
@@ -903,10 +940,7 @@ impl Transcript {
                 bubble.into_any_element()
             }
             RowKind::Markdown { tree, block_ix } => {
-                let opts = RenderOptions {
-                    row_key: row.id.clone(),
-                    fade_last_key: None,
-                };
+                let opts = RenderOptions::settled(row.id.clone());
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
                     return gpui::Empty.into_any_element();
@@ -923,15 +957,26 @@ impl Transcript {
                 )
             }
             RowKind::LiveMarkdown { tree } => {
-                let fade_key = tree.blocks.len().saturating_sub(1) as u64;
+                // Per-appended-chunk fade veil (opacity only — layout commits
+                // instantly). Reduced motion renders with no veil at all.
+                let veil = (!motion::reduced_motion(cx))
+                    .then(|| self.veils.entry(row.id.clone()).or_default().clone());
                 let opts = RenderOptions {
                     row_key: row.id.clone(),
-                    fade_last_key: Some(fade_key),
+                    veil: veil.clone(),
+                    now: Instant::now(),
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, None, cx);
-                render::render_tree(tree, &opts, &theme, &|ix| {
+                let el = render::render_tree(tree, &opts, &theme, &|ix| {
                     highlight.get(&ix).and_then(|o| o.clone())
-                })
+                });
+                // Drive the veil clock: while any chunk is still dissolving,
+                // repaint next frame (self-limiting — one callback per frame).
+                if veil.is_some_and(|v| v.borrow().is_fading()) {
+                    let id = cx.entity_id();
+                    window.on_next_frame(move |_, cx| cx.notify(id));
+                }
+                el
             }
             RowKind::ToolGroup { tools, auto_open } => {
                 self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
@@ -1063,18 +1108,20 @@ impl Transcript {
             .gap(px(CHIP_GAP))
             .children(tools.iter().map(|tool| tool_chip(tool, theme)));
 
-        // Fold body: 200ms committed-height tween on toggle; content changes
-        // while open snap (only `open` toggles animate — composes with the
-        // stick spring).
+        // Fold body: 200ms committed-height tween on a USER toggle only.
+        // Auto-open (streaming) and content growth never tween — the closure
+        // lerps toward the *current* target, so tools arriving mid- or
+        // post-tween snap the destination instead of replaying a stale height
+        // (only `open` toggles animate — composes with the stick spring).
         let body: AnyElement = if fold.epoch > 0 {
-            let (from, to) = (fold.from, fold.to);
+            let from = fold.from;
             div()
                 .overflow_hidden()
                 .child(chips)
                 .with_animation(
                     SharedString::from(format!("{row_id}-fold{}", fold.epoch)),
                     RESIZE.animation(),
-                    move |el, t| el.h(px(motion::lerp(from, to, t))),
+                    move |el, t| el.h(px(motion::lerp(from, target, t))),
                 )
                 .into_any_element()
         } else {
@@ -1350,6 +1397,39 @@ mod tests {
         ));
         // The flip changes the version even at identical text, forcing a splice.
         assert_ne!(done_rows[0].version, live_rows[0].version);
+    }
+
+    #[test]
+    fn split_sibling_gaps_match_live_internal_spacing() {
+        // The live row spaces its internal blocks by MD_BLOCK_GAP; after the
+        // live→split handoff the same boundaries are inter-row gaps. They must
+        // be identical or the whole message jumps at completion.
+        let done = assistant(
+            "m1",
+            MessageStatus::Complete,
+            vec![
+                text_part("t0", MD),
+                tool_part("a", "ls"),
+                text_part("t1", "tail para"),
+            ],
+        );
+        let rows = rows_for_entry(&done, false, &mut parse);
+        // Rows: t0.0, t0.1, t0.2 (three MD blocks), g0, t1.0.
+        assert_eq!(rows.len(), 5);
+        // Sibling markdown blocks from the same part: md block gap.
+        assert_eq!(
+            top_gap_for(Some(&rows[0]), &rows[1]),
+            render::MD_BLOCK_GAP
+        );
+        assert_eq!(
+            top_gap_for(Some(&rows[1]), &rows[2]),
+            render::MD_BLOCK_GAP
+        );
+        // Markdown → tool group and tool group → next part: block gap.
+        assert_eq!(top_gap_for(Some(&rows[2]), &rows[3]), GAP_BLOCK);
+        assert_eq!(top_gap_for(Some(&rows[3]), &rows[4]), GAP_BLOCK);
+        // Turn starts get the turn gap regardless.
+        assert_eq!(top_gap_for(None, &rows[0]), GAP_TURN);
     }
 
     #[test]

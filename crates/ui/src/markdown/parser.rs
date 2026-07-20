@@ -571,6 +571,42 @@ mod tests {
     }
 
     #[test]
+    fn appends_keep_committed_blocks_identical() {
+        // Streaming stability invariant: blocks before the reparse boundary
+        // (everything but the last two top-level blocks) must be reused
+        // as-is across appends — same index, same value — so row/element keys
+        // never re-mount and earlier blocks can never visibly reflow.
+        for corpus in CORPORA {
+            let mut p = IncrementalParser::new();
+            let mut prev = p.tree().clone();
+            let bytes = corpus.as_bytes();
+            let mut start = 0;
+            while start < bytes.len() {
+                let mut end = (start + 3).min(bytes.len());
+                while end < bytes.len() && !corpus.is_char_boundary(end) {
+                    end += 1;
+                }
+                p.append(&corpus[start..end]);
+                start = end;
+
+                let cur = p.tree();
+                let committed = prev.blocks.len().saturating_sub(2);
+                assert!(
+                    cur.blocks.len() >= committed,
+                    "committed blocks disappeared:\n{corpus}"
+                );
+                for i in 0..committed {
+                    assert_eq!(
+                        cur.blocks[i], prev.blocks[i],
+                        "block {i} changed across an append:\n{corpus}"
+                    );
+                }
+                prev = cur.clone();
+            }
+        }
+    }
+
+    #[test]
     fn incremental_matches_full_with_link_definitions() {
         // Definitions act at a distance → parser falls back to full reparses,
         // so parity must still hold.

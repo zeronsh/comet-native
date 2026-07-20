@@ -7,11 +7,12 @@
 //!   from the last stable top-level block boundary;
 //! - highlighting is **pure paint** — token colors on identical mono runs, so
 //!   layout never depends on it;
-//! - streaming fade-in is an opacity animation keyed by stable block identity —
-//!   paint-only, never measured.
+//! - streaming fade-in is a per-appended-chunk opacity veil over the text runs
+//!   ([`veil`]) — paint-only, never measured, layout commits instantly.
 
 pub mod highlight;
 pub mod parser;
 pub mod render;
+pub mod veil;
 
 pub use parser::{Block, BlockTree, IncrementalParser, InlineRun, InlineStyle, parse_full};

@@ -16,7 +16,8 @@ use std::time::Duration;
 
 use chrono::Utc;
 use gpui::{
-    AnyElement, App, Context, Empty, Entity, IntoElement, KeyBinding, Keystroke, MouseButton,
+    AnyElement, App, Context, Empty, Entity, Focusable as _, IntoElement, KeyBinding, Keystroke,
+    MouseButton,
     MouseDownEvent, MouseUpEvent, Pixels, Point, Render, SharedString, Subscription, Task, Window,
     actions, div, prelude::*, px,
 };
@@ -152,6 +153,8 @@ enum SplashPhase {
 struct RenameChatDialog {
     chat_id: String,
     input: Entity<ComposerInput>,
+    /// Focus the input on the dialog's first paint (opened without window access).
+    focus_pending: bool,
     _events: Subscription,
 }
 
@@ -447,7 +450,7 @@ impl Shell {
 
     /// Cmd/Ctrl+J and the header button (feature-inventory §1.10). Height
     /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
-    fn toggle_terminal(&mut self, cx: &mut Context<Self>) {
+    fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let from = self.terminal_target();
         self.settings.terminal_open = !self.settings.terminal_open;
         self.tween_epoch += 1;
@@ -459,6 +462,12 @@ impl Shell {
         let open = self.settings.terminal_open;
         let panel = self.terminal_panel(cx);
         panel.update(cx, |panel, cx| panel.set_open(open, cx));
+        if !open {
+            // Hiding the panel removes the (likely focused) terminal view;
+            // with nothing focused, window key bindings stop dispatching, so
+            // hand focus to the composer.
+            window.focus(&self.composer.focus_handle(cx), cx);
+        }
         self.terminal_tween_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(RESIZE.total() + Duration::from_millis(30))
@@ -665,6 +674,7 @@ impl Shell {
         self.rename_dialog = Some(RenameChatDialog {
             chat_id,
             input,
+            focus_pending: true,
             _events: events,
         });
         cx.notify();
@@ -1612,6 +1622,7 @@ impl Shell {
     fn render_overlays(
         &mut self,
         viewport: gpui::Size<Pixels>,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
         let theme = Theme::of(cx).clone();
@@ -1676,9 +1687,18 @@ impl Shell {
             overlays.push(popover::menu_at("chat-context-menu", position, menu));
         }
 
-        if let Some(dialog) = &self.rename_dialog {
+        if let Some(dialog) = &mut self.rename_dialog {
+            if std::mem::take(&mut dialog.focus_pending) {
+                window.focus(&dialog.input.focus_handle(cx), cx);
+            }
             let input = dialog.input.clone();
             let card = popover::dialog_card(&theme)
+                .on_key_down(cx.listener(|this, ev: &gpui::KeyDownEvent, _, cx| {
+                    if ev.keystroke.key == "escape" {
+                        this.rename_dialog = None;
+                        cx.notify();
+                    }
+                }))
                 .child(popover::dialog_title(&theme, "Rename session"))
                 .child(
                     div()
@@ -2658,7 +2678,9 @@ impl Render for Shell {
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
             .on_drag_move(cx.listener(Self::on_right_pane_drag))
             .on_drag_move(cx.listener(Self::on_terminal_drag))
-            .on_action(cx.listener(|this, _: &ToggleTerminal, _, cx| this.toggle_terminal(cx)))
+            .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| {
+                this.toggle_terminal(window, cx)
+            }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             .on_action(cx.listener(|this, _: &ToggleChanges, _, cx| this.toggle_right_pane(cx)));
 
@@ -2687,7 +2709,7 @@ impl Render for Shell {
                     cx,
                 );
                 let right = self.render_right_pane(cx);
-                let overlays = self.render_overlays(window.viewport_size(), cx);
+                let overlays = self.render_overlays(window.viewport_size(), window, cx);
                 // The signature frame: the content pane (main column + changes
                 // pane) is an inset rounded hairline-bordered card floating on
                 // the frost shell. Collapsed sidebar → full-bleed (margins,

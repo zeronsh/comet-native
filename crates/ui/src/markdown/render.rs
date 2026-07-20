@@ -4,21 +4,25 @@
 //! here); colors are paint. Code blocks render per-line so their height is
 //! exactly `lines × line_height`, and syntax highlighting arrives later as
 //! recolored `TextRun`s on the identical mono font — layout never changes
-//! (mugen's "highlight is pure paint"). Streaming fade-in is an opacity-only
-//! animation over the newest block, keyed by stable block identity.
+//! (mugen's "highlight is pure paint"). Streaming fade-in is a per-appended-
+//! chunk opacity veil over the text runs (see [`super::veil`]) — opacity only,
+//! zero translate, applied after layout-relevant properties are fixed.
 
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
+use std::time::Instant;
 
 use gpui::{
     AnyElement, FontStyle, FontWeight, Hsla, InteractiveText, SharedString, StyledText, TextRun,
     UnderlineStyle, div, font, prelude::*, px,
 };
 
-use crate::motion::{self, AnimationExt as _};
 use crate::theme::Theme;
 
 use super::highlight::{Token, TokenClass};
 use super::parser::{Block, BlockTree, InlineRun};
+use super::veil::{RowVeil, apply_veil, slice_spans};
 
 /// Gap between markdown blocks inside one message (comet mdBlockGap).
 pub const MD_BLOCK_GAP: f32 = 12.0;
@@ -35,10 +39,23 @@ pub const CODE_PADDING_Y: f32 = 10.0;
 pub struct RenderOptions {
     /// Stable row key — prefixes element ids (scroll state, animations).
     pub row_key: SharedString,
-    /// When set, the last block plays a paint-only fade-in keyed by this value —
-    /// pass a stable per-block discriminator (e.g. block index) so each newly
-    /// appended block fades exactly once.
-    pub fade_last_key: Option<u64>,
+    /// Streaming veil state for a live row: newly appended text fades in via
+    /// paint-only run opacity, keyed per (element, chunk offset) so each chunk
+    /// fades exactly once. `None` renders without fades (completed rows).
+    pub veil: Option<Rc<RefCell<RowVeil>>>,
+    /// Frame timestamp driving veil opacities (one clock per render pass).
+    pub now: Instant,
+}
+
+impl RenderOptions {
+    /// Options for a completed (non-streaming) row — no veil.
+    pub fn settled(row_key: SharedString) -> Self {
+        Self {
+            row_key,
+            veil: None,
+            now: Instant::now(),
+        }
+    }
 }
 
 /// Per-line highlight tokens for a code block, or `None` while pending.
@@ -52,28 +69,19 @@ pub fn render_tree(
     theme: &Theme,
     highlight: &dyn Fn(usize) -> Option<std::sync::Arc<Vec<Vec<Token>>>>,
 ) -> AnyElement {
-    let last = tree.blocks.len().saturating_sub(1);
     div()
         .flex()
         .flex_col()
         .gap(px(MD_BLOCK_GAP))
         .children(tree.blocks.iter().enumerate().map(|(ix, top)| {
             let lines = highlight(ix);
-            let el = render_block(
+            render_block(
                 &top.block,
                 ix,
                 opts,
                 theme,
                 lines.as_deref().map(|l| &l[..]),
-            );
-            if ix == last
-                && let Some(key) = opts.fade_last_key
-            {
-                let id: SharedString = format!("{}-fade{key}", opts.row_key).into();
-                fade_in_paint(id, div().child(el))
-            } else {
-                el
-            }
+            )
         }))
         .into_any_element()
 }
@@ -296,7 +304,16 @@ fn text_element(
     theme: &Theme,
 ) -> AnyElement {
     let flat = flatten_runs(runs, theme, bold_default);
-    let styled = StyledText::new(flat.text).with_runs(flat.runs);
+    // Streaming veil: opacity-only recolor of the runs covering newly appended
+    // chunks. Same text, same fonts, same lengths — layout is untouched.
+    let text_runs = match &opts.veil {
+        Some(veil) => {
+            let spans = veil.borrow_mut().advance(ix, &flat.text, opts.now);
+            apply_veil(flat.runs, &spans)
+        }
+        None => flat.runs,
+    };
+    let styled = StyledText::new(flat.text).with_runs(text_runs);
     let inner: AnyElement = if flat.links.is_empty() {
         styled.into_any_element()
     } else {
@@ -327,6 +344,12 @@ fn render_code_block(
 ) -> AnyElement {
     let mono = font(theme.font_mono.clone());
     let lines: Vec<&str> = code.split('\n').collect();
+    // Streaming veil over appended code, tracked on the whole code text and
+    // sliced per line below (paint-only run recolor — heights stay exact).
+    let veil_spans = match &opts.veil {
+        Some(veil) => veil.borrow_mut().advance(ix, code, opts.now),
+        None => Vec::new(),
+    };
     let scroll_id: SharedString = format!("{}-code{ix}", opts.row_key).into();
     div()
         .rounded(px(10.0))
@@ -360,14 +383,21 @@ fn render_code_block(
                 .whitespace_nowrap()
                 .flex()
                 .flex_col()
-                .children(lines.iter().enumerate().map(|(li, line)| {
+                .children(lines.iter().enumerate().scan(0usize, |off, (li, line)| {
+                    let start = *off;
+                    *off = start + line.len() + 1; // +1 for the '\n'
                     let tokens = highlight
                         .and_then(|h| h.get(li))
                         .map(|t| &t[..])
                         .unwrap_or(&[]);
-                    div().h(px(CODE_LINE_HEIGHT)).flex_none().child(
-                        StyledText::new(line.to_string())
-                            .with_runs(runs_for_code_line(line, tokens, &mono, theme)),
+                    let mut runs = runs_for_code_line(line, tokens, &mono, theme);
+                    let local = slice_spans(&veil_spans, start, start + line.len());
+                    runs = apply_veil(runs, &local);
+                    Some(
+                        div()
+                            .h(px(CODE_LINE_HEIGHT))
+                            .flex_none()
+                            .child(StyledText::new(line.to_string()).with_runs(runs)),
                     )
                 })),
         )
@@ -431,17 +461,6 @@ pub fn runs_with_palette(
     }
     runs.retain(|r| r.len > 0);
     runs
-}
-
-/// Paint-only fade-in (opacity 0→1 over the entrance curve; no translation, so
-/// the veil can never affect layout).
-pub fn fade_in_paint<E>(id: impl Into<gpui::ElementId>, element: E) -> AnyElement
-where
-    E: Styled + IntoElement + 'static,
-{
-    element
-        .with_animation(id, motion::FADE_IN.animation(), |el, t| el.opacity(t))
-        .into_any_element()
 }
 
 #[cfg(test)]

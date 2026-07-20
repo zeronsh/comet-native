@@ -1579,7 +1579,11 @@ impl Composer {
         };
         self.advance_task = None;
         self.answered_requests.insert(wizard.request_id.clone());
-        self.input.update(cx, |input, cx| input.set_text("", cx));
+        self.input.update(cx, |input, cx| {
+            input.set_text("", cx);
+            // The panel borrowed the composer input; hand back its identity.
+            input.set_placeholder("Do anything…", cx);
+        });
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
@@ -1619,13 +1623,18 @@ impl Composer {
         {
             if !input_focused || input_empty {
                 self.wizard_select(digit - 1, cx);
+                // Consumed as a selection: stop the platform from also
+                // inserting the digit into the focused free-text input.
+                cx.stop_propagation();
             }
         } else if key == "enter" {
             if !input_focused {
                 self.wizard_advance(cx);
+                cx.stop_propagation();
             }
         } else if key == "escape" && (!input_focused || input_empty) {
             self.wizard_back(cx);
+            cx.stop_propagation();
         }
     }
 
@@ -1874,6 +1883,14 @@ impl Composer {
                 )
                 .into_any_element(),
         }
+    }
+}
+
+/// Focus lands on the prompt input (window-level focus fallbacks — e.g. after
+/// the focused terminal panel is hidden — route here).
+impl Focusable for Composer {
+    fn focus_handle(&self, cx: &App) -> FocusHandle {
+        self.input.focus_handle(cx)
     }
 }
 
