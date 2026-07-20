@@ -33,14 +33,16 @@ use crate::theme::Theme;
 // Constants + pure decision logic
 // ---------------------------------------------------------------------------
 
-/// Expanded composer height bounds (comet auto-grow 76–260px).
-pub const COMPOSER_MIN_HEIGHT: f32 = 76.0;
-pub const COMPOSER_MAX_HEIGHT: f32 = 260.0;
+/// Expanded composer height bounds: one line at the floor, textarea capped at
+/// 260px of content (comet `max-h-[260px]`) plus the chrome.
+pub const COMPOSER_MIN_HEIGHT: f32 = INPUT_LINE_HEIGHT + INPUT_VERTICAL_CHROME;
+pub const COMPOSER_MAX_HEIGHT: f32 = 260.0 + INPUT_VERTICAL_CHROME;
 /// Below this pill input width the composer always expands.
 pub const MIN_COMPACT_INPUT_WIDTH: f32 = 200.0;
-/// Vertical chrome around the text content in expanded mode (padding + button
-/// row) — sized so a single line sits exactly at the 76px floor.
-pub const INPUT_VERTICAL_CHROME: f32 = 55.0;
+/// Vertical chrome around the text content in expanded mode: textarea padding
+/// (`pt-4 pb-1` = 20) + actions row (`pt-1` 4 + h-8 cluster 32 + `pb-2.5` 10)
+/// — comet composer.tsx / composer-actions.tsx.
+pub const INPUT_VERTICAL_CHROME: f32 = 66.0;
 /// Input text metrics.
 pub const INPUT_LINE_HEIGHT: f32 = 21.0;
 pub const INPUT_TEXT_SIZE: f32 = 14.0;
@@ -1200,7 +1202,7 @@ impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let input = cx.new(|cx| ComposerInput::new("Send a message…", cx));
+        let input = cx.new(|cx| ComposerInput::new("Do anything…", cx));
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.on_state_changed(cx));
         let input_events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
@@ -1741,40 +1743,41 @@ impl Composer {
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx);
+        // Comet composer-actions.tsx: a size-7 filled circle — up-arrow to
+        // send/steer, a dark rounded square on the same light circle to stop.
         match mode {
             SendButtonMode::Stop => div()
                 .id("composer-stop")
                 .size(px(28.0))
-                .rounded(px(Theme::CONTROL_RADIUS))
-                .bg(theme.danger)
+                .flex_none()
+                .rounded_full()
+                .bg(theme.text)
                 .flex()
                 .items_center()
                 .justify_center()
                 .cursor_pointer()
+                .hover(|s| s.opacity(0.85))
                 .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
-                .child(div().size(px(10.0)).rounded(px(1.5)).bg(gpui::white()))
+                .child(div().size(px(11.0)).rounded(px(3.0)).bg(theme.bg))
                 .into_any_element(),
-            SendButtonMode::Send | SendButtonMode::Steer => {
-                let label: SharedString = if mode == SendButtonMode::Steer {
-                    "Send · steers".into()
-                } else {
-                    "Send".into()
-                };
-                div()
-                    .id("composer-send")
-                    .px(px(12.0))
-                    .py(px(5.0))
-                    .rounded(px(8.0))
-                    .bg(theme.accent_strong)
-                    .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(gpui::white())
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.9))
-                    .on_click(cx.listener(|this, _, _, cx| this.on_submit(cx)))
-                    .child(label)
-                    .into_any_element()
-            }
+            SendButtonMode::Send | SendButtonMode::Steer => div()
+                .id("composer-send")
+                .size(px(28.0))
+                .flex_none()
+                .rounded_full()
+                .bg(theme.text)
+                .flex()
+                .items_center()
+                .justify_center()
+                .cursor_pointer()
+                .hover(|s| s.opacity(0.85))
+                .on_click(cx.listener(|this, _, _, cx| this.on_submit(cx)))
+                .child(
+                    crate::icons::icon(crate::icons::ARROW_UP)
+                        .size(px(14.0))
+                        .text_color(theme.bg),
+                )
+                .into_any_element(),
         }
     }
 }
@@ -1839,58 +1842,97 @@ impl Render for Composer {
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
 
-        // Composer actions row: repo/branch pickers (new-chat mode) +
-        // harness-model + traits (§1.7).
-        let container = container.child(
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .child(self.pickers.clone()),
-        );
+        // New chats always use the expanded layout: the repo/branch pickers
+        // need the full-width actions row (comet composer-actions.tsx).
+        let new_chat = self.state.read(cx).selected_chat.is_none();
+        let expanded = expanded || new_chat;
 
         let send_button = self.render_send_button(mode, cx);
-        // The pill chrome (comet composer.tsx): hairline white border over a
-        // faint white wash — never a solid grey box.
+        // Attach button (visual affordance; uploads arrive via paste/drop).
+        let attach = div()
+            .id("composer-attach")
+            .size(px(28.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded_full()
+            .cursor_pointer()
+            .hover(|s| s.bg(crate::theme::white_alpha(0.10)))
+            .child(
+                crate::icons::icon(crate::icons::PAPERCLIP)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted),
+            );
+
+        // The pill chrome (comet composer.tsx): `rounded-[26px] border
+        // border-white/[0.08] bg-white/[0.03] shadow-xl` — a floating pill with
+        // a hairline over a faint wash, never a solid grey box. Picker chips,
+        // attach, and the send circle all live INSIDE the pill.
         let pill_bg = crate::theme::white_alpha(0.03);
+        let pill = div()
+            .rounded(px(26.0))
+            .bg(pill_bg)
+            .border_1()
+            .border_color(theme.border)
+            .shadow_lg();
         let body = if expanded {
-            // Expanded: textarea on top, action row below. 76–260px auto-grow.
-            div()
-                .h(px(total_height))
+            // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row below
+            // (`px-3 pb-2.5 pt-1`), auto-grow between the height bounds.
+            pill.h(px(total_height))
                 .flex()
                 .flex_col()
-                .rounded(px(16.0))
-                .bg(pill_bg)
-                .border_1()
-                .border_color(theme.border)
-                .px(px(12.0))
-                .py(px(10.0))
-                .child(div().flex_1().min_h_0().child(self.input.clone()))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .px(px(16.0))
+                        .pt(px(16.0))
+                        .pb(px(4.0))
+                        .child(self.input.clone()),
+                )
                 .child(
                     div()
                         .flex()
                         .flex_row()
-                        .justify_end()
                         .items_center()
-                        .pt(px(6.0))
+                        .gap(px(4.0))
+                        .pl(px(12.0))
+                        .pr(px(10.0))
+                        .pt(px(4.0))
+                        .pb(px(10.0))
+                        .child(div().flex_1().min_w_0().child(self.pickers.clone()))
+                        .child(attach)
                         .child(send_button),
                 )
         } else {
-            // Compact pill: input and send side by side.
-            div()
-                .h(px(44.0))
+            // Compact pill: input and the actions cluster on one line
+            // (`py-3 pl-4 pr-2` textarea, `gap-2 py-1.5 pl-1 pr-2` cluster).
+            pill.h(px(46.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(Theme::SPACE_SM))
-                .rounded(px(22.0))
-                .bg(pill_bg)
-                .border_1()
-                .border_color(theme.border)
-                .pl(px(14.0))
-                .pr(px(8.0))
-                .child(div().flex_1().min_w_0().child(self.input.clone()))
-                .child(send_button)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .pl(px(16.0))
+                        .pr(px(8.0))
+                        .child(self.input.clone()),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .pl(px(4.0))
+                        .pr(px(8.0))
+                        .child(div().flex_none().child(self.pickers.clone()))
+                        .child(attach)
+                        .child(send_button),
+                )
         };
         container.child(motion::fade_quick("composer-input", body))
     }
@@ -1925,7 +1967,7 @@ mod tests {
 
     #[test]
     fn auto_grow_math() {
-        // One line sits at the 76px floor.
+        // One line sits at the floor (line + chrome).
         assert_eq!(
             composer_total_height(input_content_height(1)),
             COMPOSER_MIN_HEIGHT
@@ -1933,7 +1975,7 @@ mod tests {
         // Growth is linear once content exceeds the floor.
         let h4 = composer_total_height(input_content_height(4));
         assert_eq!(h4, 4.0 * INPUT_LINE_HEIGHT + INPUT_VERTICAL_CHROME);
-        // Caps at 260.
+        // Caps at 260px of textarea content plus chrome (comet max-h-[260px]).
         assert_eq!(
             composer_total_height(input_content_height(100)),
             COMPOSER_MAX_HEIGHT

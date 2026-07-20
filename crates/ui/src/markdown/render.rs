@@ -393,10 +393,24 @@ pub fn runs_for_code_line(
     mono: &gpui::Font,
     theme: &Theme,
 ) -> Vec<TextRun> {
+    runs_with_palette(line, tokens, mono, theme.text, |class| {
+        token_color(class, theme)
+    })
+}
+
+/// [`runs_for_code_line`] with a caller-supplied palette — the diff pane paints
+/// the same tokens in colour while transcript code blocks stay monochrome.
+pub fn runs_with_palette(
+    line: &str,
+    tokens: &[Token],
+    mono: &gpui::Font,
+    plain_color: Hsla,
+    color_for: impl Fn(TokenClass) -> Hsla,
+) -> Vec<TextRun> {
     let plain = |len: usize| TextRun {
         len,
         font: mono.clone(),
-        color: theme.text,
+        color: plain_color,
         background_color: None,
         underline: None,
         strikethrough: None,
@@ -408,7 +422,7 @@ pub fn runs_for_code_line(
             runs.push(plain(token.range.start - at));
         }
         let mut run = plain(token.range.len());
-        run.color = token_color(token.class, theme);
+        run.color = color_for(token.class);
         runs.push(run);
         at = token.range.end;
     }

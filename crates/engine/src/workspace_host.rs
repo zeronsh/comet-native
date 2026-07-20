@@ -319,6 +319,42 @@ impl WorkspaceHost {
         Ok(self.inner.doc.rename_chat(chat_id, title)?)
     }
 
+    /// Backdate a chat's activity timestamps (epoch ms). Returns false when
+    /// the chat doesn't exist.
+    pub fn set_chat_activity(
+        &self,
+        chat_id: &str,
+        last_message_at: Option<i64>,
+        created_at: Option<i64>,
+    ) -> Result<bool, EngineError> {
+        let Some(mut chat) = self.inner.doc.chat(chat_id)? else {
+            return Ok(false);
+        };
+        if let Some(ms) = last_message_at {
+            chat.last_message_at = chrono::DateTime::<Utc>::from_timestamp_millis(ms);
+        }
+        if let Some(ms) = created_at
+            && let Some(at) = chrono::DateTime::<Utc>::from_timestamp_millis(ms)
+        {
+            chat.created_at = at;
+        }
+        self.inner.doc.upsert_chat(&chat)?;
+        Ok(true)
+    }
+
+    /// Re-home a chat to another device (tooling/seeds; a future device
+    /// migration flow will drive this). Returns false when the chat doesn't
+    /// exist.
+    pub fn set_chat_host(&self, chat_id: &str, device_id: &str) -> Result<bool, EngineError> {
+        let Some(mut chat) = self.inner.doc.chat(chat_id)? else {
+            return Ok(false);
+        };
+        chat.device_id = device_id.to_string();
+        self.inner.doc.upsert_chat(&chat)?;
+        Ok(true)
+    }
+
+
     pub fn set_chat_archived(&self, chat_id: &str, archived: bool) -> Result<bool, EngineError> {
         Ok(self.inner.doc.set_chat_archived(chat_id, archived)?)
     }

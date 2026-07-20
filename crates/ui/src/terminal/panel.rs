@@ -37,8 +37,8 @@ use super::view::{
 };
 
 /// Fixed tab width — drag-reorder math stays analytic.
-pub const TAB_WIDTH: f32 = 150.0;
-pub const TAB_BAR_HEIGHT: f32 = 30.0;
+pub const TAB_WIDTH: f32 = 118.0;
+pub const TAB_BAR_HEIGHT: f32 = 40.0;
 
 actions!(terminal, [ToggleTerminal]);
 
@@ -206,7 +206,7 @@ impl Render for TabGhost {
         let theme = Theme::of(cx);
         div()
             .w(px(TAB_WIDTH))
-            .h(px(TAB_BAR_HEIGHT - 6.0))
+            .h(px(28.0))
             .px(px(Theme::SPACE_SM))
             .flex()
             .items_center()
@@ -384,12 +384,10 @@ impl TerminalPanel {
                 }
             };
             let terminal_id = session.id.clone();
-            let title: SharedString = shell_title(&session.shell).into();
             let attached = this
                 .update(cx, |panel, cx| {
                     if let Some(tab) = panel.tab_mut(&chat, key) {
                         tab.terminal_id = Some(terminal_id.clone());
-                        tab.title = title.clone();
                         cx.notify();
                         true
                     } else {
@@ -779,11 +777,9 @@ impl TerminalPanel {
                     .map(|(ix, tab)| {
                         let selected = ix == active;
                         let key = tab.key;
-                        let title = tab
-                            .emulator
-                            .title()
-                            .map(SharedString::from)
-                            .unwrap_or_else(|| tab.title.clone());
+                        // Fixed sequential label (comet: "Terminal N") — the
+                        // OSC title never replaces it.
+                        let title = tab.title.clone();
                         let exited = tab.exited.is_some();
                         (ix, key, title, selected, exited)
                     })
@@ -793,6 +789,9 @@ impl TerminalPanel {
 
         let bar_chat = chat_owned.clone();
         let drop_chat = chat_owned.clone();
+        // Comet terminal-panel.tsx: `flex h-10 items-center border-b
+        // border-white/[0.07] pl-2 pr-1.5` on the #090909 panel — no separate
+        // bar fill.
         div()
             .id("terminal-tab-bar")
             .h(px(TAB_BAR_HEIGHT))
@@ -800,11 +799,11 @@ impl TerminalPanel {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(2.0))
-            .px(px(Theme::SPACE_XS))
-            .bg(theme.surface)
+            .gap(px(4.0))
+            .pl(px(8.0))
+            .pr(px(6.0))
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(crate::theme::white_alpha(0.07))
             .on_drag_move::<TabDragPayload>(cx.listener(
                 move |this, event: &gpui::DragMoveEvent<TabDragPayload>, _, cx| {
                     let payload = event.drag(cx);
@@ -833,24 +832,48 @@ impl TerminalPanel {
                     .map(|(ix, key, title, selected, exited)| {
                         let chat_select = chat_owned.clone();
                         let chat_close = chat_owned.clone();
+                        let chat_close2 = chat_owned.clone();
                         let chat_drag = chat_owned.clone();
                         let ghost_title = title.clone();
-                        let (text_color, bg) = if selected {
-                            (theme.text, theme.element_active)
+                        // Comet tab: `h-7 rounded-lg pl-2 pr-1 gap-1.5 text-xs`,
+                        // terminal glyph + label + close; active = white/8 wash.
+                        let (text_color, bg, glyph_alpha) = if selected {
+                            (theme.text, crate::theme::white_alpha(0.08), 0.8)
                         } else {
-                            (theme.text_muted, gpui::transparent_black())
+                            (theme.text_muted.opacity(0.6), gpui::transparent_black(), 0.6)
                         };
+                        let close_btn = div()
+                            .id(("terminal-tab-close", key))
+                            .size(px(20.0))
+                            .flex_none()
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.0))
+                            .when(!selected, |el| el.invisible())
+                            .cursor_pointer()
+                            .hover(|s| s.bg(crate::theme::white_alpha(0.09)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                cx.stop_propagation();
+                                this.close_tab(&chat_close2, key, cx);
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::CLOSE)
+                                    .size(px(12.0))
+                                    .text_color(theme.text_muted.opacity(0.8)),
+                            );
                         let tab_el = div()
                             .id(("terminal-tab", key))
                             .w(px(TAB_WIDTH))
-                            .h(px(TAB_BAR_HEIGHT - 6.0))
+                            .h(px(28.0))
                             .flex_none()
                             .flex()
                             .flex_row()
                             .items_center()
                             .gap(px(6.0))
-                            .px(px(Theme::SPACE_SM))
-                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .pl(px(8.0))
+                            .pr(px(4.0))
+                            .rounded(px(8.0))
                             .bg(bg)
                             .text_size(px(12.0))
                             .text_color(text_color)
@@ -879,7 +902,13 @@ impl TerminalPanel {
                                 },
                             )
                             .when(exited, |el| el.opacity(0.55))
-                            .child(div().flex_1().min_w_0().truncate().child(title));
+                            .child(
+                                crate::icons::icon(crate::icons::TERMINAL)
+                                    .size(px(16.0))
+                                    .text_color(text_color.opacity(glyph_alpha)),
+                            )
+                            .child(div().flex_1().min_w_0().truncate().child(title))
+                            .child(close_btn);
 
                         // Sliding transform while a sibling is dragged over: animate
                         // 150 ms between committed offsets.
@@ -906,22 +935,46 @@ impl TerminalPanel {
             .child(
                 div()
                     .id("terminal-new-tab")
-                    .size(px(22.0))
+                    .size(px(28.0))
                     .flex_none()
                     .flex()
                     .items_center()
                     .justify_center()
-                    .rounded(px(Theme::CONTROL_RADIUS))
-                    .text_size(px(14.0))
-                    .text_color(theme.text_muted)
+                    .rounded(px(8.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(theme.element_hover))
+                    .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(chat) = this.selected_chat(cx) {
                             this.open_tab(chat, cx);
                         }
                     }))
-                    .child(SharedString::from("+")),
+                    .child(
+                        crate::icons::icon(crate::icons::PLUS)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted.opacity(0.6)),
+                    ),
+            )
+            // Collapse chevron pinned right (comet "Hide terminal" ⌘J).
+            .child(div().flex_1())
+            .child(
+                div()
+                    .id("terminal-collapse")
+                    .size(px(28.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(8.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(ToggleTerminal), cx);
+                    })
+                    .child(
+                        crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                            .size(px(13.0))
+                            .text_color(theme.text_muted.opacity(0.55)),
+                    ),
             )
     }
 }

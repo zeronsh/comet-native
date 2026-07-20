@@ -78,11 +78,13 @@ impl Theme {
     pub const SPACE_MD: f32 = 12.0;
     pub const SPACE_LG: f32 = 16.0;
 
-    /// Build the (only) theme.
+    /// Build the (only) theme. The surface tones are sampled straight from the
+    /// reference screenshots of the original app (docs/reference): main panel
+    /// `#060606`, shell/sidebar `#0d0d0d`.
     pub fn dark() -> Self {
         Self {
-            bg: neutral(0.145), // #0a0a0a
-            surface: neutral(0.185),
+            bg: grey(6),      // main panel — sampled #060606
+            surface: grey(13), // shell / sidebar — sampled #0d0d0d
             surface_raised: neutral(0.235),
             element_hover: white_alpha(0.06),
             element_active: white_alpha(0.10),
@@ -147,6 +149,12 @@ pub fn neutral(lightness: f32) -> Hsla {
 /// White at the given alpha — the hairline/wash primitive.
 pub fn white_alpha(alpha: f32) -> Hsla {
     hsla(0.0, 0.0, 1.0, alpha)
+}
+
+/// An exact achromatic tone from an 8-bit channel value (`grey(13)` ≡ `#0d0d0d`)
+/// — for surfaces matched against reference-screenshot samples.
+pub fn grey(value: u8) -> Hsla {
+    hsla(0.0, 0.0, value as f32 / 255.0, 1.0)
 }
 
 /// Convert an oklch color (CSS notation: L 0..1, C, H in degrees) to gpui Hsla.

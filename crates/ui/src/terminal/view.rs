@@ -26,7 +26,7 @@ use super::panel::TerminalPanel;
 pub const TERM_FONT_SIZE: f32 = 13.0;
 pub const TERM_LINE_HEIGHT: f32 = 18.0;
 /// Inner padding of the grid area.
-pub const TERM_PADDING: f32 = 8.0;
+pub const TERM_PADDING: f32 = 12.0;
 
 /// Keyboard input coalescing window before a `WriteTerminal` flush.
 pub const COALESCE_MS: u64 = 12;

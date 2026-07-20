@@ -334,10 +334,33 @@ impl Pickers {
             .map(|d| d.id)
     }
 
+    /// Effective model id: the draft pick, or the selected chat's config.
+    fn effective_model_id<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
+        if let Some(id) = self.config.model.as_deref() {
+            return Some(id);
+        }
+        self.state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.config.as_ref())
+            .and_then(|c| c.model.as_deref())
+    }
+
+    /// Effective reasoning: the draft pick, or the selected chat's config.
+    fn effective_reasoning(&self, cx: &App) -> Option<ReasoningLevel> {
+        self.config.reasoning.or_else(|| {
+            self.state
+                .read(cx)
+                .selected_chat_row()
+                .and_then(|c| c.config.as_ref())
+                .and_then(|c| c.reasoning)
+        })
+    }
+
     fn selected_model<'a>(&'a self, cx: &'a App) -> Option<&'a Model> {
         let harness = self.effective_harness(cx)?;
         let models = self.models.get(&harness)?.ready()?;
-        match self.config.model.as_deref() {
+        match self.effective_model_id(cx) {
             Some(id) => models.iter().find(|m| m.id == id),
             None => models.first(),
         }
@@ -816,6 +839,7 @@ impl Pickers {
         kind: PickerKind,
         label: SharedString,
         set: bool,
+        chip_icon: Option<(&'static str, Option<gpui::Hsla>)>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -826,33 +850,40 @@ impl Pickers {
             PickerKind::Traits => "picker-traits",
         };
         let open = self.open == Some(kind);
-        // Ghost pill (comet composer/styles.tsx `pill`): no border, muted 12px
-        // medium label, hover/open wash — the actions row stays quiet.
+        // Ghost pill (comet composer/styles.tsx `pill`): `h-8 rounded-lg px-2.5
+        // gap-1.5 text-[12px] font-medium text-muted-foreground`, icons size-4,
+        // hover/open wash — no border, no caret; the actions row stays quiet.
         div()
             .id(id)
+            .h(px(32.0))
+            .max_w(px(208.0))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(5.0))
+            .gap(px(6.0))
             .px(px(10.0))
-            .py(px(5.0))
             .rounded(px(8.0))
             .text_size(px(12.0))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(if set { theme.text } else { theme.text_muted })
+            .text_color(if set {
+                theme.text.opacity(0.9)
+            } else {
+                theme.text_muted
+            })
             .when(open, |el| el.bg(theme.element_hover))
             .hover(|s| {
                 s.bg(theme.element_hover).text_color(Theme::dark().text)
             })
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.toggle(kind, window, cx)))
-            .child(label)
-            .child(
-                div()
-                    .text_size(px(9.0))
-                    .text_color(theme.text_faint)
-                    .child(SharedString::from("▾")),
-            )
+            .when_some(chip_icon, |el, (path, tint)| {
+                el.child(
+                    crate::icons::icon(path)
+                        .size(px(16.0))
+                        .text_color(tint.unwrap_or(theme.text_muted)),
+                )
+            })
+            .child(div().min_w_0().truncate().child(label))
     }
 
     fn popover_frame(&self, width: f32, content: AnyElement, cx: &mut Context<Self>) -> AnyElement {
@@ -1678,6 +1709,13 @@ impl Render for Pickers {
         let theme = Theme::of(cx).clone();
         let new_chat = self.state.read(cx).selected_chat.is_none();
 
+        // Eager-load the harness catalog + effective harness's models so the
+        // chip reads "Fable 5", not "Default model", before any popover opens.
+        self.ensure_harnesses(cx);
+        if let Some(harness) = self.effective_harness(cx) {
+            self.ensure_models(harness, cx);
+        }
+
         let repo_label: SharedString = self
             .config
             .repo
@@ -1690,23 +1728,25 @@ impl Render for Pickers {
             .clone()
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from("Branch"));
-        let model_label: SharedString = {
-            let model = self.selected_model(cx).map(|m| m.label.clone());
-            let harness = self.effective_harness(cx).and_then(|h| {
-                self.harnesses
-                    .ready()
-                    .and_then(|list| list.iter().find(|d| d.id == h))
-                    .map(|d| d.name.clone())
-            });
-            match (harness, model) {
-                (Some(h), Some(m)) => format!("{h} · {m}").into(),
-                (Some(h), None) => h.into(),
-                _ => "Model".into(),
-            }
-        };
+        // Chip shows the model's display name alone (comet `modelText`); the
+        // harness reads from the brand mark beside it.
+        let model_label: SharedString = self
+            .selected_model(cx)
+            .map(|m| SharedString::from(m.label.clone()))
+            .unwrap_or_else(|| SharedString::from("Default model"));
+        let harness_icon: (&'static str, Option<gpui::Hsla>) =
+            match self.effective_harness(cx) {
+                // The mock harness scripts Claude-flavoured runs — it wears the
+                // Claude mark (brand orange survives the monochrome surface).
+                Some(HarnessId::ClaudeCode) | Some(HarnessId::Mock) | None => {
+                    (crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand()))
+                }
+                Some(HarnessId::Codex) => (crate::icons::OPENAI_MARK, None),
+                Some(HarnessId::Cursor) => (crate::icons::CURSOR_MARK, None),
+            };
         let traits_set = traits_summary(
             self.selected_model(cx),
-            self.config.reasoning,
+            self.effective_reasoning(cx),
             &self.config.model_options,
         );
         let traits_label: SharedString = traits_set
@@ -1738,25 +1778,34 @@ impl Render for Pickers {
             None => None,
         };
 
-        let mut row = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .flex_wrap()
-            .gap(px(6.0));
+        // Left cluster: repo/branch (new chats only). Right cluster: agent+model
+        // and traits — the composer appends attach + send after this element
+        // (comet composer-actions.tsx arrangement).
+        let mut left = div().flex().flex_row().items_center().min_w_0().gap(px(4.0));
         if new_chat {
-            let repo_set = self.config.repo.is_some();
-            let branch_set = self.config.branch.is_some();
-            let repo_chip = self.trigger_chip(PickerKind::Repo, repo_label, repo_set, &theme, cx);
-            row = row.child(attach_overlay(
+            let repo_chip = self.trigger_chip(
+                PickerKind::Repo,
+                repo_label,
+                self.config.repo.is_some(),
+                Some((crate::icons::FOLDER, None)),
+                &theme,
+                cx,
+            );
+            left = left.child(attach_overlay(
                 repo_chip,
                 &mut overlay,
                 PickerKind::Repo,
                 "repo-popover",
             ));
-            let branch_chip =
-                self.trigger_chip(PickerKind::Branch, branch_label, branch_set, &theme, cx);
-            row = row.child(attach_overlay(
+            let branch_chip = self.trigger_chip(
+                PickerKind::Branch,
+                branch_label,
+                self.config.branch.is_some(),
+                None,
+                &theme,
+                cx,
+            );
+            left = left.child(attach_overlay(
                 branch_chip,
                 &mut overlay,
                 PickerKind::Branch,
@@ -1766,29 +1815,47 @@ impl Render for Pickers {
         let model_chip = self.trigger_chip(
             PickerKind::HarnessModel,
             model_label,
-            self.config.model.is_some(),
+            true,
+            Some(harness_icon),
             &theme,
             cx,
         );
-        row = row.child(attach_overlay(
-            model_chip,
-            &mut overlay,
-            PickerKind::HarnessModel,
-            "model-popover",
-        ));
         let traits_chip = self.trigger_chip(
             PickerKind::Traits,
             traits_label,
             traits_set.is_some(),
+            Some((crate::icons::TUNING, None)),
             &theme,
             cx,
         );
-        row.child(attach_overlay(
-            traits_chip,
-            &mut overlay,
-            PickerKind::Traits,
-            "traits-popover",
-        ))
+        let right = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_none()
+            .gap(px(4.0))
+            .child(attach_overlay(
+                model_chip,
+                &mut overlay,
+                PickerKind::HarnessModel,
+                "model-popover",
+            ))
+            .child(attach_overlay(
+                traits_chip,
+                &mut overlay,
+                PickerKind::Traits,
+                "traits-popover",
+            ));
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(Theme::SPACE_SM))
+            .child(left)
+            .child(right)
     }
 }
 

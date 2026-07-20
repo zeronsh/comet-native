@@ -331,6 +331,59 @@ pub fn group_chats<'a>(chats: impl IntoIterator<Item = &'a Chat>) -> Vec<ChatGro
     groups
 }
 
+/// Compact relative time ("now", "5m", "3h", "2d", "1w", …) — no "ago" suffix;
+/// port of comet's `formatTimeAgo`.
+pub fn format_time_ago(then: chrono::DateTime<Utc>, now: chrono::DateTime<Utc>) -> String {
+    let s = now.signed_duration_since(then).num_seconds().max(0);
+    // Under a minute reads as "now" — otherwise 45–59s floors to a bare "0m".
+    if s < 60 {
+        return "now".to_string();
+    }
+    let m = s / 60;
+    if m < 60 {
+        return format!("{m}m");
+    }
+    let h = m / 60;
+    if h < 24 {
+        return format!("{h}h");
+    }
+    let d = h / 24;
+    if d < 7 {
+        return format!("{d}d");
+    }
+    let w = d / 7;
+    if w < 5 {
+        return format!("{w}w");
+    }
+    let mo = d / 30;
+    if mo < 12 {
+        return format!("{mo}mo");
+    }
+    format!("{}y", d / 365)
+}
+
+/// Session-row sub-line, "project · branch" (comet `chatLocation`): the repo
+/// checkout identity. Either part may be missing; empty when both are.
+pub fn chat_location(chat: &Chat) -> Option<String> {
+    let project = chat
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .map(|c| project_label(Some(c)));
+    let reference = chat
+        .branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|b| !b.is_empty());
+    match (project, reference) {
+        (Some(p), Some(r)) => Some(format!("{p} · {r}")),
+        (Some(p), None) => Some(p),
+        (None, Some(r)) => Some(r.to_string()),
+        (None, None) => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Org gate (pure)
 // ---------------------------------------------------------------------------
@@ -1104,6 +1157,42 @@ mod tests {
         let comet_ids: Vec<&str> = groups[0].chats.iter().map(|c| c.id.as_str()).collect();
         assert_eq!(comet_ids, ["a", "c"]);
         assert!(group_chats(std::iter::empty()).is_empty());
+    }
+
+    #[test]
+    fn relative_times_match_comet_format() {
+        let now = Utc::now();
+        let ago = |secs: i64| now - chrono::Duration::seconds(secs);
+        assert_eq!(format_time_ago(ago(0), now), "now");
+        assert_eq!(format_time_ago(ago(59), now), "now");
+        assert_eq!(format_time_ago(ago(60), now), "1m");
+        assert_eq!(format_time_ago(ago(59 * 60), now), "59m");
+        assert_eq!(format_time_ago(ago(60 * 60), now), "1h");
+        assert_eq!(format_time_ago(ago(23 * 3600 + 3599), now), "23h");
+        assert_eq!(format_time_ago(ago(24 * 3600), now), "1d");
+        assert_eq!(format_time_ago(ago(6 * 86400), now), "6d");
+        assert_eq!(format_time_ago(ago(7 * 86400), now), "1w");
+        assert_eq!(format_time_ago(ago(30 * 86400), now), "4w");
+        assert_eq!(format_time_ago(ago(35 * 86400), now), "1mo");
+        assert_eq!(format_time_ago(ago(400 * 86400), now), "1y");
+        // Clock skew (future timestamps) clamps to "now".
+        assert_eq!(format_time_ago(now + chrono::Duration::hours(2), now), "now");
+    }
+
+    #[test]
+    fn chat_location_joins_project_and_branch() {
+        let mut c = chat_with_cwd("x", 1, Some("/home/w/dev/soccertcg"));
+        c.branch = Some("comet/rebalance".into());
+        assert_eq!(chat_location(&c).as_deref(), Some("soccertcg · comet/rebalance"));
+        c.branch = None;
+        assert_eq!(chat_location(&c).as_deref(), Some("soccertcg"));
+        c.cwd = None;
+        c.branch = Some("main".into());
+        assert_eq!(chat_location(&c).as_deref(), Some("main"));
+        c.branch = Some("   ".into());
+        assert_eq!(chat_location(&c), None);
+        c.branch = None;
+        assert_eq!(chat_location(&c), None);
     }
 
     #[test]

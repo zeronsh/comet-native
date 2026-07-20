@@ -28,7 +28,7 @@ use comet_proto::{Chat, CheckoutDiff};
 use comet_rpc::methods;
 
 use crate::markdown::highlight::{Lang, LineCarry, Token, lang_for_tag, tokenize_line};
-use crate::markdown::render::runs_for_code_line;
+use crate::markdown::render;
 use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
 use crate::state::{AppState, EngineHandle};
 use crate::theme::{Theme, oklch};
@@ -37,13 +37,17 @@ use crate::theme::{Theme, oklch};
 // Layout numbers (analytic — they drive the fold tween)
 // ---------------------------------------------------------------------------
 
-pub const FILE_HEADER_HEIGHT: f32 = 34.0;
-pub const HUNK_HEADER_HEIGHT: f32 = 22.0;
-pub const DIFF_LINE_HEIGHT: f32 = 20.0;
+pub const FILE_HEADER_HEIGHT: f32 = 36.0;
+pub const HUNK_HEADER_HEIGHT: f32 = 28.0;
+pub const DIFF_LINE_HEIGHT: f32 = 21.0;
 pub const NOTICE_HEIGHT: f32 = 24.0;
 pub const BODY_BOTTOM_PAD: f32 = 8.0;
 /// Gutter width per line-number column.
 pub const GUTTER_WIDTH: f32 = 36.0;
+/// The +/−/· marker column between the gutters and the code.
+pub const MARKER_WIDTH: f32 = 28.0;
+/// Width of the coloured accent bar on the left edge of +/− rows.
+pub const ACCENT_BAR_WIDTH: f32 = 3.0;
 const DIFF_TEXT_SIZE: f32 = 12.0;
 
 // ---------------------------------------------------------------------------
@@ -747,7 +751,7 @@ impl Changes {
             .flex()
             .flex_col()
             .border_b_1()
-            .border_color(theme.border)
+            .border_color(crate::theme::white_alpha(0.04))
             .child(header)
             .child(body)
             .into_any_element()
@@ -763,20 +767,23 @@ impl Changes {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let collapsed = fold.collapsed;
-        let (status_label, status_color) = status_chip(file, theme);
         let path = file.path.clone();
-        let (dir, name) = split_path(&file.path);
         let adds = file.additions;
         let dels = file.deletions;
 
-        // Chevron: comet rotates 200 ms; gpui divs have no rotation transform
-        // at the pinned rev, so the glyph swap crossfades over the same 200 ms.
-        let chevron = div()
-            .flex_none()
-            .w(px(12.0))
-            .text_size(px(10.0))
-            .text_color(theme.text_faint)
-            .child(SharedString::from(if collapsed { "▸" } else { "▾" }));
+        // Chevron (comet checkout-diff-sidebar): chevron-right closed,
+        // chevron-down open; gpui divs have no rotation transform at the
+        // pinned rev, so the glyph swap crossfades over the same 200 ms.
+        let chevron_icon = if collapsed {
+            crate::icons::ALT_ARROW_RIGHT
+        } else {
+            crate::icons::ALT_ARROW_DOWN
+        };
+        let chevron = div().flex_none().size(px(14.0)).child(
+            crate::icons::icon(chevron_icon)
+                .size(px(13.0))
+                .text_color(theme.text_muted.opacity(0.7)),
+        );
         let chevron: AnyElement = if fold.epoch > 0 {
             chevron
                 .with_animation(
@@ -789,6 +796,8 @@ impl Changes {
             chevron.into_any_element()
         };
 
+        // Header row: chevron + mono path (one quiet tone) + right-aligned
+        // +N / −N counts on a slightly raised wash.
         div()
             .id(SharedString::from(format!("file-hdr-{ix}")))
             .h(px(FILE_HEADER_HEIGHT))
@@ -796,10 +805,11 @@ impl Changes {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(8.0))
             .px(px(Theme::SPACE_MD))
+            .bg(crate::theme::white_alpha(0.025))
             .cursor_pointer()
-            .hover(|s| s.bg(theme.element_hover))
+            .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(&path, expanded_height);
                 cx.notify();
@@ -809,56 +819,82 @@ impl Changes {
                 div()
                     .flex_1()
                     .min_w_0()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(2.0))
+                    .truncate()
+                    .font_family(theme.font_mono.clone())
                     .text_size(px(12.0))
-                    .when(!dir.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .text_color(theme.text_faint)
-                                .truncate()
-                                .child(SharedString::from(format!("{dir}/"))),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex_none()
-                            .text_color(theme.text)
-                            .child(SharedString::from(name.to_string())),
-                    ),
+                    .text_color(crate::theme::grey(0x98))
+                    .child(SharedString::from(file.path.clone())),
             )
-            .child(
-                div()
-                    .flex_none()
-                    .text_size(px(10.0))
-                    .px(px(4.0))
-                    .py(px(1.0))
-                    .rounded(px(3.0))
-                    .border_1()
-                    .border_color(status_color)
-                    .text_color(status_color)
-                    .child(SharedString::from(status_label)),
-            )
-            .when(adds > 0, |el| {
+            .when(file.binary, |el| {
                 el.child(
                     div()
                         .flex_none()
+                        .text_size(px(10.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from("BIN")),
+                )
+            })
+            .when(adds > 0 || !file.binary, |el| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .font_family(theme.font_mono.clone())
                         .text_size(px(11.0))
                         .text_color(add_color())
                         .child(SharedString::from(format!("+{adds}"))),
                 )
             })
-            .when(dels > 0, |el| {
+            .when(dels > 0 || !file.binary, |el| {
                 el.child(
                     div()
                         .flex_none()
+                        .font_family(theme.font_mono.clone())
                         .text_size(px(11.0))
-                        .text_color(theme.danger)
+                        .text_color(del_color())
                         .child(SharedString::from(format!("−{dels}"))),
                 )
             })
+            .into_any_element()
+    }
+
+    /// Pane header (h-11): "Changes" + the panel-collapse icon — matches the
+    /// main header's row so the two panes read as one chrome line.
+    fn render_pane_header(&self, theme: &Theme) -> AnyElement {
+        div()
+            .flex_none()
+            .h(px(Theme::HEADER_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px(px(Theme::SPACE_LG))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(SharedString::from("Changes")),
+            )
+            .child(
+                div()
+                    .id("changes-collapse")
+                    .size(px(28.0))
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded(px(6.0))
+                    .cursor_pointer()
+                    .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
+                    .on_click(|_, window, cx| {
+                        window.dispatch_action(Box::new(crate::shell::ToggleChanges), cx);
+                    })
+                    .child(
+                        crate::icons::icon(crate::icons::SIDEBAR_MINIMALISTIC)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted),
+                    ),
+            )
             .into_any_element()
     }
 
@@ -867,36 +903,34 @@ impl Changes {
         Some(
             div()
                 .flex_none()
-                .h(px(40.0))
+                .h(px(36.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(Theme::SPACE_SM))
-                .px(px(Theme::SPACE_MD))
+                .gap(px(10.0))
+                .px(px(Theme::SPACE_LG))
                 .border_b_1()
-                .border_color(theme.border)
+                .border_color(crate::theme::white_alpha(0.06))
                 .child(
                     div()
                         .text_size(px(12.0))
-                        .text_color(theme.text)
+                        .text_color(theme.text_muted)
                         .child(SharedString::from(uncommitted_label(parsed.file_count))),
                 )
-                .when(parsed.additions > 0, |el| {
-                    el.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(add_color())
-                            .child(SharedString::from(format!("+{}", parsed.additions))),
-                    )
-                })
-                .when(parsed.deletions > 0, |el| {
-                    el.child(
-                        div()
-                            .text_size(px(11.0))
-                            .text_color(theme.danger)
-                            .child(SharedString::from(format!("−{}", parsed.deletions))),
-                    )
-                })
+                .child(
+                    div()
+                        .font_family(theme.font_mono.clone())
+                        .text_size(px(11.0))
+                        .text_color(add_color())
+                        .child(SharedString::from(format!("+{}", parsed.additions))),
+                )
+                .child(
+                    div()
+                        .font_family(theme.font_mono.clone())
+                        .text_size(px(11.0))
+                        .text_color(del_color())
+                        .child(SharedString::from(format!("−{}", parsed.deletions))),
+                )
                 .child(div().flex_1())
                 .when(parsed.truncated, |el| {
                     el.child(
@@ -917,32 +951,31 @@ impl Changes {
     }
 }
 
-/// Green for additions (emerald-400 — the theme scale has no green).
+/// Green for additions — sampled from the reference diff (soft emerald).
 fn add_color() -> gpui::Hsla {
-    oklch(0.792, 0.209, 151.711)
+    oklch(0.765, 0.177, 163.223) // emerald-400
 }
 
-fn split_path(path: &str) -> (&str, &str) {
-    match path.rfind('/') {
-        Some(pos) => (&path[..pos], &path[pos + 1..]),
-        None => ("", path),
-    }
+/// Red for deletions — softer than the theme danger, per the reference diff.
+fn del_color() -> gpui::Hsla {
+    oklch(0.704, 0.191, 22.216) // red-400
 }
 
-fn status_chip(file: &FileDiff, theme: &Theme) -> (&'static str, gpui::Hsla) {
-    if file.binary {
-        return ("BIN", theme.text_faint);
-    }
-    match file.status {
-        FileStatus::Added => ("A", add_color()),
-        FileStatus::Deleted => ("D", theme.danger),
-        FileStatus::Modified => ("M", theme.accent),
-        FileStatus::Renamed => ("R", theme.warning),
+/// Diff syntax palette (the transcript's code blocks stay monochrome; the diff
+/// pane paints hues like the original checkout-diff sidebar).
+fn diff_token_color(class: crate::markdown::highlight::TokenClass, theme: &Theme) -> gpui::Hsla {
+    use crate::markdown::highlight::TokenClass;
+    match class {
+        TokenClass::Keyword => oklch(0.709, 0.129, 20.0),   // soft rose
+        TokenClass::StringLit => oklch(0.77, 0.11, 168.0),  // soft green
+        TokenClass::Number => oklch(0.78, 0.12, 80.0),      // soft amber
+        TokenClass::Comment => theme.text_faint,
     }
 }
 
 /// The expanded body of one file section: notices, hunk headers, +/-/context
-/// lines with dual gutters and paint-only highlight runs.
+/// lines with a coloured accent bar, dual line-number gutters, a marker
+/// column, and paint-only syntax runs (comet checkout-diff-sidebar).
 fn render_file_body(
     file: &FileDiff,
     highlight: Option<Arc<Vec<Vec<Token>>>>,
@@ -959,7 +992,7 @@ fn render_file_body(
                 .flex_none()
                 .flex()
                 .items_center()
-                .px(px(Theme::SPACE_MD))
+                .px(px(Theme::SPACE_LG))
                 .text_size(px(11.0))
                 .text_color(theme.text_faint)
                 .child(SharedString::from(notice))
@@ -967,10 +1000,13 @@ fn render_file_body(
         );
     }
 
+    // Row tints sampled from the reference: ~5–6% washes over the pane tone.
     let mut add_bg = add_color();
-    add_bg.a = 0.08;
-    let mut del_bg = theme.danger;
-    del_bg.a = 0.08;
+    add_bg.a = 0.055;
+    let mut del_bg = del_color();
+    del_bg.a = 0.055;
+    // Bluish-grey hunk-header wash.
+    let hunk_bg = gpui::hsla(0.6, 0.35, 0.6, 0.05);
 
     for hunk in &file.hunks {
         children.push(
@@ -979,10 +1015,10 @@ fn render_file_body(
                 .flex_none()
                 .flex()
                 .items_center()
-                .px(px(Theme::SPACE_MD))
-                .bg(theme.surface)
+                .px(px(Theme::SPACE_LG))
+                .bg(hunk_bg)
                 .font_family(theme.font_mono.clone())
-                .text_size(px(10.5))
+                .text_size(px(11.0))
                 .text_color(theme.text_faint)
                 .child(SharedString::from(hunk.header.clone()))
                 .into_any_element(),
@@ -1002,7 +1038,7 @@ fn render_file_body(
                         .flex_none()
                         .flex()
                         .items_center()
-                        .pl(px(2.0 * GUTTER_WIDTH + 18.0))
+                        .pl(px(ACCENT_BAR_WIDTH + 2.0 * GUTTER_WIDTH + MARKER_WIDTH + 12.0))
                         .text_size(px(10.5))
                         .text_color(theme.text_faint)
                         .italic()
@@ -1012,25 +1048,50 @@ fn render_file_body(
                 continue;
             }
 
-            let (marker, marker_color, row_bg) = match line.kind {
-                LineKind::Add => ("+", add_color(), Some(add_bg)),
-                LineKind::Del => ("−", theme.danger, Some(del_bg)),
-                _ => (" ", theme.text_faint, None),
+            let (marker, marker_color, row_bg, accent, number_color) = match line.kind {
+                LineKind::Add => (
+                    "+",
+                    add_color(),
+                    Some(add_bg),
+                    Some(add_color().opacity(0.55)),
+                    add_color().opacity(0.9),
+                ),
+                LineKind::Del => (
+                    "−",
+                    del_color(),
+                    Some(del_bg),
+                    Some(del_color().opacity(0.55)),
+                    del_color().opacity(0.9),
+                ),
+                _ => (
+                    "·",
+                    theme.text_faint.opacity(0.5),
+                    None,
+                    None,
+                    theme.text_faint.opacity(0.8),
+                ),
             };
-            let gutter = |no: Option<u32>| {
+            let gutter = |no: Option<u32>, color: gpui::Hsla| {
                 div()
                     .w(px(GUTTER_WIDTH))
                     .flex_none()
-                    .text_size(px(10.5))
-                    .text_color(theme.text_faint)
+                    .font_family(theme.font_mono.clone())
+                    .text_size(px(11.0))
+                    .text_color(color)
                     .flex()
                     .justify_end()
-                    .pr(px(6.0))
+                    .pr(px(8.0))
                     .child(SharedString::from(
                         no.map(|n| n.to_string()).unwrap_or_default(),
                     ))
             };
-            let runs = runs_for_code_line(&line.text, tokens, &mono, theme);
+            let runs = render::runs_with_palette(
+                &line.text,
+                tokens,
+                &mono,
+                theme.text.opacity(0.92),
+                |class| diff_token_color(class, theme),
+            );
             children.push(
                 div()
                     .h(px(DIFF_LINE_HEIGHT))
@@ -1039,12 +1100,37 @@ fn render_file_body(
                     .flex_row()
                     .items_center()
                     .when_some(row_bg, |el, bg| el.bg(bg))
-                    .child(gutter(line.old_no))
-                    .child(gutter(line.new_no))
+                    // Accent bar: solid colour on +/− rows, invisible spacer on
+                    // context rows so columns always align.
                     .child(
                         div()
-                            .w(px(14.0))
+                            .w(px(ACCENT_BAR_WIDTH))
+                            .h_full()
                             .flex_none()
+                            .when_some(accent, |el, color| el.bg(color)),
+                    )
+                    .child(gutter(
+                        line.old_no,
+                        if line.kind == LineKind::Del {
+                            number_color
+                        } else {
+                            theme.text_faint.opacity(0.8)
+                        },
+                    ))
+                    .child(gutter(
+                        line.new_no,
+                        if line.kind == LineKind::Add {
+                            number_color
+                        } else {
+                            theme.text_faint.opacity(0.8)
+                        },
+                    ))
+                    .child(
+                        div()
+                            .w(px(MARKER_WIDTH))
+                            .flex_none()
+                            .flex()
+                            .justify_center()
                             .text_size(px(DIFF_TEXT_SIZE))
                             .text_color(marker_color)
                             .font_family(theme.font_mono.clone())
@@ -1055,6 +1141,7 @@ fn render_file_body(
                             .flex_1()
                             .min_w_0()
                             .overflow_hidden()
+                            .pl(px(12.0))
                             .font_family(theme.font_mono.clone())
                             .text_size(px(DIFF_TEXT_SIZE))
                             .whitespace_nowrap()
@@ -1144,6 +1231,8 @@ impl Render for Changes {
             .size_full()
             .flex()
             .flex_col()
+            .bg(crate::theme::grey(8))
+            .child(self.render_pane_header(&theme))
             .when_some(error, |el, message| {
                 el.child(
                     div()
@@ -1444,9 +1533,4 @@ rename to new_name.rs
         assert_eq!(lang_for_path("img.png"), None);
     }
 
-    #[test]
-    fn path_split_for_display() {
-        assert_eq!(split_path("src/ui/mod.rs"), ("src/ui", "mod.rs"));
-        assert_eq!(split_path("top.rs"), ("", "top.rs"));
-    }
 }

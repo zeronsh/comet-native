@@ -230,6 +230,24 @@ enum MutateParams {
     },
     #[serde(rename_all = "camelCase")]
     RenameChat { chat_id: String, title: String },
+    /// Set the chat's checkout branch label — the sidebar's
+    /// "project · branch" sub-line.
+    #[serde(rename_all = "camelCase")]
+    SetChatBranch { chat_id: String, branch: String },
+    /// Backdate a chat's activity timestamps (epoch ms) — the sidebar's
+    /// relative-time column. Used by tooling/seeds; the doc fold sets these on
+    /// real message traffic.
+    #[serde(rename_all = "camelCase")]
+    SetChatActivity {
+        chat_id: String,
+        #[serde(default)]
+        last_message_at: Option<i64>,
+        #[serde(default)]
+        created_at: Option<i64>,
+    },
+    /// Re-home a chat to another device (tooling/seeds; device migration later).
+    #[serde(rename_all = "camelCase")]
+    SetChatHost { chat_id: String, device_id: String },
     #[serde(rename_all = "camelCase")]
     SetChatArchived { chat_id: String, archived: bool },
     /// Tombstone: removes the chats-map row; the session doc remains.
@@ -357,6 +375,25 @@ impl EngineRpc {
             MutateParams::RenameChat { chat_id, title } => self
                 .workspace
                 .rename_chat(&chat_id, &title)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::SetChatBranch { chat_id, branch } => self
+                .workspace
+                .set_chat_branch(&chat_id, &branch)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::SetChatActivity {
+                chat_id,
+                last_message_at,
+                created_at,
+            } => self
+                .workspace
+                .set_chat_activity(&chat_id, last_message_at, created_at)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::SetChatHost { chat_id, device_id } => self
+                .workspace
+                .set_chat_host(&chat_id, &device_id)
                 .map_err(failed)
                 .map(drop),
             MutateParams::SetChatArchived { chat_id, archived } => self

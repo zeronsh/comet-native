@@ -401,28 +401,28 @@ pub fn tool_group_summary(tools: &[ToolItem]) -> String {
 
 /// Per-kind chip label + one-line detail.
 pub fn tool_chip_content(call: &ToolCall) -> (&'static str, String) {
+    // Labels match comet tool-chip.tsx `describeTool` exactly.
     match call {
-        ToolCall::Exec { command } => ("Ran", command.clone()),
+        ToolCall::Exec { command } => ("Run", command.clone()),
         ToolCall::ReadFile { path } => ("Read", path.clone()),
-        ToolCall::WriteFile { path, .. } => ("Wrote", path.clone()),
-        ToolCall::EditFile { path, .. } => ("Edited", path.clone()),
-        ToolCall::ApplyPatch { path } => (
-            "Patched",
-            path.clone().unwrap_or_else(|| "workspace".into()),
-        ),
+        ToolCall::WriteFile { path, .. } => ("Write", path.clone()),
+        ToolCall::EditFile { path, .. } => ("Edit", path.clone()),
+        ToolCall::ApplyPatch { path } => {
+            ("Patch", path.clone().unwrap_or_else(|| "workspace".into()))
+        }
         ToolCall::Search { pattern, path } => (
-            "Searched",
+            "Search",
             match path {
                 Some(path) => format!("{pattern} in {path}"),
                 None => pattern.clone(),
             },
         ),
-        ToolCall::Glob { pattern } => ("Globbed", pattern.clone()),
-        ToolCall::WebFetch { url, .. } => ("Fetched", url.clone()),
-        ToolCall::WebSearch { query } => ("Web search", query.clone()),
+        ToolCall::Glob { pattern } => ("Glob", pattern.clone()),
+        ToolCall::WebFetch { url, .. } => ("Fetch", url.clone()),
+        ToolCall::WebSearch { query } => ("Web", query.clone()),
         ToolCall::Todo { items } => {
             let done = items.iter().filter(|i| i.done).count();
-            ("Todos", format!("{done}/{} done", items.len()))
+            ("Todo", format!("{done}/{} done", items.len()))
         }
         ToolCall::Mcp { server, tool, .. } => ("MCP", format!("{server} · {tool}")),
         ToolCall::Unknown { name, .. } => ("Tool", name.clone()),
@@ -1115,16 +1115,18 @@ fn chip_row(text: String, color: gpui::Hsla, theme: &Theme) -> AnyElement {
 
 /// A small glyph standing in for the tool's icon (comet uses an icon set; a
 /// quiet monochrome character keeps the tile without shipping SVGs).
-fn tool_glyph(call: &ToolCall) -> &'static str {
+/// The glyph for a tool call (comet tool-chip.tsx `toolIcon`, Solar set).
+fn tool_icon_path(call: &ToolCall) -> &'static str {
     match call {
-        ToolCall::Exec { .. } => "❯",
-        ToolCall::ReadFile { .. } | ToolCall::ApplyPatch { .. } => "≡",
-        ToolCall::WriteFile { .. } => "+",
-        ToolCall::EditFile { .. } => "✎",
-        ToolCall::Search { .. } | ToolCall::Glob { .. } => "∗",
-        ToolCall::WebFetch { .. } | ToolCall::WebSearch { .. } => "◍",
-        ToolCall::Todo { .. } => "✓",
-        ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => "◆",
+        ToolCall::Exec { .. } => crate::icons::COMMAND,
+        ToolCall::ReadFile { .. } | ToolCall::ApplyPatch { .. } => crate::icons::DOCUMENT,
+        ToolCall::WriteFile { .. } => crate::icons::DOCUMENT_ADD,
+        ToolCall::EditFile { .. } => crate::icons::PEN,
+        ToolCall::Search { .. } => crate::icons::MAGNIFER,
+        ToolCall::Glob { .. } => crate::icons::FOLDER_WITH_FILES,
+        ToolCall::WebFetch { .. } | ToolCall::WebSearch { .. } => crate::icons::GLOBAL,
+        ToolCall::Todo { .. } => crate::icons::CHECKLIST,
+        ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => crate::icons::WIDGET,
     }
 }
 
@@ -1140,6 +1142,7 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
     };
     div()
         .h(px(CHIP_HEIGHT))
+        .w_full()
         .flex_none()
         .flex()
         .flex_row()
@@ -1171,7 +1174,8 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                 .px(px(8.0))
                 .text_size(px(12.0))
                 .child(
-                    // Icon tile.
+                    // Icon tile (`size-[18px] rounded-[5px] bg-white/[0.08]`,
+                    // icon size-3).
                     div()
                         .size(px(18.0))
                         .flex_none()
@@ -1180,9 +1184,11 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_size(px(10.0))
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from(tool_glyph(&tool.call))),
+                        .child(
+                            crate::icons::icon(tool_icon_path(&tool.call))
+                                .size(px(12.0))
+                                .text_color(theme.text_muted),
+                        ),
                 )
                 .child(
                     div()
@@ -1520,18 +1526,18 @@ mod tests {
             tool_chip_content(&ToolCall::Exec {
                 command: "cargo test".into()
             }),
-            ("Ran", "cargo test".to_string())
+            ("Run", "cargo test".to_string())
         );
         assert_eq!(
             tool_chip_content(&ToolCall::Search {
                 pattern: "foo".into(),
                 path: Some("src".into())
             }),
-            ("Searched", "foo in src".to_string())
+            ("Search", "foo in src".to_string())
         );
         assert_eq!(
             tool_chip_content(&ToolCall::ApplyPatch { path: None }),
-            ("Patched", "workspace".to_string())
+            ("Patch", "workspace".to_string())
         );
         assert_eq!(
             tool_chip_content(&ToolCall::Mcp {
@@ -1553,7 +1559,7 @@ mod tests {
                 },
             ],
         };
-        assert_eq!(tool_chip_content(&todo), ("Todos", "1/2 done".to_string()));
+        assert_eq!(tool_chip_content(&todo), ("Todo", "1/2 done".to_string()));
     }
 
     #[test]

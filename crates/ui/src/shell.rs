@@ -25,6 +25,7 @@ use comet_rpc::methods;
 
 use crate::changes::Changes;
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
+use crate::icons::{self, icon};
 use crate::loaders;
 use crate::motion::{self, AnimationExt as _, RESIZE, SPLASH_OUT};
 use crate::popover::{self, Loadable};
@@ -38,8 +39,8 @@ use crate::settings::{
     SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings, platform_combo,
 };
 use crate::state::{
-    AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator, OrgRow,
-    group_chats, org_name_valid, parse_orgs, sort_memberships,
+    AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, OrgRow, chat_location,
+    format_time_ago, group_chats, org_name_valid, parse_orgs, sort_memberships,
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
@@ -916,12 +917,16 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One session row: title + status dot, click selects, right-click opens
-    /// the Rename/Archive/Delete context menu.
+    /// One session row (comet session-row.tsx): status dot on the left rail,
+    /// title + relative time on the first line, "project · branch" underneath
+    /// aligned to the title. Click selects; right-click opens the context menu.
+    #[allow(clippy::too_many_arguments)]
     fn render_chat_row(
         &self,
         id: String,
         title: SharedString,
+        time_ago: SharedString,
+        location: Option<SharedString>,
         indicator: Indicator,
         selected: bool,
         theme: &Theme,
@@ -939,17 +944,17 @@ impl Shell {
         };
         let (hover, text) = (theme.element_hover, theme.text);
         let selected_wash = crate::theme::white_alpha(0.08);
+        let subline = theme.text_muted.opacity(0.5);
         let select_id = id.clone();
         let menu_id = id.clone();
         div()
             .id(SharedString::from(format!("chat-{id}")))
             .flex()
-            .items_center()
-            .gap(px(Theme::SPACE_SM))
+            .flex_col()
+            .gap(px(2.0))
             .rounded(px(8.0))
             .px(px(Theme::SPACE_SM))
             .py(px(6.0))
-            .text_size(px(13.0))
             .text_color(if selected { text } else { text.opacity(0.8) })
             .when(selected, |el| el.bg(selected_wash))
             .hover(move |s| s.bg(hover).text_color(text))
@@ -965,16 +970,111 @@ impl Shell {
                     cx.notify();
                 }),
             )
-            .child(div().size(px(6.0)).rounded_full().flex_none().bg(dot_color))
-            .child(div().flex_1().min_w_0().truncate().child(title))
+            .child(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(Theme::SPACE_SM))
+                    .child(div().size(px(6.0)).rounded_full().flex_none().bg(dot_color))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_size(px(13.0))
+                            .line_height(px(17.0))
+                            .child(title),
+                    )
+                    .child(
+                        div()
+                            .flex_none()
+                            .text_size(px(11.0))
+                            .text_color(subline)
+                            .child(time_ago),
+                    ),
+            )
+            .when_some(location, |el, location| {
+                el.child(
+                    div()
+                        .w_full()
+                        .pl(px(14.0))
+                        .truncate()
+                        .text_size(px(11.0))
+                        .line_height(px(14.0))
+                        .text_color(subline)
+                        .child(location),
+                )
+            })
             .into_any_element()
     }
 
-    /// Chat-mode sidebar: new-session + grouped toggle, the session list (flat
-    /// or grouped by project), the notice strip, and the UserMenu (§1.6).
+    /// The sidebar's list-mode segmented control (comet group-toggle.tsx):
+    /// flat list vs grouped by project.
+    fn render_group_toggle(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
+        let grouped = self.settings.sidebar_grouped;
+        let option = |id: &'static str, active: bool, icon_path: &'static str, theme: &Theme| {
+            div()
+                .id(id)
+                .size(px(20.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(5.0))
+                .when(active, |el| el.bg(crate::theme::white_alpha(0.10)))
+                .cursor_pointer()
+                .child(
+                    icon(icon_path)
+                        .size(px(14.0))
+                        .text_color(if active {
+                            theme.text
+                        } else {
+                            theme.text_muted.opacity(0.45)
+                        }),
+                )
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.0))
+            .rounded(px(7.0))
+            .border_1()
+            .border_color(crate::theme::white_alpha(0.06))
+            .bg(gpui::black().opacity(0.25))
+            .p(px(2.0))
+            .child(
+                option("sidebar-flat-toggle", !grouped, icons::LIST, theme).on_click(cx.listener(
+                    |this, _, _, cx| {
+                        if this.settings.sidebar_grouped {
+                            this.toggle_grouped(cx);
+                        }
+                    },
+                )),
+            )
+            .child(
+                option(
+                    "sidebar-group-toggle",
+                    grouped,
+                    icons::FOLDER_WITH_FILES,
+                    theme,
+                )
+                .on_click(cx.listener(|this, _, _, cx| {
+                    if !this.settings.sidebar_grouped {
+                        this.toggle_grouped(cx);
+                    }
+                })),
+            )
+            .into_any_element()
+    }
+
+    /// Chat-mode sidebar (comet sidebar.tsx): window-control strip, device
+    /// switcher row, "New session", the session list (flat or grouped by
+    /// project), the notice strip, and the UserMenu (§1.6).
     fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         let now = Utc::now();
-        let (chats, meta, user) = {
+        let (chats, meta, user, device) = {
             let state = self.state.read(cx);
             let chats: Vec<comet_proto::Chat> = state.visible_chats().cloned().collect();
             let meta: std::collections::HashMap<String, (Indicator, bool)> = chats
@@ -989,7 +1089,12 @@ impl Shell {
                     )
                 })
                 .collect();
-            (chats, meta, state.auth_user().cloned())
+            let device = state
+                .local_device_id
+                .as_deref()
+                .and_then(|id| state.devices.iter().find(|d| d.id == id))
+                .cloned();
+            (chats, meta, state.auth_user().cloned(), device)
         };
         let grouped = self.settings.sidebar_grouped;
 
@@ -999,12 +1104,16 @@ impl Shell {
                 .get(&chat.id)
                 .copied()
                 .unwrap_or((Indicator::None, false));
+            let time_ago: SharedString =
+                format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
             shell.render_chat_row(
                 chat.id.clone(),
                 chat.title
                     .clone()
                     .unwrap_or_else(|| "New session".into())
                     .into(),
+                time_ago,
+                chat_location(chat).map(SharedString::from),
                 indicator,
                 selected,
                 theme,
@@ -1013,13 +1122,16 @@ impl Shell {
         };
         if grouped {
             for group in group_chats(chats.iter()) {
+                // Quiet lowercase project header (comet session-group.tsx).
                 list_items.push(
                     div()
                         .px(px(Theme::SPACE_SM))
-                        .pt(px(Theme::SPACE_SM))
-                        .pb(px(2.0))
-                        .text_size(px(10.0))
-                        .text_color(theme.text_faint)
+                        .pt(px(12.0))
+                        .pb(px(4.0))
+                        .truncate()
+                        .text_size(px(11.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text_muted.opacity(0.6))
                         .child(SharedString::from(group.label.clone()))
                         .into_any_element(),
                 );
@@ -1040,61 +1152,128 @@ impl Shell {
         let user_email: Option<SharedString> = user.as_ref().map(|u| u.email.clone().into());
         let user_menu = self.render_user_menu(user_line.clone(), user_email.clone(), theme, cx);
 
+        // Device row: platform glyph · name · presence dot · sort glyph
+        // (comet device-switcher.tsx). The native app is single-device, so the
+        // row is identity, not a menu.
+        let device_name: SharedString = device
+            .as_ref()
+            .map(|d| d.name.clone().into())
+            .unwrap_or_else(|| SharedString::from("This device"));
+        let device_icon = match device.as_ref().map(|d| d.platform.as_str()) {
+            Some("macos") | Some("darwin") => icons::LAPTOP,
+            _ => icons::MONITOR,
+        };
+        let emerald = crate::theme::oklch(0.765, 0.177, 163.223); // emerald-400
+        let device_row = div()
+            .id("device-switcher")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
+            .rounded(px(8.0))
+            .px(px(Theme::SPACE_SM))
+            .py(px(6.0))
+            .cursor_default()
+            .hover(|s| s.bg(Theme::dark().element_hover))
+            .child(
+                icon(device_icon)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(device_name),
+            )
+            .child(div().size(px(6.0)).rounded_full().flex_none().bg(emerald))
+            .child(
+                div().ml_auto().flex_none().child(
+                    icon(icons::SORT_VERTICAL)
+                        .size(px(14.0))
+                        .text_color(theme.text_muted.opacity(0.4)),
+                ),
+            );
+
         div()
             .w(px(self.settings.sidebar_width))
             .h_full()
             .flex()
             .flex_col()
-            // Device row in the h-11 strip: quiet 13px identity line.
+            // Window-control strip in the h-11 titlebar area: sidebar toggle +
+            // back/forward (comet window-controls.tsx; traffic lights are macOS).
             .child(
                 div()
                     .h(px(Theme::HEADER_HEIGHT))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px(px(Theme::SPACE_LG))
+                    .gap(px(2.0))
+                    .px(px(10.0))
+                    .child(window_control_button(
+                        "toggle-sidebar",
+                        icons::SIDEBAR_MINIMALISTIC,
+                        theme,
+                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                    ))
                     .child(
-                        div()
-                            .text_size(px(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(theme.text)
-                            .child(SharedString::from("This device")),
+                        div().size(px(24.0)).flex().items_center().justify_center().child(
+                            icon(icons::ARROW_LEFT)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted.opacity(0.35)),
+                        ),
+                    )
+                    .child(
+                        div().size(px(24.0)).flex().items_center().justify_center().child(
+                            icon(icons::ARROW_RIGHT)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted.opacity(0.35)),
+                        ),
                     ),
             )
-            // "New session" — a first-class ghost row (comet sidebar.tsx).
+            // Device switcher + "New session" (comet sidebar.tsx px-2 block).
             .child(
-                div().px(px(Theme::SPACE_SM)).pb(px(2.0)).child(
-                    div()
-                        .id("new-session")
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(Theme::SPACE_SM))
-                        .rounded(px(8.0))
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(6.0))
-                        .text_size(px(13.0))
-                        .text_color(theme.text_muted)
-                        .hover(|s| {
-                            s.bg(Theme::dark().element_hover)
-                                .text_color(Theme::dark().text)
-                        })
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.route = Route::Chat;
-                            this.state.update(cx, |s, cx| s.select_chat(None, cx));
-                            cx.notify();
-                        }))
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_size(px(13.0))
-                                .child(SharedString::from("＋")),
-                        )
-                        .child(SharedString::from("New session")),
-                ),
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pb(px(4.0))
+                    .flex()
+                    .flex_col()
+                    .child(device_row)
+                    .child(
+                        div()
+                            .id("new-session")
+                            .mt(px(2.0))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(Theme::SPACE_SM))
+                            .rounded(px(8.0))
+                            .px(px(Theme::SPACE_SM))
+                            .py(px(6.0))
+                            .text_size(px(13.0))
+                            .text_color(theme.text_muted)
+                            .hover(|s| {
+                                s.bg(Theme::dark().element_hover)
+                                    .text_color(Theme::dark().text)
+                            })
+                            .cursor_pointer()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.route = Route::Chat;
+                                this.state.update(cx, |s, cx| s.select_chat(None, cx));
+                                cx.notify();
+                            }))
+                            .child(
+                                icon(icons::PEN_NEW_SQUARE)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted),
+                            )
+                            .child(SharedString::from("New session")),
+                    ),
             )
-            // Section label + grouped-by-project toggle, then the session list.
+            // Section label + list/group toggle, then the session list.
             .child(
                 div()
                     .id("chat-list")
@@ -1111,35 +1290,16 @@ impl Shell {
                             .items_center()
                             .justify_between()
                             .px(px(Theme::SPACE_SM))
-                            .pt(px(10.0))
+                            .pt(px(12.0))
                             .pb(px(4.0))
                             .child(
                                 div()
                                     .text_size(px(11.0))
                                     .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text_faint)
+                                    .text_color(theme.text_muted.opacity(0.6))
                                     .child(SharedString::from("Sessions")),
                             )
-                            .child(
-                                div()
-                                    .id("sidebar-group-toggle")
-                                    .size(px(20.0))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .rounded(px(5.0))
-                                    .text_size(px(11.0))
-                                    .text_color(if grouped {
-                                        theme.text
-                                    } else {
-                                        theme.text_faint
-                                    })
-                                    .when(grouped, |el| el.bg(theme.element_hover))
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(Theme::dark().element_hover))
-                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_grouped(cx)))
-                                    .child(SharedString::from("⊟")),
-                            ),
+                            .child(self.render_group_toggle(theme, cx)),
                     )
                     .child(
                         div()
@@ -1218,9 +1378,9 @@ impl Shell {
                 cx.notify();
             }))
             .child(
-                // Avatar: white circle, initial in near-black.
+                // Avatar: white circle, initial in near-black (comet user-menu.tsx).
                 div()
-                    .size(px(26.0))
+                    .size(px(28.0))
                     .flex_none()
                     .rounded_full()
                     .bg(theme.text)
@@ -1233,6 +1393,7 @@ impl Shell {
                     .child(initial),
             )
             .child(
+                // Name with the plan label underneath — no chip on the right.
                 div()
                     .flex_1()
                     .min_w_0()
@@ -1241,32 +1402,19 @@ impl Shell {
                     .child(
                         div()
                             .text_size(px(13.0))
+                            .line_height(px(17.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .truncate()
                             .child(user_line.clone()),
                     )
-                    .when_some(user_email.clone(), |el, email| {
-                        el.child(
-                            div()
-                                .text_size(px(11.0))
-                                .text_color(theme.text_muted.opacity(0.7))
-                                .truncate()
-                                .child(email),
-                        )
-                    }),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .px(px(8.0))
-                    .py(px(1.0))
-                    .rounded_full()
-                    .border_1()
-                    .border_color(theme.border)
-                    .text_size(px(10.5))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from("Alpha")),
+                    .child(
+                        div()
+                            .text_size(px(11.0))
+                            .line_height(px(15.0))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from("Alpha")),
+                    ),
             );
         if open {
             let menu = popover::popover_card(theme)
@@ -1550,15 +1698,10 @@ impl Shell {
     }
 
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = Theme::of(cx);
+        let theme_owned = Theme::of(cx).clone();
+        let theme = &theme_owned;
         let theme_bg = theme.bg;
-        let (border, text, muted, faint, hover) = (
-            theme.border,
-            theme.text,
-            theme.text_muted,
-            theme.text_faint,
-            theme.element_hover,
-        );
+        let (border, text, faint) = (theme.border, theme.text, theme.text_faint);
 
         // Settings route: header title "Settings" + the section outlet — no
         // composer/terminal/status strip (feature-inventory §1.3 header variants).
@@ -1576,21 +1719,23 @@ impl Shell {
                         .flex_none()
                         .flex()
                         .items_center()
-                        .gap(px(Theme::SPACE_MD))
-                        .px(px(Theme::SPACE_MD))
+                        .gap(px(10.0))
+                        .px(px(Theme::SPACE_LG))
                         .border_b_1()
                         .border_color(border)
-                        .child(header_button(
-                            "toggle-sidebar",
-                            "☰",
-                            hover,
-                            muted,
-                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                        ))
+                        .when(self.settings.sidebar_collapsed, |el| {
+                            el.child(window_control_button(
+                                "toggle-sidebar",
+                                icons::SIDEBAR_MINIMALISTIC,
+                                &theme_owned,
+                                cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                            ))
+                        })
                         .child(
                             div()
                                 .flex_1()
                                 .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(text)
                                 .child(SharedString::from("Settings")),
                         ),
@@ -1599,13 +1744,20 @@ impl Shell {
                 .into_any_element();
         }
 
-        let title: SharedString = {
+        let (title, is_remote): (SharedString, bool) = {
             let state = self.state.read(cx);
-            state
+            let title = state
                 .selected_chat_row()
                 .and_then(|c| c.title.clone())
                 .unwrap_or_else(|| "comet".into())
-                .into()
+                .into();
+            // Working on another machine's session — worth knowing before
+            // running anything (comet __root.tsx "Remote" pill).
+            let is_remote = match (state.selected_chat_row(), state.local_device_id.as_deref()) {
+                (Some(chat), Some(local)) => chat.device_id != local,
+                _ => false,
+            };
+            (title, is_remote)
         };
         let has_selection = self.state.read(cx).selected_chat.is_some();
 
@@ -1653,27 +1805,28 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
-            // Header (h-11): collapse toggle + title + right-pane toggle.
+            // Header (h-11): title (+ "Remote" pill), icon buttons right
+            // (comet __root.tsx header-chat).
             .child(
                 div()
                     .h(px(Theme::HEADER_HEIGHT))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(Theme::SPACE_MD))
-                    .px(px(Theme::SPACE_MD))
+                    .gap(px(10.0))
+                    .px(px(Theme::SPACE_LG))
                     .border_b_1()
                     .border_color(border)
-                    .child(header_button(
-                        "toggle-sidebar",
-                        "☰",
-                        hover,
-                        muted,
-                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                    ))
+                    .when(self.settings.sidebar_collapsed, |el| {
+                        el.child(window_control_button(
+                            "toggle-sidebar",
+                            icons::SIDEBAR_MINIMALISTIC,
+                            theme,
+                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                        ))
+                    })
                     .child(
                         div()
-                            .flex_1()
                             .min_w_0()
                             .truncate()
                             .text_size(px(13.0))
@@ -1681,18 +1834,31 @@ impl Shell {
                             .text_color(text)
                             .child(title),
                     )
-                    .child(header_button(
+                    .when(is_remote, |el| {
+                        el.child(
+                            div()
+                                .flex_none()
+                                .px(px(8.0))
+                                .py(px(2.0))
+                                .rounded_full()
+                                .border_1()
+                                .border_color(border)
+                                .text_size(px(10.5))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from("Remote")),
+                        )
+                    })
+                    .child(div().flex_1())
+                    .child(header_icon_button(
                         "toggle-terminal",
-                        "Terminal",
-                        hover,
-                        muted,
+                        icons::TERMINAL,
+                        theme,
                         cx.listener(|this, _, _, cx| this.toggle_terminal(cx)),
                     ))
-                    .child(header_button(
+                    .child(header_icon_button(
                         "toggle-changes",
-                        "Changes",
-                        hover,
-                        muted,
+                        icons::SIDEBAR_MINIMALISTIC,
+                        theme,
                         cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
                     )),
             )
@@ -1813,11 +1979,6 @@ impl Shell {
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
         let state = self.state.read(cx);
-        let mode_line: SharedString = match state.engine().map(|e| e.mode()) {
-            Some(EngineMode::InProcess) => "engine: in-process".into(),
-            Some(EngineMode::Remote { url }) => format!("engine: {url}").into(),
-            None => "".into(),
-        };
 
         // Aligned with the composer column: centered, same max width, small
         // inner gutter (comet's `mx-auto h-6 max-w-3xl px-2`).
@@ -1834,10 +1995,7 @@ impl Shell {
             .text_size(px(11.0));
 
         let Some(chat_id) = state.selected_chat.clone() else {
-            return strip
-                .text_color(theme.text_faint)
-                .child(mode_line)
-                .into_any_element();
+            return strip.into_any_element();
         };
         let indicator = state.indicator_for(&chat_id, now);
         let elapsed_secs = state
@@ -1878,10 +2036,7 @@ impl Shell {
                 .text_color(theme.text_muted)
                 .child(SharedString::from("Sending…"))
                 .into_any_element(),
-            Indicator::None => strip
-                .text_color(theme.text_faint)
-                .child(mode_line)
-                .into_any_element(),
+            Indicator::None => strip.into_any_element(),
         }
     }
 
@@ -2138,24 +2293,50 @@ impl Shell {
     }
 }
 
-fn header_button(
+/// A size-6 icon button for the titlebar strip (comet window-controls.tsx:
+/// `grid size-6 place-items-center rounded-md text-muted-foreground`).
+fn window_control_button(
     id: &'static str,
-    label: &'static str,
-    hover: gpui::Hsla,
-    color: gpui::Hsla,
+    icon_path: &'static str,
+    theme: &Theme,
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let muted = theme.text_muted;
     div()
         .id(id)
-        .px(px(Theme::SPACE_SM))
-        .py(px(3.0))
-        .rounded(px(Theme::CONTROL_RADIUS))
-        .text_size(px(12.0))
-        .text_color(color)
-        .hover(move |s| s.bg(hover))
+        .size(px(24.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
         .cursor_pointer()
+        .hover(|s| s.bg(Theme::dark().element_hover))
         .on_click(on_click)
-        .child(SharedString::from(label))
+        .child(icon(icon_path).size(px(16.0)).text_color(muted))
+}
+
+/// A size-7 icon button for the main-panel header (comet __root.tsx:
+/// `grid size-7 place-items-center rounded-md text-muted-foreground`).
+fn header_icon_button(
+    id: &'static str,
+    icon_path: &'static str,
+    theme: &Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let muted = theme.text_muted;
+    div()
+        .id(id)
+        .size(px(28.0))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
+        .on_click(on_click)
+        .child(icon(icon_path).size(px(16.0)).text_color(muted))
 }
 
 impl Render for Shell {

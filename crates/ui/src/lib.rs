@@ -14,6 +14,7 @@
 
 pub mod changes;
 pub mod composer;
+pub mod icons;
 pub mod loaders;
 pub mod markdown;
 pub mod motion;
@@ -85,7 +86,9 @@ impl UiConfig {
 /// connect-or-embed), 1320×880 window (min 900×600) with [`shell::Shell`] as the
 /// root view, boot splash overlaid until the engine reports ready.
 pub fn run_app(config: UiConfig) {
-    gpui_platform::application().run(move |cx: &mut App| {
+    gpui_platform::application()
+        .with_assets(icons::Assets)
+        .run(move |cx: &mut App| {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
         register_fonts(cx);
