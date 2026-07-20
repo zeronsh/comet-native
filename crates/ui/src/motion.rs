@@ -110,7 +110,10 @@ impl CubicBezier {
         if x >= 1.0 {
             return 1.0;
         }
-        self.sample_y(self.solve_t_for_x(x))
+        // f32 rounding can push sample_y a hair past 1.0 (observed 1.000000119
+        // near the end of menu animations); gpui's animation element asserts
+        // `delta ∈ [0,1]` and aborts, so clamp the output hard.
+        self.sample_y(self.solve_t_for_x(x)).clamp(0.0, 1.0)
     }
 
     /// This curve as a gpui easing closure.
@@ -343,6 +346,25 @@ pub fn reduced_motion(cx: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn eval_never_escapes_unit_interval_dense_sweep() {
+        // Regression: f32 rounding produced 1.000000119 near the tail of
+        // EASE_OUT_EXPO, tripping gpui's `delta ∈ [0,1]` assert (SIGABRT on
+        // the user's machine). Sweep densely, including the values right
+        // below 1.0 where Newton lands closest to the endpoint.
+        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_RESORT] {
+            for i in 0..=100_000u32 {
+                let x = i as f32 / 100_000.0;
+                let y = curve.eval(x);
+                assert!((0.0..=1.0).contains(&y), "eval({x}) = {y} escaped [0,1]");
+            }
+            for x in [0.999_999f32, 0.999_999_9, 1.0 - f32::EPSILON] {
+                let y = curve.eval(x);
+                assert!((0.0..=1.0).contains(&y), "eval({x}) = {y} escaped [0,1]");
+            }
+        }
+    }
+
     use super::*;
 
     fn assert_close(actual: f32, expected: f32, tol: f32, ctx: &str) {
