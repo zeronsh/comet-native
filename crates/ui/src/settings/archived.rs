@@ -65,7 +65,9 @@ impl ArchivedPage {
 
 impl Render for ArchivedPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
+        let now = chrono::Utc::now();
         let (rows, device_names): (Vec<Chat>, std::collections::HashMap<String, String>) = {
             let state = self.state.read(cx);
             let rows = archived_chats(&state.chats).into_iter().cloned().collect();
@@ -77,6 +79,7 @@ impl Render for ArchivedPage {
             (rows, names)
         };
         let busy = self.busy.clone();
+        let count = rows.len();
 
         let items: Vec<AnyElement> = rows
             .into_iter()
@@ -92,59 +95,114 @@ impl Render for ArchivedPage {
                     .cloned()
                     .unwrap_or_else(|| chat.device_id.clone())
                     .into();
+                let time_ago: SharedString = crate::state::format_time_ago(
+                    chat.last_message_at.unwrap_or(chat.created_at),
+                    now,
+                )
+                .into();
+                let location: Option<SharedString> =
+                    crate::state::chat_location(&chat).map(Into::into);
                 let is_busy = busy.as_deref() == Some(chat.id.as_str());
                 let chat_id = chat.id.clone();
-                let preview: Option<SharedString> =
-                    chat.last_message_preview.clone().map(Into::into);
+                // comet settings.archived.tsx row: archive tile, medium title
+                // + tabular time, quiet device · location meta, Unarchive.
                 div()
                     .flex()
                     .flex_row()
                     .items_center()
-                    .gap(px(Theme::SPACE_MD))
-                    .px(px(Theme::SPACE_MD))
-                    .py(px(10.0))
-                    .border_b_1()
-                    .border_color(theme.border)
+                    .gap(px(12.0))
+                    .rounded(px(8.0))
+                    .px(px(12.0))
+                    .py(px(8.0))
+                    .hover(|s| s.bg(crate::theme::white_alpha(0.03)))
+                    .child(
+                        div()
+                            .flex_none()
+                            .size(px(32.0))
+                            .rounded(px(6.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                crate::icons::icon(crate::icons::ARCHIVE_MINIMALISTIC)
+                                    .size(px(16.0))
+                                    .text_color(theme.text_muted.opacity(0.6)),
+                            ),
+                    )
                     .child(
                         div()
                             .flex_1()
                             .min_w_0()
                             .flex()
                             .flex_col()
-                            .gap(px(2.0))
-                            .child(
-                                div()
-                                    .text_size(px(13.0))
-                                    .text_color(theme.text)
-                                    .truncate()
-                                    .child(title),
-                            )
                             .child(
                                 div()
                                     .flex()
                                     .flex_row()
+                                    .items_center()
+                                    .gap(px(8.0))
+                                    .child(
+                                        div()
+                                            .min_w_0()
+                                            .truncate()
+                                            .text_size(px(13.0))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
+                                            .text_color(theme.text)
+                                            .child(title),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .text_size(px(11.0))
+                                            .text_color(theme.text_muted.opacity(0.5))
+                                            .child(time_ago),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .mt(px(2.0))
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
                                     .gap(px(6.0))
                                     .text_size(px(11.0))
-                                    .text_color(theme.text_faint)
+                                    .text_color(theme.text_muted.opacity(0.55))
                                     .child(device)
-                                    .when_some(preview, |el, preview| {
-                                        el.child(div().min_w_0().truncate().child(preview))
+                                    .when_some(location, |el, location| {
+                                        el.child(
+                                            div()
+                                                .text_color(theme.text_muted.opacity(0.3))
+                                                .child(SharedString::from("·")),
+                                        )
+                                        .child(div().min_w_0().truncate().child(location))
                                     }),
                             ),
                     )
                     .child(
                         div()
                             .id(("unarchive", ix))
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(3.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .flex_none()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(6.0))
+                            .px(px(10.0))
+                            .py(px(4.0))
+                            .rounded(px(6.0))
                             .border_1()
                             .border_color(theme.border)
-                            .text_size(px(11.0))
-                            .text_color(theme.text)
-                            .when(is_busy, |el| el.opacity(0.5))
+                            .text_size(px(12.0))
+                            .text_color(theme.text_muted)
+                            .opacity(0.7)
+                            .when(is_busy, |el| el.opacity(0.4))
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
+                            .hover(|s| {
+                                s.opacity(1.0)
+                                    .bg(crate::theme::white_alpha(0.06))
+                                    .text_color(Theme::dark().text)
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.unarchive(chat_id.clone(), cx);
                             }))
@@ -158,48 +216,74 @@ impl Render for ArchivedPage {
             })
             .collect();
 
+        let body: AnyElement = if items.is_empty() {
+            // Centered empty state (comet settings.archived.tsx).
+            div()
+                .mt(px(96.0))
+                .flex()
+                .flex_col()
+                .items_center()
+                .text_center()
+                .text_color(theme.text_muted.opacity(0.5))
+                .child(
+                    crate::icons::icon(crate::icons::ARCHIVE_MINIMALISTIC)
+                        .size(px(28.0))
+                        .text_color(theme.text_muted.opacity(0.4)),
+                )
+                .child(
+                    div()
+                        .mt(px(12.0))
+                        .text_size(px(14.0))
+                        .child(SharedString::from("Nothing archived")),
+                )
+                .child(
+                    div()
+                        .mt(px(4.0))
+                        .text_size(px(12.0))
+                        .text_color(theme.text_muted.opacity(0.4))
+                        .child(SharedString::from(
+                            "Archived sessions stay synced and can be restored anytime.",
+                        )),
+                )
+                .into_any_element()
+        } else {
+            div()
+                .mt(px(24.0))
+                .flex()
+                .flex_col()
+                .gap(px(2.0))
+                .children(items)
+                .into_any_element()
+        };
+
         div()
             .id("archived-page")
             .size_full()
             .overflow_y_scroll()
-            .p(px(Theme::SPACE_LG))
-            .flex()
-            .flex_col()
-            .gap(px(Theme::SPACE_MD))
             .child(
-                div()
-                    .text_size(px(14.0))
-                    .text_color(theme.text)
-                    .child(SharedString::from("Archived chats")),
+                widgets::page_column()
+                    .child(widgets::page_header(
+                        &theme,
+                        "Archived sessions",
+                        (count > 0).then_some(count),
+                    ))
+                    .child(widgets::page_subtitle(
+                        &theme,
+                        "Sessions you've archived, across every device.",
+                    ))
+                    .when_some(self.error.clone(), |el, message| {
+                        el.child(
+                            widgets::error_strip(message)
+                                .id("archived-error")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.error = None;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .child(body),
             )
-            .when_some(self.error.clone(), |el, message| {
-                el.child(
-                    div()
-                        .id("archived-error")
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(4.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(theme.danger)
-                        .text_size(px(12.0))
-                        .text_color(theme.danger)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.error = None;
-                            cx.notify();
-                        }))
-                        .child(message),
-                )
-            })
-            .when(items.is_empty(), |el| {
-                el.child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from("Nothing archived")),
-                )
-            })
-            .children(items)
     }
 }
 

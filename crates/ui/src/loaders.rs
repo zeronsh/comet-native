@@ -21,6 +21,68 @@ pub const COMET_CELLS: usize = 5;
 /// Side length of the gradient spinner matrix.
 pub const MATRIX_SIDE: usize = 3;
 
+/// The comet mark's pixels — `[x, y]` of each 100×100 cell on the 820×940
+/// canvas (comet logo.tsx `CELLS`; shared by the static mark asset and the
+/// animated [`comet_mark_loader`]).
+pub const MARK_CELLS: [(f32, f32); 34] = [
+    (0., 600.), (0., 720.), (240., 840.), (240., 720.), (120., 840.), (120., 600.), (240., 600.),
+    (0., 480.), (0., 360.), (480., 840.), (480., 720.), (120., 360.), (120., 240.), (240., 360.),
+    (600., 720.), (480., 600.), (360., 360.), (240., 240.), (600., 600.), (720., 600.), (720., 480.),
+    (240., 120.), (600., 380.), (720., 240.), (720., 0.), (480., 240.), (480., 0.), (120., 480.),
+    (240., 480.), (360., 840.), (360., 720.), (360., 600.), (360., 480.), (120., 720.),
+];
+
+/// Fraction of the pulse cycle the light sweep occupies (comet-loader.tsx `SPREAD`).
+pub const MARK_SPREAD: f32 = 0.55;
+
+/// Per-cell stagger fraction along the comet's flight axis — tail tip
+/// `(720, 0)` leads, head `(0, 840)` trails (comet-loader.tsx `delayFor`,
+/// normalized into the repeating animation's phase space).
+pub fn mark_cell_stagger(x: f32, y: f32) -> f32 {
+    let t = (820.0 - x + y) / 1660.0;
+    (1.0 - t) * MARK_SPREAD
+}
+
+/// The animated comet mark (comet-loader.tsx `CometLoader`): the full logo
+/// pixel grid with a light wave sweeping tail→head. Each cell rests dim
+/// (opacity 0.08, scale 0.9) and flares to full as the crest passes; per-cell
+/// stagger follows the flight axis. `height_px` sets the mark's height (width
+/// follows the 820:940 canvas).
+pub fn comet_mark_loader(id: &'static str, theme: &Theme, height_px: f32) -> impl IntoElement {
+    let color = theme.text;
+    let scale = height_px / 940.0;
+    let cell = 100.0 * scale;
+    div()
+        .relative()
+        .w(px(820.0 * scale))
+        .h(px(height_px))
+        .children(MARK_CELLS.iter().enumerate().map(move |(i, &(x, y))| {
+            let stagger = mark_cell_stagger(x, y);
+            // Fixed slot; the animated cell breathes inside it (paint-local).
+            div()
+                .absolute()
+                .left(px(x * scale))
+                .top(px(y * scale))
+                .size(px(cell))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .rounded(px(16.0 * scale))
+                        .bg(color)
+                        .size(px(cell))
+                        .with_animation((id, i), COMET_PULSE.repeating(), move |el, delta| {
+                            // Negative CSS delay ⇒ the cell starts mid-cycle:
+                            // the stagger ADDS phase (comet-loader.tsx delayFor).
+                            let phase = (delta + stagger).rem_euclid(1.0);
+                            el.opacity(motion::pulse_opacity(phase))
+                                .size(px(cell * motion::pulse_scale(phase)))
+                        }),
+                )
+        }))
+}
+
 /// The comet wave loader: a row of cells pulsing opacity 0.08→1 / scale 0.9→1
 /// over 2.4s with a 0.15s stagger per cell.
 ///
@@ -102,9 +164,10 @@ pub fn gradient_spinner(id: &'static str, _theme: &Theme, cell_px: f32) -> impl 
         }))
 }
 
-/// Full-window boot splash: loader + wordmark over the app background.
-/// While `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px lift);
-/// the shell removes it once [`SPLASH_OUT`] has run its course.
+/// Full-window boot splash (comet App.tsx `Splash`): the animated comet mark
+/// (`h-16`) over the app background with an uppercase tracked "Loading" line.
+/// While `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px
+/// lift); the shell removes it once [`SPLASH_OUT`] has run its course.
 pub fn splash_overlay(theme: &Theme, fading: bool) -> AnyElement {
     let content = div()
         .absolute()
@@ -114,19 +177,24 @@ pub fn splash_overlay(theme: &Theme, fading: bool) -> AnyElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(Theme::SPACE_LG))
-        .child(comet_loader("boot-splash", theme, 8.0))
-        .child(
-            div()
-                .text_size(px(13.0))
-                .text_color(theme.text_muted)
-                .child(SharedString::from("comet")),
-        );
+        .gap(px(28.0))
+        .child(comet_mark_loader("boot-splash", theme, 64.0))
+        .child(loading_word(theme));
     if fading {
         motion::splash_out("boot-splash-out", content).into_any_element()
     } else {
         content.into_any_element()
     }
+}
+
+/// "L O A D I N G" — `text-[11px] uppercase tracking-[0.32em]
+/// text-muted-foreground/70`; tracking approximated with thin spaces (gpui has
+/// no letter-spacing at the pinned rev).
+pub fn loading_word(theme: &Theme) -> impl IntoElement {
+    div()
+        .text_size(px(11.0))
+        .text_color(theme.text_muted.opacity(0.7))
+        .child(SharedString::from("L\u{2009}O\u{2009}A\u{2009}D\u{2009}I\u{2009}N\u{2009}G"))
 }
 
 // Compile-time proof the specs referenced here stay wired to the catalog.
@@ -135,3 +203,24 @@ const _: () = {
     assert!(COMET_PULSE.duration_ms == 2400);
     assert!(GRADIENT_SPIN.duration_ms == 750);
 };
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mark_stagger_follows_flight_axis() {
+        // Tail tip (720, 0) leads: near-maximal stagger (starts deepest into
+        // the cycle); head (0, 840) trails with stagger 0.
+        let tail = mark_cell_stagger(720.0, 0.0);
+        let head = mark_cell_stagger(0.0, 840.0);
+        assert!(tail > head, "tail {tail} should lead head {head}");
+        assert!((head - 0.0).abs() < 1e-6, "head stagger ≈ 0, got {head}");
+        assert!(tail <= MARK_SPREAD + 1e-6, "stagger capped at SPREAD");
+        // Every logo cell stays inside [0, SPREAD].
+        for &(x, y) in &MARK_CELLS {
+            let s = mark_cell_stagger(x, y);
+            assert!((0.0..=MARK_SPREAD + 1e-6).contains(&s), "cell ({x},{y}) stagger {s}");
+        }
+    }
+}

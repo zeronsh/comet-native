@@ -439,6 +439,9 @@ impl AccountsPage {
 
     // ---- render pieces ----
 
+    /// One usage window (comet settings.agents.tsx `UsageMeter`): label ·
+    /// 5px rounded-full bar (indigo → amber ≥80% → red ≥95%) · "NN% used" ·
+    /// quiet reset time.
     fn render_usage_meter(
         &self,
         window: &comet_proto::AgentUsageWindow,
@@ -446,51 +449,78 @@ impl AccountsPage {
         now: DateTime<Utc>,
     ) -> AnyElement {
         let fraction = window.used_fraction.clamp(0.0, 1.0);
-        let color = usage_color(usage_level(fraction), theme);
+        let level = usage_level(fraction);
+        let fill = usage_color(level, theme).opacity(match level {
+            UsageLevel::Normal => 0.8,
+            _ => 0.85,
+        });
         let reset = format_reset(window.resets_at, now);
         div()
             .flex()
-            .flex_col()
-            .gap(px(3.0))
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .text_size(px(11.5))
+            .text_color(theme.text_muted.opacity(0.7))
             .child(
                 div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .text_size(px(10.0))
-                    .text_color(theme.text_faint)
-                    .child(SharedString::from(window.label.clone()))
-                    .child(SharedString::from(match reset {
-                        Some(reset) => format!("{}% · {reset}", (fraction * 100.0).round() as u32),
-                        None => format!("{}%", (fraction * 100.0).round() as u32),
-                    })),
+                    .w(px(48.0))
+                    .flex_none()
+                    .truncate()
+                    .child(SharedString::from(window.label.clone())),
             )
             .child(
-                // Meter track + fill (threshold-colored).
                 div()
-                    .h(px(4.0))
-                    .w_full()
-                    .rounded(px(2.0))
-                    .bg(theme.element_hover)
+                    .flex_1()
+                    .min_w(px(56.0))
+                    .max_w(px(230.0))
+                    .h(px(5.0))
+                    .rounded_full()
+                    .overflow_hidden()
+                    .bg(crate::theme::white_alpha(0.07))
                     .child(
                         div()
                             .h_full()
                             .w(gpui::relative(fraction))
-                            .rounded(px(2.0))
-                            .bg(color),
+                            .rounded_full()
+                            .bg(fill),
                     ),
             )
+            .child(
+                div()
+                    .w(px(64.0))
+                    .flex_none()
+                    .text_right()
+                    .child(SharedString::from(format!(
+                        "{}% used",
+                        (fraction * 100.0).round() as u32
+                    ))),
+            )
+            .when_some(reset, |el, reset| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .truncate()
+                        .text_color(theme.text_muted.opacity(0.45))
+                        .child(SharedString::from(reset)),
+                )
+            })
             .into_any_element()
     }
 
+    /// One account row (comet settings.agents.tsx `AccountRow`): initial
+    /// avatar, email + usage meters left; badges over the Switch/Forget
+    /// actions right-anchored.
     fn render_account_row(
         &self,
         account: &AgentAccount,
         ix: usize,
+        first: bool,
         theme: &Theme,
         now: DateTime<Utc>,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use crate::settings::widgets;
         let is_busy = self.busy_account.as_deref() == Some(account.id.as_str());
         let email: SharedString = account
             .email
@@ -498,128 +528,170 @@ impl AccountsPage {
             .or_else(|| account.display_name.clone())
             .unwrap_or_else(|| "Unknown account".into())
             .into();
+        let initial: SharedString = email
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_else(|| "?".into())
+            .into();
+        let auth_kind: Option<SharedString> = account.auth_kind.map(|kind| {
+            SharedString::from(match kind {
+                comet_proto::AgentAuthKind::Oauth => "OAuth login",
+                comet_proto::AgentAuthKind::ApiKey => "API key",
+            })
+        });
         let switch_account = account.clone();
         let forget_account = account.clone();
-        div()
+
+        let badges = div()
             .flex()
-            .flex_col()
+            .flex_row()
+            .items_center()
             .gap(px(6.0))
-            .px(px(Theme::SPACE_MD))
-            .py(px(Theme::SPACE_SM))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .border_1()
-            .border_color(if account.active {
-                theme.border_strong
-            } else {
-                theme.border
+            .when(account.active, |el| {
+                el.child(widgets::badge_active("Active"))
+            })
+            .when_some(account.plan_label.clone(), |el, plan| {
+                el.child(widgets::badge(theme, plan))
+            });
+
+        let actions = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .when(!account.active && account.switchable, |el| {
+                el.child(
+                    crate::popover::btn_primary(theme, "Switch")
+                        .id(("account-switch", ix))
+                        .px(px(8.0))
+                        .py(px(4.0))
+                        .rounded(px(6.0))
+                        .text_size(px(11.5))
+                        .when(is_busy, |el| el.opacity(0.5))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.account_action(
+                                methods::ACTIVATE_AGENT_ACCOUNT,
+                                &switch_account,
+                                cx,
+                            );
+                        })),
+                )
             })
             .child(
                 div()
+                    .id(("account-forget", ix))
+                    .rounded(px(6.0))
+                    .px(px(6.0))
+                    .py(px(4.0))
+                    .text_size(px(11.5))
+                    .text_color(theme.text_muted)
+                    .cursor_pointer()
+                    .when(is_busy, |el| el.opacity(0.5))
+                    .hover(|s| {
+                        s.bg(crate::theme::white_alpha(0.06))
+                            .text_color(Theme::dark().danger)
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.account_action(methods::FORGET_AGENT_ACCOUNT, &forget_account, cx);
+                    }))
+                    .child(SharedString::from("Forget")),
+            );
+
+        div()
+            .px(px(20.0))
+            .py(px(14.0))
+            .when(!first, |el| el.border_t_1().border_color(theme.border))
+            .flex()
+            .flex_row()
+            .items_stretch()
+            .gap(px(12.0))
+            .child(
+                // Initial avatar: size-8 rounded-full border bg-white/[0.03].
+                div()
+                    .flex_none()
+                    .self_center()
+                    .size(px(32.0))
+                    .rounded_full()
+                    .border_1()
+                    .border_color(theme.border)
+                    .bg(crate::theme::white_alpha(0.03))
                     .flex()
-                    .flex_row()
                     .items_center()
-                    .gap(px(Theme::SPACE_SM))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(12.0))
-                            .text_color(theme.text)
-                            .child(email),
-                    )
-                    .when_some(account.plan_label.clone(), |el, plan| {
-                        el.child(
-                            div()
-                                .px(px(5.0))
-                                .rounded(px(4.0))
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_size(px(9.0))
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from(plan)),
-                        )
-                    })
-                    .when(account.active, |el| {
-                        el.child(
-                            div()
-                                .px(px(5.0))
-                                .rounded(px(4.0))
-                                .border_1()
-                                .border_color(theme.accent)
-                                .text_size(px(9.0))
-                                .text_color(theme.accent)
-                                .child(SharedString::from("Active")),
-                        )
-                    })
-                    .when(!account.active && account.switchable, |el| {
-                        el.child(
-                            div()
-                                .id(("account-switch", ix))
-                                .px(px(Theme::SPACE_SM))
-                                .py(px(2.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_size(px(10.0))
-                                .text_color(theme.text)
-                                .when(is_busy, |el| el.opacity(0.5))
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme.element_hover))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.account_action(
-                                        methods::ACTIVATE_AGENT_ACCOUNT,
-                                        &switch_account,
-                                        cx,
-                                    );
-                                }))
-                                .child(SharedString::from("Switch")),
-                        )
-                    })
-                    .child(
-                        div()
-                            .id(("account-forget", ix))
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(2.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .text_size(px(10.0))
-                            .text_color(theme.text_faint)
-                            .when(is_busy, |el| el.opacity(0.5))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover).text_color(theme.danger))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.account_action(
-                                    methods::FORGET_AGENT_ACCOUNT,
-                                    &forget_account,
-                                    cx,
-                                );
-                            }))
-                            .child(SharedString::from("Forget")),
-                    ),
+                    .justify_center()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.text_muted)
+                    .child(initial),
             )
-            .children(
-                account
-                    .usage_windows
-                    .iter()
-                    .map(|window| self.render_usage_meter(window, theme, now)),
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(widgets::row_title(theme, email))
+                    .when(!account.usage_windows.is_empty(), |el| {
+                        el.child(
+                            div().mt(px(6.0)).flex().flex_col().gap(px(4.0)).children(
+                                account
+                                    .usage_windows
+                                    .iter()
+                                    .map(|w| self.render_usage_meter(w, theme, now)),
+                            ),
+                        )
+                    })
+                    .when_some(auth_kind, |el, kind| {
+                        el.child(
+                            div()
+                                .mt(px(2.0))
+                                .truncate()
+                                .text_size(px(11.5))
+                                .text_color(theme.text_muted.opacity(0.6))
+                                .child(kind),
+                        )
+                    }),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .justify_between()
+                    .gap(px(8.0))
+                    .child(badges)
+                    .child(actions),
             )
             .into_any_element()
     }
 
-    fn render_login_dialog(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+    fn render_login_dialog(
+        &mut self,
+        viewport: gpui::Size<gpui::Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
+        let red_text = crate::theme::oklch(0.81, 0.108, 19.6).opacity(0.9); // red-300
         let login = self.login.as_ref()?;
+        let url_link = |id: &'static str, url: &str, cx: &mut Context<Self>| {
+            let open_url = url.to_string();
+            div()
+                .id(id)
+                .mt(px(6.0))
+                .text_size(px(12.0))
+                .text_color(theme.text_muted.opacity(0.6))
+                .truncate()
+                .cursor_pointer()
+                .hover(|s| s.text_color(Theme::dark().text))
+                .on_click(cx.listener(move |_, _, _, cx| {
+                    cx.open_url(&open_url);
+                }))
+                .child(SharedString::from(format!("Open {url} ↗")))
+        };
         let body: AnyElement = match login {
             LoginFlow::Starting => div()
-                .flex()
-                .flex_col()
-                .gap(px(Theme::SPACE_SM))
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from("Starting login…")),
-                )
+                .mt(px(8.0))
                 .child(popover::skeleton_rows("login-starting", &theme, 2))
                 .into_any_element(),
             LoginFlow::PasteCode {
@@ -627,73 +699,54 @@ impl AccountsPage {
                 submitting,
                 error,
             } => {
-                let url: SharedString = start.url.clone().into();
-                let open_url = start.url.clone();
                 let submitting = *submitting;
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(Theme::SPACE_SM))
+                    .child(div().mt(px(8.0)).child(popover::dialog_body(
+                        &theme,
+                        "Sign in in your browser, then paste the code below.",
+                    )))
+                    .child(url_link("login-open-url", &start.url, cx))
                     .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(
-                                "Sign in in your browser, then paste the code below.",
-                            )),
-                    )
-                    .child(
-                        div()
-                            .id("login-open-url")
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(4.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(px(11.0))
-                            .text_color(theme.accent)
-                            .truncate()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.open_url(&open_url);
-                            }))
-                            .child(url),
-                    )
-                    .child(
-                        div()
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(5.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .child(self.code_input.clone()),
+                        div().mt(px(12.0)).child(
+                            popover::dialog_field(self.code_input.clone().into_any_element())
+                                .font_family(theme.font_mono.clone())
+                                .text_size(px(13.0)),
+                        ),
                     )
                     .when_some(error.clone(), |el, message| {
                         el.child(
                             div()
-                                .text_size(px(11.0))
-                                .text_color(theme.danger)
+                                .mt(px(8.0))
+                                .text_size(px(12.0))
+                                .text_color(red_text)
                                 .child(message),
                         )
                     })
                     .child(
                         div()
-                            .id("login-submit-code")
-                            .px(px(Theme::SPACE_MD))
-                            .py(px(4.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .bg(theme.accent_strong)
-                            .text_size(px(12.0))
-                            .text_color(gpui::white())
-                            .when(submitting, |el| el.opacity(0.6))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.submit_code(cx)))
-                            .child(SharedString::from(if submitting {
-                                "Verifying…"
-                            } else {
-                                "Continue"
-                            })),
+                            .mt(px(16.0))
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .gap(px(8.0))
+                            .child(
+                                popover::btn_ghost(&theme, "Cancel")
+                                    .id("login-cancel")
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.cancel_login(cx)),
+                                    ),
+                            )
+                            .child(
+                                popover::btn_primary(
+                                    &theme,
+                                    if submitting { "Verifying…" } else { "Continue" },
+                                )
+                                .id("login-submit-code")
+                                .when(submitting, |el| el.opacity(0.5))
+                                .on_click(cx.listener(|this, _, _, cx| this.submit_code(cx))),
+                            ),
                     )
                     .into_any_element()
             }
@@ -701,107 +754,61 @@ impl AccountsPage {
                 start,
                 message,
                 error,
-            } => {
-                let url: SharedString = start.url.clone().into();
-                let open_url = start.url.clone();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(Theme::SPACE_SM))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(
-                                "Finish signing in in your browser — waiting for it to land…",
-                            )),
-                    )
-                    .child(
-                        div()
-                            .id("login-open-url-browser")
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(4.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(px(11.0))
-                            .text_color(theme.accent)
-                            .truncate()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
-                            .on_click(cx.listener(move |_, _, _, cx| {
-                                cx.open_url(&open_url);
-                            }))
-                            .child(url),
-                    )
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(Theme::SPACE_SM))
-                            .child(crate::loaders::gradient_spinner("login-poll", &theme, 3.0))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(theme.text_faint)
-                                    .child(
-                                        message
-                                            .clone()
-                                            .unwrap_or_else(|| SharedString::from("Waiting…")),
-                                    ),
-                            ),
-                    )
-                    .when_some(error.clone(), |el, message| {
-                        el.child(
+            } => div()
+                .flex()
+                .flex_col()
+                .child(div().mt(px(8.0)).child(popover::dialog_body(
+                    &theme,
+                    "Finish signing in in your browser — waiting for it to land…",
+                )))
+                .child(url_link("login-open-url-browser", &start.url, cx))
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(10.0))
+                        .child(crate::loaders::gradient_spinner("login-poll", &theme, 3.0))
+                        .child(
                             div()
-                                .text_size(px(11.0))
-                                .text_color(theme.danger)
-                                .child(message),
-                        )
-                    })
-                    .into_any_element()
-            }
-        };
-        let card = div()
-            .w(px(420.0))
-            .p(px(Theme::SPACE_LG))
-            .rounded(px(Theme::PANEL_RADIUS))
-            .bg(theme.surface_raised)
-            .border_1()
-            .border_color(theme.border_strong)
-            .flex()
-            .flex_col()
-            .gap(px(Theme::SPACE_MD))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
-                    .child(
+                                .text_size(px(12.0))
+                                .text_color(theme.text_muted.opacity(0.6))
+                                .child(
+                                    message
+                                        .clone()
+                                        .unwrap_or_else(|| SharedString::from("Waiting…")),
+                                ),
+                        ),
+                )
+                .when_some(error.clone(), |el, message| {
+                    el.child(
                         div()
-                            .text_size(px(13.0))
-                            .text_color(theme.text)
-                            .child(SharedString::from("Add account")),
+                            .mt(px(8.0))
+                            .text_size(px(12.0))
+                            .text_color(red_text)
+                            .child(message),
                     )
-                    .child(
-                        div()
-                            .id("login-cancel")
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(2.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .text_size(px(11.0))
-                            .text_color(theme.text_muted)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
-                            .on_click(cx.listener(|this, _, _, cx| this.cancel_login(cx)))
-                            .child(SharedString::from("Cancel")),
-                    ),
-            )
+                })
+                .child(
+                    div()
+                        .mt(px(16.0))
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .child(
+                            popover::btn_ghost(&theme, "Cancel")
+                                .id("login-cancel")
+                                .on_click(cx.listener(|this, _, _, cx| this.cancel_login(cx))),
+                        ),
+                )
+                .into_any_element(),
+        };
+        let card = popover::dialog_card(&theme)
+            .child(popover::dialog_title(&theme, "Add account"))
             .child(body)
             .into_any_element();
-        Some(popover::modal("add-account-dialog", card))
+        Some(popover::modal("add-account-dialog", viewport, card))
     }
 
     /// Device switcher: retargets which device's CLI logins are listed.
@@ -878,34 +885,84 @@ impl AccountsPage {
 }
 
 impl Render for AccountsPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
         let switcher = self.render_device_switcher(cx);
-        let dialog = self.render_login_dialog(cx);
+        let dialog = self.render_login_dialog(window.viewport_size(), cx);
+        let account_count = self
+            .snapshot
+            .ready()
+            .map(|s| s.accounts.len())
+            .filter(|&n| n > 0);
 
-        let cards: Vec<AnyElement> = match &self.snapshot {
-            Loadable::Idle | Loadable::Loading => vec![
-                popover::skeleton_rows("accounts-skeleton-claude", &theme, 3),
-                popover::skeleton_rows("accounts-skeleton-codex", &theme, 3),
-            ],
+        let provider_icon = |harness: HarnessId| match harness {
+            HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
+            HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
+            _ => (crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand())),
+        };
+
+        // One section per provider (comet settings.agents.tsx `ProviderSection`):
+        // brand header + Add account, then the account rows card.
+        let sections: Vec<AnyElement> = match &self.snapshot {
+            Loadable::Idle | Loadable::Loading => PROVIDERS
+                .into_iter()
+                .map(|(harness, name)| {
+                    let (mark, tint) = provider_icon(harness);
+                    div()
+                        .mt(px(24.0))
+                        .flex()
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(
+                                    crate::icons::icon(mark)
+                                        .size(px(16.0))
+                                        .text_color(tint.unwrap_or(theme.text_muted)),
+                                )
+                                .child(
+                                    div()
+                                        .text_size(px(14.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(theme.text)
+                                        .child(SharedString::from(name)),
+                                ),
+                        )
+                        .child(
+                            widgets::section_card(&theme).mt(px(8.0)).child(
+                                div().px(px(20.0)).py(px(14.0)).child(
+                                    popover::skeleton_rows(
+                                        match harness {
+                                            HarnessId::Codex => "accounts-skeleton-codex",
+                                            _ => "accounts-skeleton-claude",
+                                        },
+                                        &theme,
+                                        2,
+                                    ),
+                                ),
+                            ),
+                        )
+                        .into_any_element()
+                })
+                .collect(),
             Loadable::Error(message) => {
                 let message = message.clone();
                 vec![
-                    popover::error_row(&theme, &message)
+                    widgets::error_strip(message)
+                        .id("accounts-load-error")
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| this.load(false, cx)))
                         .child(
                             div()
-                                .id("accounts-retry")
-                                .px(px(Theme::SPACE_SM))
-                                .py(px(3.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_color(theme.text)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme.element_hover))
-                                .on_click(cx.listener(|this, _, _, cx| this.load(false, cx)))
-                                .child(SharedString::from("Retry")),
+                                .mt(px(4.0))
+                                .text_size(px(11.5))
+                                .text_color(Theme::dark().text_muted)
+                                .child(SharedString::from("Click to retry")),
                         )
                         .into_any_element(),
                 ]
@@ -925,66 +982,66 @@ impl Render for AccountsPage {
                             .iter()
                             .enumerate()
                             .map(|(ix, account)| {
-                                self.render_account_row(account, ix, &theme, now, cx)
+                                self.render_account_row(account, ix, ix == 0, &theme, now, cx)
                             })
                             .collect();
                         let add_id: SharedString = format!("add-account-{name}").into();
+                        let (mark, tint) = provider_icon(harness);
+                        let card = widgets::section_card(&theme).mt(px(8.0));
+                        let card = if rows.is_empty() {
+                            card.child(
+                                div()
+                                    .px(px(20.0))
+                                    .py(px(32.0))
+                                    .text_center()
+                                    .text_size(px(14.0))
+                                    .text_color(theme.text_muted.opacity(0.6))
+                                    .child(SharedString::from("No accounts detected")),
+                            )
+                        } else {
+                            card.children(rows)
+                        };
                         div()
+                            .mt(px(24.0))
                             .flex()
                             .flex_col()
-                            .gap(px(Theme::SPACE_SM))
-                            .p(px(Theme::SPACE_MD))
-                            .rounded(px(Theme::PANEL_RADIUS))
-                            .bg(theme.surface)
-                            .border_1()
-                            .border_color(theme.border)
                             .child(
                                 div()
                                     .flex()
                                     .flex_row()
                                     .items_center()
-                                    .justify_between()
+                                    .gap(px(8.0))
                                     .child(
-                                        div()
-                                            .text_size(px(13.0))
-                                            .text_color(theme.text)
-                                            .child(SharedString::from(name)),
+                                        crate::icons::icon(mark)
+                                            .size(px(16.0))
+                                            .text_color(tint.unwrap_or(theme.text_muted)),
                                     )
                                     .child(
                                         div()
-                                            .id(add_id)
-                                            .px(px(Theme::SPACE_SM))
-                                            .py(px(3.0))
-                                            .rounded(px(Theme::CONTROL_RADIUS))
-                                            .border_1()
-                                            .border_color(theme.border)
-                                            .text_size(px(11.0))
+                                            .text_size(px(14.0))
+                                            .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(theme.text)
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(theme.element_hover))
+                                            .child(SharedString::from(name)),
+                                    )
+                                    .child(div().flex_1())
+                                    .child(
+                                        widgets::ghost_action(&theme)
+                                            .id(add_id)
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.start_login(harness, cx);
                                             }))
+                                            .child(
+                                                crate::icons::icon(crate::icons::PLUS)
+                                                    .size(px(14.0))
+                                                    .text_color(theme.text_muted),
+                                            )
                                             .child(SharedString::from("Add account")),
                                     ),
                             )
                             .when_some(warning, |el, warning| {
-                                el.child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(theme.warning)
-                                        .child(SharedString::from(warning)),
-                                )
+                                el.child(widgets::warning_strip(warning))
                             })
-                            .when(rows.is_empty(), |el| {
-                                el.child(
-                                    div()
-                                        .text_size(px(11.0))
-                                        .text_color(theme.text_faint)
-                                        .child(SharedString::from("No accounts detected")),
-                                )
-                            })
-                            .children(rows)
+                            .child(card)
                             .into_any_element()
                     })
                     .collect()
@@ -995,64 +1052,42 @@ impl Render for AccountsPage {
             .id("accounts-page")
             .size_full()
             .overflow_y_scroll()
-            .p(px(Theme::SPACE_LG))
-            .flex()
-            .flex_col()
-            .gap(px(Theme::SPACE_MD))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
-                    .child(
-                        div()
-                            .text_size(px(14.0))
-                            .text_color(theme.text)
-                            .child(SharedString::from("Agent accounts")),
-                    )
+                widgets::page_column()
                     .child(
                         div()
                             .flex()
                             .flex_row()
                             .items_center()
-                            .gap(px(Theme::SPACE_SM))
+                            .gap(px(10.0))
+                            .child(widgets::page_header(&theme, "Accounts", account_count))
+                            .child(div().flex_1())
                             .child(switcher)
                             .child(
-                                div()
+                                widgets::ghost_action(&theme)
                                     .id("accounts-refresh")
-                                    .px(px(Theme::SPACE_SM))
-                                    .py(px(3.0))
-                                    .rounded(px(Theme::CONTROL_RADIUS))
-                                    .text_size(px(11.0))
-                                    .text_color(theme.text_muted)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(theme.element_hover))
+                                    .flex_none()
                                     .on_click(cx.listener(|this, _, _, cx| this.load(true, cx)))
                                     .child(SharedString::from("Refresh usage")),
                             ),
-                    ),
+                    )
+                    .child(widgets::page_subtitle(
+                        &theme,
+                        "Agent CLI logins and usage limits for this device.",
+                    ))
+                    .when_some(self.error.clone(), |el, message| {
+                        el.child(
+                            widgets::error_strip(message)
+                                .id("accounts-action-error")
+                                .cursor_pointer()
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.error = None;
+                                    cx.notify();
+                                })),
+                        )
+                    })
+                    .children(sections),
             )
-            .when_some(self.error.clone(), |el, message| {
-                el.child(
-                    div()
-                        .id("accounts-action-error")
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(4.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(theme.danger)
-                        .text_size(px(12.0))
-                        .text_color(theme.danger)
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.error = None;
-                            cx.notify();
-                        }))
-                        .child(message),
-                )
-            })
-            .children(cards)
             .when_some(dialog, |el, dialog| el.child(dialog))
     }
 }

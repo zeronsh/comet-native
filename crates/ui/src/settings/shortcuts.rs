@@ -95,11 +95,22 @@ impl ShortcutsPage {
     }
 }
 
+/// One-line purpose copy per shortcut (comet settings.shortcuts.tsx rows).
+fn description(id: ShortcutId) -> &'static str {
+    match id {
+        ShortcutId::ToggleSidebar => "Show or hide the session sidebar",
+        ShortcutId::ToggleChanges => "Show or hide the changes pane",
+        ShortcutId::ToggleTerminal => "Show or hide the terminal panel",
+    }
+}
+
 impl Render for ShortcutsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
         let conflicts = conflicted_shortcuts(&self.keymap);
         let recording = self.recording;
+        let any_conflict = !conflicts.is_empty();
 
         let rows = ShortcutId::ALL.into_iter().enumerate().map(|(ix, id)| {
             let combo = self.keymap.get(id).to_string();
@@ -107,64 +118,90 @@ impl Render for ShortcutsPage {
             let conflicted = conflicts.contains(&id);
             let non_default = combo != id.default_combo();
             let chip_text: SharedString = if is_recording {
-                "Press keys… (Esc cancels)".into()
+                "Press keys…".into()
             } else {
                 display_combo(&combo).into()
             };
+            // comet settings.shortcuts.tsx row: min-h-[72px] px-5 gap-5, label
+            // + description left, Reset (only when modified), then the combo
+            // chip — recording inverts it to white-on-black.
             div()
+                .min_h(px(72.0))
+                .px(px(20.0))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(Theme::SPACE_MD))
-                .px(px(Theme::SPACE_MD))
-                .py(px(10.0))
-                .border_b_1()
-                .border_color(theme.border)
+                .gap(px(20.0))
+                .when(ix > 0, |el| el.border_t_1().border_color(theme.border))
                 .child(
                     div()
                         .flex_1()
+                        .min_w_0()
                         .flex()
                         .flex_col()
-                        .gap(px(2.0))
                         .child(
                             div()
                                 .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.text)
                                 .child(SharedString::from(id.label())),
                         )
-                        .when(conflicted, |el| {
-                            el.child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(theme.danger)
-                                    .child(SharedString::from("Conflicts with another shortcut")),
-                            )
-                        }),
+                        .child(
+                            div()
+                                .mt(px(2.0))
+                                .text_size(px(12.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from(description(id))),
+                        ),
                 )
-                // Click-to-record combo chip.
+                .when(non_default && !is_recording, |el| {
+                    el.child(
+                        div()
+                            .id(("shortcut-reset", ix))
+                            .text_size(px(11.0))
+                            .text_color(theme.text_muted.opacity(0.7))
+                            .cursor_pointer()
+                            .hover(|s| s.text_color(Theme::dark().text))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.keymap.reset(id);
+                                this.recording = None;
+                                this.commit(cx);
+                            }))
+                            .child(SharedString::from("Reset")),
+                    )
+                })
                 .child(
                     div()
                         .id(("shortcut-combo", ix))
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(4.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .min_w(px(96.0))
+                        .px(px(12.0))
+                        .py(px(6.0))
+                        .rounded(px(8.0))
                         .border_1()
-                        .border_color(if conflicted {
-                            theme.danger
-                        } else if is_recording {
-                            theme.accent
-                        } else {
-                            theme.border
-                        })
-                        .text_size(px(11.0))
+                        .flex()
+                        .justify_center()
                         .font_family(theme.font_mono.clone())
-                        .text_color(if is_recording {
-                            theme.accent
-                        } else {
-                            theme.text
-                        })
+                        .text_size(px(12.0))
                         .cursor_pointer()
-                        .hover(|s| s.bg(theme.element_hover))
+                        .map(|el| {
+                            if is_recording {
+                                el.border_color(theme.text.opacity(0.3))
+                                    .bg(theme.text)
+                                    .text_color(crate::theme::grey(0x0e))
+                            } else if conflicted {
+                                el.border_color(theme.danger.opacity(0.5))
+                                    .bg(theme.bg)
+                                    .text_color(theme.text)
+                            } else {
+                                el.border_color(theme.border)
+                                    .bg(theme.bg)
+                                    .text_color(theme.text)
+                                    .hover(|s| {
+                                        s.border_color(crate::theme::white_alpha(0.2))
+                                            .bg(crate::theme::white_alpha(0.03))
+                                    })
+                            }
+                        })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.recording = Some(id);
                             window.focus(&this.focus, cx);
@@ -172,29 +209,15 @@ impl Render for ShortcutsPage {
                         }))
                         .child(chip_text),
                 )
-                .child(
-                    div()
-                        .id(("shortcut-reset", ix))
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(3.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .text_size(px(11.0))
-                        .text_color(if non_default {
-                            theme.text_muted
-                        } else {
-                            theme.text_faint
-                        })
-                        .when(non_default, |el| {
-                            el.cursor_pointer().hover(|s| s.bg(theme.element_hover))
-                        })
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.keymap.reset(id);
-                            this.recording = None;
-                            this.commit(cx);
-                        }))
-                        .child(SharedString::from("Reset")),
-                )
         });
+
+        let helper: SharedString = if recording.is_some() {
+            "Press Escape to cancel.".into()
+        } else if any_conflict {
+            "Shortcuts conflict — each combo must be unique.".into()
+        } else {
+            "Shortcuts must be unique.".into()
+        };
 
         div()
             .id("shortcuts-page")
@@ -204,43 +227,55 @@ impl Render for ShortcutsPage {
             .on_key_down(
                 cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
             )
-            .p(px(Theme::SPACE_LG))
-            .flex()
-            .flex_col()
-            .gap(px(Theme::SPACE_MD))
             .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
+                widgets::page_column()
                     .child(
                         div()
-                            .text_size(px(14.0))
-                            .text_color(theme.text)
-                            .child(SharedString::from("Keyboard shortcuts")),
+                            .flex()
+                            .flex_row()
+                            .items_start()
+                            .justify_between()
+                            .gap(px(24.0))
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .child(widgets::page_header(
+                                        &theme,
+                                        "Keyboard shortcuts",
+                                        None,
+                                    ))
+                                    .child(widgets::page_subtitle(
+                                        &theme,
+                                        "Click a binding, then press the new combo.",
+                                    )),
+                            )
+                            .child(
+                                widgets::ghost_action(&theme)
+                                    .id("shortcuts-restore-defaults")
+                                    .flex_none()
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.keymap = KeymapConfig::default();
+                                        this.recording = None;
+                                        this.commit(cx);
+                                    }))
+                                    .child(SharedString::from("Restore defaults")),
+                            ),
                     )
+                    .child(widgets::section_card(&theme).mt(px(32.0)).children(rows))
                     .child(
                         div()
-                            .id("shortcuts-restore-defaults")
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(3.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(px(11.0))
-                            .text_color(theme.text_muted)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.keymap = KeymapConfig::default();
-                                this.recording = None;
-                                this.commit(cx);
-                            }))
-                            .child(SharedString::from("Restore defaults")),
+                            .mt(px(12.0))
+                            .px(px(4.0))
+                            .text_size(px(12.0))
+                            .text_color(if any_conflict {
+                                theme.danger.opacity(0.9)
+                            } else {
+                                theme.text_muted
+                            })
+                            .child(helper),
                     ),
             )
-            .children(rows)
     }
 }
 

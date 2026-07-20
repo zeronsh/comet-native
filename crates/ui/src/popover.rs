@@ -11,10 +11,10 @@
 //! classification) lives in free functions with unit tests; the elements only
 //! feed them measurements/events.
 
-use gpui::{Anchor, AnyElement, ElementId, IntoElement, Pixels, Point, div, prelude::*, px};
+use gpui::{Anchor, AnyElement, ElementId, IntoElement, Pixels, Point, SharedString, div, prelude::*, px};
 
 use crate::motion::{self, AnimationExt as _, COMET_PULSE};
-use crate::theme::Theme;
+use crate::theme::{Theme, grey, white_alpha};
 
 // ---------------------------------------------------------------------------
 // Loadable — async slot state shared by pickers/settings pages
@@ -135,17 +135,44 @@ pub fn classify_key(key: &str, cmd: bool, ctrl: bool) -> MenuKey {
 // Elements
 // ---------------------------------------------------------------------------
 
-/// The raised popover card surface (glass-adjacent: raised neutral + hairline).
+/// The floating-menu surface (comet `.glass-surface` + `menuSurface`):
+/// `rounded-xl border border-white/[0.1] p-1` over the frosted glass tint.
+/// gpui has no backdrop blur at the pinned rev, so the glass
+/// (`oklch(0.33 0 0 / 34%)` over blurred dark content) is approximated with
+/// the near-opaque tone it composites to on the dark panels (~#161616), plus
+/// the same hairline + baked-in shadow.
 pub fn popover_card(theme: &Theme) -> gpui::Div {
     div()
-        .bg(theme.surface_raised)
+        .bg(grey(0x16))
         .border_1()
-        .border_color(theme.border_strong)
-        .rounded(px(Theme::PANEL_RADIUS))
+        .border_color(white_alpha(0.10))
+        .rounded(px(12.0))
         .shadow_lg()
         .p(px(4.0))
+        .overflow_hidden()
         .text_size(px(13.0))
         .text_color(theme.text)
+}
+
+/// [`popover_card`] without the `p-1` inset — for popovers that manage their
+/// own internal panes (the harness/model picker's rail + list split).
+pub fn popover_card_flush(theme: &Theme) -> gpui::Div {
+    popover_card(theme).p(px(0.0))
+}
+
+/// Pin a floating layer's origin to the trigger's top-left. The anchored
+/// element is absolutely positioned; without explicit insets its *static*
+/// position is subject to the trigger's own flex alignment (an `items_center`
+/// trigger would vertically center the whole floating layer). A zero-size
+/// absolutely-inset wrapper fixes the origin at the corner.
+fn pinned_layer(layer: AnyElement) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .left_0()
+        .size_0()
+        .child(layer)
+        .into_any_element()
 }
 
 /// Wrap popover content in a floating anchored layer attached to the trigger:
@@ -153,14 +180,32 @@ pub fn popover_card(theme: &Theme) -> gpui::Div {
 /// open. Plays `menu-in` (0.14s fade + 2px drop). Dismissal is the caller's
 /// `.on_mouse_down_out` on the content.
 pub fn anchored_menu(id: impl Into<ElementId>, content: AnyElement) -> AnyElement {
-    gpui::deferred(
-        gpui::anchored()
-            .anchor(Anchor::TopLeft)
-            .snap_to_window_with_margin(px(8.0))
-            .child(motion::menu_in(id, div().child(content))),
+    pinned_layer(
+        gpui::deferred(
+            gpui::anchored()
+                .anchor(Anchor::TopLeft)
+                .snap_to_window_with_margin(px(8.0))
+                .child(motion::menu_in(id, div().pt(px(6.0)).child(content))),
+        )
+        .priority(1)
+        .into_any_element(),
     )
-    .priority(1)
-    .into_any_element()
+}
+
+/// [`anchored_menu`] opening UPWARD from the trigger (composer pickers, the
+/// user menu — anything anchored near the window bottom; Radix flips these
+/// automatically, gpui's `anchored` needs the side picked).
+pub fn anchored_menu_above(id: impl Into<ElementId>, content: AnyElement) -> AnyElement {
+    pinned_layer(
+        gpui::deferred(
+            gpui::anchored()
+                .anchor(Anchor::BottomLeft)
+                .snap_to_window_with_margin(px(8.0))
+                .child(motion::menu_in(id, div().pb(px(6.0)).child(content))),
+        )
+        .priority(1)
+        .into_any_element(),
+    )
 }
 
 /// A floating menu at an explicit window position (context menus).
@@ -182,16 +227,22 @@ pub fn menu_at(
 
 /// Full-window modal: dim scrim + centered card with the `dialog-in` entrance.
 /// The scrim swallows clicks; the caller wires its own dismiss/confirm.
-pub fn modal(id: impl Into<ElementId>, card: AnyElement) -> AnyElement {
+/// `viewport` is the window size (an `anchored` layer sizes to its children,
+/// so the scrim needs explicit dimensions).
+pub fn modal(
+    id: impl Into<ElementId>,
+    viewport: gpui::Size<Pixels>,
+    card: AnyElement,
+) -> AnyElement {
     gpui::deferred(
         gpui::anchored()
             .position(gpui::point(px(0.0), px(0.0)))
             .child(
                 div()
                     .occlude()
-                    .w_full()
-                    .h_full()
-                    .bg(gpui::hsla(0.0, 0.0, 0.0, 0.5))
+                    .w(viewport.width)
+                    .h(viewport.height)
+                    .bg(gpui::hsla(0.0, 0.0, 0.0, 0.6))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -202,20 +253,194 @@ pub fn modal(id: impl Into<ElementId>, card: AnyElement) -> AnyElement {
     .into_any_element()
 }
 
-/// One menu row: hover wash, active highlight, pointer cursor. The caller adds
-/// the id/click listener.
+/// One menu row (comet `menuItem`): `gap-2.5 rounded-lg px-2 py-1.5
+/// text-[13px]`, active = `bg-white/10 text-foreground`, hover wash
+/// `white/[0.08]`. The caller adds the id/click listener.
 pub fn menu_row(theme: &Theme, active: bool) -> gpui::Div {
-    div()
+    let row = div()
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(Theme::SPACE_SM))
-        .px(px(Theme::SPACE_SM))
-        .py(px(5.0))
-        .rounded(px(Theme::CONTROL_RADIUS))
+        .gap(px(10.0))
+        .px(px(8.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .text_size(px(13.0))
+        .cursor_pointer();
+    if active {
+        row.bg(white_alpha(0.10)).text_color(theme.text)
+    } else {
+        row.text_color(theme.text.opacity(0.9))
+            .hover(|s| s.bg(white_alpha(0.08)).text_color(Theme::dark().text))
+    }
+}
+
+/// Small uppercase section heading inside a floating menu (comet
+/// `MenuHeading`): `px-2 pb-1 pt-1.5 text-[10px] font-medium uppercase
+/// tracking-[0.1em] text-muted-foreground/60`. gpui has no letter-spacing at
+/// the pinned rev; the tracking is approximated with hair spaces.
+pub fn menu_heading(theme: &Theme, label: &str) -> gpui::Div {
+    div()
+        .px(px(8.0))
+        .pb(px(4.0))
+        .pt(px(6.0))
+        .text_size(px(10.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(theme.text_muted.opacity(0.6))
+        .child(SharedString::from(tracked_upper(label)))
+}
+
+/// Uppercase + hair-space tracking (see [`menu_heading`]).
+pub fn tracked_upper(label: &str) -> String {
+    let upper = label.to_uppercase();
+    let mut out = String::with_capacity(upper.len() * 2);
+    let mut first = true;
+    for ch in upper.chars() {
+        if !first {
+            out.push('\u{200A}'); // hair space ≈ 0.1em tracking
+        }
+        out.push(ch);
+        first = false;
+    }
+    out
+}
+
+/// Hairline divider between menu sections (comet `MenuSeparator`:
+/// `mx-1 my-1 h-px bg-white/[0.07]`).
+pub fn menu_separator() -> gpui::Div {
+    div().h(px(1.0)).mx(px(4.0)).my(px(4.0)).bg(white_alpha(0.07))
+}
+
+/// The trailing check on the selected row (comet `MenuCheck`): 14px,
+/// `text-foreground/70`, pushed to the row end by the caller's flex.
+pub fn menu_check(theme: &Theme) -> impl IntoElement {
+    crate::icons::icon(crate::icons::CHECK)
+        .size(px(14.0))
+        .text_color(theme.text.opacity(0.7))
+}
+
+/// A muted kbd hint chip inside menu rows (`⌘↵`-style accelerators).
+pub fn kbd_hint(theme: &Theme, label: &str) -> gpui::Div {
+    div()
+        .flex_none()
+        .px(px(5.0))
+        .py(px(1.0))
+        .rounded(px(5.0))
+        .bg(white_alpha(0.05))
+        .text_size(px(10.0))
+        .font_family(Theme::dark().font_mono.clone())
+        .text_color(theme.text_muted.opacity(0.6))
+        .child(SharedString::from(label.to_string()))
+}
+
+/// The search/text input frame at the top of a picker popover (comet
+/// `searchInput`: `rounded-lg bg-white/[0.04] px-2.5 py-1.5 text-[13px]`,
+/// borderless).
+pub fn search_input_frame(_theme: &Theme, input: AnyElement) -> gpui::Div {
+    div()
+        .m(px(4.0))
+        .px(px(10.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .bg(white_alpha(0.04))
+        .text_size(px(13.0))
+        .child(input)
+}
+
+// ---------------------------------------------------------------------------
+// Dialog primitives (comet dialog.tsx / sidebar dialogs.tsx)
+// ---------------------------------------------------------------------------
+
+/// The centered dialog card (`dialog-pop`): `w-[360px] rounded-2xl border
+/// border-white/[0.1] bg-popover/95 p-5 shadow-2xl` — popover tone ≈ #101010.
+pub fn dialog_card(theme: &Theme) -> gpui::Div {
+    div()
+        .w(px(360.0))
+        .p(px(20.0))
+        .rounded(px(16.0))
+        .bg(grey(0x10))
+        .border_1()
+        .border_color(white_alpha(0.10))
+        .shadow_lg()
+        .flex()
+        .flex_col()
+        .text_color(theme.text)
+}
+
+/// Dialog title: `text-[15px] font-semibold tracking-tight`.
+pub fn dialog_title(theme: &Theme, title: &str) -> gpui::Div {
+    div()
+        .text_size(px(15.0))
+        .font_weight(gpui::FontWeight::SEMIBOLD)
+        .text_color(theme.text)
+        .child(SharedString::from(title.to_string()))
+}
+
+/// Dialog body copy: `text-[13px] leading-relaxed text-muted-foreground`.
+pub fn dialog_body(theme: &Theme, copy: impl Into<SharedString>) -> gpui::Div {
+    div()
+        .text_size(px(13.0))
+        .line_height(px(19.0))
+        .text_color(theme.text_muted)
+        .child(copy.into())
+}
+
+/// Dialog text-field frame: `rounded-lg border border-white/[0.08]
+/// bg-white/[0.04] px-3 py-2 text-[14px]`.
+pub fn dialog_field(input: AnyElement) -> gpui::Div {
+    div()
+        .w_full()
+        .px(px(12.0))
+        .py(px(8.0))
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(white_alpha(0.08))
+        .bg(white_alpha(0.04))
+        .text_size(px(14.0))
+        .child(input)
+}
+
+/// Ghost button (`btnGhost`): quiet text, hover wash. Caller adds id + click.
+pub fn btn_ghost(theme: &Theme, label: &str) -> gpui::Div {
+    div()
+        .px(px(12.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .text_size(px(13.0))
+        .text_color(theme.text_muted)
         .cursor_pointer()
-        .when(active, |el| el.bg(theme.element_active))
-        .hover(|s| s.bg(theme.element_hover))
+        .hover(|s| s.bg(white_alpha(0.06)).text_color(Theme::dark().text))
+        .child(SharedString::from(label.to_string()))
+}
+
+/// Primary button (`btnPrimary`): white fill, near-black text.
+pub fn btn_primary(theme: &Theme, label: &str) -> gpui::Div {
+    div()
+        .px(px(12.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .bg(theme.text)
+        .text_size(px(13.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(grey(0x0e))
+        .cursor_pointer()
+        .hover(|s| s.opacity(0.9))
+        .child(SharedString::from(label.to_string()))
+}
+
+/// Destructive button (`btnDestructive`): the muted red fill.
+pub fn btn_danger(_theme: &Theme, label: &str) -> gpui::Div {
+    div()
+        .px(px(12.0))
+        .py(px(6.0))
+        .rounded(px(8.0))
+        .bg(crate::theme::oklch(0.58, 0.16, 25.0))
+        .text_size(px(13.0))
+        .font_weight(gpui::FontWeight::MEDIUM)
+        .text_color(gpui::white())
+        .cursor_pointer()
+        .hover(|s| s.opacity(0.9))
+        .child(SharedString::from(label.to_string()))
 }
 
 /// Pulsing skeleton rows shown while a list loads.
@@ -302,6 +527,13 @@ mod tests {
         assert_eq!(classify_key("escape", false, false), MenuKey::Escape);
         assert_eq!(classify_key("backspace", false, false), MenuKey::Backspace);
         assert_eq!(classify_key("a", false, false), MenuKey::Other);
+    }
+
+    #[test]
+    fn tracked_upper_spaces_letters() {
+        assert_eq!(tracked_upper("ab"), "A\u{200A}B");
+        assert_eq!(tracked_upper("Question"), "Q\u{200A}U\u{200A}E\u{200A}S\u{200A}T\u{200A}I\u{200A}O\u{200A}N");
+        assert_eq!(tracked_upper(""), "");
     }
 
     #[test]

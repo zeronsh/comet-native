@@ -154,6 +154,11 @@ impl Wizard {
             .is_some_and(|p| p.contains(&option_ix))
     }
 
+    /// Whether the current page has any picked option.
+    pub fn page_has_pick(&self) -> bool {
+        self.picked.get(self.page).is_some_and(|p| !p.is_empty())
+    }
+
     /// Click/tap an option.
     pub fn select(&mut self, option_ix: usize) -> WizardStep {
         let Some(question) = self.questions.get(self.page) else {
@@ -1266,12 +1271,21 @@ impl Composer {
                 if !same {
                     self.wizard = Some(Wizard::new(request_id, questions));
                     self.advance_task = None;
+                    // The shared input becomes the panel's free-text override.
+                    self.input.update(cx, |input, cx| {
+                        input.set_placeholder(
+                            "Type your own answer, or pick an option above",
+                            cx,
+                        )
+                    });
                 }
             }
             _ => {
                 if self.wizard.is_some() {
                     self.wizard = None;
                     self.advance_task = None;
+                    self.input
+                        .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
                 }
             }
         }
@@ -1507,7 +1521,19 @@ impl Composer {
         let Some(wizard) = self.wizard.as_mut() else {
             return;
         };
-        match wizard.select(option_ix) {
+        let step = wizard.select(option_ix);
+        let has_pick = wizard.page_has_pick();
+        self.input.update(cx, |input, cx| {
+            input.set_placeholder(
+                if has_pick {
+                    "Type your own answer, or leave this blank to use the selected option"
+                } else {
+                    "Type your own answer, or pick an option above"
+                },
+                cx,
+            )
+        });
+        match step {
             WizardStep::AutoAdvance => self.schedule_auto_advance(cx),
             WizardStep::Done(answers) => self.wizard_finish(answers, cx),
             WizardStep::Stay => {}
@@ -1605,6 +1631,11 @@ impl Composer {
 
     // ---- render pieces ----
 
+    /// The agent-asked-a-question panel (comet question-panel.tsx), rendered in
+    /// place of the composer: the same floating-pill chrome (`rounded-[26px]
+    /// border-white/[0.08] bg-white/[0.03] shadow-xl`), uppercase header +
+    /// "1/3" counter chip, option rows with number kbd chips, a free-text
+    /// override over a hairline, and Back / Next-Submit footer.
     fn render_wizard(&mut self, cx: &mut Context<Self>) -> gpui::AnyElement {
         let theme = Theme::of(cx).clone();
         let Some(wizard) = self.wizard.clone() else {
@@ -1615,42 +1646,76 @@ impl Composer {
             return gpui::Empty.into_any_element();
         };
         let page = wizard.page;
+        let last = page + 1 >= wizard.questions.len();
+        let typed_empty = self.input.read(cx).is_empty();
+        let can_advance = wizard.page_has_pick() || !typed_empty;
 
         let options = question.options.iter().enumerate().map(|(ix, label)| {
-            let picked = wizard.is_picked(ix);
-            let marker: SharedString = if question.multi_select {
-                if picked { "☑".into() } else { "☐".into() }
-            } else {
-                format!("{}", ix + 1).into()
-            };
+            // Selection reads on the row only while no typed override exists
+            // (typed answers win — comet question-panel.tsx `isSel`).
+            let picked = wizard.is_picked(ix) && typed_empty;
             div()
                 .id(("wizard-option", ix))
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
-                .px(px(10.0))
-                .py(px(6.0))
-                .rounded(px(Theme::CONTROL_RADIUS))
+                .gap(px(12.0))
+                .px(px(14.0))
+                .py(px(10.0))
+                .rounded(px(12.0))
                 .border_1()
-                .border_color(if picked { theme.accent } else { theme.border })
-                .when(picked, |el| el.bg(theme.element_active))
-                .hover(|s| s.bg(theme.element_hover))
+                .border_color(if picked {
+                    crate::theme::white_alpha(0.16)
+                } else {
+                    gpui::transparent_black()
+                })
+                .bg(if picked {
+                    crate::theme::white_alpha(0.09)
+                } else {
+                    crate::theme::white_alpha(0.025)
+                })
+                .when(!picked, |el| {
+                    el.hover(|s| s.bg(crate::theme::white_alpha(0.06)))
+                })
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.wizard_select(ix, cx)))
                 .child(
                     div()
-                        .flex_none()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_faint)
-                        .child(marker),
-                )
-                .child(
-                    div()
-                        .text_size(px(13.0))
-                        .text_color(theme.text)
+                        .flex_1()
+                        .min_w_0()
+                        .text_size(px(13.5))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(if picked {
+                            theme.text
+                        } else {
+                            theme.text.opacity(0.9)
+                        })
                         .child(SharedString::from(label.clone())),
                 )
+                .when(ix < 9, |el| {
+                    el.child(
+                        // Number kbd chip: `size-[22px] rounded-md text-[11px]`.
+                        div()
+                            .flex_none()
+                            .size(px(22.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(6.0))
+                            .bg(if picked {
+                                crate::theme::white_alpha(0.16)
+                            } else {
+                                crate::theme::white_alpha(0.05)
+                            })
+                            .text_size(px(11.0))
+                            .text_color(if picked {
+                                theme.text
+                            } else {
+                                theme.text_muted.opacity(0.6)
+                            })
+                            .child(SharedString::from(format!("{}", ix + 1))),
+                    )
+                })
         });
 
         div()
@@ -1659,79 +1724,109 @@ impl Composer {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_wizard_key(event, window, cx)
             }))
-            .flex()
-            .flex_col()
-            .gap(px(Theme::SPACE_SM))
-            .p(px(Theme::SPACE_MD))
-            .rounded(px(Theme::PANEL_RADIUS))
-            .bg(Theme::of(cx).surface)
+            .rounded(px(26.0))
             .border_1()
             .border_color(theme.border)
+            .bg(crate::theme::white_alpha(0.03))
+            .shadow_lg()
+            .flex()
+            .flex_col()
             .child(
                 div()
+                    .px(px(16.0))
+                    .pt(px(16.0))
                     .flex()
-                    .flex_row()
-                    .items_center()
-                    .justify_between()
+                    .flex_col()
+                    // Header: tracked uppercase + counter chip when paged.
                     .child(
                         div()
-                            .text_size(px(12.0))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(question.header.clone())),
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .gap(px(10.0))
+                            .child(
+                                div()
+                                    .text_size(px(10.5))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text_muted.opacity(0.6))
+                                    .child(SharedString::from(crate::popover::tracked_upper(
+                                        &question.header,
+                                    ))),
+                            )
+                            .when(wizard.questions.len() > 1, |el| {
+                                el.child(
+                                    div()
+                                        .h(px(20.0))
+                                        .px(px(6.0))
+                                        .flex()
+                                        .items_center()
+                                        .rounded(px(6.0))
+                                        .bg(crate::theme::white_alpha(0.06))
+                                        .text_size(px(10.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(theme.text_muted.opacity(0.6))
+                                        .child(SharedString::from(counter)),
+                                )
+                            }),
                     )
                     .child(
                         div()
-                            .text_size(px(11.0))
-                            .text_color(theme.text_faint)
-                            .child(SharedString::from(counter)),
+                            .mt(px(6.0))
+                            .text_size(px(15.0))
+                            .line_height(px(20.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text)
+                            .child(SharedString::from(question.question.clone())),
+                    )
+                    .when(question.multi_select, |el| {
+                        el.child(
+                            div()
+                                .mt(px(4.0))
+                                .text_size(px(12.0))
+                                .text_color(theme.text_muted.opacity(0.65))
+                                .child(SharedString::from("Select one or more options.")),
+                        )
+                    })
+                    .child(div().mt(px(12.0)).flex().flex_col().gap(px(4.0)).children(options))
+                    // Free-text override over a hairline (shares the composer
+                    // input entity).
+                    .child(
+                        div()
+                            .mt(px(12.0))
+                            .border_t_1()
+                            .border_color(crate::theme::white_alpha(0.06))
+                            .pt(px(12.0))
+                            .pb(px(4.0))
+                            .px(px(4.0))
+                            .child(self.input.clone()),
                     ),
             )
             .child(
                 div()
-                    .text_size(px(13.0))
-                    .text_color(theme.text)
-                    .child(SharedString::from(question.question.clone())),
-            )
-            .child(div().flex().flex_col().gap(px(4.0)).children(options))
-            // Free-text override shares the composer input.
-            .child(div().pt(px(2.0)).child(self.input.clone()))
-            .child(
-                div()
                     .flex()
                     .flex_row()
                     .justify_between()
                     .items_center()
-                    .child(
-                        div()
+                    .px(px(16.0))
+                    .pb(px(16.0))
+                    .pt(px(4.0))
+                    .child(if page > 0 {
+                        crate::popover::btn_ghost(&theme, "Back")
                             .id("wizard-back")
-                            .px(px(10.0))
-                            .py(px(4.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .text_size(px(12.0))
-                            .text_color(if page > 0 {
-                                theme.text_muted
-                            } else {
-                                theme.text_faint
-                            })
-                            .when(page > 0, |el| {
-                                el.cursor_pointer()
-                                    .hover(|s| s.bg(Theme::dark().element_hover))
-                            })
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
-                            .child(SharedString::from("Back")),
-                    )
+                            .into_any_element()
+                    } else {
+                        gpui::Empty.into_any_element()
+                    })
                     .child(
-                        div()
-                            .id("wizard-submit")
-                            .px(px(12.0))
-                            .py(px(4.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .bg(theme.accent_strong)
-                            .text_size(px(12.0))
-                            .text_color(gpui::white())
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx)))
-                            .child(SharedString::from("Submit")),
+                        crate::popover::btn_primary(
+                            &theme,
+                            if last { "Submit" } else { "Next" },
+                        )
+                        .id("wizard-submit")
+                        .px(px(16.0))
+                        .when(!can_advance, |el| el.opacity(0.4))
+                        .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
                     ),
             )
             .into_any_element()

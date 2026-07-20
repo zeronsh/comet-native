@@ -277,10 +277,20 @@ impl Pickers {
         // Chat selection / config changes must re-render the chips (child views
         // only re-render on their own notify).
         let state_observe = cx.observe(&state, |_, _, cx| cx.notify());
+        // Dev/testing knob: `COMET_OPEN_PICKER=model|traits|repo|branch` boots
+        // with that popover open — synthetic input can't reach the app on
+        // headless compositors, so captures need a data-side path.
+        let open = match std::env::var("COMET_OPEN_PICKER").ok().as_deref() {
+            Some("model") => Some(PickerKind::HarnessModel),
+            Some("traits") => Some(PickerKind::Traits),
+            Some("repo") => Some(PickerKind::Repo),
+            Some("branch") => Some(PickerKind::Branch),
+            _ => None,
+        };
         Self {
             state,
             config: DraftConfig::default(),
-            open: None,
+            open,
             repo_pane: RepoPane::List,
             harnesses: Loadable::Idle,
             models: HashMap::new(),
@@ -902,15 +912,31 @@ impl Pickers {
             .into_any_element()
     }
 
+    /// [`Self::popover_frame`] without the p-1 inset — the harness/model
+    /// picker's rail + list panes bleed to the card edge (comet
+    /// harness-model-picker.tsx `className="w-80 p-0"`).
+    fn popover_frame_flush(
+        &self,
+        width: f32,
+        content: AnyElement,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        popover::popover_card_flush(&theme)
+            .w(px(width))
+            .track_focus(&self.focus)
+            .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
+                this.on_key_down(event, window, cx)
+            }))
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| this.close(cx)))
+            .flex()
+            .flex_col()
+            .child(content)
+            .into_any_element()
+    }
+
     fn search_box(&self, theme: &Theme) -> AnyElement {
-        div()
-            .m(px(4.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(4.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .border_1()
-            .border_color(theme.border)
-            .child(self.search.clone())
+        popover::search_input_frame(theme, self.search.clone().into_any_element())
             .into_any_element()
     }
 
@@ -975,38 +1001,57 @@ impl Pickers {
                         .into_any_element(),
                     Loadable::Ready(_) => {
                         let active = self.active;
+                        let selected_path = self.config.repo.as_ref().map(|r| r.path.clone());
                         div()
                             .id("repo-list")
                             .flex()
                             .flex_col()
-                            .max_h(px(220.0))
+                            .gap(px(2.0))
+                            .max_h(px(224.0))
                             .overflow_y_scroll()
                             .children(rows.into_iter().enumerate().map(|(ix, repo)| {
                                 let name: SharedString = repo.name.clone().into();
                                 let path: SharedString = repo.path.clone().into();
-                                popover::menu_row(&theme, ix == active)
+                                let is_selected =
+                                    selected_path.as_deref() == Some(repo.path.as_str());
+                                popover::menu_row(&theme, ix == active || is_selected)
                                     .id(("repo-row", ix))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.pick_repo(repo.clone(), cx);
                                     }))
-                                    .child(div().flex_none().child(name))
                                     .child(
+                                        // Two-line row (comet repo-picker.tsx):
+                                        // name over the mono path.
                                         div()
                                             .flex_1()
                                             .min_w_0()
-                                            .truncate()
-                                            .text_size(px(11.0))
-                                            .text_color(theme.text_faint)
-                                            .child(path),
+                                            .flex()
+                                            .flex_col()
+                                            .child(div().truncate().child(name))
+                                            .child(
+                                                div()
+                                                    .truncate()
+                                                    .font_family(theme.font_mono.clone())
+                                                    .text_size(px(11.0))
+                                                    .text_color(theme.text_muted.opacity(0.7))
+                                                    .child(path),
+                                            ),
                                     )
                             }))
                             .into_any_element()
                     }
                 };
-                let action = |id: &'static str, label: &'static str, pane: RepoPane| {
+                let action = |id: &'static str,
+                              label: &'static str,
+                              icon_path: &'static str,
+                              pane: RepoPane| {
                     popover::menu_row(&theme, false)
                         .id(id)
-                        .text_color(theme.text_muted)
+                        .child(
+                            crate::icons::icon(icon_path)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.repo_pane = pane;
                             this.active = 0;
@@ -1039,16 +1084,23 @@ impl Pickers {
                     .flex_col()
                     .child(self.search_box(&theme))
                     .child(body)
-                    .child(div().h(px(1.0)).mx(px(4.0)).my(px(2.0)).bg(theme.border))
+                    .child(popover::menu_separator())
                     .child(action(
                         "repo-open-folder",
                         "Open folder…",
+                        crate::icons::FOLDER,
                         RepoPane::Browser,
                     ))
-                    .child(action("repo-clone", "Clone from URL…", RepoPane::CloneUrl))
+                    .child(action(
+                        "repo-clone",
+                        "Clone from URL…",
+                        crate::icons::GLOBAL,
+                        RepoPane::CloneUrl,
+                    ))
                     .child(action(
                         "repo-create",
                         "Create new repo…",
+                        crate::icons::PLUS,
                         RepoPane::CreateName,
                     ))
                     .into_any_element()
@@ -1064,18 +1116,13 @@ impl Pickers {
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(4.0))
-                    .p(px(4.0))
-                    .child(
-                        div()
-                            .text_size(px(12.0))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from(title)),
-                    )
+                    .gap(px(2.0))
+                    .child(popover::menu_heading(&theme, title))
                     .child(self.search_box(&theme))
                     .when_some(self.form_error.clone(), |el, message| {
                         el.child(
                             div()
+                                .px(px(8.0))
                                 .text_size(px(11.0))
                                 .text_color(theme.danger)
                                 .child(message),
@@ -1086,16 +1133,16 @@ impl Pickers {
                             .flex()
                             .flex_row()
                             .justify_between()
+                            .items_center()
+                            .px(px(4.0))
+                            .pb(px(2.0))
+                            .pt(px(4.0))
                             .child(
-                                div()
+                                popover::btn_ghost(&theme, "Back")
                                     .id("repo-form-back")
-                                    .px(px(Theme::SPACE_SM))
-                                    .py(px(3.0))
-                                    .rounded(px(Theme::CONTROL_RADIUS))
+                                    .px(px(8.0))
+                                    .py(px(4.0))
                                     .text_size(px(12.0))
-                                    .text_color(theme.text_muted)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(theme.element_hover))
                                     .on_click(cx.listener(|this, _, _, cx| {
                                         this.repo_pane = RepoPane::List;
                                         this.form_error = None;
@@ -1104,28 +1151,21 @@ impl Pickers {
                                             input.set_text("", cx);
                                         });
                                         cx.notify();
-                                    }))
-                                    .child(SharedString::from("Back")),
+                                    })),
                             )
                             .child(
-                                div()
-                                    .id("repo-form-submit")
-                                    .px(px(Theme::SPACE_MD))
-                                    .py(px(3.0))
-                                    .rounded(px(Theme::CONTROL_RADIUS))
-                                    .bg(theme.accent_strong)
-                                    .text_size(px(12.0))
-                                    .text_color(gpui::white())
-                                    .when(busy, |el| el.opacity(0.6))
-                                    .cursor_pointer()
-                                    .on_click(
-                                        cx.listener(|this, _, _, cx| this.submit_repo_form(cx)),
-                                    )
-                                    .child(SharedString::from(if busy {
-                                        "Working…"
-                                    } else {
-                                        submit_label
-                                    })),
+                                popover::btn_primary(
+                                    &theme,
+                                    if busy { "Working…" } else { submit_label },
+                                )
+                                .id("repo-form-submit")
+                                .px(px(10.0))
+                                .py(px(4.0))
+                                .text_size(px(12.0))
+                                .when(busy, |el| el.opacity(0.6))
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.submit_repo_form(cx)),
+                                ),
                             ),
                     )
                     .into_any_element()
@@ -1266,6 +1306,7 @@ impl Pickers {
             .flex()
             .flex_col()
             .gap(px(2.0))
+            .child(popover::menu_heading(theme, "Open folder"))
             .child(crumbs)
             .child(body)
             .when_some(self.form_error.clone(), |el, message| {
@@ -1277,7 +1318,7 @@ impl Pickers {
                         .child(message),
                 )
             })
-            .child(div().h(px(1.0)).mx(px(4.0)).my(px(2.0)).bg(theme.border))
+            .child(popover::menu_separator())
             .child(
                 div()
                     .flex()
@@ -1287,38 +1328,36 @@ impl Pickers {
                     .px(px(4.0))
                     .pb(px(2.0))
                     .child(
-                        div()
+                        popover::btn_ghost(theme, "Back")
                             .id("browser-back")
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(3.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .px(px(8.0))
+                            .py(px(4.0))
                             .text_size(px(12.0))
-                            .text_color(theme.text_muted)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.repo_pane = RepoPane::List;
                                 cx.notify();
-                            }))
-                            .child(SharedString::from("Back")),
+                            })),
                     )
                     .when_some(use_this, |el, path| {
                         el.child(
                             div()
                                 .id("browser-use-current")
-                                .px(px(Theme::SPACE_SM))
-                                .py(px(3.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .border_1()
-                                .border_color(theme.border)
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .px(px(8.0))
+                                .py(px(4.0))
+                                .rounded(px(8.0))
                                 .text_size(px(12.0))
                                 .text_color(theme.text)
                                 .cursor_pointer()
-                                .hover(|s| s.bg(theme.element_hover))
+                                .hover(|s| s.bg(crate::theme::white_alpha(0.08)))
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.add_repo_path(path.clone(), cx);
                                 }))
-                                .child(SharedString::from("Use this folder")),
+                                .child(SharedString::from("Use this folder"))
+                                .child(popover::kbd_hint(theme, "⌘↵")),
                         )
                     }),
             )
@@ -1357,36 +1396,39 @@ impl Pickers {
                     .id("branch-list")
                     .flex()
                     .flex_col()
-                    .max_h(px(220.0))
+                    .gap(px(2.0))
+                    .max_h(px(176.0))
                     .overflow_y_scroll()
                     .children(rows.into_iter().enumerate().map(|(ix, branch)| {
                         let label: SharedString = branch.clone().into();
                         let is_selected = selected.as_deref() == Some(branch.as_str());
-                        popover::menu_row(&theme, ix == active)
+                        popover::menu_row(&theme, ix == active || is_selected)
                             .id(("branch-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_branch(branch.clone(), cx);
                             }))
                             .child(div().flex_1().min_w_0().truncate().child(label))
-                            .when(is_selected, |el| {
-                                el.child(
-                                    div()
-                                        .text_color(theme.accent)
-                                        .child(SharedString::from("✓")),
-                                )
-                            })
+                            .when(is_selected, |el| el.child(popover::menu_check(&theme)))
                     }))
                     .into_any_element()
             }
         };
         let isolated = self.config.isolated_worktree;
+        let repo_name = self
+            .config
+            .repo
+            .as_ref()
+            .map(|r| r.name.clone())
+            .unwrap_or_else(|| "<repo>".into());
         div()
             .flex()
             .flex_col()
+            .child(popover::menu_heading(&theme, "Base branch"))
             .child(self.search_box(&theme))
             .child(body)
-            .child(div().h(px(1.0)).mx(px(4.0)).my(px(2.0)).bg(theme.border))
-            // Isolated-worktree toggle (~/.comet/worktrees/… on send).
+            .child(popover::menu_separator())
+            // Isolated-worktree toggle row with a display-only switch (comet
+            // branch-picker.tsx `Toggle`).
             .child(
                 popover::menu_row(&theme, false)
                     .id("branch-isolated")
@@ -1396,16 +1438,8 @@ impl Pickers {
                     }))
                     .child(
                         div()
-                            .flex_none()
-                            .text_color(if isolated {
-                                theme.accent
-                            } else {
-                                theme.text_faint
-                            })
-                            .child(SharedString::from(if isolated { "☑" } else { "☐" })),
-                    )
-                    .child(
-                        div()
+                            .flex_1()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .child(
@@ -1415,26 +1449,34 @@ impl Pickers {
                             )
                             .child(
                                 div()
-                                    .text_size(px(10.0))
-                                    .text_color(theme.text_faint)
-                                    .child(SharedString::from(
-                                        "Runs in a fresh worktree of this branch",
-                                    )),
+                                    .truncate()
+                                    .font_family(theme.font_mono.clone())
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text_muted.opacity(0.7))
+                                    .child(SharedString::from(format!(
+                                        "~/.comet/worktrees/{repo_name}/<name>"
+                                    ))),
                             ),
-                    ),
+                    )
+                    .child(toggle_switch(&theme, isolated)),
             )
             .into_any_element()
     }
 
+    /// The combined harness + model switcher (comet harness-model-picker.tsx):
+    /// a vertical harness rail of square brand-icon tabs on the left, the
+    /// viewed harness's models on the right. On an existing chat the other
+    /// tabs stay visible but disabled — the lock reads as a rule.
     fn render_harness_model_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let locked = self.harness_locked(cx);
         let effective = self.effective_harness(cx);
 
         let rail: AnyElement = match &self.harnesses {
-            Loadable::Loading | Loadable::Idle => {
-                popover::skeleton_rows("harness-skeleton", &theme, 3)
-            }
+            Loadable::Loading | Loadable::Idle => div()
+                .p(px(4.0))
+                .child(popover::skeleton_rows("harness-skeleton", &theme, 3))
+                .into_any_element(),
             Loadable::Error(message) => {
                 let message = message.clone();
                 self.retry_row(
@@ -1446,34 +1488,85 @@ impl Pickers {
                 )
             }
             Loadable::Ready(list) => {
-                let descriptors: Vec<HarnessDescriptor> = visible_harnesses(list);
+                let mut descriptors: Vec<HarnessDescriptor> = visible_harnesses(list);
+                // The committed harness always gets its rail tab, even when
+                // it's the (normally hidden) mock harness of a dev session.
+                if let Some(effective) = effective
+                    && !descriptors.iter().any(|d| d.id == effective)
+                    && let Some(descriptor) = list.iter().find(|d| d.id == effective)
+                {
+                    descriptors.insert(0, descriptor.clone());
+                }
                 div()
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
+                    .gap(px(4.0))
+                    .p(px(4.0))
                     .children(descriptors.into_iter().enumerate().map(|(ix, descriptor)| {
                         let harness = descriptor.id;
-                        let name: SharedString = descriptor.name.clone().into();
-                        let is_active = effective == Some(harness);
-                        popover::menu_row(&theme, is_active)
-                            .id(("harness-row", ix))
-                            .when(locked, |el| el.opacity(0.55))
+                        let is_viewed = effective == Some(harness);
+                        let is_disabled = locked && !is_viewed;
+                        let (icon_path, tint) = harness_brand_icon(harness);
+                        // Square brand tab; the committed harness keeps a
+                        // 2px bar hugging the rail's right edge.
+                        div()
+                            .id(("harness-tab", ix))
+                            .relative()
+                            .w_full()
+                            .h(px(40.0))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(8.0))
+                            .when(is_viewed, |el| el.bg(crate::theme::white_alpha(0.10)))
+                            .when(is_disabled, |el| el.opacity(0.35))
+                            .when(!is_disabled, |el| {
+                                el.cursor_pointer()
+                                    .hover(|s| s.bg(crate::theme::white_alpha(0.06)))
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_harness(harness, cx);
                             }))
-                            .child(div().flex_1().child(name))
+                            .child(
+                                crate::icons::icon(icon_path)
+                                    .size(px(20.0))
+                                    .text_color(tint.unwrap_or(if is_viewed {
+                                        theme.text
+                                    } else {
+                                        theme.text_muted
+                                    })),
+                            )
+                            .when(is_viewed, |el| {
+                                el.child(
+                                    div()
+                                        .absolute()
+                                        .right(px(-4.0))
+                                        .top(px(12.0))
+                                        .w(px(2.0))
+                                        .h(px(16.0))
+                                        .rounded_l_full()
+                                        .bg(theme.text),
+                                )
+                            })
                     }))
-                    .when(locked, |el| {
-                        el.child(
-                            div()
-                                .px(px(Theme::SPACE_SM))
-                                .pt(px(4.0))
-                                .text_size(px(10.0))
-                                .text_color(theme.text_faint)
-                                .child(SharedString::from("Harness is locked for this chat")),
-                        )
-                    })
                     .into_any_element()
+            }
+        };
+
+        let heading_label = {
+            let name = self
+                .harnesses
+                .ready()
+                .and_then(|list| {
+                    list.iter()
+                        .find(|d| Some(d.id) == effective)
+                        .map(|d| d.name.clone())
+                })
+                .unwrap_or_else(|| "Models".to_string());
+            if locked {
+                format!("{name} · this session")
+            } else {
+                name
             }
         };
 
@@ -1486,26 +1579,21 @@ impl Pickers {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .max_h(px(260.0))
+                    .flex_1()
+                    .min_h_0()
                     .overflow_y_scroll()
                     .children(models.into_iter().enumerate().map(|(ix, model)| {
                         let label: SharedString = model.label.clone().into();
                         let id = model.id.clone();
                         let is_selected = selected.as_deref() == Some(model.id.as_str())
                             || (selected.is_none() && ix == 0);
-                        popover::menu_row(&theme, false)
+                        popover::menu_row(&theme, is_selected)
                             .id(("model-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_model(id.clone(), cx);
                             }))
                             .child(div().flex_1().min_w_0().truncate().child(label))
-                            .when(is_selected, |el| {
-                                el.child(
-                                    div()
-                                        .text_color(theme.accent)
-                                        .child(SharedString::from("✓")),
-                                )
-                            })
+                            .when(is_selected, |el| el.child(popover::menu_check(&theme)))
                     }))
                     .into_any_element()
             }
@@ -1519,26 +1607,48 @@ impl Pickers {
                     cx,
                 )
             }
-            _ => popover::skeleton_rows("model-skeleton", &theme, 4),
+            _ => div()
+                .px(px(8.0))
+                .py(px(24.0))
+                .text_size(px(12.0))
+                .text_color(theme.text_muted.opacity(0.6))
+                .text_center()
+                .child(SharedString::from("Loading models…"))
+                .into_any_element(),
         };
 
         div()
+            .h(px(256.0))
             .flex()
             .flex_row()
-            .gap(px(4.0))
+            // Left rail: `w-12 border-r border-white/[0.07] bg-white/[0.02]`.
             .child(
                 div()
-                    .w(px(150.0))
+                    .w(px(48.0))
                     .flex_none()
+                    .h_full()
                     .border_r_1()
-                    .border_color(theme.border)
-                    .pr(px(4.0))
+                    .border_color(crate::theme::white_alpha(0.07))
+                    .bg(crate::theme::white_alpha(0.02))
                     .child(rail),
             )
-            .child(div().flex_1().min_w_0().child(models))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .p(px(4.0))
+                    .child(popover::menu_heading(&theme, &heading_label))
+                    .child(models),
+            )
             .into_any_element()
     }
 
+    /// The traits picker (comet traits-picker.tsx): one menu — the reasoning
+    /// ladder plus every advertised model option as headed row sections.
+    /// Selecting keeps the menu open; the selected row carries the check.
     fn render_traits_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let Some(model) = self.selected_model(cx).cloned() else {
@@ -1558,7 +1668,9 @@ impl Pickers {
         } else {
             model.reasoning_levels.clone()
         };
-        let current = self.config.reasoning;
+        // Display the effective level (draft pick or the chat's config), so
+        // the ladder check mirrors the chip summary.
+        let current = self.effective_reasoning(cx);
 
         let ladder: AnyElement = if levels.is_empty() {
             gpui::Empty.into_any_element()
@@ -1567,13 +1679,7 @@ impl Pickers {
                 .flex()
                 .flex_col()
                 .gap(px(2.0))
-                .child(
-                    div()
-                        .px(px(Theme::SPACE_SM))
-                        .text_size(px(10.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from("Reasoning")),
-                )
+                .child(popover::menu_heading(&theme, "Reasoning"))
                 .children(levels.into_iter().enumerate().map(|(ix, level)| {
                     let is_active = current == Some(level);
                     popover::menu_row(&theme, is_active)
@@ -1584,15 +1690,11 @@ impl Pickers {
                         .child(
                             div()
                                 .flex_1()
+                                .min_w_0()
+                                .truncate()
                                 .child(SharedString::from(reasoning_label(level))),
                         )
-                        .when(is_active, |el| {
-                            el.child(
-                                div()
-                                    .text_color(theme.accent)
-                                    .child(SharedString::from("✓")),
-                            )
-                        })
+                        .when(is_active, |el| el.child(popover::menu_check(&theme)))
                 }))
                 .into_any_element()
         };
@@ -1602,7 +1704,7 @@ impl Pickers {
             div()
                 .flex()
                 .flex_col()
-                .gap(px(4.0))
+                .gap(px(2.0))
                 .children(model.options.iter().enumerate().map(|(opt_ix, option)| {
                     let selected_choice = selections
                         .get(&option.id)
@@ -1615,68 +1717,99 @@ impl Pickers {
                         .flex()
                         .flex_col()
                         .gap(px(2.0))
-                        .child(
-                            div()
-                                .px(px(Theme::SPACE_SM))
-                                .text_size(px(10.0))
-                                .text_color(theme.text_faint)
-                                .child(SharedString::from(option.label.clone())),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .flex_wrap()
-                                .gap(px(4.0))
-                                .px(px(4.0))
-                                .children(option.choices.iter().enumerate().map(
-                                    |(choice_ix, choice)| {
-                                        let is_active = selected_choice == choice.id;
-                                        let choice_id = choice.id.clone();
-                                        let option_id = option_id.clone();
-                                        let is_default = choice.id == default_choice;
+                        .child(popover::menu_heading(&theme, &option.label))
+                        .children(option.choices.iter().enumerate().map(
+                            |(choice_ix, choice)| {
+                                let is_active = selected_choice == choice.id;
+                                let choice_id = choice.id.clone();
+                                let option_id = option_id.clone();
+                                let is_default = choice.id == default_choice;
+                                popover::menu_row(&theme, is_active)
+                                    .id(("trait-choice", opt_ix * 32 + choice_ix))
+                                    .on_click(cx.listener(move |this, _, _, cx| {
+                                        this.pick_option(
+                                            option_id.clone(),
+                                            choice_id.clone(),
+                                            is_default,
+                                            cx,
+                                        );
+                                    }))
+                                    .child(
                                         div()
-                                            .id(("trait-choice", opt_ix * 32 + choice_ix))
-                                            .px(px(Theme::SPACE_SM))
-                                            .py(px(2.0))
-                                            .rounded(px(Theme::CONTROL_RADIUS))
-                                            .border_1()
-                                            .border_color(if is_active {
-                                                theme.accent
-                                            } else {
-                                                theme.border
-                                            })
-                                            .text_size(px(11.0))
-                                            .text_color(if is_active {
-                                                theme.text
-                                            } else {
-                                                theme.text_muted
-                                            })
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(theme.element_hover))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.pick_option(
-                                                    option_id.clone(),
-                                                    choice_id.clone(),
-                                                    is_default,
-                                                    cx,
-                                                );
-                                            }))
+                                            .flex_1()
+                                            .min_w_0()
+                                            .truncate()
+                                            .flex()
+                                            .flex_row()
+                                            .gap(px(4.0))
                                             .child(SharedString::from(choice.label.clone()))
-                                    },
-                                )),
-                        )
+                                            .when(is_default, |el| {
+                                                el.child(
+                                                    div()
+                                                        .text_color(
+                                                            theme.text_muted.opacity(0.5),
+                                                        )
+                                                        .child(SharedString::from("(default)")),
+                                                )
+                                            }),
+                                    )
+                                    .when(is_active, |el| el.child(popover::menu_check(&theme)))
+                            },
+                        ))
                 }));
 
         div()
             .flex()
             .flex_col()
-            .gap(px(6.0))
-            .py(px(2.0))
+            .gap(px(2.0))
+            .max_h(px(360.0))
             .child(ladder)
             .child(options)
             .into_any_element()
     }
+}
+
+/// Brand mark + optional tint for a harness (the Claude mark keeps its brand
+/// orange even on the monochrome surface; the mock harness scripts
+/// Claude-flavoured runs, so it wears the Claude mark).
+fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gpui::Hsla>) {
+    match harness {
+        HarnessId::ClaudeCode | HarnessId::Mock => {
+            (crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand()))
+        }
+        HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
+        HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
+    }
+}
+
+/// Display-only toggle switch (comet branch-picker.tsx `Toggle`): an 18×32
+/// pill whose knob slides right and track flips white when on. State is owned
+/// by the parent row.
+fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
+    div()
+        .flex_none()
+        .w(px(32.0))
+        .h(px(18.0))
+        .rounded_full()
+        .bg(if on {
+            theme.text
+        } else {
+            crate::theme::white_alpha(0.15)
+        })
+        .relative()
+        .child(
+            div()
+                .absolute()
+                .top(px(2.0))
+                .left(px(if on { 16.0 } else { 2.0 }))
+                .size(px(14.0))
+                .rounded_full()
+                .bg(if on {
+                    crate::theme::grey(0x0e)
+                } else {
+                    crate::theme::white_alpha(0.7)
+                }),
+        )
 }
 
 /// Production pickers hide the mock harness unless it's all there is.
@@ -1699,7 +1832,7 @@ fn attach_overlay(
     if overlay.as_ref().is_some_and(|(k, _)| *k == kind)
         && let Some((_, element)) = overlay.take()
     {
-        return chip.child(popover::anchored_menu(id, element));
+        return chip.child(popover::anchored_menu_above(id, element));
     }
     chip
 }
@@ -1714,6 +1847,17 @@ impl Render for Pickers {
         self.ensure_harnesses(cx);
         if let Some(harness) = self.effective_harness(cx) {
             self.ensure_models(harness, cx);
+        }
+        // A popover opened data-side (COMET_OPEN_PICKER) never went through
+        // `toggle`, so kick its loads here (all ensure_* are idempotent).
+        match self.open {
+            Some(PickerKind::Repo) if matches!(self.repos, Loadable::Idle) => {
+                self.ensure_repos(false, cx)
+            }
+            Some(PickerKind::Branch) if matches!(self.branches, Loadable::Idle) => {
+                self.ensure_branches(false, cx)
+            }
+            _ => {}
         }
 
         let repo_label: SharedString = self
@@ -1734,16 +1878,10 @@ impl Render for Pickers {
             .selected_model(cx)
             .map(|m| SharedString::from(m.label.clone()))
             .unwrap_or_else(|| SharedString::from("Default model"));
-        let harness_icon: (&'static str, Option<gpui::Hsla>) =
-            match self.effective_harness(cx) {
-                // The mock harness scripts Claude-flavoured runs — it wears the
-                // Claude mark (brand orange survives the monochrome surface).
-                Some(HarnessId::ClaudeCode) | Some(HarnessId::Mock) | None => {
-                    (crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand()))
-                }
-                Some(HarnessId::Codex) => (crate::icons::OPENAI_MARK, None),
-                Some(HarnessId::Cursor) => (crate::icons::CURSOR_MARK, None),
-            };
+        let harness_icon: (&'static str, Option<gpui::Hsla>) = self
+            .effective_harness(cx)
+            .map(harness_brand_icon)
+            .unwrap_or((crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand())));
         let traits_set = traits_summary(
             self.selected_model(cx),
             self.effective_reasoning(cx),
@@ -1768,12 +1906,12 @@ impl Render for Pickers {
                 let content = self.render_harness_model_popover(cx);
                 Some((
                     PickerKind::HarnessModel,
-                    self.popover_frame(380.0, content, cx),
+                    self.popover_frame_flush(320.0, content, cx),
                 ))
             }
             Some(PickerKind::Traits) => {
                 let content = self.render_traits_popover(cx);
-                Some((PickerKind::Traits, self.popover_frame(280.0, content, cx)))
+                Some((PickerKind::Traits, self.popover_frame(224.0, content, cx)))
             }
             None => None,
         };

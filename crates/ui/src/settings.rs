@@ -14,6 +14,7 @@ pub mod accounts;
 pub mod archived;
 pub mod devices;
 pub mod shortcuts;
+pub mod widgets;
 
 /// Sidebar drag-resize bounds (px).
 pub const SIDEBAR_MIN: f32 = 208.0;

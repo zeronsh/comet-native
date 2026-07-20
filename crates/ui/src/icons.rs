@@ -57,6 +57,12 @@ icon_assets![
     (FOLDER_WITH_FILES, "folder-with-files"),
     (FOLDER, "folder"),
     (SIDEBAR_MINIMALISTIC, "sidebar-minimalistic"),
+    // Mirrored variant (comet window-controls.tsx `-scale-x-100`): the LEFT
+    // sidebar toggle shows the panel line on the left; gpui divs have no
+    // scale transform at the pinned rev, so the flip is baked into the asset.
+    (SIDEBAR_MINIMALISTIC_LEFT, "sidebar-minimalistic-left"),
+    (KEY_MINIMALISTIC, "key-minimalistic"),
+    (KEYBOARD, "keyboard"),
     (ARROW_LEFT, "arrow-left"),
     (ARROW_RIGHT, "arrow-right"),
     (ARROW_UP, "arrow-up"),
@@ -77,11 +83,14 @@ icon_assets![
     (CHECKLIST, "checklist"),
     (WIDGET, "widget"),
     (CLOSE_CIRCLE, "close-circle"),
-    // Hand-drawn comet glyphs (terminal-panel.tsx / composer-actions.tsx).
+    // Hand-drawn comet glyphs (terminal-panel.tsx / composer-actions.tsx /
+    // menu-check.tsx / logo.tsx).
     (TERMINAL, "terminal"),
     (PLUS, "plus"),
     (CLOSE, "close"),
     (STOP, "stop"),
+    (CHECK, "check"),
+    (COMET_LOGO, "comet-logo"),
     // Harness brand marks (icons.tsx).
     (CLAUDE_MARK, "claude-mark"),
     (OPENAI_MARK, "openai-mark"),

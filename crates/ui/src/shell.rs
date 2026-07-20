@@ -197,6 +197,10 @@ pub struct Shell {
     boot: EngineBootConfig,
     data_dir: PathBuf,
     settings: UiSettings,
+    /// Dev/testing knobs (`COMET_OPEN_DIALOG`, `COMET_FORCE_GATE`) — see
+    /// [`Shell::new`].
+    debug_dialog: Option<String>,
+    debug_gate: Option<GatePhase>,
     sidebar_tween: Option<WidthTween>,
     right_tween: Option<WidthTween>,
     terminal_tween: Option<WidthTween>,
@@ -256,13 +260,43 @@ impl Shell {
         let settings = UiSettings::load(&data_dir);
         // Bind the customizable shortcuts from the persisted keymap.
         apply_keymap(cx, &settings.keymap);
+        // Dev/testing knob: `COMET_OPEN_ROUTE=settings[/<section>]` boots
+        // straight into a settings section — these pages have no deep link and
+        // synthetic input can't reach them on headless compositors.
+        let route = match std::env::var("COMET_OPEN_ROUTE").ok().as_deref() {
+            Some("settings") | Some("settings/devices") => {
+                Route::Settings(SettingsSection::Devices)
+            }
+            Some("settings/agents") => Route::Settings(SettingsSection::Agents),
+            Some("settings/shortcuts") => Route::Settings(SettingsSection::Shortcuts),
+            Some("settings/archived") => Route::Settings(SettingsSection::Archived),
+            // `new` pins the new-chat canvas (suppresses boot auto-select).
+            Some("new") => {
+                state.update(cx, |s, _| s.auto_selected = true);
+                Route::Chat
+            }
+            _ => Route::Chat,
+        };
+        // More capture knobs of the same kind: `COMET_OPEN_DIALOG=rename|delete`
+        // opens that dialog for the first chat once chats land;
+        // `COMET_FORCE_GATE=signin|org|failed` renders that gate regardless of
+        // real auth state (display-only — for styling passes).
+        let debug_dialog = std::env::var("COMET_OPEN_DIALOG").ok();
+        let debug_gate = match std::env::var("COMET_FORCE_GATE").ok().as_deref() {
+            Some("signin") => Some(GatePhase::SignIn),
+            Some("org") => Some(GatePhase::OrgGate),
+            Some("failed") => Some(GatePhase::Failed(
+                "Could not reach the comet engine on port 27901".into(),
+            )),
+            _ => None,
+        };
         Self {
             state,
             transcript,
             composer,
             terminal: None,
             changes: None,
-            route: Route::Chat,
+            route,
             devices_page: None,
             archived_page: None,
             shortcuts_page: None,
@@ -280,6 +314,8 @@ impl Shell {
             boot,
             data_dir,
             settings,
+            debug_dialog,
+            debug_gate,
             sidebar_tween: None,
             right_tween: None,
             terminal_tween: None,
@@ -298,6 +334,19 @@ impl Shell {
     // ---- splash ----
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
+        // Capture knob: pop the requested dialog once chats have landed.
+        if let Some(which) = self.debug_dialog.clone()
+            && let Some(first) = state.read(cx).chats.first().map(|c| c.id.clone())
+        {
+            self.debug_dialog = None;
+            match which.as_str() {
+                "rename" => self.open_rename_chat(first, cx),
+                "delete" => {
+                    self.delete_confirm = Some(first);
+                }
+                _ => {}
+            }
+        }
         match state.read(cx).connection {
             ConnectionStatus::Ready => {
                 if self.splash == SplashPhase::Visible {
@@ -854,13 +903,21 @@ impl Shell {
         )
     }
 
-    /// Settings-mode sidebar: back to chats + section nav (§1.5).
+    /// Settings-mode sidebar (comet settings-sidebar.tsx): window-control
+    /// strip, "Settings" heading, icon section rows styled like session rows,
+    /// and a Back row pinned to the bottom.
     fn render_settings_nav(
         &mut self,
         section: SettingsSection,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let section_icon = |item: SettingsSection| match item {
+            SettingsSection::Devices => icons::MONITOR,
+            SettingsSection::Agents => icons::KEY_MINIMALISTIC,
+            SettingsSection::Shortcuts => icons::KEYBOARD,
+            SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
+        };
         div()
             .w(px(self.settings.sidebar_width))
             .h_full()
@@ -872,47 +929,101 @@ impl Shell {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px(px(Theme::SPACE_MD))
-                    .child(
-                        div()
-                            .id("settings-back")
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(6.0))
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(3.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .text_size(px(12.0))
-                            .text_color(theme.text_muted)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
-                            .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
-                            .child(SharedString::from("←"))
-                            .child(SharedString::from("Back to chats")),
-                    ),
+                    .px(px(10.0))
+                    .child(window_control_button(
+                        "toggle-sidebar",
+                        icons::SIDEBAR_MINIMALISTIC_LEFT,
+                        theme,
+                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                    )),
             )
             .child(
                 div()
+                    .flex_1()
                     .px(px(Theme::SPACE_SM))
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
-                    .children(SettingsSection::ALL.into_iter().map(|item| {
-                        let selected = item == section;
-                        popover::menu_row(theme, selected)
-                            .id(SharedString::from(format!("settings-nav-{}", item.label())))
-                            .text_size(px(13.0))
-                            .text_color(if selected {
-                                theme.text
-                            } else {
-                                theme.text_muted
-                            })
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.open_settings(item, cx)),
-                            )
-                            .child(SharedString::from(item.label()))
-                    })),
+                    .child(
+                        div()
+                            .px(px(Theme::SPACE_SM))
+                            .pt(px(12.0))
+                            .pb(px(4.0))
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from("Settings")),
+                    )
+                    .child(div().flex().flex_col().gap(px(2.0)).children(
+                        SettingsSection::ALL.into_iter().map(|item| {
+                            let selected = item == section;
+                            div()
+                                .id(SharedString::from(format!(
+                                    "settings-nav-{}",
+                                    item.label()
+                                )))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .rounded(px(8.0))
+                                .px(px(Theme::SPACE_SM))
+                                .py(px(6.0))
+                                .text_size(px(13.0))
+                                .when(selected, |el| {
+                                    el.bg(crate::theme::white_alpha(0.08))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                })
+                                .text_color(if selected {
+                                    theme.text
+                                } else {
+                                    theme.text_muted
+                                })
+                                .cursor_pointer()
+                                .hover(|s| {
+                                    s.bg(crate::theme::white_alpha(0.04))
+                                        .text_color(Theme::dark().text)
+                                })
+                                .on_click(
+                                    cx.listener(move |this, _, _, cx| {
+                                        this.open_settings(item, cx)
+                                    }),
+                                )
+                                .child(
+                                    icon(section_icon(item))
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from(item.label()))
+                        }),
+                    )),
+            )
+            // Back pinned to the bottom (comet settings-sidebar.tsx).
+            .child(
+                div().px(px(Theme::SPACE_SM)).pb(px(12.0)).child(
+                    div()
+                        .id("settings-back")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(6.0))
+                        .rounded(px(8.0))
+                        .px(px(Theme::SPACE_SM))
+                        .py(px(6.0))
+                        .text_size(px(13.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .hover(|s| {
+                            s.bg(crate::theme::white_alpha(0.04))
+                                .text_color(Theme::dark().text)
+                        })
+                        .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
+                        .child(
+                            icon(icons::ARROW_LEFT)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
+                        .child(SharedString::from("Back")),
+                ),
             )
             .into_any_element()
     }
@@ -1215,7 +1326,7 @@ impl Shell {
                     .px(px(10.0))
                     .child(window_control_button(
                         "toggle-sidebar",
-                        icons::SIDEBAR_MINIMALISTIC,
+                        icons::SIDEBAR_MINIMALISTIC_LEFT,
                         theme,
                         cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
                     ))
@@ -1428,39 +1539,54 @@ impl Shell {
                 .flex_col()
                 .child(
                     div()
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(4.0))
+                        .px(px(8.0))
+                        .py(px(6.0))
                         .flex()
                         .flex_col()
+                        .gap(px(1.0))
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(px(13.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(theme.text)
+                                .truncate()
                                 .child(user_line),
                         )
                         .when_some(user_email, |el, email| {
                             el.child(
                                 div()
-                                    .text_size(px(10.0))
-                                    .text_color(theme.text_faint)
+                                    .text_size(px(11.0))
+                                    .text_color(theme.text_muted.opacity(0.7))
+                                    .truncate()
                                     .child(email),
                             )
                         })
                         .child(
-                            div()
-                                .pt(px(2.0))
-                                .text_size(px(10.0))
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from("Plan: Alpha")),
+                            div().pt(px(4.0)).flex().flex_row().child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(1.0))
+                                    .rounded_full()
+                                    .border_1()
+                                    .border_color(theme.border)
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_muted)
+                                    .child(SharedString::from("Alpha")),
+                            ),
                         ),
                 )
-                .child(div().h(px(1.0)).mx(px(4.0)).my(px(2.0)).bg(theme.border))
+                .child(popover::menu_separator())
                 .child(
                     popover::menu_row(theme, false)
                         .id("user-menu-settings")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.open_settings(SettingsSection::Devices, cx)
                         }))
+                        .child(
+                            icon(icons::SETTINGS_MINIMALISTIC)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
                         .child(SharedString::from("Open settings")),
                 )
                 .child(
@@ -1468,17 +1594,26 @@ impl Shell {
                         .id("user-menu-signout")
                         .text_color(theme.danger)
                         .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
+                        .child(
+                            icon(icons::LOGOUT_2)
+                                .size(px(16.0))
+                                .text_color(theme.danger),
+                        )
                         .child(SharedString::from("Sign out")),
                 )
                 .into_any_element();
-            trigger = trigger.child(popover::anchored_menu("user-menu-popover", menu));
+            trigger = trigger.child(popover::anchored_menu_above("user-menu-popover", menu));
         }
         trigger.into_any_element()
     }
 
     /// Floating layers owned by the shell: the session context menu and the
     /// rename / delete-confirm dialogs.
-    fn render_overlays(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+    fn render_overlays(
+        &mut self,
+        viewport: gpui::Size<Pixels>,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
         let theme = Theme::of(cx).clone();
         let mut overlays: Vec<AnyElement> = Vec::new();
 
@@ -1500,6 +1635,11 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_rename_chat(rename_id.clone(), cx)
                         }))
+                        .child(
+                            icon(icons::PEN)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
                         .child(SharedString::from("Rename…")),
                 )
                 .child(
@@ -1508,8 +1648,14 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.archive_chat(archive_id.clone(), cx)
                         }))
+                        .child(
+                            icon(icons::ARCHIVE_MINIMALISTIC)
+                                .size(px(16.0))
+                                .text_color(theme.text_muted),
+                        )
                         .child(SharedString::from("Archive")),
                 )
+                .child(popover::menu_separator())
                 .child(
                     popover::menu_row(&theme, false)
                         .id("chat-menu-delete")
@@ -1519,6 +1665,11 @@ impl Shell {
                             this.delete_confirm = Some(delete_id.clone());
                             cx.notify();
                         }))
+                        .child(
+                            icon(icons::TRASH_BIN_MINIMALISTIC)
+                                .size(px(16.0))
+                                .text_color(theme.danger),
+                        )
                         .child(SharedString::from("Delete…")),
                 )
                 .into_any_element();
@@ -1527,136 +1678,80 @@ impl Shell {
 
         if let Some(dialog) = &self.rename_dialog {
             let input = dialog.input.clone();
-            let card = div()
-                .w(px(360.0))
-                .p(px(Theme::SPACE_LG))
-                .rounded(px(Theme::PANEL_RADIUS))
-                .bg(theme.surface_raised)
-                .border_1()
-                .border_color(theme.border_strong)
-                .flex()
-                .flex_col()
-                .gap(px(Theme::SPACE_MD))
+            let card = popover::dialog_card(&theme)
+                .child(popover::dialog_title(&theme, "Rename session"))
                 .child(
                     div()
-                        .text_size(px(13.0))
-                        .text_color(theme.text)
-                        .child(SharedString::from("Rename session")),
+                        .mt(px(12.0))
+                        .child(popover::dialog_field(input.into_any_element())),
                 )
                 .child(
                     div()
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(6.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(theme.border)
-                        .child(input),
-                )
-                .child(
-                    div()
+                        .mt(px(16.0))
                         .flex()
                         .flex_row()
                         .justify_end()
-                        .gap(px(Theme::SPACE_SM))
+                        .gap(px(8.0))
                         .child(
-                            div()
+                            popover::btn_ghost(&theme, "Cancel")
                                 .id("rename-chat-cancel")
-                                .px(px(Theme::SPACE_MD))
-                                .py(px(4.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .text_size(px(12.0))
-                                .text_color(theme.text_muted)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(Theme::dark().element_hover))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.rename_dialog = None;
                                     cx.notify();
-                                }))
-                                .child(SharedString::from("Cancel")),
+                                })),
                         )
                         .child(
-                            div()
+                            popover::btn_primary(&theme, "Rename")
                                 .id("rename-chat-save")
-                                .px(px(Theme::SPACE_MD))
-                                .py(px(4.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .bg(theme.accent_strong)
-                                .text_size(px(12.0))
-                                .text_color(gpui::white())
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| this.submit_rename_chat(cx)))
-                                .child(SharedString::from("Save")),
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.submit_rename_chat(cx)),
+                                ),
                         ),
                 )
                 .into_any_element();
-            overlays.push(popover::modal("rename-chat-dialog", card));
+            overlays.push(popover::modal("rename-chat-dialog", viewport, card));
         }
 
         if let Some(chat_id) = self.delete_confirm.clone() {
-            let card = div()
-                .w(px(360.0))
-                .p(px(Theme::SPACE_LG))
-                .rounded(px(Theme::PANEL_RADIUS))
-                .bg(theme.surface_raised)
-                .border_1()
-                .border_color(theme.border_strong)
-                .flex()
-                .flex_col()
-                .gap(px(Theme::SPACE_MD))
+            let title = self
+                .state
+                .read(cx)
+                .chats
+                .iter()
+                .find(|c| c.id == chat_id)
+                .and_then(|c| c.title.clone())
+                .unwrap_or_else(|| "New session".into());
+            let card = popover::dialog_card(&theme)
+                .child(popover::dialog_title(&theme, "Delete session?"))
+                .child(div().mt(px(6.0)).child(popover::dialog_body(
+                    &theme,
+                    format!("\u{201C}{title}\u{201D} will be permanently deleted. This can\u{2019}t be undone."),
+                )))
                 .child(
                     div()
-                        .text_size(px(13.0))
-                        .text_color(theme.text)
-                        .child(SharedString::from("Delete this session?")),
-                )
-                .child(
-                    div()
-                        .text_size(px(12.0))
-                        .text_color(theme.text_muted)
-                        .child(SharedString::from(
-                            "The chat disappears from every device. The transcript doc is kept.",
-                        )),
-                )
-                .child(
-                    div()
+                        .mt(px(16.0))
                         .flex()
                         .flex_row()
                         .justify_end()
-                        .gap(px(Theme::SPACE_SM))
+                        .gap(px(8.0))
                         .child(
-                            div()
+                            popover::btn_ghost(&theme, "Cancel")
                                 .id("delete-chat-cancel")
-                                .px(px(Theme::SPACE_MD))
-                                .py(px(4.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .text_size(px(12.0))
-                                .text_color(theme.text_muted)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(Theme::dark().element_hover))
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.delete_confirm = None;
                                     cx.notify();
-                                }))
-                                .child(SharedString::from("Cancel")),
+                                })),
                         )
                         .child(
-                            div()
+                            popover::btn_danger(&theme, "Delete")
                                 .id("delete-chat-confirm")
-                                .px(px(Theme::SPACE_MD))
-                                .py(px(4.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .bg(theme.danger)
-                                .text_size(px(12.0))
-                                .text_color(gpui::white())
-                                .cursor_pointer()
                                 .on_click(cx.listener(move |this, _, _, cx| {
                                     this.delete_chat(chat_id.clone(), cx)
-                                }))
-                                .child(SharedString::from("Delete")),
+                                })),
                         ),
                 )
                 .into_any_element();
-            overlays.push(popover::modal("delete-chat-dialog", card));
+            overlays.push(popover::modal("delete-chat-dialog", viewport, card));
         }
 
         overlays
@@ -1726,7 +1821,7 @@ impl Shell {
                         .when(self.settings.sidebar_collapsed, |el| {
                             el.child(window_control_button(
                                 "toggle-sidebar",
-                                icons::SIDEBAR_MINIMALISTIC,
+                                icons::SIDEBAR_MINIMALISTIC_LEFT,
                                 &theme_owned,
                                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
                             ))
@@ -1737,7 +1832,7 @@ impl Shell {
                                 .text_size(px(13.0))
                                 .font_weight(gpui::FontWeight::MEDIUM)
                                 .text_color(text)
-                                .child(SharedString::from("Settings")),
+                                .child(SharedString::from(section.label())),
                         ),
                 )
                 .child(div().flex_1().min_h_0().child(outlet))
@@ -1767,101 +1862,120 @@ impl Shell {
         let outlet: AnyElement = if has_selection {
             self.transcript.clone().into_any_element()
         } else {
+            // New-chat canvas (comet index.tsx): the dim comet mark watermark
+            // (`h-12 text-foreground/[0.09]`) over the centered helper line.
+            let _ = faint;
             div()
                 .size_full()
                 .flex()
                 .flex_col()
                 .items_center()
                 .justify_center()
-                .gap(px(Theme::SPACE_MD))
                 .child(motion::fade_in(
                     "new-chat-canvas",
                     div()
                         .flex()
                         .flex_col()
                         .items_center()
-                        .gap(px(Theme::SPACE_MD))
                         .child(
-                            // Watermark.
-                            div()
-                                .text_size(px(28.0))
-                                .text_color(theme.border_strong)
-                                .child(SharedString::from("comet")),
+                            icon(icons::COMET_LOGO)
+                                .w(px(41.9))
+                                .h(px(48.0))
+                                .text_color(theme.text.opacity(0.09)),
                         )
                         .child(
                             div()
-                                .text_size(px(13.0))
-                                .text_color(faint)
-                                .child(SharedString::from("Send a message to start")),
+                                .mt(px(24.0))
+                                .text_size(px(14.0))
+                                .text_color(theme.text_muted.opacity(0.6))
+                                .child(SharedString::from(
+                                    "Send a message to start a new session.",
+                                )),
                         ),
                 ))
                 .into_any_element()
         };
 
         let status = self.render_status_strip(cx);
+        // Header variants (comet __root.tsx): a chat shows title + "Remote"
+        // pill + the changes toggle (only while the pane is closed — the open
+        // pane carries its own collapse button); the new-chat canvas shows a
+        // bare h-11 strip with no border and no chrome.
+        let header: AnyElement = if has_selection {
+            div()
+                .h(px(Theme::HEADER_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(10.0))
+                .px(px(Theme::SPACE_LG))
+                .border_b_1()
+                .border_color(border)
+                .when(self.settings.sidebar_collapsed, |el| {
+                    el.child(window_control_button(
+                        "toggle-sidebar",
+                        icons::SIDEBAR_MINIMALISTIC_LEFT,
+                        theme,
+                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                    ))
+                })
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(13.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(text)
+                        .child(title),
+                )
+                .when(is_remote, |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .px(px(8.0))
+                            .py(px(2.0))
+                            .rounded_full()
+                            .border_1()
+                            .border_color(border)
+                            .text_size(px(10.5))
+                            .text_color(theme.text_muted)
+                            .child(SharedString::from("Remote")),
+                    )
+                })
+                .child(div().flex_1())
+                .when(!self.settings.right_pane_open, |el| {
+                    el.child(header_icon_button(
+                        "toggle-changes",
+                        icons::SIDEBAR_MINIMALISTIC,
+                        theme,
+                        cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
+                    ))
+                })
+                .into_any_element()
+        } else {
+            div()
+                .h(px(Theme::HEADER_HEIGHT))
+                .flex_none()
+                .flex()
+                .items_center()
+                .px(px(10.0))
+                .when(self.settings.sidebar_collapsed, |el| {
+                    el.child(window_control_button(
+                        "toggle-sidebar",
+                        icons::SIDEBAR_MINIMALISTIC_LEFT,
+                        theme,
+                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                    ))
+                })
+                .into_any_element()
+        };
         div()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
-            // Header (h-11): title (+ "Remote" pill), icon buttons right
-            // (comet __root.tsx header-chat).
-            .child(
-                div()
-                    .h(px(Theme::HEADER_HEIGHT))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(10.0))
-                    .px(px(Theme::SPACE_LG))
-                    .border_b_1()
-                    .border_color(border)
-                    .when(self.settings.sidebar_collapsed, |el| {
-                        el.child(window_control_button(
-                            "toggle-sidebar",
-                            icons::SIDEBAR_MINIMALISTIC,
-                            theme,
-                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                        ))
-                    })
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(13.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .text_color(text)
-                            .child(title),
-                    )
-                    .when(is_remote, |el| {
-                        el.child(
-                            div()
-                                .flex_none()
-                                .px(px(8.0))
-                                .py(px(2.0))
-                                .rounded_full()
-                                .border_1()
-                                .border_color(border)
-                                .text_size(px(10.5))
-                                .text_color(theme.text_muted)
-                                .child(SharedString::from("Remote")),
-                        )
-                    })
-                    .child(div().flex_1())
-                    .child(header_icon_button(
-                        "toggle-terminal",
-                        icons::TERMINAL,
-                        theme,
-                        cx.listener(|this, _, _, cx| this.toggle_terminal(cx)),
-                    ))
-                    .child(header_icon_button(
-                        "toggle-changes",
-                        icons::SIDEBAR_MINIMALISTIC,
-                        theme,
-                        cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
-                    )),
-            )
+            .child(header)
             .child(
                 // The conversation fades out at its bottom edge instead of
                 // hard-cutting against the composer — a gradient overlay from
@@ -1885,11 +1999,13 @@ impl Shell {
                             )),
                     ),
             )
-            .child(self.render_terminal_container(cx))
             // Reserved status strip (h-6) — the WorkingIndicator lives here so
-            // the composer below never shifts.
+            // the composer below never shifts. Both live INSIDE the
+            // conversation region, ABOVE the terminal dock (comet __root.tsx:
+            // the terminal panel sits below the whole conversation column).
             .child(status)
             .child(self.composer.clone())
+            .child(self.render_terminal_container(cx))
             .into_any_element()
     }
 
@@ -2072,79 +2188,111 @@ impl Shell {
     }
 
     fn render_gate_card(&mut self, phase: &GatePhase, cx: &mut Context<Self>) -> AnyElement {
-        let theme = Theme::of(cx);
-        let (raised, border, text, muted, danger, hover) = (
-            theme.surface_raised,
-            theme.border,
-            theme.text,
-            theme.text_muted,
-            theme.danger,
-            theme.element_hover,
-        );
-        let card = div()
-            .w(px(360.0))
-            .p(px(Theme::SPACE_LG))
-            .rounded(px(Theme::PANEL_RADIUS))
-            .bg(raised)
-            .border_1()
-            .border_color(border)
-            .flex()
-            .flex_col()
-            .gap(px(Theme::SPACE_MD))
-            .text_size(px(13.0));
-        let card = match phase {
-            GatePhase::Failed(error) => card
+        let theme = Theme::of(cx).clone();
+        let content: AnyElement = match phase {
+            // Backend unreachable: quiet centered copy (comet Gate `Failed`),
+            // plus a Retry affordance (the native engine doesn't self-redial).
+            GatePhase::Failed(error) => div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(Theme::SPACE_MD))
                 .child(
                     div()
-                        .text_color(danger)
-                        .child(SharedString::from("Backend unreachable")),
-                )
-                .child(
-                    div()
-                        .text_color(muted)
+                        .text_size(px(14.0))
+                        .text_color(theme.text_muted)
                         .child(SharedString::from(error.clone())),
                 )
                 .child(
                     div()
                         .id("retry-engine")
-                        .px(px(Theme::SPACE_MD))
+                        .px(px(12.0))
                         .py(px(6.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .rounded(px(8.0))
                         .border_1()
-                        .border_color(border)
-                        .text_color(text)
-                        .hover(move |s| s.bg(hover))
+                        .border_color(theme.border)
+                        .text_size(px(13.0))
+                        .text_color(theme.text)
                         .cursor_pointer()
+                        .hover(|s| s.bg(Theme::dark().element_hover))
                         .on_click(cx.listener(|this, _, _, cx| this.retry_engine(cx)))
                         .child(SharedString::from("Retry")),
-                ),
-            // Sign-in card: kick the WorkOS browser flow (M4b); the AuthStatus
-            // stream flips the gate once the loopback callback lands.
-            _ => card
-                .child(div().text_color(text).child(SharedString::from("Sign in")))
-                .child(div().text_color(muted).child(SharedString::from(
-                    "Sign in with your browser to connect this device.",
-                )))
+                )
+                .into_any_element(),
+            // Login card (comet App.tsx Gate): centered card on the grid —
+            // logo, "Log in to Comet", copy, full-width white Log in button.
+            _ => div()
+                .w(px(360.0))
+                .px(px(32.0))
+                .py(px(40.0))
+                .rounded(px(12.0))
+                .border_1()
+                .border_color(theme.border)
+                .bg(crate::theme::grey(0x0e))
+                .shadow_lg()
+                .flex()
+                .flex_col()
+                .items_center()
+                .text_center()
+                .child(
+                    icon(icons::COMET_LOGO)
+                        .w(px(31.4))
+                        .h(px(36.0))
+                        .text_color(theme.text),
+                )
+                .child(
+                    div()
+                        .mt(px(24.0))
+                        .text_size(px(18.0))
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                        .text_color(theme.text)
+                        .child(SharedString::from("Log in to Comet")),
+                )
+                .child(
+                    div()
+                        .mt(px(6.0))
+                        .mb(px(24.0))
+                        .text_size(px(13.0))
+                        .line_height(px(19.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(
+                            "This opens your browser to finish logging in — you'll come right back.",
+                        )),
+                )
                 .child(
                     div()
                         .id("sign-in")
-                        .px(px(Theme::SPACE_MD))
-                        .py(px(6.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .bg(Theme::dark().accent_strong)
-                        .text_color(gpui::white())
+                        .w_full()
+                        .h(px(36.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(6.0))
+                        .bg(theme.text)
+                        .text_size(px(14.0))
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(crate::theme::grey(0x0e))
                         .cursor_pointer()
-                        .hover(move |s| s.opacity(0.9))
+                        .hover(|s| s.opacity(0.9))
                         .on_click(cx.listener(|this, _, _, cx| this.start_sign_in(cx)))
-                        .child(SharedString::from("Sign in with browser")),
-                ),
+                        .child(SharedString::from("Log in")),
+                )
+                .into_any_element(),
         };
         div()
             .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(motion::dialog_in("gate-card", card))
+            .relative()
+            .bg(theme.bg)
+            .child(grid_backdrop(&theme))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(motion::fade_in("gate-card", div().child(content))),
+            )
             .into_any_element()
     }
 
@@ -2161,136 +2309,283 @@ impl Shell {
         let name_input = org.name_input.clone();
         let orgs = org.orgs.clone();
 
+        let email: Option<SharedString> = self
+            .state
+            .read(cx)
+            .auth_user()
+            .map(|u| u.email.clone().into());
+
         let memberships: AnyElement = match &orgs {
-            Loadable::Idle | Loadable::Loading => popover::skeleton_rows("org-skeleton", &theme, 2),
-            Loadable::Error(message) => popover::error_row(&theme, message)
+            Loadable::Idle | Loadable::Loading => div()
+                .mt(px(24.0))
+                .child(popover::skeleton_rows("org-skeleton", &theme, 2))
+                .into_any_element(),
+            Loadable::Error(message) => div()
+                .mt(px(24.0))
                 .child(
-                    div()
-                        .id("orgs-retry")
-                        .px(px(Theme::SPACE_SM))
-                        .py(px(3.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
-                        .border_1()
-                        .border_color(theme.border)
-                        .text_color(theme.text)
-                        .cursor_pointer()
-                        .hover(|s| s.bg(theme.element_hover))
-                        .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
-                        .child(SharedString::from("Retry")),
+                    popover::error_row(&theme, message).child(
+                        div()
+                            .id("orgs-retry")
+                            .px(px(Theme::SPACE_SM))
+                            .py(px(3.0))
+                            .rounded(px(Theme::CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(theme.border)
+                            .text_color(theme.text)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(theme.element_hover))
+                            .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
+                            .child(SharedString::from("Retry")),
+                    ),
                 )
                 .into_any_element(),
             Loadable::Ready(rows) if rows.is_empty() => Empty.into_any_element(),
             Loadable::Ready(rows) => div()
+                .mt(px(24.0))
                 .flex()
                 .flex_col()
-                .gap(px(4.0))
                 .child(
                     div()
+                        .pb(px(8.0))
                         .text_size(px(11.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from("Or join an existing workspace")),
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text_muted.opacity(0.6))
+                        .child(SharedString::from(
+                            "Or continue in a workspace you belong to",
+                        )),
                 )
-                .children(rows.iter().enumerate().map(|(ix, row)| {
-                    let org_id = row.organization_id.clone();
-                    popover::menu_row(&theme, false)
-                        .id(("org-row", ix))
-                        .border_1()
-                        .border_color(theme.border)
-                        .when(submitting, |el| el.opacity(0.6))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.select_org(org_id.clone(), cx);
-                        }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .text_size(px(13.0))
-                                .text_color(theme.text)
-                                .child(SharedString::from(row.name.clone())),
-                        )
-                }))
+                .child(div().flex().flex_col().gap(px(4.0)).children(
+                    rows.iter().enumerate().map(|(ix, row)| {
+                        let org_id = row.organization_id.clone();
+                        div()
+                            .id(("org-row", ix))
+                            .px(px(12.0))
+                            .py(px(8.0))
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.bg)
+                            .text_size(px(13.0))
+                            .text_color(theme.text)
+                            .when(submitting, |el| el.opacity(0.5))
+                            .cursor_pointer()
+                            .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.select_org(org_id.clone(), cx);
+                            }))
+                            .child(SharedString::from(row.name.clone()))
+                    }),
+                ))
                 .into_any_element(),
         };
 
+        // comet App.tsx OrgGate: w-400 card on the grid — logo, headline,
+        // explainer (+ signed-in email), name form with a white Create button,
+        // then existing memberships and the account escape hatch.
+        let blurb: SharedString = match email {
+            Some(email) => format!(
+                "Comet is organized around workspaces — create one for yourself or your team. Signed in as {email}."
+            )
+            .into(),
+            None => {
+                "Comet is organized around workspaces — create one for yourself or your team."
+                    .into()
+            }
+        };
         let card = div()
             .w(px(400.0))
-            .p(px(Theme::SPACE_LG))
-            .rounded(px(Theme::PANEL_RADIUS))
-            .bg(theme.surface_raised)
+            .px(px(32.0))
+            .py(px(36.0))
+            .rounded(px(12.0))
             .border_1()
             .border_color(theme.border)
+            .bg(crate::theme::grey(0x0e))
+            .shadow_lg()
             .flex()
             .flex_col()
-            .gap(px(Theme::SPACE_MD))
+            .child(
+                icon(icons::COMET_LOGO)
+                    .w(px(24.4))
+                    .h(px(28.0))
+                    .text_color(theme.text),
+            )
             .child(
                 div()
-                    .text_size(px(15.0))
+                    .mt(px(20.0))
+                    .text_size(px(18.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
                     .text_color(theme.text)
                     .child(SharedString::from("Create your workspace")),
             )
             .child(
                 div()
-                    .text_size(px(12.0))
+                    .mt(px(6.0))
+                    .mb(px(24.0))
+                    .text_size(px(13.0))
+                    .line_height(px(19.0))
                     .text_color(theme.text_muted)
-                    .child(SharedString::from(
-                        "Chats and devices sync inside a workspace.",
-                    )),
+                    .child(blurb),
             )
             .child(
                 div()
-                    .px(px(Theme::SPACE_SM))
-                    .py(px(6.0))
-                    .rounded(px(Theme::CONTROL_RADIUS))
-                    .border_1()
-                    .border_color(theme.border)
-                    .child(name_input),
+                    .flex()
+                    .flex_row()
+                    .gap(px(8.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h(px(36.0))
+                            .flex()
+                            .items_center()
+                            .px(px(12.0))
+                            .rounded(px(8.0))
+                            .border_1()
+                            .border_color(theme.border)
+                            .bg(theme.bg)
+                            .text_size(px(13.0))
+                            .child(name_input),
+                    )
+                    .child(
+                        div()
+                            .id("create-org")
+                            .h(px(36.0))
+                            .px(px(16.0))
+                            .flex()
+                            .items_center()
+                            .rounded(px(6.0))
+                            .bg(theme.text)
+                            .text_size(px(14.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(crate::theme::grey(0x0e))
+                            .when(submitting, |el| el.opacity(0.5))
+                            .cursor_pointer()
+                            .hover(|s| s.opacity(0.9))
+                            .on_click(cx.listener(|this, _, _, cx| this.create_org(cx)))
+                            .child(SharedString::from(if submitting {
+                                "Creating…"
+                            } else {
+                                "Create"
+                            })),
+                    ),
             )
+            .child(memberships)
             .when_some(error, |el, message| {
                 el.child(
                     div()
-                        .text_size(px(11.0))
-                        .text_color(theme.danger)
+                        .mt(px(16.0))
+                        .text_size(px(12.0))
+                        .line_height(px(17.0))
+                        .text_color(crate::theme::oklch(0.81, 0.108, 19.6).opacity(0.9)) // red-300
                         .child(message),
                 )
             })
             .child(
-                div()
-                    .id("create-org")
-                    .px(px(Theme::SPACE_MD))
-                    .py(px(6.0))
-                    .rounded(px(Theme::CONTROL_RADIUS))
-                    .bg(theme.accent_strong)
-                    .text_size(px(13.0))
-                    .text_color(gpui::white())
-                    .when(submitting, |el| el.opacity(0.6))
-                    .cursor_pointer()
-                    .hover(|s| s.opacity(0.9))
-                    .on_click(cx.listener(|this, _, _, cx| this.create_org(cx)))
-                    .child(SharedString::from(if submitting {
-                        "Creating…"
-                    } else {
-                        "Create workspace"
-                    })),
-            )
-            .child(memberships)
-            .child(
-                div()
-                    .id("org-signout")
-                    .text_size(px(11.0))
-                    .text_color(theme.text_faint)
-                    .cursor_pointer()
-                    .hover(|s| s.text_color(Theme::dark().text_muted))
-                    .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
-                    .child(SharedString::from("Use a different account")),
+                div().mt(px(24.0)).flex().flex_row().child(
+                    div()
+                        .id("org-signout")
+                        .text_size(px(12.0))
+                        .text_color(theme.text_muted.opacity(0.6))
+                        .cursor_pointer()
+                        .hover(|s| s.text_color(Theme::dark().text))
+                        .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
+                        .child(SharedString::from("Use a different account")),
+                ),
             );
 
         div()
             .size_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .child(motion::dialog_in("org-gate-card", card))
+            .relative()
+            .bg(theme.bg)
+            .child(grid_backdrop(&theme))
+            .child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(motion::fade_in("org-gate-card", card)),
+            )
             .into_any_element()
     }
+}
+
+/// The sign-in gate's faint grid backdrop (comet styles.css `.bg-grid`):
+/// 44px hairlines at white 3.5%, with the radial mask approximated by edge
+/// gradients back into the page background (gpui has no mask-image).
+fn grid_backdrop(theme: &Theme) -> AnyElement {
+    let line = crate::theme::white_alpha(0.035);
+    let bg = theme.bg;
+    const STEP: f32 = 44.0;
+    const SPAN: f32 = 2640.0;
+    let verticals = (1..(SPAN / STEP) as usize).map(|i| {
+        div()
+            .absolute()
+            .left(px(i as f32 * STEP))
+            .top_0()
+            .bottom_0()
+            .w(px(1.0))
+            .bg(line)
+    });
+    let horizontals = (1..((SPAN * 0.75) / STEP) as usize).map(|i| {
+        div()
+            .absolute()
+            .top(px(i as f32 * STEP))
+            .left_0()
+            .right_0()
+            .h(px(1.0))
+            .bg(line)
+    });
+    div()
+        .absolute()
+        .inset_0()
+        .overflow_hidden()
+        .children(verticals)
+        .children(horizontals)
+        // Mask approximation: fade the grid back into the background toward
+        // the window edges (the original masks to an ellipse at 50% / 40%).
+        .child(div().absolute().top_0().left_0().right_0().h(px(120.0)).bg(
+            gpui::linear_gradient(
+                180.0,
+                gpui::linear_color_stop(bg, 0.0),
+                gpui::linear_color_stop(bg.opacity(0.0), 1.0),
+            ),
+        ))
+        .child(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .h(px(260.0))
+                .bg(gpui::linear_gradient(
+                    0.0,
+                    gpui::linear_color_stop(bg, 0.0),
+                    gpui::linear_color_stop(bg.opacity(0.0), 1.0),
+                )),
+        )
+        .child(div().absolute().top_0().bottom_0().left_0().w(px(200.0)).bg(
+            gpui::linear_gradient(
+                90.0,
+                gpui::linear_color_stop(bg, 0.0),
+                gpui::linear_color_stop(bg.opacity(0.0), 1.0),
+            ),
+        ))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(200.0))
+                .bg(gpui::linear_gradient(
+                    270.0,
+                    gpui::linear_color_stop(bg, 0.0),
+                    gpui::linear_color_stop(bg.opacity(0.0), 1.0),
+                )),
+        )
+        .into_any_element()
 }
 
 /// A size-6 icon button for the titlebar strip (comet window-controls.tsx:
@@ -2345,7 +2640,10 @@ impl Render for Shell {
         // The shell tone (comet `.frost`): the surface the sidebar sits on and
         // the main panel floats over as an inset rounded card.
         let (frost, text, font) = (theme.surface, theme.text, theme.font_sans.clone());
-        let gate = self.state.read(cx).gate();
+        let gate = self
+            .debug_gate
+            .clone()
+            .unwrap_or_else(|| self.state.read(cx).gate());
 
         let root = div()
             .id("shell-root")
@@ -2389,7 +2687,7 @@ impl Render for Shell {
                     cx,
                 );
                 let right = self.render_right_pane(cx);
-                let overlays = self.render_overlays(cx);
+                let overlays = self.render_overlays(window.viewport_size(), cx);
                 // The signature frame: the content pane (main column + changes
                 // pane) is an inset rounded hairline-bordered card floating on
                 // the frost shell. Collapsed sidebar → full-bleed (margins,

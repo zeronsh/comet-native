@@ -876,6 +876,10 @@ impl Changes {
                     .child(SharedString::from("Changes")),
             )
             .child(
+                // Pressed-state toggle (comet checkout-diff-sidebar.tsx "Hide
+                // changes": `border-white/[0.11] bg-white/[0.06]
+                // text-foreground/85`) — the pane-open state reads on the
+                // button itself.
                 div()
                     .id("changes-collapse")
                     .size(px(28.0))
@@ -884,15 +888,18 @@ impl Changes {
                     .items_center()
                     .justify_center()
                     .rounded(px(6.0))
+                    .border_1()
+                    .border_color(crate::theme::white_alpha(0.11))
+                    .bg(crate::theme::white_alpha(0.06))
                     .cursor_pointer()
-                    .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
+                    .hover(|s| s.bg(crate::theme::white_alpha(0.10)))
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(crate::shell::ToggleChanges), cx);
                     })
                     .child(
                         crate::icons::icon(crate::icons::SIDEBAR_MINIMALISTIC)
                             .size(px(16.0))
-                            .text_color(theme.text_muted),
+                            .text_color(theme.text.opacity(0.85)),
                     ),
             )
             .into_any_element()
