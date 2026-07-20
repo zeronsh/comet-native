@@ -123,8 +123,19 @@ pub fn truncate_preview(text: &str, max_chars: usize) -> String {
 impl Transcript {
     /// Smooth-scroll the list so `target` sits at the viewport top, reusing the
     /// transcript scroll-task slot (any running stick/jump animation yields).
+    ///
+    /// Rows above the viewport glide in ITEM space (`scroll_to` with an item
+    /// anchor), not by pixels: on a freshly-opened chat everything above the
+    /// viewport is unmeasured (height 0 in the list's sum-tree) and the
+    /// bottom-aligned layout re-glues any pixel anchor landing within one
+    /// viewport of the end — a `scroll_by` step from the glued bottom is
+    /// silently undone every frame and the click looks dead. Item anchors far
+    /// enough from the end stick; a stall detector escalates the jump when a
+    /// step gets re-glued so the first steps always escape the glue band.
     pub fn scroll_to_row(&mut self, target: usize, cx: &mut Context<Self>) {
         self.set_scroll_task(cx.spawn(async move |this, cx| {
+            let mut last_top: Option<(usize, f32)> = None;
+            let mut stall: u32 = 0;
             for _ in 0..120 {
                 cx.background_executor()
                     .timer(Duration::from_millis(16))
@@ -132,11 +143,26 @@ impl Transcript {
                 let done = this.update(cx, |t, cx| {
                     let list = t.list_state().clone();
                     let top = list.logical_scroll_top();
+                    let key = (top.item_ix, f32::from(top.offset_in_item));
+                    // No movement since the last step = the layout re-glued the
+                    // anchor to the bottom; escalate the next jump.
+                    if last_top == Some(key) {
+                        stall = (stall + 1).min(5);
+                    } else {
+                        stall = 0;
+                    }
+                    last_top = Some(key);
                     let step: f32 = if target < top.item_ix {
-                        // Above the viewport: distance is unmeasured — glide up,
-                        // faster the further away.
-                        let gap = (top.item_ix - target) as f32;
-                        -(80.0 + gap * 60.0).min(480.0)
+                        // Above the viewport: unmeasured distance — eased glide
+                        // in item space, doubled per stalled frame.
+                        let gap = top.item_ix - target;
+                        let jump = (((gap as f32 * 0.3).ceil() as usize).max(1) << stall).min(gap);
+                        list.scroll_to(ListOffset {
+                            item_ix: top.item_ix - jump,
+                            offset_in_item: px(0.0),
+                        });
+                        cx.notify();
+                        return false;
                     } else {
                         let viewport_top = list
                             .bounds_for_item(top.item_ix)

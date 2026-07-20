@@ -47,8 +47,12 @@ pub struct UiSettings {
     /// Sidebar grouped-by-project mode (feature-inventory §1.6).
     pub sidebar_grouped: bool,
     pub right_pane_width: f32,
+    /// Legacy: panel *open* flags are session-scoped in-memory state now
+    /// (`shell::SessionPanels`, comet `sessionPanels` parity). Kept for file
+    /// compatibility; no longer read or written by the shell.
     pub right_pane_open: bool,
     pub terminal_height: f32,
+    /// Legacy — see [`Self::right_pane_open`].
     pub terminal_open: bool,
     /// Customizable shortcut combos (feature-inventory §1.4).
     pub keymap: KeymapConfig,

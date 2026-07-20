@@ -9,6 +9,7 @@
 //! zero translate, applied after layout-relevant properties are fixed.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
 use std::time::Instant;
@@ -43,18 +44,62 @@ pub struct RenderOptions {
     /// paint-only run opacity, keyed per (element, chunk offset) so each chunk
     /// fades exactly once. `None` renders without fades (completed rows).
     pub veil: Option<Rc<RefCell<RowVeil>>>,
+    /// Flatten/shape input cache (see [`RenderCache`]): settled blocks reuse
+    /// their flat text + runs across frames instead of rebuilding them — the
+    /// per-frame cost of a fading live row stays O(tail block), flat in the
+    /// total reply length. `None` rebuilds every pass.
+    pub cache: Option<Rc<RefCell<RenderCache>>>,
     /// Frame timestamp driving veil opacities (one clock per render pass).
     pub now: Instant,
 }
 
 impl RenderOptions {
-    /// Options for a completed (non-streaming) row — no veil.
+    /// Options for a completed (non-streaming) row — no veil, no cache.
     pub fn settled(row_key: SharedString) -> Self {
         Self {
             row_key,
             veil: None,
+            cache: None,
             now: Instant::now(),
         }
+    }
+}
+
+/// Cross-frame cache of flatten results, keyed by
+/// `(row key, top-level block ix, element discriminator)`.
+///
+/// During a streaming fade the live row re-renders every frame; without the
+/// cache each frame re-derives every block's flat `String` + `TextRun`s —
+/// O(reply length) per frame, growing through long replies. The incremental
+/// parser only ever touches a suffix of the top-level blocks
+/// ([`super::parser::IncrementalParser::stable_prefix_blocks`]), so everything
+/// below that boundary is byte-identical and its flatten result (and, via
+/// gpui's line-layout cache keyed on identical text+runs, its shaping) can be
+/// reused as-is. `SharedString`/`Rc` make the reuse O(1) per block.
+#[derive(Default)]
+pub struct RenderCache {
+    flats: HashMap<(SharedString, usize, usize), Rc<FlatText>>,
+    code: HashMap<(SharedString, usize, usize), Rc<CachedCode>>,
+}
+
+/// Cached per-line code runs (validity: code length + highlight identity).
+pub struct CachedCode {
+    code_len: usize,
+    /// Slice-pointer identity + len of the highlight Arc that produced this.
+    hl_key: (usize, usize),
+    lines: Vec<(SharedString, Vec<TextRun>)>,
+}
+
+impl RenderCache {
+    /// Drop every cached entry for `row`.
+    pub fn invalidate_row(&mut self, row: &str) {
+        self.flats.retain(|(r, _, _), _| r.as_ref() != row);
+        self.code.retain(|(r, _, _), _| r.as_ref() != row);
+    }
+
+    pub fn clear(&mut self) {
+        self.flats.clear();
+        self.code.clear();
     }
 }
 
@@ -78,6 +123,7 @@ pub fn render_tree(
             render_block(
                 &top.block,
                 ix,
+                ix,
                 opts,
                 theme,
                 lines.as_deref().map(|l| &l[..]),
@@ -86,24 +132,33 @@ pub fn render_tree(
         .into_any_element()
 }
 
-/// Render one block (top-level or nested).
+/// Render one block (top-level or nested). `top_ix` is the enclosing top-level
+/// block index (cache invalidation scope); `ix` the per-element discriminator.
 pub fn render_block(
     block: &Block,
+    top_ix: usize,
     ix: usize,
     opts: &RenderOptions,
     theme: &Theme,
     highlight: CodeHighlight,
 ) -> AnyElement {
     match block {
-        Block::Paragraph { runs } => {
-            text_element(runs, MD_TEXT_SIZE, MD_LINE_HEIGHT, false, ix, opts, theme)
-        }
+        Block::Paragraph { runs } => text_element(
+            runs,
+            MD_TEXT_SIZE,
+            MD_LINE_HEIGHT,
+            false,
+            top_ix,
+            ix,
+            opts,
+            theme,
+        ),
         Block::Heading { level, runs } => {
             let (size, line) = heading_metrics(*level);
-            text_element(runs, size, line, true, ix, opts, theme)
+            text_element(runs, size, line, true, top_ix, ix, opts, theme)
         }
         Block::CodeBlock { language, code } => {
-            render_code_block(language.as_deref(), code, ix, opts, theme, highlight)
+            render_code_block(language.as_deref(), code, top_ix, ix, opts, theme, highlight)
         }
         Block::BlockQuote { children } => div()
             .border_l_2()
@@ -113,12 +168,9 @@ pub fn render_block(
             .flex_col()
             .gap(px(8.0))
             .text_color(theme.text_muted)
-            .children(
-                children
-                    .iter()
-                    .enumerate()
-                    .map(|(ci, child)| render_block(child, ix * 100 + ci, opts, theme, None)),
-            )
+            .children(children.iter().enumerate().map(|(ci, child)| {
+                render_block(child, top_ix, ix * 100 + ci, opts, theme, None)
+            }))
             .into_any_element(),
         Block::List {
             ordered_start,
@@ -153,7 +205,14 @@ pub fn render_block(
                             .flex_col()
                             .gap(px(4.0))
                             .children(item.iter().enumerate().map(|(ci, child)| {
-                                render_block(child, ix * 100 + item_ix * 10 + ci, opts, theme, None)
+                                render_block(
+                                    child,
+                                    top_ix,
+                                    ix * 100 + item_ix * 10 + ci,
+                                    opts,
+                                    theme,
+                                    None,
+                                )
                             })),
                     )
             }))
@@ -170,6 +229,7 @@ pub fn render_block(
                         13.0,
                         19.0,
                         bold,
+                        top_ix,
                         ix * 1000 + cell_ix,
                         opts,
                         theme,
@@ -224,8 +284,9 @@ fn heading_metrics(level: u8) -> (f32, f32) {
 }
 
 /// Flattened inline runs: one string + gpui `TextRun`s + clickable link ranges.
+/// `text` is a `SharedString` so cached reuse across frames is an Arc clone.
 pub struct FlatText {
-    pub text: String,
+    pub text: SharedString,
     pub runs: Vec<TextRun>,
     pub links: Vec<(Range<usize>, String)>,
 }
@@ -288,36 +349,50 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> Fl
         });
     }
     FlatText {
-        text,
+        text: text.into(),
         runs: out,
         links,
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn text_element(
     runs: &[InlineRun],
     size: f32,
     line_height: f32,
     bold_default: bool,
+    top_ix: usize,
     ix: usize,
     opts: &RenderOptions,
     theme: &Theme,
 ) -> AnyElement {
-    let flat = flatten_runs(runs, theme, bold_default);
+    // Flatten through the cross-frame cache when one is wired: settled blocks
+    // reuse text + runs untouched (O(1) per block per frame); only blocks the
+    // incremental parser invalidated rebuild.
+    let flat: Rc<FlatText> = match &opts.cache {
+        Some(cache) => cache
+            .borrow_mut()
+            .flats
+            .entry((opts.row_key.clone(), top_ix, ix))
+            .or_insert_with(|| Rc::new(flatten_runs(runs, theme, bold_default)))
+            .clone(),
+        None => Rc::new(flatten_runs(runs, theme, bold_default)),
+    };
     // Streaming veil: opacity-only recolor of the runs covering newly appended
     // chunks. Same text, same fonts, same lengths — layout is untouched.
+    // Settled elements return no spans and reuse the cached runs unsplit.
     let text_runs = match &opts.veil {
         Some(veil) => {
             let spans = veil.borrow_mut().advance(ix, &flat.text, opts.now);
-            apply_veil(flat.runs, &spans)
+            apply_veil(flat.runs.clone(), &spans)
         }
-        None => flat.runs,
+        None => flat.runs.clone(),
     };
-    let styled = StyledText::new(flat.text).with_runs(text_runs);
+    let styled = StyledText::new(flat.text.clone()).with_runs(text_runs);
     let inner: AnyElement = if flat.links.is_empty() {
         styled.into_any_element()
     } else {
-        let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.into_iter().unzip();
+        let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.iter().cloned().unzip();
         let id: SharedString = format!("{}-t{ix}", opts.row_key).into();
         InteractiveText::new(id, styled)
             .on_click(ranges, move |clicked_ix, _window, cx| {
@@ -334,16 +409,55 @@ fn text_element(
         .into_any_element()
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_code_block(
     language: Option<&str>,
     code: &str,
+    top_ix: usize,
     ix: usize,
     opts: &RenderOptions,
     theme: &Theme,
     highlight: CodeHighlight,
 ) -> AnyElement {
     let mono = font(theme.font_mono.clone());
-    let lines: Vec<&str> = code.split('\n').collect();
+    // Per-line strings + runs through the cross-frame cache (validity: code
+    // length + highlight slice identity — a fresh highlight Arc re-derives).
+    let hl_key = highlight.map_or((0, 0), |h| (h.as_ptr() as usize, h.len()));
+    let build = || {
+        let lines: Vec<(SharedString, Vec<TextRun>)> = code
+            .split('\n')
+            .enumerate()
+            .map(|(li, line)| {
+                let tokens = highlight
+                    .and_then(|h| h.get(li))
+                    .map(|t| &t[..])
+                    .unwrap_or(&[]);
+                (
+                    SharedString::from(line.to_string()),
+                    runs_for_code_line(line, tokens, &mono, theme),
+                )
+            })
+            .collect();
+        Rc::new(CachedCode {
+            code_len: code.len(),
+            hl_key,
+            lines,
+        })
+    };
+    let cached: Rc<CachedCode> = match &opts.cache {
+        Some(cache) => {
+            let mut cache = cache.borrow_mut();
+            let entry = cache
+                .code
+                .entry((opts.row_key.clone(), top_ix, ix))
+                .or_insert_with(&build);
+            if entry.code_len != code.len() || entry.hl_key != hl_key {
+                *entry = build();
+            }
+            entry.clone()
+        }
+        None => build(),
+    };
     // Streaming veil over appended code, tracked on the whole code text and
     // sliced per line below (paint-only run recolor — heights stay exact).
     let veil_spans = match &opts.veil {
@@ -383,21 +497,17 @@ fn render_code_block(
                 .whitespace_nowrap()
                 .flex()
                 .flex_col()
-                .children(lines.iter().enumerate().scan(0usize, |off, (li, line)| {
+                .children((0..cached.lines.len()).scan(0usize, move |off, li| {
+                    let (line, runs) = &cached.lines[li];
                     let start = *off;
                     *off = start + line.len() + 1; // +1 for the '\n'
-                    let tokens = highlight
-                        .and_then(|h| h.get(li))
-                        .map(|t| &t[..])
-                        .unwrap_or(&[]);
-                    let mut runs = runs_for_code_line(line, tokens, &mono, theme);
                     let local = slice_spans(&veil_spans, start, start + line.len());
-                    runs = apply_veil(runs, &local);
+                    let runs = apply_veil(runs.clone(), &local);
                     Some(
                         div()
                             .h(px(CODE_LINE_HEIGHT))
                             .flex_none()
-                            .child(StyledText::new(line.to_string()).with_runs(runs)),
+                            .child(StyledText::new(line.clone()).with_runs(runs)),
                     )
                 })),
         )

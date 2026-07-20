@@ -858,7 +858,9 @@ impl Changes {
     }
 
     /// Pane header (h-11): "Changes" + the panel-collapse icon — matches the
-    /// main header's row so the two panes read as one chrome line.
+    /// main header's row, and carries the same bottom hairline so the header
+    /// rule reads as ONE continuous line across the conversation column, the
+    /// vertical divider, and the pane (reference chrome).
     fn render_pane_header(&self, theme: &Theme) -> AnyElement {
         div()
             .flex_none()
@@ -867,6 +869,8 @@ impl Changes {
             .flex_row()
             .items_center()
             .px(px(Theme::SPACE_LG))
+            .border_b_1()
+            .border_color(theme.border)
             .child(
                 div()
                     .flex_1()

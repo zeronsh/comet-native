@@ -27,7 +27,7 @@ use crate::changes::Changes;
 use crate::composer::{Composer, ComposerEvent, ComposerInput, ComposerInputEvent};
 use crate::icons::{self, icon};
 use crate::loaders;
-use crate::motion::{self, AnimationExt as _, RESIZE, SPLASH_OUT};
+use crate::motion::{self, AnimationExt as _, MotionSpec, RESIZE, SPLASH_OUT};
 use crate::popover::{self, Loadable};
 use crate::rail;
 use crate::settings::accounts::AccountsPage;
@@ -68,6 +68,26 @@ pub fn titlebar_spacer_width(is_macos: bool, fullscreen: bool, container_pad: f3
         return 0.0;
     }
     (titlebar_cluster_start(fullscreen) - container_pad).max(0.0)
+}
+
+/// Width of the persistent top-left button cluster itself (sidebar toggle +
+/// back/forward: three 24px buttons, 2px gaps).
+pub const CLUSTER_BUTTONS_WIDTH: f32 = 24.0 * 3.0 + 2.0 * 2.0;
+
+/// Where the cluster's first button starts, from the window's left edge.
+pub fn cluster_buttons_start(is_macos: bool, fullscreen: bool) -> f32 {
+    if is_macos {
+        titlebar_cluster_start(fullscreen)
+    } else {
+        10.0
+    }
+}
+
+/// Left clearance a full-bleed header (collapsed sidebar) needs so its content
+/// starts past the overlay cluster, given the header's own `container_pad`.
+pub fn cluster_clearance(is_macos: bool, fullscreen: bool, container_pad: f32) -> f32 {
+    (cluster_buttons_start(is_macos, fullscreen) + CLUSTER_BUTTONS_WIDTH + 8.0 - container_pad)
+        .max(0.0)
 }
 
 /// (Re-)apply the whole app keymap: clears every binding, restores the composer
@@ -137,6 +157,85 @@ pub enum Route {
     Chat,
     Settings(SettingsSection),
 }
+
+/// Per-chat panel open flags (comet parity: `sessionPanels` — the terminal and
+/// changes panels open *per session*, in memory only; heights and every other
+/// persisted setting stay global). New/unknown chats default to closed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ChatPanels {
+    pub terminal_open: bool,
+    pub changes_open: bool,
+}
+
+/// The session-scoped panel map. Keys are chat ids; the new-chat canvas uses
+/// the empty key. Not persisted — a fresh app starts with everything closed.
+#[derive(Debug, Default)]
+pub struct SessionPanels {
+    map: std::collections::HashMap<String, ChatPanels>,
+}
+
+impl SessionPanels {
+    pub fn get(&self, key: &str) -> ChatPanels {
+        self.map.get(key).copied().unwrap_or_default()
+    }
+
+    /// Flip the terminal flag for `key`; returns the new value.
+    pub fn toggle_terminal(&mut self, key: &str) -> bool {
+        let entry = self.map.entry(key.to_string()).or_default();
+        entry.terminal_open = !entry.terminal_open;
+        entry.terminal_open
+    }
+
+    /// Flip the changes flag for `key`; returns the new value.
+    pub fn toggle_changes(&mut self, key: &str) -> bool {
+        let entry = self.map.entry(key.to_string()).or_default();
+        entry.changes_open = !entry.changes_open;
+        entry.changes_open
+    }
+}
+
+/// Sidebar resort glide (feature-inventory §1.6): 260ms
+/// `cubic-bezier(0.22,1,0.36,1)` per-row translate, the View Transitions
+/// equivalent.
+pub const RESORT: MotionSpec = MotionSpec::new(260, motion::EASE_RESORT);
+
+/// FLIP diff for a keyed list: given the previously rendered order and the new
+/// order (key + row height), return each surviving key's paint-only start
+/// offset `old_y - new_y` (only keys whose position actually moved). `gap` is
+/// the flex gap between rows. Pure — drives the sidebar resort glide.
+pub fn resort_offsets(
+    old: &[(String, f32)],
+    new: &[(String, f32)],
+    gap: f32,
+) -> std::collections::HashMap<String, f32> {
+    let mut old_y = std::collections::HashMap::new();
+    let mut y = 0.0_f32;
+    for (key, height) in old {
+        old_y.insert(key.as_str(), y);
+        y += height + gap;
+    }
+    let mut offsets = std::collections::HashMap::new();
+    let mut y = 0.0_f32;
+    for (key, height) in new {
+        if let Some(prev) = old_y.get(key.as_str()) {
+            let dy = prev - y;
+            if dy.abs() > 0.5 {
+                offsets.insert(key.clone(), dy);
+            }
+        }
+        y += height + gap;
+    }
+    offsets
+}
+
+/// Estimated sidebar row heights for the resort diff (title line 17px inside
+/// 6px vertical padding; the location subline adds its 14px line + 2px gap).
+const CHAT_ROW_HEIGHT: f32 = 29.0;
+const CHAT_ROW_WITH_LOCATION_HEIGHT: f32 = 45.0;
+/// Group header: 12px top + 4px bottom padding around an 11px label line.
+const GROUP_HEADER_HEIGHT: f32 = 32.0;
+/// Flex gap between sidebar list items.
+const SIDEBAR_LIST_GAP: f32 = 2.0;
 
 /// Drag marker for the sidebar resize handle.
 struct SidebarResize;
@@ -221,6 +320,20 @@ pub struct Shell {
     boot: EngineBootConfig,
     data_dir: PathBuf,
     settings: UiSettings,
+    /// Session-scoped panel open flags (terminal / changes per chat; §1.10-1.11
+    /// parity — heights stay in [`UiSettings`]).
+    panels: SessionPanels,
+    /// The panel key of the chat currently shown ("" = new-chat canvas).
+    active_chat: String,
+    /// Last rendered sidebar order (key + estimated height) — the FLIP baseline
+    /// for the §1.6 resort glide.
+    sidebar_prev_order: Vec<(String, f32)>,
+    /// Per-key paint offsets of the resort in flight, keyed elements restart on
+    /// `resort_epoch` bumps.
+    sidebar_resort: std::collections::HashMap<String, f32>,
+    /// Keys that just appeared in a live list (fade in, no glide).
+    sidebar_new_keys: std::collections::HashSet<String>,
+    resort_epoch: usize,
     /// Dev/testing knobs (`COMET_OPEN_DIALOG`, `COMET_FORCE_GATE`) — see
     /// [`Shell::new`].
     debug_dialog: Option<String>,
@@ -351,6 +464,12 @@ impl Shell {
             boot,
             data_dir,
             settings,
+            panels: SessionPanels::default(),
+            active_chat: String::new(),
+            sidebar_prev_order: Vec::new(),
+            sidebar_resort: std::collections::HashMap::new(),
+            sidebar_new_keys: std::collections::HashSet::new(),
+            resort_epoch: 0,
             debug_dialog,
             debug_gate,
             sidebar_tween: None,
@@ -388,6 +507,22 @@ impl Shell {
                 _ => {}
             }
         }
+        // Chat switch: restore THAT chat's panel state (per-session open flags;
+        // snap, no tween — the panels belong to the destination chat).
+        let selected = state.read(cx).selected_chat.clone().unwrap_or_default();
+        if selected != self.active_chat {
+            self.active_chat = selected;
+            self.right_tween = None;
+            self.terminal_tween = None;
+            let panels = self.panels.get(&self.active_chat);
+            if let Some(panel) = self.terminal.clone() {
+                panel.update(cx, |panel, cx| panel.set_open(panels.terminal_open, cx));
+            }
+            if panels.changes_open {
+                let changes = self.changes_pane(cx);
+                changes.update(cx, |changes, cx| changes.ensure_watch(cx));
+            }
+        }
         match state.read(cx).connection {
             ConnectionStatus::Ready => {
                 if self.splash == SplashPhase::Visible {
@@ -420,8 +555,18 @@ impl Shell {
         }
     }
 
+    /// The current chat's changes-pane flag (per-session, in-memory).
+    fn right_pane_open(&self) -> bool {
+        self.panels.get(&self.active_chat).changes_open
+    }
+
+    /// The current chat's terminal flag (per-session, in-memory).
+    fn terminal_open(&self) -> bool {
+        self.panels.get(&self.active_chat).terminal_open
+    }
+
     fn right_target(&self) -> f32 {
-        if self.settings.right_pane_open {
+        if self.right_pane_open() {
             self.settings.right_pane_width
         } else {
             0.0
@@ -443,20 +588,20 @@ impl Shell {
 
     fn toggle_right_pane(&mut self, cx: &mut Context<Self>) {
         let from = self.right_target();
-        self.settings.right_pane_open = !self.settings.right_pane_open;
+        let key = self.active_chat.clone();
+        let open = self.panels.toggle_changes(&key);
         self.tween_epoch += 1;
         self.right_tween = Some(WidthTween {
             from,
             to: self.right_target(),
             epoch: self.tween_epoch,
         });
-        if self.settings.right_pane_open {
+        if open {
             // Lazy: the Changes entity (and its WatchCheckoutDiffs) exists only
             // once the pane has been opened.
             let changes = self.changes_pane(cx);
             changes.update(cx, |changes, cx| changes.ensure_watch(cx));
         }
-        self.schedule_save(cx);
         cx.notify();
     }
 
@@ -479,7 +624,7 @@ impl Shell {
     }
 
     fn terminal_target(&self) -> f32 {
-        if self.settings.terminal_open {
+        if self.terminal_open() {
             self.settings.terminal_height
         } else {
             0.0
@@ -488,16 +633,17 @@ impl Shell {
 
     /// Cmd/Ctrl+J and the header button (feature-inventory §1.10). Height
     /// animates 200 ms; closing detaches (PTYs stay alive), opening restores.
+    /// The flag is per chat (comet `sessionPanels`).
     fn toggle_terminal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let from = self.terminal_target();
-        self.settings.terminal_open = !self.settings.terminal_open;
+        let key = self.active_chat.clone();
+        let open = self.panels.toggle_terminal(&key);
         self.tween_epoch += 1;
         self.terminal_tween = Some(WidthTween {
             from,
             to: self.terminal_target(),
             epoch: self.tween_epoch,
         });
-        let open = self.settings.terminal_open;
         let panel = self.terminal_panel(cx);
         panel.update(cx, |panel, cx| panel.set_open(open, cx));
         if !open {
@@ -516,7 +662,6 @@ impl Shell {
             })
             .ok();
         }));
-        self.schedule_save(cx);
         cx.notify();
     }
 
@@ -995,6 +1140,60 @@ impl Shell {
             })
     }
 
+    /// The ONE top-left window-control cluster (sidebar toggle + back/forward —
+    /// comet window-controls.tsx): rendered once, in a paint-only overlay layer
+    /// pinned at the window's top-left, ABOVE the sidebar and headers. The
+    /// sidebar width animates *beneath* it, so the buttons keep their element
+    /// identity and never move or remount on collapse/expand; only the
+    /// fullscreen traffic-light inset tweens (the animated spacer). The
+    /// container has no id/listeners — everything between the buttons falls
+    /// through to the titlebar drag strips below.
+    fn render_titlebar_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        div()
+            .absolute()
+            .top_0()
+            .left_0()
+            .h(px(Theme::HEADER_HEIGHT))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(2.0))
+            .px(px(10.0))
+            .children(self.titlebar_spacer("titlebar-cluster-inset", 12.0))
+            .child(window_control_button(
+                "toggle-sidebar",
+                icons::SIDEBAR_MINIMALISTIC_LEFT,
+                &theme,
+                cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+            ))
+            .child(
+                div()
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        icon(icons::ARROW_LEFT)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted.opacity(0.35)),
+                    ),
+            )
+            .child(
+                div()
+                    .size(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(
+                        icon(icons::ARROW_RIGHT)
+                            .size(px(16.0))
+                            .text_color(theme.text_muted.opacity(0.35)),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let inner: AnyElement = match self.route {
@@ -1033,19 +1232,12 @@ impl Shell {
             .flex()
             .flex_col()
             .child({
+                // Bare drag strip — the control cluster is the shell overlay.
                 let strip = div()
                     .h(px(Theme::HEADER_HEIGHT))
                     .flex_none()
                     .flex()
-                    .items_center()
-                    .px(px(10.0))
-                    .children(self.titlebar_spacer("settings-titlebar-inset", 10.0))
-                    .child(window_control_button(
-                        "toggle-sidebar",
-                        icons::SIDEBAR_MINIMALISTIC_LEFT,
-                        theme,
-                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                    ));
+                    .items_center();
                 self.titlebar_drag_region("settings-titlebar", strip, cx)
             })
             .child(
@@ -1323,7 +1515,9 @@ impl Shell {
         };
         let grouped = self.settings.sidebar_grouped;
 
-        let mut list_items: Vec<AnyElement> = Vec::new();
+        // Keyed rows: (stable key, estimated height, element) — the key + height
+        // list drives the §1.6 resort FLIP diff below.
+        let mut keyed: Vec<(String, f32, AnyElement)> = Vec::new();
         let row_for = |shell: &Self, chat: &comet_proto::Chat, cx: &mut Context<Self>| {
             let (indicator, selected) = meta
                 .get(&chat.id)
@@ -1331,24 +1525,33 @@ impl Shell {
                 .unwrap_or((Indicator::None, false));
             let time_ago: SharedString =
                 format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
-            shell.render_chat_row(
+            let location = chat_location(chat).map(SharedString::from);
+            let height = if location.is_some() {
+                CHAT_ROW_WITH_LOCATION_HEIGHT
+            } else {
+                CHAT_ROW_HEIGHT
+            };
+            let element = shell.render_chat_row(
                 chat.id.clone(),
                 chat.title
                     .clone()
                     .unwrap_or_else(|| "New session".into())
                     .into(),
                 time_ago,
-                chat_location(chat).map(SharedString::from),
+                location,
                 indicator,
                 selected,
                 theme,
                 cx,
-            )
+            );
+            (format!("c:{}", chat.id), height, element)
         };
         if grouped {
             for group in group_chats(chats.iter()) {
                 // Quiet lowercase project header (comet session-group.tsx).
-                list_items.push(
+                keyed.push((
+                    format!("g:{}", group.label),
+                    GROUP_HEADER_HEIGHT,
                     div()
                         .px(px(Theme::SPACE_SM))
                         .pt(px(12.0))
@@ -1359,16 +1562,66 @@ impl Shell {
                         .text_color(theme.text_muted.opacity(0.6))
                         .child(SharedString::from(group.label.clone()))
                         .into_any_element(),
-                );
+                ));
                 for chat in group.chats {
-                    list_items.push(row_for(self, chat, cx));
+                    keyed.push(row_for(self, chat, cx));
                 }
             }
         } else {
             for chat in &chats {
-                list_items.push(row_for(self, chat, cx));
+                keyed.push(row_for(self, chat, cx));
             }
         }
+
+        // Resort glide (§1.6 View Transitions parity): when the ORDER of a live
+        // list changes (new activity resort, grouping flip), surviving rows
+        // glide from their old y to the new one — layout is already at the new
+        // position; the offset is a paint-only relative inset animated to 0
+        // over 260ms cubic-bezier(0.22,1,0.36,1). New rows fade in; removals
+        // just go (matching the original). First fill and chat switches (which
+        // don't reorder) never animate.
+        let order: Vec<(String, f32)> = keyed.iter().map(|(k, h, _)| (k.clone(), *h)).collect();
+        if self.sidebar_prev_order != order {
+            if !self.sidebar_prev_order.is_empty() {
+                let offsets = resort_offsets(&self.sidebar_prev_order, &order, SIDEBAR_LIST_GAP);
+                let prev_keys: std::collections::HashSet<&str> = self
+                    .sidebar_prev_order
+                    .iter()
+                    .map(|(k, _)| k.as_str())
+                    .collect();
+                let new_keys: std::collections::HashSet<String> = order
+                    .iter()
+                    .filter(|(k, _)| !prev_keys.contains(k.as_str()))
+                    .map(|(k, _)| k.clone())
+                    .collect();
+                if !offsets.is_empty() || !new_keys.is_empty() {
+                    self.resort_epoch += 1;
+                    self.sidebar_resort = offsets;
+                    self.sidebar_new_keys = new_keys;
+                }
+            }
+            self.sidebar_prev_order = order;
+        }
+        let epoch = self.resort_epoch;
+        let list_items: Vec<AnyElement> = keyed
+            .into_iter()
+            .map(|(key, _, element)| {
+                if let Some(dy) = self.sidebar_resort.get(&key).copied() {
+                    let id = SharedString::from(format!("resort-{epoch}-{key}"));
+                    div()
+                        .child(element)
+                        .with_animation(id, RESORT.animation(), move |el, t| {
+                            el.relative().top(px(dy * (1.0 - t)))
+                        })
+                        .into_any_element()
+                } else if self.sidebar_new_keys.contains(&key) {
+                    let id = SharedString::from(format!("row-in-{epoch}-{key}"));
+                    motion::fade_quick(id, div().child(element)).into_any_element()
+                } else {
+                    element
+                }
+            })
+            .collect();
 
         let user_line: SharedString = user
             .as_ref()
@@ -1428,40 +1681,16 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
-            // Window-control strip in the h-11 titlebar area: sidebar toggle +
-            // back/forward (comet window-controls.tsx). A drag region like
-            // comet's `.drag` strip; on macOS an animated spacer clears the
-            // traffic lights (cluster at 88px, 12px in fullscreen — §1.1).
+            // The h-11 titlebar strip: a bare drag region — the window-control
+            // cluster itself lives in the shell's persistent overlay
+            // ([`Shell::render_titlebar_cluster`]) so it never remounts or
+            // moves when the sidebar animates.
             .child({
                 let strip = div()
                     .h(px(Theme::HEADER_HEIGHT))
                     .flex_none()
                     .flex()
-                    .items_center()
-                    .gap(px(2.0))
-                    .px(px(10.0))
-                    // 10px padding + 2px gap ahead of the first button.
-                    .children(self.titlebar_spacer("sidebar-titlebar-inset", 12.0))
-                    .child(window_control_button(
-                        "toggle-sidebar",
-                        icons::SIDEBAR_MINIMALISTIC_LEFT,
-                        theme,
-                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                    ))
-                    .child(
-                        div().size(px(24.0)).flex().items_center().justify_center().child(
-                            icon(icons::ARROW_LEFT)
-                                .size(px(16.0))
-                                .text_color(theme.text_muted.opacity(0.35)),
-                        ),
-                    )
-                    .child(
-                        div().size(px(24.0)).flex().items_center().justify_center().child(
-                            icon(icons::ARROW_RIGHT)
-                                .size(px(16.0))
-                                .text_color(theme.text_muted.opacity(0.35)),
-                        ),
-                    );
+                    .items_center();
                 self.titlebar_drag_region("sidebar-titlebar", strip, cx)
             })
             // Device switcher + "New session" (comet sidebar.tsx px-2 block).
@@ -1892,7 +2121,7 @@ impl Shell {
         marker: fn() -> T,
         reset: fn(&mut Shell, &mut Context<Shell>),
         cx: &mut Context<Self>,
-    ) -> AnyElement
+    ) -> gpui::Stateful<gpui::Div>
     where
         T: 'static,
     {
@@ -1918,7 +2147,6 @@ impl Shell {
                     }
                 }),
             )
-            .into_any_element()
     }
 
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -1942,14 +2170,12 @@ impl Shell {
                 .border_color(border)
                 .when(self.settings.sidebar_collapsed, |el| {
                     // Full-bleed card: the header IS the titlebar — clear the
-                    // traffic lights (16px pad + 10px gap ahead of the button).
-                    el.children(self.titlebar_spacer("settings-header-inset", 26.0))
-                        .child(window_control_button(
-                            "toggle-sidebar",
-                            icons::SIDEBAR_MINIMALISTIC_LEFT,
-                            &theme_owned,
-                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                        ))
+                    // persistent overlay cluster (which never moves).
+                    el.child(div().flex_none().w(px(cluster_clearance(
+                        cfg!(target_os = "macos"),
+                        self.fullscreen.unwrap_or(false),
+                        Theme::SPACE_LG,
+                    ))))
                 })
                 .child(
                     div()
@@ -2044,14 +2270,12 @@ impl Shell {
                 .border_color(border)
                 .when(self.settings.sidebar_collapsed, |el| {
                     // Full-bleed card: this header is the titlebar — clear the
-                    // traffic lights (16px pad + 10px gap ahead of the button).
-                    el.children(self.titlebar_spacer("chat-header-inset", 26.0))
-                        .child(window_control_button(
-                            "toggle-sidebar",
-                            icons::SIDEBAR_MINIMALISTIC_LEFT,
-                            theme,
-                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                        ))
+                    // persistent overlay cluster (which never moves).
+                    el.child(div().flex_none().w(px(cluster_clearance(
+                        cfg!(target_os = "macos"),
+                        self.fullscreen.unwrap_or(false),
+                        Theme::SPACE_LG,
+                    ))))
                 })
                 .child(
                     div()
@@ -2077,7 +2301,7 @@ impl Shell {
                     )
                 })
                 .child(div().flex_1())
-                .when(!self.settings.right_pane_open, |el| {
+                .when(!self.right_pane_open(), |el| {
                     el.child(header_icon_button(
                         "toggle-changes",
                         icons::SIDEBAR_MINIMALISTIC,
@@ -2095,13 +2319,11 @@ impl Shell {
                 .items_center()
                 .px(px(10.0))
                 .when(self.settings.sidebar_collapsed, |el| {
-                    el.children(self.titlebar_spacer("empty-header-inset", 10.0))
-                        .child(window_control_button(
-                            "toggle-sidebar",
-                            icons::SIDEBAR_MINIMALISTIC_LEFT,
-                            theme,
-                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
-                        ))
+                    el.child(div().flex_none().w(px(cluster_clearance(
+                        cfg!(target_os = "macos"),
+                        self.fullscreen.unwrap_or(false),
+                        10.0,
+                    ))))
                 });
             self.titlebar_drag_region("empty-header-titlebar", bar, cx)
                 .into_any_element()
@@ -2154,9 +2376,9 @@ impl Shell {
         if target <= 0.0 && tween.is_none() {
             return gpui::Empty.into_any_element();
         }
-        // Restore-on-boot: an open panel needs its entity (and set_open) even
-        // if toggle_terminal never ran this session.
-        if self.settings.terminal_open && self.terminal.is_none() {
+        // Defensive: an open flag needs its entity (and set_open) even if
+        // toggle_terminal never created one.
+        if self.terminal_open() && self.terminal.is_none() {
             let panel = self.terminal_panel(cx);
             panel.update(cx, |panel, cx| panel.set_open(true, cx));
         }
@@ -2297,8 +2519,8 @@ impl Shell {
     /// lazy [`Changes`] diff viewer (created on first open).
     fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx);
-        let (bg, border) = (theme.bg, theme.border);
-        let content: AnyElement = if self.settings.right_pane_open {
+        let bg = theme.bg;
+        let content: AnyElement = if self.right_pane_open() {
             let changes = self.changes_pane(cx);
             // Idempotent — also covers a persisted-open pane on boot.
             changes.update(cx, |changes, cx| changes.ensure_watch(cx));
@@ -2311,16 +2533,14 @@ impl Shell {
             .h_full()
             .child(content);
         let target = self.right_target();
+        // No chrome of its own: the pane is a plain column inside the window
+        // card — the divider hairline between it and the conversation is drawn
+        // by the card row (render, `right_divider`).
         self.pane_container(
             "right-pane-width",
             self.right_tween,
             target,
-            div()
-                .h_full()
-                .bg(bg)
-                .when(target > 0.0, |el| el.border_l_1().border_color(border))
-                .child(inner)
-                .into_any_element(),
+            div().h_full().bg(bg).child(inner).into_any_element(),
         )
     }
 
@@ -2857,19 +3077,41 @@ impl Render for Shell {
                     cx,
                 );
                 let main = self.render_main(cx);
-                let right_open = self.settings.right_pane_open;
-                let right_handle = self.resize_handle(
-                    "right-pane-resize",
-                    || RightPaneResize,
-                    |shell, _| shell.settings.right_pane_width = RIGHT_PANE_DEFAULT,
-                    cx,
-                );
+                let right_open = self.right_pane_open();
+                // The conversation/pane divider: a single full-height hairline
+                // inside the card (the reference chrome), with the 5px resize
+                // grabber floating OVER it (absolute) so the hit area consumes
+                // no layout width — no dead gap breaking the header hairline.
+                let right_divider: Option<AnyElement> = right_open.then(|| {
+                    let border = Theme::of(cx).border;
+                    let handle = self
+                        .resize_handle(
+                            "right-pane-resize",
+                            || RightPaneResize,
+                            |shell, _| shell.settings.right_pane_width = RIGHT_PANE_DEFAULT,
+                            cx,
+                        )
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .left(px(-2.0));
+                    div()
+                        .w(px(1.0))
+                        .h_full()
+                        .flex_none()
+                        .relative()
+                        .bg(border)
+                        .child(handle)
+                        .into_any_element()
+                });
                 let right = self.render_right_pane(cx);
                 let overlays = self.render_overlays(window.viewport_size(), window, cx);
                 // The signature frame: the content pane (main column + changes
                 // pane) is an inset rounded hairline-bordered card floating on
-                // the frost shell. Collapsed sidebar → full-bleed (margins,
-                // radius, and border melt away; the header row IS the title bar).
+                // the frost shell — ONE card; the changes pane is a column
+                // inside it, split off by the divider hairline. Collapsed
+                // sidebar → full-bleed (margins, radius, and border melt away;
+                // the header row IS the title bar).
                 let inset = !self.settings.sidebar_collapsed;
                 let theme = Theme::of(cx);
                 let card = div()
@@ -2887,11 +3129,12 @@ impl Render for Shell {
                             .border_color(theme.border)
                     })
                     .child(main)
-                    .when(right_open, |el| el.child(right_handle))
+                    .children(right_divider)
                     .child(right);
                 root.child(sidebar)
-                    .child(sidebar_handle)
+                    .child(sidebar_handle.into_any_element())
                     .child(card)
+                    .child(self.render_titlebar_cluster(cx))
                     .children(overlays)
             }
             GatePhase::Loading => root, // splash overlay covers boot
@@ -2940,5 +3183,122 @@ mod tests {
         // Linux / Windows: never any inset.
         assert_eq!(titlebar_spacer_width(false, false, 10.0), 0.0);
         assert_eq!(titlebar_spacer_width(false, true, 10.0), 0.0);
+    }
+
+    #[test]
+    fn cluster_clearance_clears_the_overlay_buttons() {
+        // Linux: buttons at 10..86; a 16px-padded header needs 78 more px to
+        // put content at 86 + 8 breathing room.
+        assert_eq!(cluster_clearance(false, false, 16.0), 78.0);
+        assert_eq!(cluster_clearance(false, false, 10.0), 84.0);
+        // macOS: buttons start at the 88px traffic-light cluster start.
+        assert_eq!(cluster_clearance(true, false, 16.0), 88.0 + 76.0 + 8.0 - 16.0);
+        // macOS fullscreen: cluster reclaims the inset (starts at 12).
+        assert_eq!(cluster_clearance(true, true, 16.0), 12.0 + 76.0 + 8.0 - 16.0);
+    }
+
+    // ---- per-session panel flags (§1.10/1.11 parity: comet sessionPanels) ----
+
+    #[test]
+    fn session_panels_default_closed_per_chat() {
+        let panels = SessionPanels::default();
+        assert_eq!(panels.get("a"), ChatPanels::default());
+        assert!(!panels.get("a").terminal_open);
+        assert!(!panels.get("a").changes_open);
+        // The new-chat canvas ("" key) is its own session, also closed.
+        assert!(!panels.get("").terminal_open);
+    }
+
+    #[test]
+    fn session_panels_flags_are_chat_scoped() {
+        let mut panels = SessionPanels::default();
+        // Opening the terminal in chat A opens it ONLY in chat A.
+        assert!(panels.toggle_terminal("a"));
+        assert!(panels.get("a").terminal_open);
+        assert!(!panels.get("b").terminal_open);
+        assert!(!panels.get("").terminal_open);
+        // Changes pane in B is independent of A's terminal.
+        assert!(panels.toggle_changes("b"));
+        assert!(panels.get("b").changes_open);
+        assert!(!panels.get("b").terminal_open);
+        assert!(!panels.get("a").changes_open);
+        // Switching back to A restores A's state untouched.
+        assert!(panels.get("a").terminal_open);
+        // Toggling off round-trips.
+        assert!(!panels.toggle_terminal("a"));
+        assert!(!panels.get("a").terminal_open);
+    }
+
+    #[test]
+    fn session_panels_both_flags_coexist_per_chat() {
+        let mut panels = SessionPanels::default();
+        panels.toggle_terminal("a");
+        panels.toggle_changes("a");
+        assert_eq!(
+            panels.get("a"),
+            ChatPanels {
+                terminal_open: true,
+                changes_open: true
+            }
+        );
+        assert_eq!(panels.get("b"), ChatPanels::default());
+    }
+
+    // ---- sidebar resort FLIP diff (§1.6) ----
+
+    fn keys(list: &[(&str, f32)]) -> Vec<(String, f32)> {
+        list.iter().map(|(k, h)| (k.to_string(), *h)).collect()
+    }
+
+    #[test]
+    fn resort_offsets_empty_when_order_unchanged() {
+        let order = keys(&[("a", 29.0), ("b", 29.0), ("c", 45.0)]);
+        assert!(resort_offsets(&order, &order, 2.0).is_empty());
+    }
+
+    #[test]
+    fn resort_offsets_activity_moves_row_to_top() {
+        // c (bottom, y=62) jumps to top: c glides down-from-above? No — c's
+        // old y is 62, new y is 0 → starts +62 below… offset = old - new = +62,
+        // painted at +62 decaying to 0 (a glide UP into place). a and b shift
+        // down by c's height + gap (31).
+        let old = keys(&[("a", 29.0), ("b", 29.0), ("c", 29.0)]);
+        let new = keys(&[("c", 29.0), ("a", 29.0), ("b", 29.0)]);
+        let offsets = resort_offsets(&old, &new, 2.0);
+        assert_eq!(offsets.get("c"), Some(&62.0));
+        assert_eq!(offsets.get("a"), Some(&-31.0));
+        assert_eq!(offsets.get("b"), Some(&-31.0));
+    }
+
+    #[test]
+    fn resort_offsets_respect_heights_and_gap() {
+        // Tall row (45px) swaps with a short one (29px).
+        let old = keys(&[("tall", 45.0), ("short", 29.0)]);
+        let new = keys(&[("short", 29.0), ("tall", 45.0)]);
+        let offsets = resort_offsets(&old, &new, 2.0);
+        // short: old y 47 → new y 0; tall: old y 0 → new y 31.
+        assert_eq!(offsets.get("short"), Some(&47.0));
+        assert_eq!(offsets.get("tall"), Some(&-31.0));
+    }
+
+    #[test]
+    fn resort_offsets_ignore_added_and_removed_keys() {
+        let old = keys(&[("a", 29.0), ("gone", 29.0), ("b", 29.0)]);
+        let new = keys(&[("new", 29.0), ("a", 29.0), ("b", 29.0)]);
+        let offsets = resort_offsets(&old, &new, 2.0);
+        // "new" has no old position (fades in instead); "gone" just goes.
+        assert!(!offsets.contains_key("new"));
+        assert!(!offsets.contains_key("gone"));
+        // a: old 0 → new 31 (pushed down by the insert); b: 62 → 62 (gone's
+        // slot replaced by "new" of equal height — no move, no entry).
+        assert_eq!(offsets.get("a"), Some(&-31.0));
+        assert_eq!(offsets.get("b"), None);
+    }
+
+    #[test]
+    fn resort_glide_spec_matches_original() {
+        // §1.6: 260ms cubic-bezier(0.22, 1, 0.36, 1).
+        assert_eq!(RESORT.duration_ms, 260);
+        assert_eq!(RESORT.curve, motion::EASE_RESORT);
     }
 }

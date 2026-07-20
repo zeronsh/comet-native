@@ -6,9 +6,10 @@
 //!   into one row per markdown top-level block, plus consecutive-tool groups and
 //!   input/error chips;
 //! - stable row ids `{msgId}#{partId}.{blockIx}` / `{msgId}#g{groupIx}` — LIVE
-//!   (streaming) entries stay UNSPLIT (one row per text part) and re-split on
-//!   completion; the first split block reuses the live row's id, so row identity
-//!   is continuous and nothing flickers;
+//!   (streaming) entries split per block exactly like completed ones (the list
+//!   virtualizes them, so a fading live reply re-renders only its visible tail
+//!   each frame — flat cost in the reply length); on completion each block row
+//!   keeps its id, so row identity is continuous and nothing flickers;
 //! - rows are cached per entry keyed by a content fingerprint — only changed
 //!   messages rebuild (the anti-"streaming stutter" trick);
 //! - row-set changes diff by (id, version) into one minimal `splice`.
@@ -38,7 +39,7 @@ use comet_proto::ToolCall;
 
 use crate::markdown::highlight::{Lang, LineCarry, Token, lang_for_tag, tokenize_line};
 use crate::markdown::parser::{Block, BlockTree, IncrementalParser, parse_full};
-use crate::markdown::render::{self, RenderOptions};
+use crate::markdown::render::{self, RenderCache, RenderOptions};
 use crate::markdown::veil::RowVeil;
 use crate::motion::{self, AnimationExt as _, RESIZE};
 use crate::state::AppState;
@@ -196,9 +197,13 @@ pub enum RowKind {
         tree: Arc<BlockTree>,
         block_ix: usize,
     },
-    /// A whole streaming text part, unsplit (boundaries shift while streaming).
+    /// One top-level block of a STREAMING message. Split per block like
+    /// completed rows (only the tail blocks' versions change per commit, so
+    /// the settled prefix is never respliced or re-rendered); rendered with
+    /// the fade veil.
     LiveMarkdown {
         tree: Arc<BlockTree>,
+        block_ix: usize,
     },
     ToolGroup {
         tools: Arc<Vec<ToolItem>>,
@@ -332,28 +337,37 @@ pub fn rows_for_entry(
                         }
                         let key = format!("{}#{}", entry.id, part_id);
                         let tree = parse(&key, text);
-                        if streaming {
-                            // Live turn stays unsplit — one row, id matching the
-                            // eventual first split block for flicker-free handoff.
+                        // Live and completed parts split identically — one row
+                        // per top-level block, same ids, so the live→complete
+                        // handoff never changes row identity. The version is a
+                        // content hash of the block's bytes (LSB = streaming),
+                        // so a commit only splices rows whose bytes actually
+                        // changed — the settled prefix of a live reply is
+                        // untouched (and its render caches stay valid).
+                        for block_ix in 0..tree.blocks.len() {
+                            let range = &tree.blocks[block_ix].range;
+                            let end = range.end.min(text.len());
+                            let bytes = text
+                                .as_bytes()
+                                .get(range.start.min(end)..end)
+                                .unwrap_or_default();
+                            let version = (fnv1a(bytes) << 1) | streaming as u64;
                             rows.push(Row {
-                                id: format!("{key}.0").into(),
-                                version: (text.len() as u64) << 1 | 1,
+                                id: format!("{key}.{block_ix}").into(),
+                                version,
                                 turn_start: false,
-                                kind: RowKind::LiveMarkdown { tree },
-                            });
-                        } else {
-                            for block_ix in 0..tree.blocks.len() {
-                                let end = tree.blocks[block_ix].range.end.min(text.len());
-                                rows.push(Row {
-                                    id: format!("{key}.{block_ix}").into(),
-                                    version: (end as u64) << 1,
-                                    turn_start: false,
-                                    kind: RowKind::Markdown {
+                                kind: if streaming {
+                                    RowKind::LiveMarkdown {
                                         tree: tree.clone(),
                                         block_ix,
-                                    },
-                                });
-                            }
+                                    }
+                                } else {
+                                    RowKind::Markdown {
+                                        tree: tree.clone(),
+                                        block_ix,
+                                    }
+                                },
+                            });
                         }
                     }
                     MessagePart::Input {
@@ -404,6 +418,114 @@ pub fn rows_for_entry(
     rows
 }
 
+/// `COMET_FRAME_STATS=1` logs live-row render-cost percentiles (p50/p95 µs
+/// over rolling windows of [`FRAME_STATS_WINDOW`] samples) at `warn` level —
+/// the smoothness measurement knob. Off by default; zero cost when off.
+fn frame_stats_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("COMET_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+const FRAME_STATS_WINDOW: usize = 240;
+
+/// `COMET_NO_RENDER_CACHE=1` bypasses the cross-frame flatten cache — the
+/// A/B knob for the frame-cost measurement above.
+fn render_cache_disabled() -> bool {
+    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DISABLED.get_or_init(|| {
+        std::env::var("COMET_NO_RENDER_CACHE").is_ok_and(|v| !v.is_empty() && v != "0")
+    })
+}
+
+fn record_live_frame_us(us: u64) {
+    thread_local! {
+        static SAMPLES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    }
+    SAMPLES.with(|s| {
+        let mut s = s.borrow_mut();
+        s.push(us);
+        if s.len() >= FRAME_STATS_WINDOW {
+            s.sort_unstable();
+            let p50 = s[s.len() / 2];
+            let p95 = s[s.len() * 95 / 100];
+            let max = *s.last().unwrap();
+            tracing::warn!(
+                n = s.len(),
+                p50_us = p50,
+                p95_us = p95,
+                max_us = max,
+                "live-row render cost"
+            );
+            s.clear();
+        }
+    });
+}
+
+/// How [`parse_for_row`] produced its tree — carries the incremental parser's
+/// work counters so callers (and tests) can see that per-append parse work is
+/// bounded by the reparsed tail, never the whole accumulated reply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParseOutcome {
+    /// Streaming row: the live [`IncrementalParser`] advanced by one commit.
+    Incremental {
+        /// Bytes fed through `parse_full` for this commit (the reparse tail).
+        parsed_bytes: usize,
+        /// Leading top-level blocks left untouched (render caches stay valid).
+        stable_prefix_blocks: usize,
+    },
+    /// Completed row served from the settled tree cache (no parse at all).
+    Cached,
+    /// Live→complete handoff: the live parser's exact tree was adopted.
+    Handoff,
+    /// Completed row parsed from scratch.
+    Full,
+}
+
+/// The transcript's markdown parse wiring, extracted for testability: one call
+/// per text part per sync. Streaming parts keep one [`IncrementalParser`] per
+/// row key and advance it with the full accumulated text (`set_text` takes the
+/// O(tail) append path for the prefix-extensions the doc watch delivers);
+/// completed parts hit the settled cache, adopt the live parser's tree on the
+/// live→complete flip (flicker-free handoff), or do one full parse.
+pub fn parse_for_row(
+    streaming: bool,
+    key: &str,
+    text: &str,
+    live_parsers: &mut HashMap<String, IncrementalParser>,
+    tree_cache: &mut HashMap<String, (usize, Arc<BlockTree>)>,
+) -> (Arc<BlockTree>, ParseOutcome) {
+    if streaming {
+        let parser = live_parsers.entry(key.to_string()).or_default();
+        parser.set_text(text);
+        (
+            Arc::new(parser.tree().clone()),
+            ParseOutcome::Incremental {
+                parsed_bytes: parser.last_parse_bytes(),
+                stable_prefix_blocks: parser.stable_prefix_blocks(),
+            },
+        )
+    } else {
+        if let Some((len, tree)) = tree_cache.get(key)
+            && *len == text.len()
+        {
+            return (tree.clone(), ParseOutcome::Cached);
+        }
+        // On the live→complete flip reuse the live parser's tree when
+        // the sources match — the split rows then share the exact tree
+        // the unsplit row painted, guaranteeing a flicker-free handoff.
+        let (tree, outcome) = match live_parsers.remove(key) {
+            Some(parser) if parser.source() == text => {
+                (Arc::new(parser.tree().clone()), ParseOutcome::Handoff)
+            }
+            _ => (Arc::new(parse_full(text)), ParseOutcome::Full),
+        };
+        tree_cache.insert(key.to_string(), (text.len(), tree.clone()));
+        (tree, outcome)
+    }
+}
+
 /// Markdown row ids are `{entry}#{part}.{blockIx}` — the part prefix is
 /// everything before the block index.
 fn part_prefix(id: &str) -> &str {
@@ -418,10 +540,14 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
     if row.turn_start {
         return GAP_TURN;
     }
+    let is_md = |k: &RowKind| {
+        matches!(
+            k,
+            RowKind::Markdown { .. } | RowKind::LiveMarkdown { .. }
+        )
+    };
     let same_part_markdown = prev.is_some_and(|p| {
-        matches!(p.kind, RowKind::Markdown { .. })
-            && matches!(row.kind, RowKind::Markdown { .. })
-            && part_prefix(&p.id) == part_prefix(&row.id)
+        is_md(&p.kind) && is_md(&row.kind) && part_prefix(&p.id) == part_prefix(&row.id)
     });
     if same_part_markdown {
         render::MD_BLOCK_GAP
@@ -747,6 +873,10 @@ pub struct Transcript {
     folds: HashMap<SharedString, FoldState>,
     /// Streaming fade veils, one per live markdown row (dropped on completion).
     veils: HashMap<SharedString, Rc<RefCell<RowVeil>>>,
+    /// Cross-frame flatten/shape-input cache (see [`RenderCache`]): fade
+    /// frames reuse settled blocks' text+runs; the incremental parser's stable
+    /// boundary invalidates only the live tail per commit.
+    render_cache: Rc<RefCell<RenderCache>>,
     highlights: HighlightStore,
     show_jump_button: bool,
     /// Distance from the bottom at the last observation (wheel event or spring
@@ -797,6 +927,7 @@ impl Transcript {
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
             veils: HashMap::new(),
+            render_cache: Rc::new(RefCell::new(RenderCache::default())),
             highlights: HighlightStore::default(),
             show_jump_button: false,
             last_scroll_distance: 0.0,
@@ -1030,6 +1161,7 @@ impl Transcript {
             self.tree_cache.clear();
             self.folds.clear();
             self.veils.clear();
+            self.render_cache.borrow_mut().clear();
             self.highlights.entries.clear();
             self.list.reset(0);
             self.pinned = true;
@@ -1049,8 +1181,8 @@ impl Transcript {
         }
 
         // Veils live exactly as long as their live row — drop them on the
-        // live→split handoff (any mid-fade chunk snaps to full, matching the
-        // flip's row splice).
+        // live→complete flip (any mid-fade chunk snaps to full, matching the
+        // row's version splice).
         self.veils.retain(|id, _| {
             new_rows
                 .iter()
@@ -1064,6 +1196,13 @@ impl Transcript {
                 return;
             }
             Some((old_range, count)) => {
+                // Any replaced row's cached flatten results are stale — and
+                // because live replies splice only the rows whose content hash
+                // changed (the tail), this is O(changed rows) per commit, never
+                // O(reply).
+                for row in &self.rows[old_range.clone()] {
+                    self.render_cache.borrow_mut().invalidate_row(&row.id);
+                }
                 self.list.splice(old_range, count);
             }
         }
@@ -1099,26 +1238,9 @@ impl Transcript {
         let live_parsers = &mut self.live_parsers;
         let tree_cache = &mut self.tree_cache;
         let mut parse = |key: &str, text: &str| -> Arc<BlockTree> {
-            if streaming {
-                let parser = live_parsers.entry(key.to_string()).or_default();
-                parser.set_text(text);
-                Arc::new(parser.tree().clone())
-            } else {
-                if let Some((len, tree)) = tree_cache.get(key)
-                    && *len == text.len()
-                {
-                    return tree.clone();
-                }
-                // On the live→complete flip reuse the live parser's tree when
-                // the sources match — the split rows then share the exact tree
-                // the unsplit row painted, guaranteeing a flicker-free handoff.
-                let tree = match live_parsers.remove(key) {
-                    Some(parser) if parser.source() == text => Arc::new(parser.tree().clone()),
-                    _ => Arc::new(parse_full(text)),
-                };
-                tree_cache.insert(key.to_string(), (text.len(), tree.clone()));
-                tree.clone()
-            }
+            // Render-cache invalidation rides on the row diff in `sync` (only
+            // rows whose content hash changed are spliced — the reparsed tail).
+            parse_for_row(streaming, key, text, live_parsers, tree_cache).0
         };
         let rows = rows_for_entry(entry, pending, &mut parse);
 
@@ -1183,13 +1305,19 @@ impl Transcript {
                 bubble.into_any_element()
             }
             RowKind::Markdown { tree, block_ix } => {
-                let opts = RenderOptions::settled(row.id.clone());
+                let opts = RenderOptions {
+                    row_key: row.id.clone(),
+                    veil: None,
+                    cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
+                    now: Instant::now(),
+                };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
                     return gpui::Empty.into_any_element();
                 };
                 render::render_block(
                     &top.block,
+                    *block_ix,
                     *block_ix,
                     &opts,
                     &theme,
@@ -1199,7 +1327,7 @@ impl Transcript {
                         .map(|v| v.as_slice()),
                 )
             }
-            RowKind::LiveMarkdown { tree } => {
+            RowKind::LiveMarkdown { tree, block_ix } => {
                 // Per-appended-chunk fade veil (opacity only — layout commits
                 // instantly). Reduced motion renders with no veil at all.
                 let veil = (!motion::reduced_motion(cx))
@@ -1207,12 +1335,28 @@ impl Transcript {
                 let opts = RenderOptions {
                     row_key: row.id.clone(),
                     veil: veil.clone(),
+                    cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
                 };
-                let highlight = self.code_highlight_for(&row.id, tree, None, cx);
-                let el = render::render_tree(tree, &opts, &theme, &|ix| {
-                    highlight.get(&ix).and_then(|o| o.clone())
-                });
+                let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
+                let Some(top) = tree.blocks.get(*block_ix) else {
+                    return gpui::Empty.into_any_element();
+                };
+                let timer = frame_stats_enabled().then(Instant::now);
+                let el = render::render_block(
+                    &top.block,
+                    *block_ix,
+                    *block_ix,
+                    &opts,
+                    &theme,
+                    highlight
+                        .get(block_ix)
+                        .and_then(|o| o.as_deref())
+                        .map(|v| v.as_slice()),
+                );
+                if let Some(start) = timer {
+                    record_live_frame_us(start.elapsed().as_micros() as u64);
+                }
                 // Drive the veil clock: while any chunk is still dissolving,
                 // repaint next frame (self-limiting — one callback per frame).
                 if veil.is_some_and(|v| v.borrow().is_fading()) {
@@ -1603,6 +1747,67 @@ mod tests {
     use super::*;
     use comet_doc::MessagePart;
 
+    // ---- streaming parse wiring (the transcript side, not the parser) ----
+
+    #[test]
+    fn live_row_parse_work_is_bounded_per_commit() {
+        // Drive the EXACT wiring `rows_for` uses (`parse_for_row`) with the
+        // prefix-extending commit snapshots the doc watch delivers, and prove
+        // the per-commit parse work stays O(reparsed tail): a full-reparse
+        // wiring would feed ~N/2 × final_len bytes through the parser across N
+        // commits; the incremental path stays within a small multiple of the
+        // final length regardless of N.
+        let mut live_parsers = HashMap::new();
+        let mut tree_cache = HashMap::new();
+        let paragraph = "A paragraph of streaming prose that keeps arriving.\n\n";
+        let commits = 120usize;
+        let mut text = String::new();
+        let mut total_parsed = 0usize;
+        for i in 0..commits {
+            // Each commit appends ~half a paragraph (crosses block boundaries).
+            let chunk = &paragraph[..paragraph.len() / 2];
+            text.push_str(if i % 2 == 0 { chunk } else { &paragraph[paragraph.len() / 2..] });
+            let (tree, outcome) =
+                parse_for_row(true, "e1#p1", &text, &mut live_parsers, &mut tree_cache);
+            assert!(!tree.blocks.is_empty());
+            let ParseOutcome::Incremental {
+                parsed_bytes,
+                stable_prefix_blocks,
+            } = outcome
+            else {
+                panic!("streaming commit must take the incremental path");
+            };
+            total_parsed += parsed_bytes;
+            // Per commit: never a full reparse once the doc has grown past the
+            // tail window (last two complete blocks + the partial trailing
+            // one + the delta ≤ 3 paragraphs here).
+            assert!(
+                parsed_bytes <= 3 * paragraph.len(),
+                "commit {i}: parsed {parsed_bytes} bytes — not bounded by the tail window"
+            );
+            // The stable prefix grows with the doc — settled blocks are never
+            // re-touched (this is what keeps render caches valid).
+            assert!(stable_prefix_blocks + 2 >= tree.blocks.len().saturating_sub(1));
+        }
+        // Across the whole stream: work is commits × O(tail), an order of
+        // magnitude under the ~commits × len/2 a full-reparse wiring costs.
+        let final_len = text.len();
+        let full_reparse_cost = commits * final_len / 2;
+        assert!(total_parsed <= commits * 3 * paragraph.len());
+        assert!(
+            total_parsed * 10 < full_reparse_cost,
+            "total parsed {total_parsed} vs full-reparse ~{full_reparse_cost}"
+        );
+
+        // Live→complete handoff: the completed part adopts the live parser's
+        // exact tree without parsing a single byte.
+        let (_, outcome) = parse_for_row(false, "e1#p1", &text, &mut live_parsers, &mut tree_cache);
+        assert_eq!(outcome, ParseOutcome::Handoff);
+        // And the settled cache serves repeats with no work at all.
+        let (_, outcome) = parse_for_row(false, "e1#p1", &text, &mut live_parsers, &mut tree_cache);
+        assert_eq!(outcome, ParseOutcome::Cached);
+    }
+
     // ---- stick-to-bottom spring ----
 
     #[test]
@@ -1762,25 +1967,52 @@ mod tests {
     const MD: &str = "# Title\n\npara one\n\n```rust\nlet x = 1;\n```";
 
     #[test]
-    fn live_entry_stays_unsplit_and_splits_on_complete_with_id_continuity() {
+    fn live_entry_splits_per_block_with_id_continuity() {
+        // Live rows split per block exactly like completed ones (the list
+        // virtualizes them — the fading tail is the only per-frame work).
         let live = assistant("m1", MessageStatus::Streaming, vec![text_part("t0", MD)]);
         let live_rows = rows_for_entry(&live, false, &mut parse);
-        assert_eq!(live_rows.len(), 1, "live text stays one row");
-        assert!(matches!(live_rows[0].kind, RowKind::LiveMarkdown { .. }));
+        assert_eq!(live_rows.len(), 3, "one live row per top-level block");
+        assert!(
+            live_rows
+                .iter()
+                .all(|r| matches!(r.kind, RowKind::LiveMarkdown { .. }))
+        );
         assert_eq!(live_rows[0].id.as_ref(), "m1#t0.0");
+        assert_eq!(live_rows[2].id.as_ref(), "m1#t0.2");
 
         let done = assistant("m1", MessageStatus::Complete, vec![text_part("t0", MD)]);
         let done_rows = rows_for_entry(&done, false, &mut parse);
         assert_eq!(done_rows.len(), 3, "three top-level blocks");
-        // First split block reuses the live row id — no flicker on handoff.
-        assert_eq!(done_rows[0].id, live_rows[0].id);
-        assert_eq!(done_rows[1].id.as_ref(), "m1#t0.1");
+        // Every block row keeps its id across the flip — no flicker on handoff.
+        for (live, done) in live_rows.iter().zip(&done_rows) {
+            assert_eq!(live.id, done.id);
+            // The flip changes the version even at identical text (the
+            // streaming bit), forcing a splice.
+            assert_ne!(live.version, done.version);
+        }
         assert!(matches!(
             done_rows[0].kind,
             RowKind::Markdown { block_ix: 0, .. }
         ));
-        // The flip changes the version even at identical text, forcing a splice.
-        assert_ne!(done_rows[0].version, live_rows[0].version);
+    }
+
+    #[test]
+    fn live_commit_changes_only_tail_row_versions() {
+        // Streaming commit: appending to the last block leaves every settled
+        // block row's (id, version) untouched — the diff splices only the tail.
+        let t1 = "para one\n\npara two\n\npara three";
+        let t2 = "para one\n\npara two\n\npara three grows here";
+        let live1 = assistant("m1", MessageStatus::Streaming, vec![text_part("t0", t1)]);
+        let live2 = assistant("m1", MessageStatus::Streaming, vec![text_part("t0", t2)]);
+        let r1 = rows_for_entry(&live1, false, &mut parse);
+        let r2 = rows_for_entry(&live2, false, &mut parse);
+        assert_eq!(r1.len(), 3);
+        assert_eq!(r2.len(), 3);
+        assert_eq!(r1[0].version, r2[0].version, "settled block untouched");
+        assert_eq!(r1[1].version, r2[1].version, "settled block untouched");
+        assert_ne!(r1[2].version, r2[2].version, "tail block respliced");
+        assert_eq!(diff_rows(&r1, &r2), Some((2..3, 1)));
     }
 
     #[test]
@@ -1923,8 +2155,8 @@ mod tests {
         let done = assistant("m1", MessageStatus::Complete, vec![text_part("t0", MD)]);
         let live_rows = rows_for_entry(&live, false, &mut parse);
         let done_rows = rows_for_entry(&done, false, &mut parse);
-        // One live row becomes three split rows in a single splice at 0.
-        assert_eq!(diff_rows(&live_rows, &done_rows), Some((0..1, 3)));
+        // Same ids; every version flips its streaming bit → one 3-row splice.
+        assert_eq!(diff_rows(&live_rows, &done_rows), Some((0..3, 3)));
     }
 
     #[test]

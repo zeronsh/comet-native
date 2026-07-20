@@ -153,8 +153,29 @@ impl Harness for MockHarness {
             return Ok(stream.boxed());
         }
 
-        let events: Vec<Result<AgentEvent, HarnessError>> =
-            self.script.iter().cloned().map(Ok).collect();
+        // Dev/testing knob: `COMET_MOCK_REPEAT=N` loops the script body N times
+        // before the final Done — long single-reply streams for frame-cost /
+        // smoothness measurement (the terminal `Done` is emitted exactly once,
+        // at the very end).
+        let repeat = std::env::var("COMET_MOCK_REPEAT")
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .unwrap_or(1)
+            .max(1);
+        let done_ix = self
+            .script
+            .iter()
+            .position(|e| matches!(e, AgentEvent::Done { .. }))
+            .unwrap_or(self.script.len());
+        let (body, tail) = self.script.split_at(done_ix);
+        let events: Vec<Result<AgentEvent, HarnessError>> = body
+            .iter()
+            .cycle()
+            .take(body.len() * repeat)
+            .chain(tail.iter())
+            .cloned()
+            .map(Ok)
+            .collect();
         if delay_ms == 0 {
             return Ok(futures::stream::iter(events).boxed());
         }

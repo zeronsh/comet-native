@@ -435,6 +435,13 @@ pub struct IncrementalParser {
     tree: BlockTree,
     /// Link-reference definitions act at a distance — full reparses only.
     full_only: bool,
+    /// Bytes fed through `parse_full` by the most recent `set_text`/`append`/
+    /// `reset` — instrumentation proving per-append work is O(tail), not
+    /// O(total). 0 for a no-op set_text.
+    last_parse_bytes: usize,
+    /// Number of leading top-level blocks guaranteed untouched by the most
+    /// recent update (render caches for these blocks stay valid).
+    stable_prefix_blocks: usize,
 }
 
 impl IncrementalParser {
@@ -450,10 +457,25 @@ impl IncrementalParser {
         &self.tree
     }
 
+    /// Bytes actually reparsed by the last update (see field docs).
+    pub fn last_parse_bytes(&self) -> usize {
+        self.last_parse_bytes
+    }
+
+    /// Leading top-level blocks left untouched by the last update.
+    pub fn stable_prefix_blocks(&self) -> usize {
+        self.stable_prefix_blocks
+    }
+
     /// Set the source: appends take the incremental path, anything else resets.
     pub fn set_text(&mut self, text: &str) {
         if text.len() >= self.source.len() && text.starts_with(self.source.as_str()) {
             let delta = text[self.source.len()..].to_string();
+            if delta.is_empty() {
+                self.last_parse_bytes = 0;
+                self.stable_prefix_blocks = self.tree.blocks.len();
+                return;
+            }
             self.append(&delta);
         } else {
             self.reset(text);
@@ -464,11 +486,15 @@ impl IncrementalParser {
         self.source = text.to_string();
         self.full_only = has_link_defs(text);
         self.tree = parse_full(text);
+        self.last_parse_bytes = text.len();
+        self.stable_prefix_blocks = 0;
     }
 
     /// Append streamed text, reparsing from the last stable boundary.
     pub fn append(&mut self, delta: &str) {
         if delta.is_empty() {
+            self.last_parse_bytes = 0;
+            self.stable_prefix_blocks = self.tree.blocks.len();
             return;
         }
         // The delta may complete a line begun earlier — rescan from that line's
@@ -480,6 +506,8 @@ impl IncrementalParser {
         }
         if self.full_only {
             self.tree = parse_full(&self.source);
+            self.last_parse_bytes = self.source.len();
+            self.stable_prefix_blocks = 0;
             return;
         }
 
@@ -501,7 +529,9 @@ impl IncrementalParser {
             .unwrap_or(0);
 
         let tail = parse_full(&self.source[boundary..]);
+        self.last_parse_bytes = self.source.len() - boundary;
         self.tree.blocks.retain(|b| b.range.start < boundary);
+        self.stable_prefix_blocks = self.tree.blocks.len();
         for mut top in tail.blocks {
             top.range.start += boundary;
             top.range.end += boundary;

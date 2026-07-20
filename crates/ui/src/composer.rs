@@ -9,7 +9,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{
     App, Bounds, ClipboardItem, Context, CursorStyle, ElementInputHandler, Entity,
@@ -49,9 +49,55 @@ pub const INPUT_TEXT_SIZE: f32 = 14.0;
 /// Single-select questions auto-advance after this long.
 pub const AUTO_ADVANCE_MS: u64 = 220;
 
-/// Compact→expanded flip: newline, overflowing text, or a too-narrow pill.
-pub fn composer_expanded(text_width: f32, pill_capacity: f32, has_newline: bool) -> bool {
-    has_newline || pill_capacity < MIN_COMPACT_INPUT_WIDTH || text_width > pill_capacity
+/// Hysteresis slack for the expanded→compact flip: once expanded, the composer
+/// only collapses when the text is comfortably narrower than the compact
+/// capacity — expanding and collapsing share no boundary, so a width right at
+/// the flip threshold can't oscillate between the two layouts.
+pub const COLLAPSE_HYSTERESIS: f32 = 32.0;
+/// During an interactive window resize the current mode is frozen until the
+/// measured widths have been stable this long.
+pub const RESIZE_SETTLE_MS: u64 = 150;
+
+/// Compact↔expanded flip with hysteresis. `capacity` is the *compact-mode*
+/// input capacity (a layout-stable width: measured while compact, tracked by
+/// container-width deltas while expanded — never the post-flip measured width,
+/// which differs per mode and would feed back into the decision):
+/// - a newline always expands;
+/// - while `resizing`, the current mode is kept (no flip until sizes settle);
+/// - a too-narrow pill (`capacity < MIN_COMPACT_INPUT_WIDTH`) always expands;
+/// - compact expands only when `text_width > capacity`; expanded collapses
+///   only when `text_width < capacity - COLLAPSE_HYSTERESIS`.
+pub fn composer_flip(
+    expanded: bool,
+    text_width: f32,
+    capacity: f32,
+    has_newline: bool,
+    resizing: bool,
+) -> bool {
+    if has_newline {
+        return true;
+    }
+    if resizing {
+        return expanded;
+    }
+    if capacity < MIN_COMPACT_INPUT_WIDTH {
+        return true;
+    }
+    if expanded {
+        text_width >= capacity - COLLAPSE_HYSTERESIS
+    } else {
+        text_width > capacity
+    }
+}
+
+/// Caret blink half-period (standard textarea cadence: ~500ms on / 500ms off).
+pub const CARET_BLINK_MS: u64 = 500;
+
+/// Caret blink phase for a time since the last keystroke/caret move: solid
+/// through the first half-period (typing bursts never blink — each keystroke
+/// resets the phase), then alternating.
+pub fn caret_visible(ms_since_activity: u64) -> bool {
+    (ms_since_activity / CARET_BLINK_MS) % 2 == 0
 }
 
 /// Auto-grow: content height for a wrapped-line count.
@@ -335,7 +381,16 @@ pub struct ComposerInput {
     content_height: f32,
     max_line_width: f32,
     last_width: f32,
+    /// Bumped once per `layout_text` pass — the flip logic uses it to apply at
+    /// most one compact↔expanded flip per layout (a flip is only re-evaluated
+    /// after the input has been measured in the new mode).
+    layout_epoch: u64,
     display_is_placeholder: bool,
+    /// Caret blink anchor: reset on every keystroke/caret move so the caret is
+    /// solid while typing and blinks at [`CARET_BLINK_MS`] when idle.
+    blink_anchor: Instant,
+    /// Half-period repaint driver, alive only while the input is focused.
+    blink_task: Option<Task<()>>,
 }
 
 impl ComposerInput {
@@ -356,8 +411,41 @@ impl ComposerInput {
             content_height: INPUT_LINE_HEIGHT,
             max_line_width: 0.0,
             last_width: 0.0,
+            layout_epoch: 0,
             display_is_placeholder: true,
+            blink_anchor: Instant::now(),
+            blink_task: None,
         }
+    }
+
+    /// Reset the caret blink phase (solid again) — called on every edit and
+    /// caret move, matching textarea behavior.
+    fn reset_blink(&mut self) {
+        self.blink_anchor = Instant::now();
+    }
+
+    /// Caret paint gate: focused input in an active window, in the "on" blink
+    /// phase. Also (re)arms the half-period repaint driver while focused, and
+    /// drops it on blur so an unfocused input schedules no frames.
+    fn caret_shown(&mut self, window: &Window, cx: &mut Context<Self>) -> bool {
+        let focused = self.focus_handle.is_focused(window);
+        if !focused || !window.is_window_active() {
+            self.blink_task = None;
+            return false;
+        }
+        if self.blink_task.is_none() {
+            self.blink_task = Some(cx.spawn(async move |this, cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(Duration::from_millis(CARET_BLINK_MS))
+                        .await;
+                    if this.update(cx, |_, cx| cx.notify()).is_err() {
+                        break;
+                    }
+                }
+            }));
+        }
+        caret_visible(self.blink_anchor.elapsed().as_millis() as u64)
     }
 
     pub fn text(&self) -> &str {
@@ -397,6 +485,7 @@ impl ComposerInput {
         self.selection_reversed = false;
         self.marked_range = None;
         self.scroll_top = 0.0;
+        self.reset_blink();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -413,6 +502,7 @@ impl ComposerInput {
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.selected_range = offset..offset;
+        self.reset_blink();
         cx.notify();
     }
 
@@ -426,6 +516,7 @@ impl ComposerInput {
             self.selection_reversed = !self.selection_reversed;
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
+        self.reset_blink();
         cx.notify();
     }
 
@@ -793,6 +884,7 @@ impl ComposerInput {
         self.content_height = content_height.max(INPUT_LINE_HEIGHT);
         self.max_line_width = if is_placeholder { 0.0 } else { max_line_width };
         self.last_width = f32::from(width);
+        self.layout_epoch += 1;
         self.content_height
     }
 
@@ -872,6 +964,7 @@ impl EntityInputHandler for ComposerInput {
         let cursor = range.start + new_text.len();
         self.selected_range = cursor..cursor;
         self.marked_range.take();
+        self.reset_blink();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -901,6 +994,7 @@ impl EntityInputHandler for ComposerInput {
             .map(|r| self.range_from_utf16(r))
             .map(|new_range| new_range.start + range.start..new_range.end + range.start)
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
+        self.reset_blink();
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -1113,7 +1207,10 @@ impl gpui::Element for ComposerTextElement {
                 );
                 y += height;
             }
-            if focus_handle.is_focused(window)
+            // Caret only when this input is actually focused in an active
+            // window (Electron hides it on window deactivation too), and only
+            // in the "on" blink phase — solid while typing, ~500ms blink idle.
+            if self.input.update(cx, |input, cx| input.caret_shown(window, cx))
                 && let Some(cursor) = prepaint.cursor.take()
             {
                 window.paint_quad(cursor);
@@ -1199,6 +1296,24 @@ pub struct Composer {
     answered_requests: HashSet<String>,
     advance_task: Option<Task<()>>,
     send_task: Option<Task<()>>,
+    // -- compact/expanded flip state (hysteresis; see `composer_flip`) --
+    /// Current layout mode (persisted across frames — never derived fresh).
+    expanded_mode: bool,
+    /// `layout_epoch` of the measurement that caused the last flip: the flip is
+    /// re-evaluated only after the input has been laid out in the new mode, so
+    /// at most one flip can happen per layout pass.
+    flip_epoch: u64,
+    /// Compact-mode input capacity, learned while compact (layout-stable).
+    compact_capacity: f32,
+    /// Input width first measured after expanding — container-width deltas
+    /// while expanded shift `compact_capacity` by the same amount.
+    expanded_anchor: f32,
+    /// Last input width seen in the current mode (resize detection).
+    last_seen_width: f32,
+    /// Set while an interactive resize is in flight; mode is frozen until
+    /// widths have settled for [`RESIZE_SETTLE_MS`].
+    width_changed_at: Option<Instant>,
+    settle_task: Option<Task<()>>,
     _observe: Subscription,
     _input_events: Subscription,
 }
@@ -1228,6 +1343,13 @@ impl Composer {
             answered_requests: HashSet::new(),
             advance_task: None,
             send_task: None,
+            expanded_mode: false,
+            flip_epoch: 0,
+            compact_capacity: 0.0,
+            expanded_anchor: 0.0,
+            last_seen_width: 0.0,
+            width_changed_at: None,
+            settle_task: None,
             _observe: observe,
             _input_events: input_events,
         }
@@ -1899,23 +2021,81 @@ impl Render for Composer {
         let theme = Theme::of(cx).clone();
         let wizard_active = self.wizard.is_some();
         let mode = self.button_mode(cx);
-        let (text_width, has_newline, content_height, last_width) = {
+        let (text_width, has_newline, content_height, last_width, epoch) = {
             let input = self.input.read(cx);
             (
                 input.measured_text_width(),
                 input.has_newline(),
                 input.measured_content_height(),
                 input.last_width,
+                input.layout_epoch,
             )
         };
-        // Pill capacity ≈ the input's own last measured width (compact renders
-        // constrain it); before first measure default to compact.
-        let capacity = if last_width > 0.0 {
-            last_width - 8.0
+        let now = Instant::now();
+        // Only measurements taken *after* the last flip may drive the next one
+        // (at most one flip per layout pass — a flip invalidates the widths).
+        let measured_since_flip = epoch > self.flip_epoch && last_width > 0.0;
+        if measured_since_flip {
+            // A same-mode width change is an interactive window/pane resize:
+            // freeze the mode until sizes settle for RESIZE_SETTLE_MS.
+            if self.last_seen_width > 0.0 && (last_width - self.last_seen_width).abs() > 0.5 {
+                self.width_changed_at = Some(now);
+            }
+            self.last_seen_width = last_width;
+            if self.expanded_mode {
+                if self.expanded_anchor <= 0.0 {
+                    self.expanded_anchor = last_width;
+                }
+            } else {
+                // The compact pill's content box is the layout-stable capacity
+                // both thresholds measure against.
+                self.compact_capacity = last_width - 8.0;
+            }
+        }
+        let resizing = self
+            .width_changed_at
+            .is_some_and(|t| now.duration_since(t) < Duration::from_millis(RESIZE_SETTLE_MS));
+        if resizing && self.settle_task.is_none() {
+            // Re-evaluate once the settle window has passed.
+            self.settle_task = Some(cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(RESIZE_SETTLE_MS + 20))
+                    .await;
+                this.update(cx, |composer, cx| {
+                    composer.settle_task = None;
+                    cx.notify();
+                })
+                .ok();
+            }));
+        }
+        // Layout-stable compact capacity: measured directly while compact;
+        // while expanded, the learned value shifted by any container resize
+        // (the expanded input width tracks the container 1:1).
+        let capacity = if !self.expanded_mode {
+            if last_width > 0.0 {
+                last_width - 8.0
+            } else {
+                f32::MAX // before first measure default to compact
+            }
+        } else if self.compact_capacity > 0.0 {
+            if self.expanded_anchor > 0.0 && last_width > 0.0 {
+                self.compact_capacity + (last_width - self.expanded_anchor)
+            } else {
+                self.compact_capacity
+            }
         } else {
             f32::MAX
         };
-        let expanded = composer_expanded(text_width, capacity, has_newline);
+        let next = composer_flip(self.expanded_mode, text_width, capacity, has_newline, resizing);
+        if next != self.expanded_mode && measured_since_flip {
+            self.expanded_mode = next;
+            self.flip_epoch = epoch;
+            self.expanded_anchor = 0.0;
+            // The mode change moves the input width; don't read that jump as
+            // an interactive resize.
+            self.last_seen_width = 0.0;
+        }
+        let expanded = self.expanded_mode;
         let total_height = composer_total_height(content_height);
 
         let failure = self.failure.clone();
@@ -2066,15 +2246,63 @@ mod tests {
 
     #[test]
     fn flip_decision() {
-        // Fits in the pill → compact.
-        assert!(!composer_expanded(150.0, 300.0, false));
-        // Overflow → expanded.
-        assert!(composer_expanded(320.0, 300.0, false));
-        // Newline always expands.
-        assert!(composer_expanded(10.0, 300.0, true));
+        // Fits in the pill → compact stays compact.
+        assert!(!composer_flip(false, 150.0, 300.0, false, false));
+        // Overflow → expand.
+        assert!(composer_flip(false, 320.0, 300.0, false, false));
+        // Newline always expands (either mode, even mid-resize).
+        assert!(composer_flip(false, 10.0, 300.0, true, false));
+        assert!(composer_flip(true, 10.0, 300.0, true, true));
         // Narrow column (< MIN_COMPACT_INPUT_WIDTH) always expands.
-        assert!(composer_expanded(10.0, 199.0, false));
-        assert!(!composer_expanded(10.0, 200.0, false));
+        assert!(composer_flip(false, 10.0, 199.0, false, false));
+        assert!(!composer_flip(false, 10.0, 200.0, false, false));
+    }
+
+    #[test]
+    fn flip_hysteresis_band_prevents_oscillation() {
+        let cap = 300.0;
+        // Text just over capacity expands…
+        assert!(composer_flip(false, cap + 1.0, cap, false, false));
+        // …and the SAME width, now expanded, does NOT collapse back — the
+        // collapse threshold sits COLLAPSE_HYSTERESIS below the expand one.
+        assert!(composer_flip(true, cap + 1.0, cap, false, false));
+        // Anywhere inside the band the two modes are both stable (no width in
+        // (cap - 32, cap] flips in either direction).
+        let in_band = cap - COLLAPSE_HYSTERESIS + 1.0;
+        assert!(!composer_flip(false, in_band, cap, false, false));
+        assert!(composer_flip(true, in_band, cap, false, false));
+        // Comfortably under the band → collapses.
+        assert!(!composer_flip(
+            true,
+            cap - COLLAPSE_HYSTERESIS - 1.0,
+            cap,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn flip_frozen_during_interactive_resize() {
+        // While resizing, both modes hold even across their thresholds…
+        assert!(!composer_flip(false, 500.0, 300.0, false, true));
+        assert!(composer_flip(true, 0.0, 300.0, false, true));
+        // …including the narrow-column force-expand.
+        assert!(!composer_flip(false, 10.0, 150.0, false, true));
+        // Once settled, the same inputs flip.
+        assert!(composer_flip(false, 500.0, 300.0, false, false));
+        assert!(!composer_flip(true, 0.0, 300.0, false, false));
+        assert!(composer_flip(false, 10.0, 150.0, false, false));
+    }
+
+    #[test]
+    fn caret_blink_phase() {
+        // Solid through the first half-period (typing burst never blinks).
+        assert!(caret_visible(0));
+        assert!(caret_visible(CARET_BLINK_MS - 1));
+        // Off for the second half-period, back on for the third.
+        assert!(!caret_visible(CARET_BLINK_MS));
+        assert!(!caret_visible(2 * CARET_BLINK_MS - 1));
+        assert!(caret_visible(2 * CARET_BLINK_MS));
     }
 
     #[test]

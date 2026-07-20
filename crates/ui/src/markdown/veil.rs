@@ -16,7 +16,11 @@
 //!   shaped as one contiguous word even across the split (kerning and ligatures
 //!   survive; wrapping is byte-identical to the unsplit render).
 //!
-//! The fade is [`crate::motion::FADE_IN`]'s 500ms expo-out curve with **zero
+//! Constants and curve match mugen-markdown's web `FadePainter` (the engine the
+//! desktop app ships): per-chunk duration adapts to the stream's cadence — an
+//! EMA of inter-append gaps, `duration = clamp(ema × 3, 120ms, 400ms)` — the
+//! dissolve eases with `veil = (1 − p)^1.6` (text alpha `1 − veil`), and a
+//! backed-up stream (3+ concurrent chunks) gets a small speed boost. **Zero
 //! translate** — opacity only, per the "no positional offset on streamed
 //! content" rule.
 
@@ -26,10 +30,15 @@ use std::time::Instant;
 
 use gpui::TextRun;
 
-use crate::motion::{FADE_IN, MotionSpec};
-
-/// The veil's fade spec — the entrance curve, opacity only.
-pub const VEIL_FADE: MotionSpec = FADE_IN;
+/// EMA seed for the inter-append gap (mugen `EMA_SEED_MS`).
+pub const VEIL_EMA_SEED_MS: f32 = 160.0;
+/// Duration clamp (mugen `MIN_FADE_MS` / `MAX_FADE_MS`).
+pub const VEIL_MIN_FADE_MS: f32 = 120.0;
+pub const VEIL_MAX_FADE_MS: f32 = 400.0;
+/// Dissolve exponent (mugen: `alpha = (1 - p) ** 1.6`).
+pub const VEIL_CURVE_POW: f32 = 1.6;
+/// Gap clamp feeding the EMA (mugen: `min(gap, 1000)`).
+const VEIL_GAP_CLAMP_MS: f32 = 1000.0;
 
 /// One appended chunk of text mid-fade.
 #[derive(Debug, Clone)]
@@ -37,26 +46,56 @@ struct Chunk {
     /// Byte range in the element's flat text.
     range: Range<usize>,
     started: Instant,
+    /// Fade duration fixed at arrival from the cadence EMA.
+    duration_ms: f32,
 }
 
 /// A veiled byte range and its current opacity (0..1).
 pub type VeilSpan = (Range<usize>, f32);
 
-/// Veil opacity for a chunk age. Pure — unit-testable.
-pub fn veil_opacity(elapsed_ms: f32) -> f32 {
-    let total = VEIL_FADE.total().as_millis() as f32;
-    if total <= 0.0 {
-        return 1.0;
-    }
-    VEIL_FADE.progress((elapsed_ms / total).clamp(0.0, 1.0))
+/// Text alpha for a fade progress `p` (0..1): the veil dissolves as
+/// `(1 − p)^1.6`, so the text shows through at `1 − veil`. Pure.
+pub fn veil_opacity(p: f32) -> f32 {
+    1.0 - (1.0 - p.clamp(0.0, 1.0)).powf(VEIL_CURVE_POW)
+}
+
+/// Chunk fade duration for the current inter-append EMA (mugen:
+/// `min(MAX, max(MIN, ema * 3))`).
+pub fn veil_duration_ms(ema_ms: f32) -> f32 {
+    (ema_ms * 3.0).clamp(VEIL_MIN_FADE_MS, VEIL_MAX_FADE_MS)
+}
+
+/// Fast-stream boost: 3+ chunks fading concurrently speed up by 30% each
+/// (mugen: `1 + 0.3 * max(0, veils.length - 2)`).
+pub fn veil_boost(active_chunks: usize) -> f32 {
+    1.0 + 0.3 * active_chunks.saturating_sub(2) as f32
+}
+
+/// EMA update on a new append gap (mugen: `ema*0.7 + min(gap,1000)*0.3`).
+pub fn veil_ema_next(ema_ms: f32, gap_ms: f32) -> f32 {
+    ema_ms * 0.7 + gap_ms.min(VEIL_GAP_CLAMP_MS) * 0.3
 }
 
 /// Per-element chunk tracker: remembers the last rendered flat text and fades
 /// every newly appended suffix exactly once.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ElemVeil {
     prev: String,
     chunks: Vec<Chunk>,
+    /// EMA of inter-append gaps (drives per-chunk durations).
+    ema_ms: f32,
+    last_append: Option<Instant>,
+}
+
+impl Default for ElemVeil {
+    fn default() -> Self {
+        Self {
+            prev: String::new(),
+            chunks: Vec::new(),
+            ema_ms: VEIL_EMA_SEED_MS,
+            last_append: None,
+        }
+    }
 }
 
 /// Longest common prefix length, snapped back to a char boundary.
@@ -89,22 +128,34 @@ impl ElemVeil {
                 c.range.start < c.range.end
             });
             if text.len() > p {
+                // Cadence-adaptive duration (mugen FadePainter): update the
+                // EMA with the gap since the previous append.
+                if let Some(last) = self.last_append {
+                    let gap = now.saturating_duration_since(last).as_secs_f32() * 1000.0;
+                    self.ema_ms = veil_ema_next(self.ema_ms, gap);
+                }
+                self.last_append = Some(now);
                 self.chunks.push(Chunk {
                     range: p..text.len(),
                     started: now,
+                    duration_ms: veil_duration_ms(self.ema_ms),
                 });
             }
             self.prev.clear();
             self.prev.push_str(text);
         }
-        let total = VEIL_FADE.total();
-        self.chunks
-            .retain(|c| now.saturating_duration_since(c.started) < total);
+        let boost = veil_boost(self.chunks.len());
+        self.chunks.retain(|c| {
+            let elapsed = now.saturating_duration_since(c.started).as_secs_f32() * 1000.0;
+            elapsed * boost < c.duration_ms
+        });
+        let boost = veil_boost(self.chunks.len());
         self.chunks
             .iter()
             .map(|c| {
-                let elapsed = now.saturating_duration_since(c.started);
-                (c.range.clone(), veil_opacity(elapsed.as_millis() as f32))
+                let elapsed = now.saturating_duration_since(c.started).as_secs_f32() * 1000.0;
+                let progress = (elapsed * boost / c.duration_ms).clamp(0.0, 1.0);
+                (c.range.clone(), veil_opacity(progress))
             })
             .collect()
     }
@@ -232,11 +283,34 @@ mod tests {
         assert_eq!(spans[1].0, 4..8);
         // The older chunk is further along its fade than the newer one.
         assert!(spans[0].1 > spans[1].1);
-        // After the first settles, only the newer chunk remains.
-        let spans = v.advance("one two three", at(t0, 550));
-        assert_eq!(spans.len(), 2);
+        // After the first settles (past its adaptive duration), only the
+        // newer chunk remains.
+        let spans = v.advance("one two ", at(t0, 410));
+        assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].0, 4..8);
-        assert_eq!(spans[1].0, 8..13);
+    }
+
+    #[test]
+    fn fade_constants_match_mugen_fade_painter() {
+        // @wingleeio/mugen-markdown dist/index.mjs: EMA_SEED_MS=160,
+        // MIN_FADE_MS=120, MAX_FADE_MS=400, alpha=(1-p)**1.6,
+        // ema = ema*0.7 + min(gap,1000)*0.3, boost = 1 + 0.3*max(0,n-2).
+        assert_eq!(VEIL_EMA_SEED_MS, 160.0);
+        assert_eq!(VEIL_MIN_FADE_MS, 120.0);
+        assert_eq!(VEIL_MAX_FADE_MS, 400.0);
+        assert_eq!(VEIL_CURVE_POW, 1.6);
+        // duration = clamp(ema*3, 120, 400).
+        assert_eq!(veil_duration_ms(160.0), 400.0); // seed → clamped at max
+        assert_eq!(veil_duration_ms(30.0), 120.0); // fast stream → floor
+        assert_eq!(veil_duration_ms(60.0), 180.0);
+        // EMA update.
+        assert_eq!(veil_ema_next(160.0, 100.0), 160.0 * 0.7 + 100.0 * 0.3);
+        assert_eq!(veil_ema_next(160.0, 5000.0), 160.0 * 0.7 + 1000.0 * 0.3);
+        // Fast-stream boost kicks in at the 3rd concurrent chunk.
+        assert_eq!(veil_boost(0), 1.0);
+        assert_eq!(veil_boost(2), 1.0);
+        assert!((veil_boost(3) - 1.3).abs() < 1e-6);
+        assert!((veil_boost(5) - 1.9).abs() < 1e-6);
     }
 
     #[test]
@@ -275,12 +349,18 @@ mod tests {
 
     #[test]
     fn veil_opacity_curve_endpoints() {
+        // Text alpha = 1 - (1-p)^1.6: 0 at arrival, 1 when the veil is gone.
         assert_eq!(veil_opacity(0.0), 0.0);
-        assert_eq!(veil_opacity(500.0), 1.0);
-        let mid = veil_opacity(250.0);
+        assert_eq!(veil_opacity(1.0), 1.0);
+        let mid = veil_opacity(0.5);
         assert!(mid > 0.0 && mid < 1.0);
-        // Monotonic.
-        assert!(veil_opacity(100.0) <= veil_opacity(200.0));
+        // The pow-1.6 ease-out reveals faster than linear early on.
+        assert!(mid > 0.5);
+        assert!((mid - (1.0 - 0.5f32.powf(1.6))).abs() < 1e-6);
+        // Monotonic + clamped.
+        assert!(veil_opacity(0.2) <= veil_opacity(0.4));
+        assert_eq!(veil_opacity(-1.0), 0.0);
+        assert_eq!(veil_opacity(2.0), 1.0);
     }
 
     fn run(len: usize, color: gpui::Hsla) -> TextRun {
