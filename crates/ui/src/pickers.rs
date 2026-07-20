@@ -826,30 +826,30 @@ impl Pickers {
             PickerKind::Traits => "picker-traits",
         };
         let open = self.open == Some(kind);
+        // Ghost pill (comet composer/styles.tsx `pill`): no border, muted 12px
+        // medium label, hover/open wash — the actions row stays quiet.
         div()
             .id(id)
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(4.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(3.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .border_1()
-            .border_color(if open {
-                theme.border_strong
-            } else {
-                theme.border
-            })
-            .text_size(px(11.0))
+            .gap(px(5.0))
+            .px(px(10.0))
+            .py(px(5.0))
+            .rounded(px(8.0))
+            .text_size(px(12.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
             .text_color(if set { theme.text } else { theme.text_muted })
-            .when(open, |el| el.bg(theme.element_active))
-            .hover(|s| s.bg(theme.element_hover))
+            .when(open, |el| el.bg(theme.element_hover))
+            .hover(|s| {
+                s.bg(theme.element_hover).text_color(Theme::dark().text)
+            })
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.toggle(kind, window, cx)))
             .child(label)
             .child(
                 div()
+                    .text_size(px(9.0))
                     .text_color(theme.text_faint)
                     .child(SharedString::from("▾")),
             )

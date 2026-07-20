@@ -191,9 +191,6 @@ impl Transcript {
             (state.transcript.clone(), state.pending_echoes().to_vec())
         };
         let ticks = rail_ticks(&entries, &echoes);
-        if ticks.is_empty() {
-            return gpui::Empty.into_any_element();
-        }
         // Map each tick to its transcript row (user rows share the entry id).
         let pairs: Vec<(RailTick, usize)> = ticks
             .into_iter()
@@ -205,7 +202,9 @@ impl Transcript {
                 Some((tick, row))
             })
             .collect();
-        if pairs.is_empty() {
+        // A minimap of one exchange is noise, not navigation — the original
+        // rail hides below two marks (message-rail.tsx `marks.length < 2`).
+        if pairs.len() < 2 {
             return gpui::Empty.into_any_element();
         }
         let tick_rows: Vec<usize> = pairs.iter().map(|(_, row)| *row).collect();
@@ -216,7 +215,7 @@ impl Transcript {
 
         div()
             .absolute()
-            .left(px(6.0))
+            .left(px(16.0))
             .top_0()
             .bottom_0()
             .w(px(26.0))
@@ -224,23 +223,17 @@ impl Transcript {
             .flex_col()
             .items_start()
             .justify_center()
-            .gap(px(5.0))
+            .gap(px(3.0))
             .children(pairs.into_iter().enumerate().map(|(ix, (tick, row))| {
                 let is_active = active == Some(ix);
                 let is_hovered = hover == Some(ix);
-                let bar_width = if is_hovered {
-                    20.0
-                } else if is_active {
-                    16.0
+                // Only hover grows the tick; the active one just reads brighter
+                // (message-rail.tsx: w-3 rest, w-5 hovered).
+                let bar_width = if is_hovered { 20.0 } else { 12.0 };
+                let bar_color = if is_active || is_hovered {
+                    theme.text.opacity(0.8)
                 } else {
-                    12.0
-                };
-                let bar_color = if is_active {
-                    theme.text
-                } else if is_hovered {
-                    theme.text_muted
-                } else {
-                    theme.border_strong
+                    crate::theme::white_alpha(0.16)
                 };
                 let prompt = truncate_preview(&tick.prompt, PREVIEW_PROMPT_CHARS);
                 let reply = tick

@@ -27,9 +27,28 @@ pub mod terminal;
 pub mod theme;
 pub mod transcript;
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
+
+/// Embedded UI fonts — Geist and Geist Mono (variable), © Vercel Inc.,
+/// licensed under the SIL Open Font License 1.1 (https://openfontlicense.org).
+/// Bundled so the type ships with the binary instead of depending on what the
+/// host system happens to have installed.
+static FONT_GEIST: &[u8] = include_bytes!("../assets/fonts/Geist.ttf");
+static FONT_GEIST_MONO: &[u8] = include_bytes!("../assets/fonts/GeistMono.ttf");
+
+/// Register the embedded fonts with the gpui text system. Failure is non-fatal:
+/// the theme's system fallbacks take over (same families the CSS stack names).
+fn register_fonts(cx: &App) {
+    if let Err(err) = cx.text_system().add_fonts(vec![
+        Cow::Borrowed(FONT_GEIST),
+        Cow::Borrowed(FONT_GEIST_MONO),
+    ]) {
+        tracing::warn!(error = %err, "failed to register embedded Geist fonts");
+    }
+}
 
 pub use comet_proto::HarnessId;
 pub use state::EngineBootConfig;
@@ -69,6 +88,7 @@ pub fn run_app(config: UiConfig) {
     gpui_platform::application().run(move |cx: &mut App| {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
+        register_fonts(cx);
         cx.set_global(theme::Theme::dark());
         composer::init(cx);
         terminal::panel::init(cx);

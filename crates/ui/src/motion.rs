@@ -306,6 +306,21 @@ pub fn matrix_wave(raw_delta: f32, wave_index: usize, wave_count: usize) -> f32 
     pulse_wave(staggered_phase(raw_delta, wave_index, 1.0 / count))
 }
 
+/// Gradient-spin cell opacity for a local phase `t` (0..1 of the period),
+/// ported from comet's `gradient-spin-pulse` keyframes: full at the cycle
+/// start, easing down to `dim` by 45%, resting at `dim` until 92%, then rising
+/// back to full — the per-cell phase offset sweeps this pulse across the grid.
+pub fn gspin_opacity(t: f32, dim: f32) -> f32 {
+    let t = t.rem_euclid(1.0);
+    if t < 0.45 {
+        lerp(1.0, dim, t / 0.45)
+    } else if t < 0.92 {
+        dim
+    } else {
+        lerp(dim, 1.0, (t - 0.92) / 0.08)
+    }
+}
+
 /// Linear interpolation (layout tweens).
 pub fn lerp(from: f32, to: f32, t: f32) -> f32 {
     from + (to - from) * t
@@ -470,5 +485,18 @@ mod tests {
         assert_eq!(lerp(208.0, 400.0, 0.0), 208.0);
         assert_eq!(lerp(208.0, 400.0, 1.0), 400.0);
         assert_eq!(lerp(0.0, 10.0, 0.5), 5.0);
+    }
+
+    #[test]
+    fn gspin_pulse_shape() {
+        // Full at the cycle start, dim through the rest band, rising at the tail.
+        assert_close(gspin_opacity(0.0, 0.1), 1.0, 1e-6, "cycle start");
+        assert_close(gspin_opacity(0.45, 0.1), 0.1, 1e-6, "fully dim");
+        assert_close(gspin_opacity(0.9, 0.1), 0.1, 1e-6, "rest band");
+        assert_close(gspin_opacity(1.0, 0.1), 1.0, 1e-6, "wraps to full");
+        let mid_fall = gspin_opacity(0.2, 0.1);
+        assert!(mid_fall > 0.1 && mid_fall < 1.0, "eases down");
+        let mid_rise = gspin_opacity(0.96, 0.1);
+        assert!(mid_rise > 0.1 && mid_rise < 1.0, "eases up");
     }
 }

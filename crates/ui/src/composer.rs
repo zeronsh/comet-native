@@ -1764,9 +1764,10 @@ impl Composer {
                     .id("composer-send")
                     .px(px(12.0))
                     .py(px(5.0))
-                    .rounded(px(Theme::CONTROL_RADIUS))
+                    .rounded(px(8.0))
                     .bg(theme.accent_strong)
                     .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
                     .text_color(gpui::white())
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.9))
@@ -1803,12 +1804,16 @@ impl Render for Composer {
         let total_height = composer_total_height(content_height);
 
         let failure = self.failure.clone();
+        // Centered composer column (comet `mx-auto w-full max-w-3xl`).
         let container = div()
+            .w_full()
+            .max_w(px(768.0))
+            .mx_auto()
             .flex()
             .flex_col()
             .gap(px(Theme::SPACE_SM))
             .px(px(Theme::SPACE_LG))
-            .pb(px(Theme::SPACE_MD))
+            .pb(px(Theme::SPACE_LG))
             .when_some(failure, |el, message| {
                 el.child(
                     div()
@@ -1845,16 +1850,19 @@ impl Render for Composer {
         );
 
         let send_button = self.render_send_button(mode, cx);
+        // The pill chrome (comet composer.tsx): hairline white border over a
+        // faint white wash — never a solid grey box.
+        let pill_bg = crate::theme::white_alpha(0.03);
         let body = if expanded {
             // Expanded: textarea on top, action row below. 76–260px auto-grow.
             div()
                 .h(px(total_height))
                 .flex()
                 .flex_col()
-                .rounded(px(Theme::PANEL_RADIUS))
-                .bg(theme.surface)
+                .rounded(px(16.0))
+                .bg(pill_bg)
                 .border_1()
-                .border_color(theme.border_strong)
+                .border_color(theme.border)
                 .px(px(12.0))
                 .py(px(10.0))
                 .child(div().flex_1().min_h_0().child(self.input.clone()))
@@ -1876,9 +1884,9 @@ impl Render for Composer {
                 .items_center()
                 .gap(px(Theme::SPACE_SM))
                 .rounded(px(22.0))
-                .bg(theme.surface)
+                .bg(pill_bg)
                 .border_1()
-                .border_color(theme.border_strong)
+                .border_color(theme.border)
                 .pl(px(14.0))
                 .pr(px(8.0))
                 .child(div().flex_1().min_w_0().child(self.input.clone()))

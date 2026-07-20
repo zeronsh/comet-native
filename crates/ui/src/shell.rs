@@ -843,18 +843,13 @@ impl Shell {
             Route::Chat => self.render_chat_sidebar(&theme, cx),
         };
         let target = self.sidebar_target();
+        // Transparent — the sidebar sits directly on the frost shell; the main
+        // card's own border provides the separation.
         self.pane_container(
             "sidebar-width",
             self.sidebar_tween,
             target,
-            div()
-                .h_full()
-                .bg(theme.surface)
-                .when(target > 0.0, |el| {
-                    el.border_r_1().border_color(theme.border)
-                })
-                .child(inner)
-                .into_any_element(),
+            div().h_full().child(inner).into_any_element(),
         )
     }
 
@@ -932,18 +927,18 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        // Status is a dot, not a word (comet session-row.tsx): always present as
+        // a left rail — grey at rest, amber while working / awaiting input, red
+        // when errored — so rows align and state changes read in place.
         let dot_color = match indicator {
-            Indicator::Working => Some(theme.accent),
-            Indicator::AwaitingInput => Some(theme.warning),
-            Indicator::Errored => Some(theme.danger),
-            Indicator::None => None,
+            Indicator::Working | Indicator::AwaitingInput => {
+                crate::theme::oklch(0.879, 0.169, 91.605).opacity(0.8) // amber-300
+            }
+            Indicator::Errored => theme.danger,
+            Indicator::None => crate::theme::white_alpha(0.14),
         };
-        let (hover, active, text, muted) = (
-            theme.element_hover,
-            theme.element_active,
-            theme.text,
-            theme.text_muted,
-        );
+        let (hover, text) = (theme.element_hover, theme.text);
+        let selected_wash = crate::theme::white_alpha(0.08);
         let select_id = id.clone();
         let menu_id = id.clone();
         div()
@@ -951,13 +946,13 @@ impl Shell {
             .flex()
             .items_center()
             .gap(px(Theme::SPACE_SM))
+            .rounded(px(8.0))
             .px(px(Theme::SPACE_SM))
-            .py(px(5.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
+            .py(px(6.0))
             .text_size(px(13.0))
-            .text_color(if selected { text } else { muted })
-            .when(selected, |el| el.bg(active))
-            .hover(move |s| s.bg(hover))
+            .text_color(if selected { text } else { text.opacity(0.8) })
+            .when(selected, |el| el.bg(selected_wash))
+            .hover(move |s| s.bg(hover).text_color(text))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 let id = select_id.clone();
@@ -970,10 +965,8 @@ impl Shell {
                     cx.notify();
                 }),
             )
-            .when_some(dot_color, |el, color| {
-                el.child(div().size(px(6.0)).rounded_full().flex_none().bg(color))
-            })
-            .child(div().flex_1().truncate().child(title))
+            .child(div().size(px(6.0)).rounded_full().flex_none().bg(dot_color))
+            .child(div().flex_1().min_w_0().truncate().child(title))
             .into_any_element()
     }
 
@@ -1052,76 +1045,56 @@ impl Shell {
             .h_full()
             .flex()
             .flex_col()
+            // Device row in the h-11 strip: quiet 13px identity line.
             .child(
                 div()
                     .h(px(Theme::HEADER_HEIGHT))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .px(px(Theme::SPACE_MD))
+                    .px(px(Theme::SPACE_LG))
                     .child(
                         div()
                             .text_size(px(13.0))
-                            .text_color(theme.text_muted)
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text)
                             .child(SharedString::from("This device")),
                     ),
             )
-            // "New session" + grouped-by-project toggle.
+            // "New session" — a first-class ghost row (comet sidebar.tsx).
             .child(
-                div()
-                    .mx(px(Theme::SPACE_MD))
-                    .mb(px(Theme::SPACE_SM))
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(Theme::SPACE_SM))
-                    .child(
-                        div()
-                            .id("new-session")
-                            .flex_1()
-                            .px(px(Theme::SPACE_MD))
-                            .py(px(6.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_size(px(13.0))
-                            .text_color(theme.text)
-                            .hover(|s| s.bg(Theme::dark().element_hover))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.route = Route::Chat;
-                                this.state.update(cx, |s, cx| s.select_chat(None, cx));
-                                cx.notify();
-                            }))
-                            .child(SharedString::from("New session")),
-                    )
-                    .child(
-                        // Grouped-by-project toggle (persisted).
-                        div()
-                            .id("sidebar-group-toggle")
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(6.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(if grouped {
-                                theme.border_strong
-                            } else {
-                                theme.border
-                            })
-                            .text_size(px(12.0))
-                            .text_color(if grouped {
-                                theme.text
-                            } else {
-                                theme.text_faint
-                            })
-                            .when(grouped, |el| el.bg(theme.element_active))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(Theme::dark().element_hover))
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_grouped(cx)))
-                            .child(SharedString::from("⊟")),
-                    ),
+                div().px(px(Theme::SPACE_SM)).pb(px(2.0)).child(
+                    div()
+                        .id("new-session")
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(Theme::SPACE_SM))
+                        .rounded(px(8.0))
+                        .px(px(Theme::SPACE_SM))
+                        .py(px(6.0))
+                        .text_size(px(13.0))
+                        .text_color(theme.text_muted)
+                        .hover(|s| {
+                            s.bg(Theme::dark().element_hover)
+                                .text_color(Theme::dark().text)
+                        })
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.route = Route::Chat;
+                            this.state.update(cx, |s, cx| s.select_chat(None, cx));
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_size(px(13.0))
+                                .child(SharedString::from("＋")),
+                        )
+                        .child(SharedString::from("New session")),
+                ),
             )
-            // Session list.
+            // Section label + grouped-by-project toggle, then the session list.
             .child(
                 div()
                     .id("chat-list")
@@ -1131,8 +1104,51 @@ impl Shell {
                     .px(px(Theme::SPACE_SM))
                     .flex()
                     .flex_col()
-                    .gap(px(2.0))
-                    .children(list_items),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .justify_between()
+                            .px(px(Theme::SPACE_SM))
+                            .pt(px(10.0))
+                            .pb(px(4.0))
+                            .child(
+                                div()
+                                    .text_size(px(11.0))
+                                    .font_weight(gpui::FontWeight::MEDIUM)
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from("Sessions")),
+                            )
+                            .child(
+                                div()
+                                    .id("sidebar-group-toggle")
+                                    .size(px(20.0))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .rounded(px(5.0))
+                                    .text_size(px(11.0))
+                                    .text_color(if grouped {
+                                        theme.text
+                                    } else {
+                                        theme.text_faint
+                                    })
+                                    .when(grouped, |el| el.bg(theme.element_hover))
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(Theme::dark().element_hover))
+                                    .on_click(cx.listener(|this, _, _, cx| this.toggle_grouped(cx)))
+                                    .child(SharedString::from("⊟")),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(2.0))
+                            .pb(px(Theme::SPACE_SM))
+                            .children(list_items),
+                    ),
             )
             // Inline mutation-failure notice.
             .when_some(self.sidebar_notice.clone(), |el, notice| {
@@ -1156,7 +1172,7 @@ impl Shell {
                         .child(notice),
                 )
             })
-            .child(user_menu)
+            .child(div().p(px(Theme::SPACE_SM)).flex_none().child(user_menu))
             .into_any_element()
     }
 
@@ -1170,19 +1186,27 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let open = self.user_menu_open;
+        // Bottom-of-sidebar identity (comet user-menu.tsx): avatar circle +
+        // name with the plan label underneath, Alpha badge chip on the right.
+        let initial: SharedString = user_line
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_else(|| "?".into())
+            .into();
         let mut trigger = div()
             .id("user-menu")
             .flex_none()
-            .border_t_1()
-            .border_color(theme.border)
-            .px(px(Theme::SPACE_MD))
+            .rounded(px(8.0))
+            .px(px(Theme::SPACE_SM))
             .py(px(Theme::SPACE_SM))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(Theme::SPACE_SM))
+            .gap(px(10.0))
             .cursor_pointer()
             .hover(|s| s.bg(Theme::dark().element_hover))
+            .when(open, |el| el.bg(theme.element_hover))
             .on_click(cx.listener(|this, _, _, cx| {
                 // A click that just dismissed the menu (outside-click on the
                 // trigger) must not instantly reopen it.
@@ -1194,6 +1218,21 @@ impl Shell {
                 cx.notify();
             }))
             .child(
+                // Avatar: white circle, initial in near-black.
+                div()
+                    .size(px(26.0))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(theme.text)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                    .text_color(theme.bg)
+                    .child(initial),
+            )
+            .child(
                 div()
                     .flex_1()
                     .min_w_0()
@@ -1201,7 +1240,8 @@ impl Shell {
                     .flex_col()
                     .child(
                         div()
-                            .text_size(px(12.0))
+                            .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text)
                             .truncate()
                             .child(user_line.clone()),
@@ -1209,8 +1249,8 @@ impl Shell {
                     .when_some(user_email.clone(), |el, email| {
                         el.child(
                             div()
-                                .text_size(px(10.0))
-                                .text_color(theme.text_faint)
+                                .text_size(px(11.0))
+                                .text_color(theme.text_muted.opacity(0.7))
                                 .truncate()
                                 .child(email),
                         )
@@ -1218,11 +1258,13 @@ impl Shell {
             )
             .child(
                 div()
-                    .px(px(5.0))
-                    .rounded(px(4.0))
+                    .flex_none()
+                    .px(px(8.0))
+                    .py(px(1.0))
+                    .rounded_full()
                     .border_1()
                     .border_color(theme.border)
-                    .text_size(px(9.0))
+                    .text_size(px(10.5))
                     .text_color(theme.text_muted)
                     .child(SharedString::from("Alpha")),
             );
@@ -1509,6 +1551,7 @@ impl Shell {
 
     fn render_main(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx);
+        let theme_bg = theme.bg;
         let (border, text, muted, faint, hover) = (
             theme.border,
             theme.text,
@@ -1634,6 +1677,7 @@ impl Shell {
                             .min_w_0()
                             .truncate()
                             .text_size(px(13.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(text)
                             .child(title),
                     )
@@ -1652,7 +1696,29 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
                     )),
             )
-            .child(div().flex_1().min_h_0().child(outlet))
+            .child(
+                // The conversation fades out at its bottom edge instead of
+                // hard-cutting against the composer — a gradient overlay from
+                // transparent into the panel background.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .child(outlet)
+                    .child(
+                        div()
+                            .absolute()
+                            .bottom_0()
+                            .left_0()
+                            .right(px(10.0))
+                            .h(px(40.0))
+                            .bg(gpui::linear_gradient(
+                                0.0,
+                                gpui::linear_color_stop(theme_bg, 0.0),
+                                gpui::linear_color_stop(theme_bg.opacity(0.0), 1.0),
+                            )),
+                    ),
+            )
             .child(self.render_terminal_container(cx))
             // Reserved status strip (h-6) — the WorkingIndicator lives here so
             // the composer below never shifts.
@@ -1753,13 +1819,18 @@ impl Shell {
             None => "".into(),
         };
 
+        // Aligned with the composer column: centered, same max width, small
+        // inner gutter (comet's `mx-auto h-6 max-w-3xl px-2`).
         let strip = div()
             .h(px(Theme::STATUS_STRIP_HEIGHT))
             .flex_none()
+            .w_full()
+            .max_w(px(768.0))
+            .mx_auto()
             .flex()
             .items_center()
             .gap(px(Theme::SPACE_SM))
-            .px(px(Theme::SPACE_LG))
+            .px(px(Theme::SPACE_LG + 8.0))
             .text_size(px(11.0));
 
         let Some(chat_id) = state.selected_chat.clone() else {
@@ -1781,9 +1852,10 @@ impl Shell {
                 let word =
                     transcript::flavour_word(transcript::flavour_seed(&chat_id), elapsed_secs);
                 strip
-                    .child(loaders::gradient_spinner("working-indicator", &theme, 3.0))
+                    .child(loaders::gradient_spinner("working-indicator", &theme, 2.5))
                     .child(
                         div()
+                            .text_size(px(12.0))
                             .text_color(theme.text_muted)
                             .child(SharedString::from(format!("{word}…"))),
                     )
@@ -1817,7 +1889,7 @@ impl Shell {
     /// lazy [`Changes`] diff viewer (created on first open).
     fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx);
-        let (bg, border) = (theme.surface, theme.border);
+        let (bg, border) = (theme.bg, theme.border);
         let content: AnyElement = if self.settings.right_pane_open {
             let changes = self.changes_pane(cx);
             // Idempotent — also covers a persisted-open pane on boot.
@@ -2089,7 +2161,9 @@ fn header_button(
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
-        let (bg, text, font) = (theme.bg, theme.text, theme.font_sans.clone());
+        // The shell tone (comet `.frost`): the surface the sidebar sits on and
+        // the main panel floats over as an inset rounded card.
+        let (frost, text, font) = (theme.surface, theme.text, theme.font_sans.clone());
         let gate = self.state.read(cx).gate();
 
         let root = div()
@@ -2098,7 +2172,7 @@ impl Render for Shell {
             .flex()
             .flex_row()
             .size_full()
-            .bg(bg)
+            .bg(frost)
             .text_color(text)
             .font_family(font)
             .text_size(px(14.0))
@@ -2135,11 +2209,32 @@ impl Render for Shell {
                 );
                 let right = self.render_right_pane(cx);
                 let overlays = self.render_overlays(cx);
-                root.child(sidebar)
-                    .child(sidebar_handle)
+                // The signature frame: the content pane (main column + changes
+                // pane) is an inset rounded hairline-bordered card floating on
+                // the frost shell. Collapsed sidebar → full-bleed (margins,
+                // radius, and border melt away; the header row IS the title bar).
+                let inset = !self.settings.sidebar_collapsed;
+                let theme = Theme::of(cx);
+                let card = div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_row()
+                    .overflow_hidden()
+                    .bg(theme.bg)
+                    .when(inset, |el| {
+                        el.my(px(8.0))
+                            .mr(px(8.0))
+                            .rounded(px(12.0))
+                            .border_1()
+                            .border_color(theme.border)
+                    })
                     .child(main)
                     .when(right_open, |el| el.child(right_handle))
-                    .child(right)
+                    .child(right);
+                root.child(sidebar)
+                    .child(sidebar_handle)
+                    .child(card)
                     .children(overlays)
             }
             GatePhase::Loading => root, // splash overlay covers boot

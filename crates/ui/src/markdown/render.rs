@@ -21,10 +21,10 @@ use super::highlight::{Token, TokenClass};
 use super::parser::{Block, BlockTree, InlineRun};
 
 /// Gap between markdown blocks inside one message (comet mdBlockGap).
-pub const MD_BLOCK_GAP: f32 = 14.0;
-/// Body text size / line height.
+pub const MD_BLOCK_GAP: f32 = 12.0;
+/// Body text size / line height (comet: 14px / 22px).
 pub const MD_TEXT_SIZE: f32 = 14.0;
-pub const MD_LINE_HEIGHT: f32 = 21.0;
+pub const MD_LINE_HEIGHT: f32 = 22.0;
 /// Code block metrics — height is `lines × CODE_LINE_HEIGHT + padding + header`.
 pub const CODE_TEXT_SIZE: f32 = 12.5;
 pub const CODE_LINE_HEIGHT: f32 = 18.0;
@@ -204,12 +204,14 @@ pub fn render_block(
     }
 }
 
+/// Tight monochrome heading scale (comet: h2 ≈ 16px semibold; headings step
+/// down quickly toward body size).
 fn heading_metrics(level: u8) -> (f32, f32) {
     match level {
-        1 => (22.0, 30.0),
-        2 => (18.0, 26.0),
-        3 => (16.0, 23.0),
-        _ => (14.0, 21.0),
+        1 => (19.0, 27.0),
+        2 => (16.0, 24.0),
+        3 => (15.0, 22.0),
+        _ => (14.0, 22.0),
     }
 }
 
@@ -246,8 +248,11 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> Fl
         } else {
             FontStyle::Normal
         };
+        // Links stay monochrome — foreground with an underline (comet's md
+        // theme underlines in the text color; indigo is reserved for primary
+        // actions).
         let is_link = run.style.link.is_some();
-        let color = if is_link { theme.accent } else { theme.text };
+        let color = theme.text;
         if let Some(url) = &run.style.link {
             // Merge adjacent runs of the same link into one clickable range.
             match links.last_mut() {
@@ -261,9 +266,10 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> Fl
             len: run.text.len(),
             font: f,
             color,
-            background_color: run.style.code.then_some(theme.surface_raised),
+            // Inline code: mono over a faint white wash (comet: white at 8%).
+            background_color: run.style.code.then_some(crate::theme::white_alpha(0.08)),
             underline: is_link.then_some(UnderlineStyle {
-                color: Some(theme.accent),
+                color: Some(theme.text_muted),
                 thickness: px(1.0),
                 wavy: false,
             }),
@@ -323,8 +329,10 @@ fn render_code_block(
     let lines: Vec<&str> = code.split('\n').collect();
     let scroll_id: SharedString = format!("{}-code{ix}", opts.row_key).into();
     div()
-        .rounded(px(8.0))
-        .bg(theme.surface)
+        .rounded(px(10.0))
+        // Faint white wash over the near-black panel ≈ #101010 (comet's code
+        // surface), with the hairline border.
+        .bg(crate::theme::white_alpha(0.035))
         .border_1()
         .border_color(theme.border)
         .overflow_hidden()
@@ -332,11 +340,11 @@ fn render_code_block(
             el.child(
                 div()
                     .px(px(CODE_PADDING_X))
-                    .py(px(4.0))
+                    .py(px(5.0))
                     .border_b_1()
                     .border_color(theme.border)
                     .text_size(px(11.0))
-                    .text_color(theme.text_faint)
+                    .text_color(theme.text_muted)
                     .child(SharedString::from(lang.to_string())),
             )
         })
@@ -366,13 +374,14 @@ fn render_code_block(
         .into_any_element()
 }
 
-/// Paint color for a token class — monochrome-leaning accents.
+/// Paint color for a token class — a monochrome hierarchy (comet's code blocks
+/// carry no hue): keywords full-bright, strings a step down, comments faint.
 pub fn token_color(class: TokenClass, theme: &Theme) -> Hsla {
     match class {
-        TokenClass::Keyword => theme.accent,
-        TokenClass::StringLit => theme.warning,
+        TokenClass::Keyword => theme.text,
+        TokenClass::StringLit => theme.text_muted,
         TokenClass::Comment => theme.text_faint,
-        TokenClass::Number => theme.accent_strong,
+        TokenClass::Number => theme.text_muted,
     }
 }
 
@@ -481,7 +490,9 @@ mod tests {
         assert_eq!(flat.links, vec![(3..7, "https://x.dev".to_string())]);
         let total: usize = flat.runs.iter().map(|r| r.len).sum();
         assert_eq!(total, flat.text.len());
-        assert_eq!(flat.runs[1].color, theme.accent);
+        // Links stay monochrome (foreground + underline), never accent-tinted.
+        assert_eq!(flat.runs[1].color, theme.text);
+        assert!(flat.runs[1].underline.is_some());
         assert_eq!(flat.runs[2].font.weight, FontWeight::SEMIBOLD);
     }
 

@@ -54,9 +54,13 @@ pub const GAP_BLOCK: f32 = 8.0;
 /// Transcript column max width (comet 46rem).
 pub const MAX_CONTENT_WIDTH: f32 = 736.0;
 /// Tool chip row height / gap — analytic, so fold heights need no measurement.
-pub const CHIP_HEIGHT: f32 = 26.0;
-pub const CHIP_GAP: f32 = 4.0;
-const CHIPS_TOP_PAD: f32 = 6.0;
+/// A row is the guide rail + a 30px chip card centered in it (comet
+/// tool-chip.tsx: `TOOL_CHIP_HEIGHT = 38`, card `h-[30px]`); rows stack with no
+/// gap so the rail reads continuous.
+pub const CHIP_HEIGHT: f32 = 38.0;
+pub const CHIP_GAP: f32 = 0.0;
+pub const CHIP_CARD_HEIGHT: f32 = 30.0;
+const CHIPS_TOP_PAD: f32 = 2.0;
 
 // ---------------------------------------------------------------------------
 // Row model (pure)
@@ -888,10 +892,10 @@ impl Transcript {
                         .max_w(px(MAX_CONTENT_WIDTH * 0.8))
                         .bg(theme.surface_raised)
                         .rounded(px(Theme::BUBBLE_RADIUS))
-                        .px(px(14.0))
-                        .py(px(8.0))
+                        .px(px(16.0))
+                        .py(px(10.0))
                         .text_size(px(14.0))
-                        .line_height(px(21.0))
+                        .line_height(px(22.0))
                         .text_color(theme.text)
                         .when(*pending, |el| el.opacity(0.65))
                         .child(text.clone()),
@@ -956,7 +960,8 @@ impl Transcript {
             .justify_center()
             .pt(px(top_gap))
             .pb(px(bottom_pad))
-            .px(px(24.0))
+            // Wide gutters (comet `px-4 @3xl:px-12`) around the 46rem column.
+            .px(px(48.0))
             .child(
                 div()
                     .w_full()
@@ -1009,13 +1014,16 @@ impl Transcript {
 
         let toggle_id = row_id.clone();
         let tool_count = tools.len();
+        // Header (comet tool-group.tsx): a small chevron tile centered over the
+        // chips' guide rail, then the quiet 12px summary.
         let header = div()
             .id(SharedString::from(format!("{row_id}-hdr")))
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
-            .py(px(2.0))
+            .gap(px(8.0))
+            .px(px(4.0))
+            .h(px(26.0))
             .cursor_pointer()
             .text_size(px(12.0))
             .text_color(if any_error {
@@ -1023,13 +1031,30 @@ impl Transcript {
             } else {
                 theme.text_muted
             })
-            .hover(|s| s.text_color(gpui::white()))
+            .hover(|s| s.text_color(Theme::dark().text))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(toggle_id.clone(), tool_count, auto_open);
                 cx.notify();
             }))
-            .child(SharedString::from(if open { "▾" } else { "▸" }))
-            .child(SharedString::from(summary));
+            .child(
+                div()
+                    .size(px(18.0))
+                    .flex_none()
+                    .rounded(px(5.0))
+                    .bg(crate::theme::white_alpha(0.06))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(10.0))
+                    .text_color(theme.text_muted.opacity(0.7))
+                    .child(SharedString::from(if open { "▾" } else { "▸" })),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .child(SharedString::from(summary)),
+            );
 
         let chips = div()
             .pt(px(CHIPS_TOP_PAD))
@@ -1088,6 +1113,24 @@ fn chip_row(text: String, color: gpui::Hsla, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
+/// A small glyph standing in for the tool's icon (comet uses an icon set; a
+/// quiet monochrome character keeps the tile without shipping SVGs).
+fn tool_glyph(call: &ToolCall) -> &'static str {
+    match call {
+        ToolCall::Exec { .. } => "❯",
+        ToolCall::ReadFile { .. } | ToolCall::ApplyPatch { .. } => "≡",
+        ToolCall::WriteFile { .. } => "+",
+        ToolCall::EditFile { .. } => "✎",
+        ToolCall::Search { .. } | ToolCall::Glob { .. } => "∗",
+        ToolCall::WebFetch { .. } | ToolCall::WebSearch { .. } => "◍",
+        ToolCall::Todo { .. } => "✓",
+        ToolCall::Mcp { .. } | ToolCall::Unknown { .. } => "◆",
+    }
+}
+
+/// One tool chip row: a guide rail on the left (continuous across stacked
+/// chips — the rail spans the row's full height) threading the chips to their
+/// group toggle, then the chip card (comet tool-chip.tsx).
 fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
     let (label, detail) = tool_chip_content(&tool.call);
     let tint = if tool.is_error {
@@ -1101,42 +1144,65 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
         .flex()
         .flex_row()
         .items_center()
-        .gap(px(8.0))
-        .pl(px(8.0))
-        .border_l_1()
-        .border_color(theme.border_strong)
-        .text_size(px(12.0))
+        // Guide rail: hairline centered under the header's chevron tile.
         .child(
-            // Icon placeholder: a small square that dims until the result lands.
             div()
-                .size(px(6.0))
+                .ml(px(12.0))
+                .h_full()
+                .w(px(1.0))
                 .flex_none()
-                .rounded(px(1.5))
-                .bg(if tool.is_error {
-                    theme.danger
-                } else if tool.resolved {
-                    theme.text_faint
-                } else {
-                    theme.accent
-                }),
+                .bg(crate::theme::white_alpha(0.08)),
         )
         .child(
             div()
-                .flex_none()
-                .text_color(tint)
-                .child(SharedString::from(label)),
-        )
-        .child(
-            div()
-                .flex_1()
+                .ml(px(12.0))
+                .h(px(CHIP_CARD_HEIGHT))
                 .min_w_0()
-                .truncate()
-                .text_color(if tool.is_error {
-                    theme.danger
-                } else {
-                    theme.text_faint
-                })
-                .child(SharedString::from(detail)),
+                .flex_1()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .rounded(px(9.0))
+                .border_1()
+                .border_color(crate::theme::white_alpha(0.07))
+                .bg(crate::theme::white_alpha(0.03))
+                .px(px(8.0))
+                .text_size(px(12.0))
+                .child(
+                    // Icon tile.
+                    div()
+                        .size(px(18.0))
+                        .flex_none()
+                        .rounded(px(5.0))
+                        .bg(crate::theme::white_alpha(0.08))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(10.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from(tool_glyph(&tool.call))),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(tint)
+                        .child(SharedString::from(label)),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .text_color(if tool.is_error {
+                            theme.danger
+                        } else {
+                            theme.text.opacity(0.85)
+                        })
+                        .child(SharedString::from(detail)),
+                ),
         )
         .into_any_element()
 }

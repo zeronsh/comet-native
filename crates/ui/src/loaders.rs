@@ -14,7 +14,7 @@ use gpui::{AnyElement, IntoElement, ParentElement, SharedString, Styled, div, px
 use crate::motion::{
     self, AnimationExt as _, COMET_PULSE, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT,
 };
-use crate::theme::{self, Theme};
+use crate::theme::Theme;
 
 /// Cells in the comet wave loader.
 pub const COMET_CELLS: usize = 5;
@@ -55,34 +55,47 @@ pub fn comet_loader(id: &'static str, theme: &Theme, cell_px: f32) -> impl IntoE
         }))
 }
 
-/// The gradient matrix spinner (WorkingIndicator): a 3×3 grid whose cells run a
-/// 750ms phase wave along the diagonals, painting a moving accent→text gradient.
-pub fn gradient_spinner(id: &'static str, theme: &Theme, cell_px: f32) -> impl IntoElement {
-    let hot = theme.accent;
-    let cold = theme.text_faint;
-    let wave_count = MATRIX_SIDE * 2 - 1; // diagonals of the matrix
+/// Per-row tints of the gradient matrix spinner — comet's "sunrise" gradient
+/// (gradient-spin.tsx SUNRISE) sampled at each row: cool blue at the top,
+/// through amber, to pink at the bottom.
+pub const GSPIN_ROW_TINTS: [u32; MATRIX_SIDE] = [0xB6D3EF, 0xEDB185, 0xF888A0];
+/// Opacity a cell rests at between pulses.
+pub const GSPIN_DIM: f32 = 0.1;
+
+/// The gradient matrix spinner (WorkingIndicator), ported from comet's
+/// gradient-spin.tsx: a 3×3 grid of round cells tinted per row from the
+/// sunrise gradient. Each cell pulses opacity once per 750ms period; the
+/// per-cell phase follows the "arrow-up" pattern (the pulse enters at the
+/// bottom edge and converges toward the top-center cell), so the wave reads
+/// as travelling upward.
+pub fn gradient_spinner(id: &'static str, _theme: &Theme, cell_px: f32) -> impl IntoElement {
+    let center = (MATRIX_SIDE as f32 - 1.0) / 2.0;
+    let max = MATRIX_SIDE as f32 - 1.0 + center;
     div()
         .flex()
         .flex_col()
         .gap(px(cell_px / 2.0))
         .children((0..MATRIX_SIDE).map(move |row| {
+            let tint: gpui::Hsla = gpui::rgb(GSPIN_ROW_TINTS[row]).into();
             div()
                 .flex()
                 .flex_row()
                 .gap(px(cell_px / 2.0))
                 .children((0..MATRIX_SIDE).map(move |col| {
-                    let diagonal = row + col;
                     let cell_ix = row * MATRIX_SIDE + col;
+                    // Distance of this cell from the wave origin, normalized
+                    // into a phase offset (gradient-spin's `--gspin-phase`).
+                    let d = MATRIX_SIDE as f32 - 1.0 - row as f32 + (col as f32 - center).abs();
+                    let phase = if max == 0.0 { 0.0 } else { d / (max + 1.0) };
                     div()
                         .size(px(cell_px))
-                        .rounded(px(1.5))
-                        .bg(cold)
+                        .rounded(px(cell_px / 2.0))
+                        .bg(tint)
                         .with_animation(
                             (id, cell_ix),
                             GRADIENT_SPIN.repeating(),
                             move |el, delta| {
-                                let w = motion::matrix_wave(delta, diagonal, wave_count);
-                                el.bg(theme::mix(cold, hot, w)).opacity(0.25 + 0.75 * w)
+                                el.opacity(motion::gspin_opacity(delta + phase, GSPIN_DIM))
                             },
                         )
                 }))
