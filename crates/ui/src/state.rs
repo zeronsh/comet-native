@@ -384,6 +384,8 @@ pub struct AppState {
     pub chats: Vec<Chat>,
     pub sessions: Vec<Session>,
     pub selected_chat: Option<String>,
+    /// Boot auto-select happened (or a manual selection superseded it).
+    pub auto_selected: bool,
     /// Joined transcript of the selected chat (continuations folded engine-side).
     pub transcript: Vec<SessionMessageEntry>,
     /// Optimistic user echoes per chat id, shown until the doc frame carrying
@@ -418,6 +420,7 @@ impl AppState {
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
+            auto_selected: false,
         }
     }
 
@@ -571,12 +574,7 @@ impl AppState {
                 methods::WATCH_SESSIONS,
                 AppState::apply_sessions,
             ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_CHATS,
-                AppState::apply_chats,
-            ),
+            spawn_chats_watch(cx, handle.clone()),
             spawn_watch(
                 cx,
                 handle.clone(),
@@ -607,6 +605,7 @@ impl AppState {
             return;
         }
         self.selected_chat = chat_id.clone();
+        self.auto_selected = true;
         self.transcript.clear();
         self.transcript_task = None;
         if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
@@ -618,6 +617,48 @@ impl AppState {
 
 /// Subscribe to a watch method and pump each frame through `apply`. Runs on the
 /// gpui executor; ends when the stream closes or the entity is released.
+/// Chats watch with boot auto-select: comet's `/` route redirected to the
+/// last-used chat; we approximate by selecting the most recent unarchived chat
+/// on the first frame when nothing is selected yet (manual selection wins).
+fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<()> {
+    cx.spawn(async move |this, cx| {
+        let mut rx = match handle
+            .client()
+            .subscribe(methods::WATCH_CHATS, serde_json::json!({}))
+            .await
+        {
+            Ok(rx) => rx,
+            Err(err) => {
+                tracing::debug!(error = %err, "chats watch unavailable");
+                return;
+            }
+        };
+        while let Some(value) = rx.recv().await {
+            let parsed: Vec<Chat> = match serde_json::from_value(value) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    tracing::warn!(error = %err, "dropping malformed chats frame");
+                    continue;
+                }
+            };
+            let alive = this.update(cx, |state, cx| {
+                state.apply_chats(parsed);
+                if state.selected_chat.is_none() && !state.auto_selected {
+                    let most_recent = state.chats.iter().find(|c| !c.archived).map(|c| c.id.clone());
+                    if let Some(chat_id) = most_recent {
+                        state.auto_selected = true;
+                        state.select_chat(Some(chat_id), cx);
+                    }
+                }
+                cx.notify();
+            });
+            if alive.is_err() {
+                break;
+            }
+        }
+    })
+}
+
 fn spawn_watch<T: DeserializeOwned + 'static>(
     cx: &mut Context<AppState>,
     handle: EngineHandle,

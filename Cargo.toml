@@ -35,7 +35,11 @@ loro-protocol = "0.3"
 
 # gpui — pinned to the same rev as the local ~/github/zed reference clone
 gpui = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
+gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57", features = [
+    "wayland",
+    "x11",
+    "font-kit",
+] }
 gpui_tokio = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
 
 # async / net

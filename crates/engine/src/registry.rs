@@ -128,7 +128,23 @@ pub fn default_registry() -> HarnessRegistry {
     registry.register(Arc::new(MockHarness {
         script: vec![
             AgentEvent::TextDelta {
-                text: "Mock harness reporting in.".into(),
+                text: "## Streaming pipeline\n\nEvery turn flows through the same path:\n\n".into(),
+            },
+            AgentEvent::TextDelta {
+                text: "1. **Doc command** — the composer queues a durable `run` entry\n2. **Host executor** — the chat's host device marks it processed, then dispatches\n3. **Fold** — events fold into parts and diff into the Loro doc every 120ms\n\n".into(),
+            },
+            AgentEvent::ToolCall {
+                id: "mock-tool-1".into(),
+                call: comet_proto::ToolCall::Exec {
+                    command: "cargo test --workspace".into(),
+                },
+            },
+            AgentEvent::ToolResult {
+                id: "mock-tool-1".into(),
+                is_error: false,
+            },
+            AgentEvent::TextDelta {
+                text: "The `SegmentWriter` appends into `LoroText` so the oplog stays RLE-merged:\n\n```rust\nfolded = fold_event_into_parts(&folded, &event);\nwriter.sync(&folded)?; // 120ms coalesced commits\n```\n\nSynced to every device through the session room. *Mock harness reporting in.*".into(),
             },
             AgentEvent::Done {
                 status: DoneStatus::Completed,
