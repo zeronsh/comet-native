@@ -49,6 +49,16 @@ fn result_error_text(subtype: &str) -> &'static str {
     }
 }
 
+/// The CLI seeds `result.errors` with internal `[ede_diagnostic]` breadcrumbs
+/// for its error_during_execution telemetry ("turn aborted (…) stop_reason=…",
+/// "result_type=… last_content_type=… stop_reason=…"). They're diagnostics
+/// about the CLI's own turn accounting, not user-relevant errors — surfacing
+/// them verbatim put raw `[ede_diagnostic] result_type=user …` boxes in the
+/// transcript. They're debug-logged and dropped instead.
+fn is_internal_diagnostic(message: &str) -> bool {
+    message.contains("[ede_diagnostic]")
+}
+
 fn str_field(input: &Value, key: &str) -> String {
     input.get(key).and_then(Value::as_str).unwrap_or("").into()
 }
@@ -272,21 +282,43 @@ impl Normalizer {
                         session_id: f.session_id,
                     }
                 } else {
-                    // Never let the terminal error be blank: an empty `errors`
-                    // array would fold to no error part and the failed turn
-                    // would read as a silent non-reply.
-                    let errors: Vec<String> = f
+                    // Split the CLI's internal `[ede_diagnostic]` breadcrumbs
+                    // off the real errors: diagnostics are debug-logged, never
+                    // surfaced as transcript error parts.
+                    let (diagnostics, errors): (Vec<String>, Vec<String>) = f
                         .errors
                         .iter()
                         .map(|e| match e {
                             Value::String(s) => s.clone(),
                             other => other.to_string(),
                         })
-                        .collect();
-                    let error = if errors.is_empty() {
-                        result_error_text(&f.subtype).to_owned()
+                        .partition(|m| is_internal_diagnostic(m));
+                    for diagnostic in &diagnostics {
+                        tracing::debug!(
+                            target: "comet_harness::claude",
+                            "internal CLI diagnostic (not surfaced): {diagnostic}"
+                        );
+                    }
+                    let error = if !errors.is_empty() {
+                        // Real user-relevant errors — surface verbatim.
+                        Some(errors.join("; "))
                     } else {
-                        errors.join("; ")
+                        match f.subtype.as_str() {
+                            // Known run-failure subtypes stay visible with
+                            // their mapped human wording (never blank — a
+                            // blank error folds to no part and the failed
+                            // turn reads as a silent non-reply).
+                            "error_max_turns"
+                            | "error_max_budget_usd"
+                            | "error_max_structured_output_retries" => {
+                                Some(result_error_text(&f.subtype).to_owned())
+                            }
+                            // Diagnostic-only ends (the CLI's turn-accounting
+                            // telemetry, typically `error_during_execution`
+                            // after an abort): nothing user-relevant to show.
+                            _ if !diagnostics.is_empty() => None,
+                            _ => Some(result_error_text(&f.subtype).to_owned()),
+                        }
                     };
                     AgentEvent::Done {
                         status: if interrupted {
@@ -295,7 +327,7 @@ impl Normalizer {
                             DoneStatus::Errored
                         },
                         result: None,
-                        error: Some(error),
+                        error,
                         session_id: f.session_id,
                     }
                 };
@@ -356,5 +388,69 @@ mod tests {
             decode_tool_use("Mystery", &json!({})),
             ToolCall::Unknown { .. }
         ));
+    }
+
+    fn result_done(raw: &str) -> AgentEvent {
+        let frame = crate::claude::wire::parse_frame(raw).expect("frame parses");
+        let events = Normalizer::new().normalize(frame, false);
+        assert_eq!(events.len(), 2, "usage + done");
+        events.into_iter().nth(1).expect("done event")
+    }
+
+    #[test]
+    fn ede_diagnostics_never_surface_as_errors() {
+        // The CLI's internal turn-accounting breadcrumbs must not become
+        // transcript error parts (they showed up as raw red boxes).
+        let done = result_done(
+            r#"{"type":"result","subtype":"error_during_execution","errors":["[ede_diagnostic] result_type=user last_content_type=n/a stop_reason=null"]}"#,
+        );
+        match done {
+            AgentEvent::Done { status, error, .. } => {
+                assert_eq!(status, DoneStatus::Errored);
+                assert_eq!(error, None, "diagnostic-only failure surfaces no text");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_errors_survive_diagnostic_filtering() {
+        let done = result_done(
+            r#"{"type":"result","subtype":"error_during_execution","errors":["[ede_diagnostic] turn aborted (x) stop_reason=null","Something real broke"]}"#,
+        );
+        match done {
+            AgentEvent::Done { error, .. } => {
+                assert_eq!(error.as_deref(), Some("Something real broke"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn known_failure_subtypes_keep_mapped_wording() {
+        // A known run-failure subtype stays visible with human wording even
+        // when its errors array is all diagnostics (or empty).
+        let done = result_done(
+            r#"{"type":"result","subtype":"error_max_turns","errors":["[ede_diagnostic] turn aborted (max) stop_reason=null"]}"#,
+        );
+        match done {
+            AgentEvent::Done { error, .. } => {
+                assert_eq!(
+                    error.as_deref(),
+                    Some("The run hit the maximum number of turns.")
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+        let done = result_done(r#"{"type":"result","subtype":"error_max_turns","errors":[]}"#);
+        match done {
+            AgentEvent::Done { error, .. } => {
+                assert_eq!(
+                    error.as_deref(),
+                    Some("The run hit the maximum number of turns.")
+                );
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
     }
 }

@@ -338,10 +338,13 @@ impl Pickers {
         {
             return Some(config.harness);
         }
+        // Fall back to the first VISIBLE harness: the registry lists the mock
+        // harness first, and resolving chips against it would boot the
+        // new-chat canvas onto "Mock" instead of Claude Code + its default
+        // model (it stays available under `COMET_HARNESS=mock`).
         self.harnesses
             .ready()
-            .and_then(|list| list.first())
-            .map(|d| d.id)
+            .and_then(|list| visible_harnesses(list).first().map(|d| d.id))
     }
 
     /// Effective model id: the draft pick, or the selected chat's config.
@@ -1934,8 +1937,25 @@ fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
         )
 }
 
-/// Production pickers hide the mock harness unless it's all there is.
+/// `COMET_HARNESS=mock` (the e2e/dev rig) opts the mock harness into the UI;
+/// production launches never set it, so the mock never surfaces there.
+fn mock_harness_enabled() -> bool {
+    std::env::var("COMET_HARNESS").ok().as_deref().map(str::trim) == Some("mock")
+}
+
+/// Production pickers AND chip resolution hide the mock harness — the
+/// registry always lists it, but it must never surface in real UI (neither in
+/// the picker rail nor as the eager default the chips resolve against).
+/// `COMET_HARNESS=mock` shows it; otherwise it only remains when it's
+/// literally all there is (a dev build with no real harness registered).
 pub fn visible_harnesses(list: &[HarnessDescriptor]) -> Vec<HarnessDescriptor> {
+    visible_harnesses_impl(list, mock_harness_enabled())
+}
+
+fn visible_harnesses_impl(list: &[HarnessDescriptor], allow_mock: bool) -> Vec<HarnessDescriptor> {
+    if allow_mock {
+        return list.to_vec();
+    }
     let real: Vec<HarnessDescriptor> = list
         .iter()
         .filter(|d| d.id != HarnessId::Mock)
@@ -2330,10 +2350,14 @@ mod tests {
             descriptor(HarnessId::Mock, "Mock"),
             descriptor(HarnessId::ClaudeCode, "Claude Code"),
         ];
-        let visible = visible_harnesses(&mixed);
+        // Env-independent core: mock hidden in production…
+        let visible = visible_harnesses_impl(&mixed, false);
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].id, HarnessId::ClaudeCode);
         let only_mock = vec![descriptor(HarnessId::Mock, "Mock")];
-        assert_eq!(visible_harnesses(&only_mock).len(), 1);
+        assert_eq!(visible_harnesses_impl(&only_mock, false).len(), 1);
+        // …and opted back in by COMET_HARNESS=mock (the e2e rig).
+        assert_eq!(visible_harnesses_impl(&mixed, true).len(), 2);
+        assert_eq!(visible_harnesses_impl(&mixed, true)[0].id, HarnessId::Mock);
     }
 }

@@ -1289,8 +1289,15 @@ impl Transcript {
 
         let inner: AnyElement = match &row.kind {
             RowKind::User { text, pending } => {
-                let bubble = div().flex().justify_end().child(
+                // `min_w_0` is load-bearing: gpui text answers min/max-content
+                // probes with its UNWRAPPED width, so without it the bubble's
+                // automatic min-size is the full single-line width — the flex
+                // item can't shrink, `justify_end` pushes the overflow off the
+                // left edge, and long prompts render as one clipped line
+                // instead of wrapping inside the 80% column cap.
+                let bubble = div().w_full().flex().justify_end().child(
                     div()
+                        .min_w_0()
                         .max_w(px(MAX_CONTENT_WIDTH * 0.8))
                         .bg(theme.surface_raised)
                         .rounded(px(Theme::BUBBLE_RADIUS))
@@ -1383,7 +1390,7 @@ impl Transcript {
                     &theme,
                 )
             }
-            RowKind::ErrorChip { message } => chip_row(message.to_string(), theme.danger, &theme),
+            RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
         };
 
         div()
@@ -1526,6 +1533,66 @@ impl Transcript {
             .child(body)
             .into_any_element()
     }
+}
+
+/// The transcript ErrorChip — an exact port of comet chat-view.tsx
+/// `ErrorChip`: a 34px row (`rounded-[10px] border border-red-400/[0.16]
+/// bg-red-400/[0.05] px-2 text-[12px]`) with a 20px red-washed tile holding a
+/// 12px DangerTriangle (`bg-red-400/[0.12] text-red-300/80`), a medium
+/// "Error" label, then the human message truncating at `text-foreground/80` —
+/// a subtle red-tinted wash, never a bare red-stroke box.
+fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
+    let red_300 = crate::theme::oklch(0.808, 0.114, 19.571); // tailwind red-300
+    let danger = theme.danger; // red-400
+    div()
+        .py(px(4.0))
+        .w_full()
+        .child(
+            div()
+                .h(px(34.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .rounded(px(10.0))
+                .border_1()
+                .border_color(danger.opacity(0.16))
+                .bg(danger.opacity(0.05))
+                .px(px(8.0))
+                .text_size(px(12.0))
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(20.0))
+                        .rounded(px(6.0))
+                        .bg(danger.opacity(0.12))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                                .size(px(12.0))
+                                .text_color(red_300.opacity(0.8)),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(red_300.opacity(0.8))
+                        .child(SharedString::from("Error")),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .text_color(theme.text.opacity(0.8))
+                        .child(message),
+                ),
+        )
+        .into_any_element()
 }
 
 fn chip_row(text: String, color: gpui::Hsla, theme: &Theme) -> AnyElement {

@@ -346,6 +346,11 @@ pub struct Shell {
     fullscreen: Option<bool>,
     /// 200ms ease-out tween of the cluster start on fullscreen toggles.
     titlebar_tween: Option<WidthTween>,
+    /// 200ms ease-out tween of the header's left padding on sidebar toggles —
+    /// comet __root.tsx `transition-[padding-left] duration-200 ease-out` with
+    /// `paddingLeft: headerInset`: the title GLIDES to its new x, one element,
+    /// no remount (route changes swap the keyed header instantly instead).
+    header_inset_tween: Option<WidthTween>,
     /// Armed by mouse-down on a titlebar strip; the next mouse-move hands the
     /// drag to the compositor (zed's platform-titlebar pattern).
     titlebar_should_move: bool,
@@ -477,6 +482,7 @@ impl Shell {
             terminal_tween: None,
             fullscreen: None,
             titlebar_tween: None,
+            header_inset_tween: None,
             titlebar_should_move: false,
             terminal_tween_task: None,
             terminal_drag_anchor: None,
@@ -573,13 +579,39 @@ impl Shell {
         }
     }
 
+    /// Header content left padding (comet __root.tsx `headerInset`): expanded
+    /// it hugs the container pad; collapsed it clears the persistent
+    /// window-control cluster (which never moves) plus the header's own 10px
+    /// child gap, so the title lands exactly where the old clearance spacer
+    /// put it.
+    fn header_inset_for(&self, fullscreen: bool) -> f32 {
+        let pad = Theme::SPACE_LG;
+        if self.settings.sidebar_collapsed {
+            pad + cluster_clearance(cfg!(target_os = "macos"), fullscreen, pad) + 10.0
+        } else {
+            pad
+        }
+    }
+
+    fn header_inset(&self) -> f32 {
+        self.header_inset_for(self.fullscreen.unwrap_or(false))
+    }
+
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         let from = self.sidebar_target();
+        let inset_from = self.header_inset();
         self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
         self.tween_epoch += 1;
         self.sidebar_tween = Some(WidthTween {
             from,
             to: self.sidebar_target(),
+            epoch: self.tween_epoch,
+        });
+        // The title glides with the same 200ms ease-out as the sidebar width
+        // (comet __root.tsx `transition-[padding-left]`).
+        self.header_inset_tween = Some(WidthTween {
+            from: inset_from,
+            to: self.header_inset(),
             epoch: self.tween_epoch,
         });
         self.schedule_save(cx);
@@ -692,6 +724,7 @@ impl Shell {
         self.settings.sidebar_width = x.clamp(SIDEBAR_MIN, SIDEBAR_MAX);
         self.settings.sidebar_collapsed = false;
         self.sidebar_tween = None; // live drag tracks the pointer directly
+        self.header_inset_tween = None;
         self.schedule_save(cx);
         cx.notify();
     }
@@ -1098,6 +1131,24 @@ impl Shell {
                 .into_any_element(),
             None => spacer.w(px(target)).into_any_element(),
         })
+    }
+
+    /// The header's content row with the animated left inset — the native port
+    /// of comet __root.tsx `transition-[padding-left] duration-200 ease-out` +
+    /// `style={{ paddingLeft: headerInset }}`: on sidebar toggles the SAME
+    /// element's padding tweens, so the title glides to its new x-position;
+    /// with no tween in flight it sits at the target instantly (route/chat
+    /// changes remount the keyed header — instant swap, no animation).
+    fn header_inset_container(&self, id: &'static str, content: gpui::Div) -> AnyElement {
+        let target = self.header_inset();
+        match self.header_inset_tween {
+            Some(WidthTween { from, to, epoch }) => content
+                .with_animation((id, epoch), RESIZE.animation(), move |el, t| {
+                    el.pl(px(motion::lerp(from, to, t)))
+                })
+                .into_any_element(),
+            None => content.pl(px(target)).into_any_element(),
+        }
     }
 
     /// Make a titlebar strip drag the window — zed's platform-titlebar
@@ -2159,24 +2210,16 @@ impl Shell {
         // composer/terminal/status strip (feature-inventory §1.3 header variants).
         if let Route::Settings(section) = self.route {
             let outlet = self.settings_outlet(section, cx);
-            let header = div()
-                .h(px(Theme::HEADER_HEIGHT))
-                .flex_none()
+            // One persistent row whose left padding glides on sidebar toggles
+            // (comet __root.tsx `key="header-settings"` + animated
+            // `paddingLeft: headerInset`); the section label itself swaps
+            // instantly, as in the original.
+            let inner = div()
+                .size_full()
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .px(px(Theme::SPACE_LG))
-                .border_b_1()
-                .border_color(border)
-                .when(self.settings.sidebar_collapsed, |el| {
-                    // Full-bleed card: the header IS the titlebar — clear the
-                    // persistent overlay cluster (which never moves).
-                    el.child(div().flex_none().w(px(cluster_clearance(
-                        cfg!(target_os = "macos"),
-                        self.fullscreen.unwrap_or(false),
-                        Theme::SPACE_LG,
-                    ))))
-                })
+                .pr(px(Theme::SPACE_LG))
                 .child(
                     div()
                         .flex_1()
@@ -2185,6 +2228,12 @@ impl Shell {
                         .text_color(text)
                         .child(SharedString::from(section.label())),
                 );
+            let header = div()
+                .h(px(Theme::HEADER_HEIGHT))
+                .flex_none()
+                .border_b_1()
+                .border_color(border)
+                .child(self.header_inset_container("settings-header-inset", inner));
             return div()
                 .flex_1()
                 .min_w_0()
@@ -2259,24 +2308,16 @@ impl Shell {
         // pane carries its own collapse button); the new-chat canvas shows a
         // bare h-11 strip with no border and no chrome.
         let header: AnyElement = if has_selection {
-            let bar = div()
-                .h(px(Theme::HEADER_HEIGHT))
-                .flex_none()
+            // One persistent header row (comet __root.tsx `key="header-chat"`):
+            // chat switches swap the title text instantly; sidebar toggles
+            // glide the whole row via the animated left inset
+            // (`transition-[padding-left] duration-200 ease-out`).
+            let inner = div()
+                .size_full()
                 .flex()
                 .items_center()
                 .gap(px(10.0))
-                .px(px(Theme::SPACE_LG))
-                .border_b_1()
-                .border_color(border)
-                .when(self.settings.sidebar_collapsed, |el| {
-                    // Full-bleed card: this header is the titlebar — clear the
-                    // persistent overlay cluster (which never moves).
-                    el.child(div().flex_none().w(px(cluster_clearance(
-                        cfg!(target_os = "macos"),
-                        self.fullscreen.unwrap_or(false),
-                        Theme::SPACE_LG,
-                    ))))
-                })
+                .pr(px(Theme::SPACE_LG))
                 .child(
                     div()
                         .min_w_0()
@@ -2309,6 +2350,12 @@ impl Shell {
                         cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
                     ))
                 });
+            let bar = div()
+                .h(px(Theme::HEADER_HEIGHT))
+                .flex_none()
+                .border_b_1()
+                .border_color(border)
+                .child(self.header_inset_container("chat-header-inset", inner));
             self.titlebar_drag_region("chat-header-titlebar", bar, cx)
                 .into_any_element()
         } else {
@@ -2648,7 +2695,16 @@ impl Shell {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .child(motion::fade_in("gate-card", div().child(content))),
+                    // Keyed per phase (comet App.tsx `<div key={phase}
+                    // className="animate-in">`): every gate swap replays the
+                    // 0.5s entrance instead of mutating one animated element.
+                    .child(motion::fade_in(
+                        match phase {
+                            GatePhase::SignIn => "gate-card-signin",
+                            _ => "gate-card-failed",
+                        },
+                        div().child(content),
+                    )),
             )
             .into_any_element()
     }
@@ -3014,6 +3070,15 @@ impl Render for Shell {
                     to: titlebar_cluster_start(fullscreen),
                     epoch: self.tween_epoch,
                 });
+                // Collapsed headers inset past the traffic lights — glide the
+                // title with the cluster (comet `headerInset` 204 ↔ 128).
+                if self.settings.sidebar_collapsed {
+                    self.header_inset_tween = Some(WidthTween {
+                        from: self.header_inset_for(!fullscreen),
+                        to: self.header_inset_for(fullscreen),
+                        epoch: self.tween_epoch,
+                    });
+                }
             }
             self.fullscreen = Some(fullscreen);
         }
@@ -3114,6 +3179,13 @@ impl Render for Shell {
                 // the header row IS the title bar).
                 let inset = !self.settings.sidebar_collapsed;
                 let theme = Theme::of(cx);
+                // Margins, radius, and border-color MELT over the same 200ms
+                // ease-out as the sidebar width (comet __root.tsx `<main>`
+                // `transition-[margin,border-radius,border-color]`; collapsed
+                // is `m-0 rounded-none border-transparent` — the border WIDTH
+                // stays, only its color fades, so layout never jumps by the
+                // hairline).
+                let border_color = theme.border;
                 let card = div()
                     .flex_1()
                     .min_w_0()
@@ -3121,21 +3193,50 @@ impl Render for Shell {
                     .flex_row()
                     .overflow_hidden()
                     .bg(theme.bg)
-                    .when(inset, |el| {
-                        el.my(px(8.0))
-                            .mr(px(8.0))
-                            .rounded(px(12.0))
-                            .border_1()
-                            .border_color(theme.border)
-                    })
+                    .border_1()
                     .child(main)
                     .children(right_divider)
                     .child(right);
-                root.child(sidebar)
+                let card: AnyElement = match self.sidebar_tween {
+                    Some(WidthTween { epoch, .. }) => {
+                        let (from, to) = if inset { (0.0, 1.0) } else { (1.0, 0.0) };
+                        card.with_animation(
+                            ("main-card-melt", epoch),
+                            RESIZE.animation(),
+                            move |el, t| {
+                                let x = motion::lerp(from, to, t);
+                                el.my(px(8.0 * x))
+                                    .mr(px(8.0 * x))
+                                    .rounded(px(12.0 * x))
+                                    .border_color(border_color.opacity(x))
+                            },
+                        )
+                        .into_any_element()
+                    }
+                    None => card
+                        .when(inset, |el| {
+                            el.my(px(8.0))
+                                .mr(px(8.0))
+                                .rounded(px(12.0))
+                                .border_color(border_color)
+                        })
+                        .when(!inset, |el| el.border_color(gpui::transparent_black()))
+                        .into_any_element(),
+                };
+                // The whole app page is one keyed `animate-in` entrance (comet
+                // App.tsx `<div key={phase} className="animate-in h-full">`):
+                // arriving from the splash or any gate fades the page in; the
+                // splash-out crossfades over it on boot.
+                let page = div()
+                    .size_full()
+                    .flex()
+                    .flex_row()
+                    .child(sidebar)
                     .child(sidebar_handle.into_any_element())
                     .child(card)
                     .child(self.render_titlebar_cluster(cx))
-                    .children(overlays)
+                    .children(overlays);
+                root.child(motion::fade_in("phase-app", page))
             }
             GatePhase::Loading => root, // splash overlay covers boot
             GatePhase::OrgGate => {

@@ -2110,22 +2110,59 @@ impl Render for Composer {
             .px(px(Theme::SPACE_LG))
             .pb(px(Theme::SPACE_LG))
             .when_some(failure, |el, message| {
+                // comet composer.tsx `Notice` (matches the transcript
+                // ErrorChip palette): `flex items-start gap-2 rounded-xl
+                // border px-3 py-2 text-[12px] leading-snug` with a 14px
+                // DangerTriangle — a subtle tinted wash, not a bare red
+                // stroke. Amber for the offline-ish case (engine not
+                // connected), red for send/run failures. Click dismisses.
+                let offline = message.as_ref() == "Engine not connected";
+                let (border_c, wash, text_c) = if offline {
+                    let amber = theme.warning; // amber-400
+                    let amber_200 = crate::theme::oklch(0.924, 0.12, 95.746);
+                    (
+                        amber.opacity(0.16),
+                        amber.opacity(0.05),
+                        amber_200.opacity(0.9),
+                    )
+                } else {
+                    let danger = theme.danger; // red-400
+                    let red_300 = crate::theme::oklch(0.808, 0.114, 19.571);
+                    (
+                        danger.opacity(0.16),
+                        danger.opacity(0.05),
+                        red_300.opacity(0.9),
+                    )
+                };
                 el.child(
                     div()
                         .id("composer-failure")
-                        .px(px(10.0))
-                        .py(px(6.0))
-                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .mx(px(4.0))
+                        .mt(px(6.0))
+                        .flex()
+                        .items_start()
+                        .gap(px(8.0))
+                        .rounded(px(12.0))
                         .border_1()
-                        .border_color(theme.danger)
+                        .border_color(border_c)
+                        .bg(wash)
+                        .px(px(12.0))
+                        .py(px(8.0))
                         .text_size(px(12.0))
-                        .text_color(theme.danger)
+                        .line_height(px(16.0))
+                        .text_color(text_c)
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.failure = None;
                             cx.notify();
                         }))
-                        .child(message),
+                        .child(
+                            crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                                .size(px(14.0))
+                                .mt(px(2.0))
+                                .text_color(text_c),
+                        )
+                        .child(div().min_w_0().child(message)),
                 )
             });
 

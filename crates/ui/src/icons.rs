@@ -83,6 +83,7 @@ icon_assets![
     (CHECKLIST, "checklist"),
     (WIDGET, "widget"),
     (CLOSE_CIRCLE, "close-circle"),
+    (DANGER_TRIANGLE, "danger-triangle"),
     // Hand-drawn comet glyphs (terminal-panel.tsx / composer-actions.tsx /
     // menu-check.tsx / logo.tsx).
     (TERMINAL, "terminal"),

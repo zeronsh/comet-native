@@ -162,18 +162,28 @@ impl Harness for MockHarness {
             .and_then(|v| v.parse::<usize>().ok())
             .unwrap_or(1)
             .max(1);
+        // Dev/testing knob: `COMET_MOCK_ERROR=1` appends a scripted error
+        // before the terminal Done — the only data-side way to put the
+        // transcript ErrorChip on screen with the mock harness.
+        let mock_error = std::env::var("COMET_MOCK_ERROR")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0");
         let done_ix = self
             .script
             .iter()
             .position(|e| matches!(e, AgentEvent::Done { .. }))
             .unwrap_or(self.script.len());
         let (body, tail) = self.script.split_at(done_ix);
+        let error_event = mock_error.then(|| AgentEvent::Error {
+            message: "Claude usage limit reached — try again after the limit resets.".into(),
+        });
         let events: Vec<Result<AgentEvent, HarnessError>> = body
             .iter()
             .cycle()
             .take(body.len() * repeat)
-            .chain(tail.iter())
             .cloned()
+            .chain(error_event)
+            .chain(tail.iter().cloned())
             .map(Ok)
             .collect();
         if delay_ms == 0 {
