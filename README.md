@@ -46,11 +46,19 @@ docs/        PARITY.md + research notes
 ## Build & test
 
 ```bash
-cargo build --workspace       # needs the gpui Linux deps (see docs/research/gpui.md)
+cargo build --workspace       # Linux: needs the gpui deps (see docs/research/gpui.md)
 cargo test  --workspace
 cargo clippy --workspace --all-targets && cargo fmt --all --check
 cd edge && npm install && npm run dev   # wrangler dev on :26640 (dev auth: bearer = user@org)
 ```
+
+**macOS**: `xcode-select --install` (gpui needs the Metal toolchain; full Xcode 15+ if the
+shader compile complains) + rustup, then `cargo run -p comet`. Heads-up: this workspace has
+only ever been compiled on Linux — the `#[cfg(target_os = "macos")]` paths (Keychain access
+in agent accounts) parse but have never been type-checked against the Apple SDK, so the
+first macOS build may surface errors there; they're isolated to `crates/engine/src/
+agent_accounts.rs` and safe to stub if needed. Window chrome (traffic-light inset,
+vibrancy) is untested on real macOS — see dist/README.md for bundling.
 
 ## Run
 
