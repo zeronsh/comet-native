@@ -1333,6 +1333,9 @@ impl Shell {
                     .flex()
                     .items_center()
                     .gap(px(2.0))
+                    // macOS traffic lights occupy the left inset (frameless
+                    // hiddenInset chrome) — clear them like the original.
+                    .when(cfg!(target_os = "macos"), |strip| strip.pl(px(68.0)))
                     .px(px(10.0))
                     .child(window_control_button(
                         "toggle-sidebar",
