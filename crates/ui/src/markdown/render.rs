@@ -59,8 +59,16 @@ pub fn render_tree(
         .gap(px(MD_BLOCK_GAP))
         .children(tree.blocks.iter().enumerate().map(|(ix, top)| {
             let lines = highlight(ix);
-            let el = render_block(&top.block, ix, opts, theme, lines.as_deref().map(|l| &l[..]));
-            if ix == last && let Some(key) = opts.fade_last_key {
+            let el = render_block(
+                &top.block,
+                ix,
+                opts,
+                theme,
+                lines.as_deref().map(|l| &l[..]),
+            );
+            if ix == last
+                && let Some(key) = opts.fade_last_key
+            {
                 let id: SharedString = format!("{}-fade{key}", opts.row_key).into();
                 fade_in_paint(id, div().child(el))
             } else {
@@ -79,7 +87,9 @@ pub fn render_block(
     highlight: CodeHighlight,
 ) -> AnyElement {
     match block {
-        Block::Paragraph { runs } => text_element(runs, MD_TEXT_SIZE, MD_LINE_HEIGHT, false, ix, opts, theme),
+        Block::Paragraph { runs } => {
+            text_element(runs, MD_TEXT_SIZE, MD_LINE_HEIGHT, false, ix, opts, theme)
+        }
         Block::Heading { level, runs } => {
             let (size, line) = heading_metrics(*level);
             text_element(runs, size, line, true, ix, opts, theme)
@@ -102,7 +112,10 @@ pub fn render_block(
                     .map(|(ci, child)| render_block(child, ix * 100 + ci, opts, theme, None)),
             )
             .into_any_element(),
-        Block::List { ordered_start, items } => div()
+        Block::List {
+            ordered_start,
+            items,
+        } => div()
             .flex()
             .flex_col()
             .gap(px(4.0))
@@ -125,25 +138,34 @@ pub fn render_block(
                             .child(marker),
                     )
                     .child(
-                        div().flex_1().min_w_0().flex().flex_col().gap(px(4.0)).children(
-                            item.iter().enumerate().map(|(ci, child)| {
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .children(item.iter().enumerate().map(|(ci, child)| {
                                 render_block(child, ix * 100 + item_ix * 10 + ci, opts, theme, None)
-                            }),
-                        ),
+                            })),
                     )
             }))
             .into_any_element(),
         Block::Table { header, rows } => {
             let cell = |runs: &[InlineRun], bold: bool, cell_ix: usize| {
-                div().flex_1().min_w_0().px(px(6.0)).py(px(3.0)).child(text_element(
-                    runs,
-                    13.0,
-                    19.0,
-                    bold,
-                    ix * 1000 + cell_ix,
-                    opts,
-                    theme,
-                ))
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .px(px(6.0))
+                    .py(px(3.0))
+                    .child(text_element(
+                        runs,
+                        13.0,
+                        19.0,
+                        bold,
+                        ix * 1000 + cell_ix,
+                        opts,
+                        theme,
+                    ))
             };
             div()
                 .flex()
@@ -163,14 +185,22 @@ pub fn render_block(
                     div()
                         .flex()
                         .flex_row()
-                        .when(ri + 1 < rows.len(), |el| el.border_b_1().border_color(theme.border))
+                        .when(ri + 1 < rows.len(), |el| {
+                            el.border_b_1().border_color(theme.border)
+                        })
                         .children(
-                            row.iter().enumerate().map(|(ci, r)| cell(r, false, (ri + 1) * 10 + ci)),
+                            row.iter()
+                                .enumerate()
+                                .map(|(ci, r)| cell(r, false, (ri + 1) * 10 + ci)),
                         )
                 }))
                 .into_any_element()
         }
-        Block::Rule => div().h(px(1.0)).w_full().bg(theme.border).into_any_element(),
+        Block::Rule => div()
+            .h(px(1.0))
+            .w_full()
+            .bg(theme.border)
+            .into_any_element(),
     }
 }
 
@@ -206,8 +236,16 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> Fl
         } else {
             font(theme.font_sans.clone())
         };
-        f.weight = if run.style.bold || bold_default { FontWeight::SEMIBOLD } else { FontWeight::NORMAL };
-        f.style = if run.style.italic { FontStyle::Italic } else { FontStyle::Normal };
+        f.weight = if run.style.bold || bold_default {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        };
+        f.style = if run.style.italic {
+            FontStyle::Italic
+        } else {
+            FontStyle::Normal
+        };
         let is_link = run.style.link.is_some();
         let color = if is_link { theme.accent } else { theme.text };
         if let Some(url) = &run.style.link {
@@ -235,7 +273,11 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> Fl
             }),
         });
     }
-    FlatText { text, runs: out, links }
+    FlatText {
+        text,
+        runs: out,
+        links,
+    }
 }
 
 fn text_element(
@@ -262,7 +304,11 @@ fn text_element(
             })
             .into_any_element()
     };
-    div().text_size(px(size)).line_height(px(line_height)).child(inner).into_any_element()
+    div()
+        .text_size(px(size))
+        .line_height(px(line_height))
+        .child(inner)
+        .into_any_element()
 }
 
 fn render_code_block(
@@ -307,7 +353,10 @@ fn render_code_block(
                 .flex()
                 .flex_col()
                 .children(lines.iter().enumerate().map(|(li, line)| {
-                    let tokens = highlight.and_then(|h| h.get(li)).map(|t| &t[..]).unwrap_or(&[]);
+                    let tokens = highlight
+                        .and_then(|h| h.get(li))
+                        .map(|t| &t[..])
+                        .unwrap_or(&[]);
                     div().h(px(CODE_LINE_HEIGHT)).flex_none().child(
                         StyledText::new(line.to_string())
                             .with_runs(runs_for_code_line(line, tokens, &mono, theme)),
@@ -363,10 +412,7 @@ pub fn runs_for_code_line(
 
 /// Paint-only fade-in (opacity 0→1 over the entrance curve; no translation, so
 /// the veil can never affect layout).
-pub fn fade_in_paint<E>(
-    id: impl Into<gpui::ElementId>,
-    element: E,
-) -> AnyElement
+pub fn fade_in_paint<E>(id: impl Into<gpui::ElementId>, element: E) -> AnyElement
 where
     E: Styled + IntoElement + 'static,
 {
@@ -390,7 +436,10 @@ mod tests {
         let runs = runs_for_code_line(line, &tokens, &mono, &theme);
         let total: usize = runs.iter().map(|r| r.len).sum();
         assert_eq!(total, line.len());
-        assert!(runs.iter().all(|r| r.font == mono), "highlight must not change fonts");
+        assert!(
+            runs.iter().all(|r| r.font == mono),
+            "highlight must not change fonts"
+        );
         // At least one non-plain color made it through.
         assert!(runs.iter().any(|r| r.color != theme.text));
     }
@@ -408,14 +457,23 @@ mod tests {
     fn flatten_runs_maps_links_and_styles() {
         let theme = Theme::dark();
         let runs = vec![
-            InlineRun { text: "go ".into(), style: InlineStyle::default() },
+            InlineRun {
+                text: "go ".into(),
+                style: InlineStyle::default(),
+            },
             InlineRun {
                 text: "here".into(),
-                style: InlineStyle { link: Some("https://x.dev".into()), ..Default::default() },
+                style: InlineStyle {
+                    link: Some("https://x.dev".into()),
+                    ..Default::default()
+                },
             },
             InlineRun {
                 text: " now".into(),
-                style: InlineStyle { bold: true, ..Default::default() },
+                style: InlineStyle {
+                    bold: true,
+                    ..Default::default()
+                },
             },
         ];
         let flat = flatten_runs(&runs, &theme, false);
@@ -430,10 +488,22 @@ mod tests {
     #[test]
     fn adjacent_same_link_runs_merge_into_one_range() {
         let theme = Theme::dark();
-        let style = InlineStyle { link: Some("https://x.dev".into()), ..Default::default() };
+        let style = InlineStyle {
+            link: Some("https://x.dev".into()),
+            ..Default::default()
+        };
         let runs = vec![
-            InlineRun { text: "bold".into(), style: InlineStyle { bold: true, ..style.clone() } },
-            InlineRun { text: " tail".into(), style },
+            InlineRun {
+                text: "bold".into(),
+                style: InlineStyle {
+                    bold: true,
+                    ..style.clone()
+                },
+            },
+            InlineRun {
+                text: " tail".into(),
+                style,
+            },
         ];
         let flat = flatten_runs(&runs, &theme, false);
         assert_eq!(flat.links, vec![(0..9, "https://x.dev".to_string())]);

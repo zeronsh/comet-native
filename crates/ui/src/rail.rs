@@ -126,7 +126,9 @@ impl Transcript {
     pub fn scroll_to_row(&mut self, target: usize, cx: &mut Context<Self>) {
         self.set_scroll_task(cx.spawn(async move |this, cx| {
             for _ in 0..120 {
-                cx.background_executor().timer(Duration::from_millis(16)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
                 let done = this.update(cx, |t, cx| {
                     let list = t.list_state().clone();
                     let top = list.logical_scroll_top();
@@ -169,7 +171,10 @@ impl Transcript {
             }
             // Give up gracefully: snap the remainder.
             this.update(cx, |t, cx| {
-                t.list_state().scroll_to(ListOffset { item_ix: target, offset_in_item: px(0.0) });
+                t.list_state().scroll_to(ListOffset {
+                    item_ix: target,
+                    offset_in_item: px(0.0),
+                });
                 cx.notify();
             })
             .ok();
@@ -223,7 +228,13 @@ impl Transcript {
             .children(pairs.into_iter().enumerate().map(|(ix, (tick, row))| {
                 let is_active = active == Some(ix);
                 let is_hovered = hover == Some(ix);
-                let bar_width = if is_hovered { 20.0 } else if is_active { 16.0 } else { 12.0 };
+                let bar_width = if is_hovered {
+                    20.0
+                } else if is_active {
+                    16.0
+                } else {
+                    12.0
+                };
                 let bar_color = if is_active {
                     theme.text
                 } else if is_hovered {
@@ -232,7 +243,10 @@ impl Transcript {
                     theme.border_strong
                 };
                 let prompt = truncate_preview(&tick.prompt, PREVIEW_PROMPT_CHARS);
-                let reply = tick.reply.as_deref().map(|r| truncate_preview(r, PREVIEW_REPLY_CHARS));
+                let reply = tick
+                    .reply
+                    .as_deref()
+                    .map(|r| truncate_preview(r, PREVIEW_REPLY_CHARS));
                 let card: Option<AnyElement> = is_hovered.then(|| {
                     popover::popover_card(&theme)
                         .w(px(280.0))
@@ -300,7 +314,10 @@ mod tests {
         SessionMessageEntry {
             id: id.into(),
             role,
-            parts: vec![MessagePart::Text { id: "t0".into(), text: text.into() }],
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: text.into(),
+            }],
             created_at: 0,
             device_id: "d".into(),
             status: Some(MessageStatus::Complete),

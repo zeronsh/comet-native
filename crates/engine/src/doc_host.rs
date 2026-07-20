@@ -11,8 +11,10 @@
 //!   ledger), mark processed BEFORE execute, execute through the sessions engine, then
 //!   write the outcome status back into the doc as the sole outcome writer.
 //!
-//! M4: chat ownership is gated on the workspace doc (`chats[chat_id].deviceId`), with
-//! claim-on-first-command for unknown chats; warm-open/nudge delivery land later.
+//! Chat ownership is gated on the workspace doc (`chats[chat_id].deviceId`), with
+//! claim-on-first-command for unknown chats. Queueing a command for a chat hosted on
+//! another device POSTs a durable nudge to that device's room (§7 cold-chat delivery);
+//! the host's relay receives it and warm-opens the doc, which drains the queue.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
@@ -21,7 +23,7 @@ use tokio::sync::watch;
 
 use comet_doc::{
     COMMAND_DEFAULT_TTL_MS, CommandBasedOn, CommandDisposition, DocError, EvaluationContext,
-    MessageRole, MessagePart, MessageStatus, SessionCommandEntry, SessionCommandPayload,
+    MessagePart, MessageRole, MessageStatus, SessionCommandEntry, SessionCommandPayload,
     SessionCommandStatus, SessionDoc, SessionMessageEntry, evaluate_command,
     join_continuation_entries,
 };
@@ -117,7 +119,10 @@ impl ChatDocHandle {
         self.doc.push_message(&SessionMessageEntry {
             id: message_id.to_string(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text { id: "t0".into(), text: text.to_string() }],
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: text.to_string(),
+            }],
             created_at,
             device_id: self.device_id.clone(),
             status: Some(MessageStatus::Complete),
@@ -133,7 +138,9 @@ impl ChatDocHandle {
             if entry.role == MessageRole::Assistant
                 && entry.status == Some(MessageStatus::Streaming)
                 && entry.device_id == self.device_id
-                && self.doc.set_message_status(&entry.id, MessageStatus::Aborted)?
+                && self
+                    .doc
+                    .set_message_status(&entry.id, MessageStatus::Aborted)?
             {
                 stamped += 1;
             }
@@ -271,11 +278,10 @@ impl DocHost {
         let handle = self.open(chat_id)?;
         let id = new_id();
         let now = now_ms();
-        let based_on = handle
-            .doc
-            .read_entries()?
-            .last()
-            .map(|m| CommandBasedOn { turn_id: Some(m.id.clone()), frontier: None });
+        let based_on = handle.doc.read_entries()?.last().map(|m| CommandBasedOn {
+            turn_id: Some(m.id.clone()),
+            frontier: None,
+        });
         handle.doc.queue_command(&SessionCommandEntry {
             id: id.clone(),
             payload,
@@ -286,7 +292,61 @@ impl DocHost {
             status: SessionCommandStatus::Pending,
             resolution: None,
         })?;
+        // §7 durable delivery: when another device hosts this chat, nudge its device
+        // room so a cold host opens the doc and drains the queue. Fire-and-forget —
+        // the command is durable in the doc either way (a host that opens the chat
+        // for any other reason still executes it).
+        self.nudge_remote_host(chat_id);
         Ok(id)
+    }
+
+    /// POST `{edge}/device/{host}/nudge {chatId}` when the chat's workspace row names
+    /// another device as host. Best-effort: offline/edge-less engines skip silently.
+    fn nudge_remote_host(&self, chat_id: &str) {
+        let Some(edge) = self.inner.config.edge.clone() else {
+            return;
+        };
+        let Some(workspace) = self.workspace() else {
+            return;
+        };
+        let host_device = match workspace.doc().chat(chat_id) {
+            Ok(Some(chat)) => chat.device_id,
+            // Unclaimed chat: whoever drains first claims it — nobody to nudge.
+            _ => return,
+        };
+        if host_device == self.inner.config.device_id {
+            return;
+        }
+        // Only meaningful inside a runtime (RPC handlers, executors); bare sync
+        // callers (unit tests) skip rather than panic.
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        let url = format!(
+            "{}/device/{}/nudge",
+            edge.url.trim_end_matches('/'),
+            host_device
+        );
+        let chat = chat_id.to_string();
+        runtime.spawn(async move {
+            let send = reqwest::Client::new()
+                .post(&url)
+                .bearer_auth(&edge.token)
+                .json(&serde_json::json!({ "chatId": chat }))
+                .timeout(std::time::Duration::from_secs(10))
+                .send()
+                .await;
+            match send {
+                Ok(res) if res.status().is_success() => {
+                    tracing::info!(chat = %chat, device = %host_device, "host nudged");
+                }
+                Ok(res) => tracing::warn!(chat = %chat, device = %host_device,
+                    status = res.status().as_u16(), "nudge rejected"),
+                Err(err) => {
+                    tracing::warn!(chat = %chat, error = %err, "nudge failed (best-effort)")
+                }
+            }
+        });
     }
 
     /// §2.2 writer discipline: we host a chat iff its workspace row's `deviceId` is
@@ -324,8 +384,7 @@ impl DocHost {
                     return;
                 }
             };
-            let is_processed =
-                |id: &str| self.inner.store.is_processed(id).unwrap_or(false);
+            let is_processed = |id: &str| self.inner.store.is_processed(id).unwrap_or(false);
             let Some(entry) = commands
                 .iter()
                 .find(|c| {
@@ -364,21 +423,13 @@ impl DocHost {
                     self.resolve_command(handle, &entry.id, SessionCommandStatus::Expired, None);
                 }
                 CommandDisposition::Superseded => {
-                    self.resolve_command(
-                        handle,
-                        &entry.id,
-                        SessionCommandStatus::Superseded,
-                        None,
-                    );
+                    self.resolve_command(handle, &entry.id, SessionCommandStatus::Superseded, None);
                 }
                 CommandDisposition::Execute => {
-                    let (status, resolution) =
-                        match self.execute(sessions, handle, &entry).await {
-                            Ok(outcome) => outcome,
-                            Err(err) => {
-                                (SessionCommandStatus::Rejected, Some(err.to_string()))
-                            }
-                        };
+                    let (status, resolution) = match self.execute(sessions, handle, &entry).await {
+                        Ok(outcome) => outcome,
+                        Err(err) => (SessionCommandStatus::Rejected, Some(err.to_string())),
+                    };
                     self.resolve_command(handle, &entry.id, status, resolution.as_deref());
                 }
             }
@@ -393,7 +444,10 @@ impl DocHost {
         status: SessionCommandStatus,
         resolution: Option<&str>,
     ) {
-        if let Err(err) = handle.doc.set_command_status(command_id, status, resolution) {
+        if let Err(err) = handle
+            .doc
+            .set_command_status(command_id, status, resolution)
+        {
             tracing::warn!(
                 chat = %handle.chat_id,
                 command = %command_id,
@@ -411,7 +465,10 @@ impl DocHost {
     ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
         let chat_id = &handle.chat_id;
         match &entry.payload {
-            SessionCommandPayload::Run { request, message_id } => {
+            SessionCommandPayload::Run {
+                request,
+                message_id,
+            } => {
                 // Claim-on-first-command: a run for a chat with no workspace row
                 // creates the row under our device id (we are about to host it).
                 if let Some(ws) = self.workspace() {
@@ -438,9 +495,17 @@ impl DocHost {
                         request.prompt = prompt.clone();
                         request.resume = None; // dispatch re-derives the harness session
                         sessions
-                            .dispatch(chat_id, self.harness_for(chat_id), request, message_id.clone())
+                            .dispatch(
+                                chat_id,
+                                self.harness_for(chat_id),
+                                request,
+                                message_id.clone(),
+                            )
                             .await?;
-                        Ok((SessionCommandStatus::Applied, Some("queued as new turn".into())))
+                        Ok((
+                            SessionCommandStatus::Applied,
+                            Some("queued as new turn".into()),
+                        ))
                     }
                 }
             }
@@ -448,7 +513,10 @@ impl DocHost {
                 sessions.interrupt(chat_id).await?;
                 Ok((SessionCommandStatus::Applied, None))
             }
-            SessionCommandPayload::RespondInput { request_id, answers } => {
+            SessionCommandPayload::RespondInput {
+                request_id,
+                answers,
+            } => {
                 if sessions.respond_input(chat_id, request_id, answers.clone())? {
                     Ok((SessionCommandStatus::Applied, None))
                 } else {
@@ -486,11 +554,7 @@ impl DocHost {
 /// Per-chat background task: reacts to doc changes (local commits and remote imports)
 /// by re-publishing the transcript watch, draining commands, and debouncing snapshots.
 /// Holds only a weak handle so a dropped host tears the task down.
-async fn chat_task(
-    host: DocHost,
-    weak: Weak<ChatDocHandle>,
-    mut changed_rx: watch::Receiver<u64>,
-) {
+async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: watch::Receiver<u64>) {
     // Initial pass: the snapshot may already carry pending commands.
     {
         let Some(handle) = weak.upgrade() else { return };

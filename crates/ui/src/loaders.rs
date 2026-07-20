@@ -36,21 +36,22 @@ pub fn comet_loader(id: &'static str, theme: &Theme, cell_px: f32) -> impl IntoE
         .gap(px(slot / 2.0))
         .children((0..COMET_CELLS).map(move |i| {
             // Fixed slot; the animated cell breathes inside it.
-            div().size(px(slot)).flex().items_center().justify_center().child(
-                div()
-                    .rounded(px(slot / 4.0))
-                    .bg(color)
-                    .size(px(slot))
-                    .with_animation(
-                        (id, i),
-                        COMET_PULSE.repeating(),
-                        move |el, delta| {
+            div()
+                .size(px(slot))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    div()
+                        .rounded(px(slot / 4.0))
+                        .bg(color)
+                        .size(px(slot))
+                        .with_animation((id, i), COMET_PULSE.repeating(), move |el, delta| {
                             let phase = motion::staggered_phase(delta, i, PULSE_STAGGER);
                             el.opacity(motion::pulse_opacity(phase))
                                 .size(px(slot * motion::pulse_scale(phase)))
-                        },
-                    ),
-            )
+                        }),
+                )
         }))
 }
 
@@ -60,20 +61,32 @@ pub fn gradient_spinner(id: &'static str, theme: &Theme, cell_px: f32) -> impl I
     let hot = theme.accent;
     let cold = theme.text_faint;
     let wave_count = MATRIX_SIDE * 2 - 1; // diagonals of the matrix
-    div().flex().flex_col().gap(px(cell_px / 2.0)).children((0..MATRIX_SIDE).map(move |row| {
-        div().flex().flex_row().gap(px(cell_px / 2.0)).children((0..MATRIX_SIDE).map(move |col| {
-            let diagonal = row + col;
-            let cell_ix = row * MATRIX_SIDE + col;
-            div().size(px(cell_px)).rounded(px(1.5)).bg(cold).with_animation(
-                (id, cell_ix),
-                GRADIENT_SPIN.repeating(),
-                move |el, delta| {
-                    let w = motion::matrix_wave(delta, diagonal, wave_count);
-                    el.bg(theme::mix(cold, hot, w)).opacity(0.25 + 0.75 * w)
-                },
-            )
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(cell_px / 2.0))
+        .children((0..MATRIX_SIDE).map(move |row| {
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(cell_px / 2.0))
+                .children((0..MATRIX_SIDE).map(move |col| {
+                    let diagonal = row + col;
+                    let cell_ix = row * MATRIX_SIDE + col;
+                    div()
+                        .size(px(cell_px))
+                        .rounded(px(1.5))
+                        .bg(cold)
+                        .with_animation(
+                            (id, cell_ix),
+                            GRADIENT_SPIN.repeating(),
+                            move |el, delta| {
+                                let w = motion::matrix_wave(delta, diagonal, wave_count);
+                                el.bg(theme::mix(cold, hot, w)).opacity(0.25 + 0.75 * w)
+                            },
+                        )
+                }))
         }))
-    }))
 }
 
 /// Full-window boot splash: loader + wordmark over the app background.

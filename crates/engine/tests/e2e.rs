@@ -39,7 +39,12 @@ fn run_request(prompt: &str) -> RunRequest {
 }
 
 fn done(status: DoneStatus) -> AgentEvent {
-    AgentEvent::Done { status, result: None, error: None, session_id: Some("hs-1".into()) }
+    AgentEvent::Done {
+        status,
+        result: None,
+        error: None,
+        session_id: Some("hs-1".into()),
+    }
 }
 
 fn mock_script() -> Vec<AgentEvent> {
@@ -56,9 +61,15 @@ fn mock_script() -> Vec<AgentEvent> {
         AgentEvent::TextDelta { text: "lo".into() },
         AgentEvent::ToolCall {
             id: "tool-1".into(),
-            call: ToolCall::WriteFile { path: "/tmp/x".into(), content: Some("SECRET".into()) },
+            call: ToolCall::WriteFile {
+                path: "/tmp/x".into(),
+                content: Some("SECRET".into()),
+            },
         },
-        AgentEvent::ToolResult { id: "tool-1".into(), is_error: false },
+        AgentEvent::ToolResult {
+            id: "tool-1".into(),
+            is_error: false,
+        },
         done(DoneStatus::Completed),
     ]
 }
@@ -135,11 +146,14 @@ fn assemble(dir: &std::path::Path, harness: Arc<dyn Harness>) -> EngineCore {
 /// pending entry appended under the viewer's device id (ledger rule 1).
 fn queue_as_viewer(doc: &SessionDoc, id: &str, payload: SessionCommandPayload) {
     let now = chrono::Utc::now().timestamp_millis();
-    let based_on = doc
-        .read_entries()
-        .expect("read entries")
-        .last()
-        .map(|m| comet_doc::CommandBasedOn { turn_id: Some(m.id.clone()), frontier: None });
+    let based_on =
+        doc.read_entries()
+            .expect("read entries")
+            .last()
+            .map(|m| comet_doc::CommandBasedOn {
+                turn_id: Some(m.id.clone()),
+                frontier: None,
+            });
     doc.queue_command(&SessionCommandEntry {
         id: id.into(),
         payload,
@@ -159,7 +173,10 @@ where
 {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while !predicate() {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(15)).await;
     }
 }
@@ -188,7 +205,12 @@ fn command_status(core: &EngineCore, id: &str) -> Option<(SessionCommandStatus, 
 #[tokio::test]
 async fn queued_run_command_executes_end_to_end() {
     let dir = tempfile::tempdir().unwrap();
-    let core = assemble(dir.path(), Arc::new(MockHarness { script: mock_script() }));
+    let core = assemble(
+        dir.path(),
+        Arc::new(MockHarness {
+            script: mock_script(),
+        }),
+    );
     let handle = core.doc_host.open(CHAT).unwrap();
 
     // Live event subscription (journal replay + broadcast) before anything runs.
@@ -223,7 +245,10 @@ async fn queued_run_command_executes_end_to_end() {
     assert_eq!(all[0].role, MessageRole::User);
     assert_eq!(
         all[0].parts,
-        vec![MessagePart::Text { id: "t0".into(), text: "do the thing".into() }]
+        vec![MessagePart::Text {
+            id: "t0".into(),
+            text: "do the thing".into()
+        }]
     );
     // Assistant entry: folded parts — merged text, then the resolved tool call with the
     // render-parts privacy policy applied (WriteFile content stripped).
@@ -235,10 +260,21 @@ async fn queued_run_command_executes_end_to_end() {
         other => panic!("unexpected first part {other:?}"),
     }
     match &assistant.parts[1] {
-        MessagePart::Tool { call, resolved, is_error, .. } => {
+        MessagePart::Tool {
+            call,
+            resolved,
+            is_error,
+            ..
+        } => {
             assert!(*resolved);
             assert!(!*is_error);
-            assert_eq!(call, &ToolCall::WriteFile { path: "/tmp/x".into(), content: None });
+            assert_eq!(
+                call,
+                &ToolCall::WriteFile {
+                    path: "/tmp/x".into(),
+                    content: None
+                }
+            );
         }
         other => panic!("unexpected second part {other:?}"),
     }
@@ -254,7 +290,10 @@ async fn queued_run_command_executes_end_to_end() {
     assert_eq!(replay.len(), mock_script().len());
     assert!(matches!(
         replay.last().map(|j| &j.event),
-        Some(AgentEvent::Done { status: DoneStatus::Completed, .. })
+        Some(AgentEvent::Done {
+            status: DoneStatus::Completed,
+            ..
+        })
     ));
     let seqs: Vec<u64> = replay.iter().map(|j| j.seq).collect();
     assert_eq!(seqs, (1..=mock_script().len() as u64).collect::<Vec<_>>());
@@ -292,7 +331,10 @@ async fn session_status_transitions_idle_working_idle() {
     queue_as_viewer(
         handle.doc(),
         "cmd-run-status",
-        SessionCommandPayload::Run { request: run_request("go"), message_id: "m-1".into() },
+        SessionCommandPayload::Run {
+            request: run_request("go"),
+            message_id: "m-1".into(),
+        },
     );
 
     let mut seen = Vec::new();
@@ -321,9 +363,9 @@ async fn interrupt_stamps_streaming_entry_aborted() {
     let core = assemble(
         dir.path(),
         Arc::new(ScriptedHarness {
-            script: vec![
-                AgentEvent::TextDelta { text: "partial output".into() },
-            ],
+            script: vec![AgentEvent::TextDelta {
+                text: "partial output".into(),
+            }],
             step_delay: Duration::from_millis(5),
             hang_until_interrupt: true,
         }),
@@ -332,7 +374,10 @@ async fn interrupt_stamps_streaming_entry_aborted() {
     queue_as_viewer(
         handle.doc(),
         "cmd-run-hang",
-        SessionCommandPayload::Run { request: run_request("hang"), message_id: "m-1".into() },
+        SessionCommandPayload::Run {
+            request: run_request("hang"),
+            message_id: "m-1".into(),
+        },
     );
 
     // Wait until the streaming entry is visibly in the doc, then interrupt via a
@@ -346,7 +391,11 @@ async fn interrupt_stamps_streaming_entry_aborted() {
         "streaming entry",
     )
     .await;
-    queue_as_viewer(handle.doc(), "cmd-int-1", SessionCommandPayload::Interrupt {});
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-int-1",
+        SessionCommandPayload::Interrupt {},
+    );
 
     wait_for(
         || {
@@ -359,7 +408,10 @@ async fn interrupt_stamps_streaming_entry_aborted() {
     .await;
 
     let all = entries(&core);
-    let assistant = all.iter().find(|e| e.role == MessageRole::Assistant).unwrap();
+    let assistant = all
+        .iter()
+        .find(|e| e.role == MessageRole::Assistant)
+        .unwrap();
     assert_eq!(assistant.status, Some(MessageStatus::Aborted));
     match &assistant.parts[0] {
         MessagePart::Text { text, .. } => assert_eq!(text, "partial output"),
@@ -381,16 +433,29 @@ async fn interrupt_stamps_streaming_entry_aborted() {
 #[tokio::test]
 async fn steer_with_no_live_run_falls_back_to_new_turn() {
     let dir = tempfile::tempdir().unwrap();
-    let core = assemble(dir.path(), Arc::new(MockHarness { script: mock_script() }));
+    let core = assemble(
+        dir.path(),
+        Arc::new(MockHarness {
+            script: mock_script(),
+        }),
+    );
     let handle = core.doc_host.open(CHAT).unwrap();
 
     queue_as_viewer(
         handle.doc(),
         "cmd-run-1",
-        SessionCommandPayload::Run { request: run_request("first"), message_id: "m-1".into() },
+        SessionCommandPayload::Run {
+            request: run_request("first"),
+            message_id: "m-1".into(),
+        },
     );
     wait_for(
-        || matches!(command_status(&core, "cmd-run-1"), Some((SessionCommandStatus::Applied, _))),
+        || {
+            matches!(
+                command_status(&core, "cmd-run-1"),
+                Some((SessionCommandStatus::Applied, _))
+            )
+        },
         "first run applied",
     )
     .await;
@@ -405,7 +470,10 @@ async fn steer_with_no_live_run_falls_back_to_new_turn() {
     queue_as_viewer(
         handle.doc(),
         "cmd-steer-1",
-        SessionCommandPayload::Steer { prompt: "also do this".into(), message_id: Some("m-2".into()) },
+        SessionCommandPayload::Steer {
+            prompt: "also do this".into(),
+            message_id: Some("m-2".into()),
+        },
     );
     wait_for(
         || {
@@ -425,8 +493,9 @@ async fn steer_with_no_live_run_falls_back_to_new_turn() {
         || {
             entries(&core)
                 .iter()
-                .filter(|e| e.role == MessageRole::Assistant
-                    && e.status == Some(MessageStatus::Complete))
+                .filter(|e| {
+                    e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+                })
                 .count()
                 == 2
         },
@@ -434,7 +503,11 @@ async fn steer_with_no_live_run_falls_back_to_new_turn() {
     )
     .await;
     // The steer prompt became a user entry with its client-minted id.
-    assert!(entries(&core).iter().any(|e| e.id == "m-2" && e.role == MessageRole::User));
+    assert!(
+        entries(&core)
+            .iter()
+            .any(|e| e.id == "m-2" && e.role == MessageRole::User)
+    );
 }
 
 #[tokio::test]
@@ -448,17 +521,28 @@ async fn processed_commands_are_skipped_on_redelivery() {
         assert!(store.mark_processed("cmd-crashed").unwrap());
     }
 
-    let core = assemble(dir.path(), Arc::new(MockHarness { script: mock_script() }));
+    let core = assemble(
+        dir.path(),
+        Arc::new(MockHarness {
+            script: mock_script(),
+        }),
+    );
     let handle = core.doc_host.open(CHAT).unwrap();
     queue_as_viewer(
         handle.doc(),
         "cmd-crashed",
-        SessionCommandPayload::Run { request: run_request("never again"), message_id: "m-x".into() },
+        SessionCommandPayload::Run {
+            request: run_request("never again"),
+            message_id: "m-x".into(),
+        },
     );
 
     // Give the drain a moment: the command must be SKIPPED — no user entry, no run.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert!(entries(&core).is_empty(), "skipped command must not execute");
+    assert!(
+        entries(&core).is_empty(),
+        "skipped command must not execute"
+    );
     assert_eq!(
         command_status(&core, "cmd-crashed"),
         Some((SessionCommandStatus::Pending, None)),
@@ -496,13 +580,23 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
     // assistant entry is still `streaming`.
     {
         let journal = RunJournal::open(dir.path().join("journals")).unwrap();
-        journal.append(CHAT, &AgentEvent::TextDelta { text: "doomed".into() }).unwrap();
+        journal
+            .append(
+                CHAT,
+                &AgentEvent::TextDelta {
+                    text: "doomed".into(),
+                },
+            )
+            .unwrap();
 
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
             id: "m-user".into(),
             role: MessageRole::User,
-            parts: vec![MessagePart::Text { id: "t0".into(), text: "hi".into() }],
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "hi".into(),
+            }],
             created_at: 1,
             device_id: device_id.into(),
             status: Some(MessageStatus::Complete),
@@ -511,15 +605,25 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
         .unwrap();
         let mut writer = SegmentWriter::begin(&doc, "m-assist", device_id, 2).unwrap();
         writer
-            .sync(&[MessagePart::Text { id: "t0".into(), text: "doomed".into() }])
+            .sync(&[MessagePart::Text {
+                id: "t0".into(),
+                text: "doomed".into(),
+            }])
             .unwrap();
         // No finish — the "process" dies here with the entry still streaming.
         let store = DocsStore::open(dir.path()).unwrap();
-        store.save_snapshot(CHAT, &doc.export_snapshot().unwrap()).unwrap();
+        store
+            .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
+            .unwrap();
     }
 
     // Boot: EngineCore::assemble runs recover_stale.
-    let core = assemble(dir.path(), Arc::new(MockHarness { script: mock_script() }));
+    let core = assemble(
+        dir.path(),
+        Arc::new(MockHarness {
+            script: mock_script(),
+        }),
+    );
     assert_eq!(core.device_id, device_id);
 
     let all = entries(&core);
@@ -534,7 +638,13 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
     let journal = RunJournal::open(dir.path().join("journals")).unwrap();
     assert!(journal.stale_sessions().unwrap().is_empty());
     let (_, last) = journal.last_event(CHAT).unwrap().unwrap();
-    assert!(matches!(last, AgentEvent::Done { status: DoneStatus::Interrupted, .. }));
+    assert!(matches!(
+        last,
+        AgentEvent::Done {
+            status: DoneStatus::Interrupted,
+            ..
+        }
+    ));
     assert_eq!(
         core.sessions.session_status(CHAT).map(|s| s.status),
         Some(SessionStatus::Idle)
@@ -544,7 +654,12 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
 #[tokio::test]
 async fn rpc_surface_over_in_memory_transport() {
     let dir = tempfile::tempdir().unwrap();
-    let core = assemble(dir.path(), Arc::new(MockHarness { script: mock_script() }));
+    let core = assemble(
+        dir.path(),
+        Arc::new(MockHarness {
+            script: mock_script(),
+        }),
+    );
     let client = comet_rpc::memory_client(core.rpc_service());
 
     // ListHarnesses + ListModels.
@@ -554,7 +669,10 @@ async fn rpc_surface_over_in_memory_transport() {
         .unwrap();
     assert_eq!(harnesses[0]["id"], "mock");
     let models = client
-        .call(comet_rpc::methods::LIST_MODELS, serde_json::json!({"harness": "mock"}))
+        .call(
+            comet_rpc::methods::LIST_MODELS,
+            serde_json::json!({"harness": "mock"}),
+        )
         .await
         .unwrap();
     assert_eq!(models[0]["id"], "mock-1");
@@ -607,9 +725,7 @@ async fn rpc_surface_over_in_memory_transport() {
             .expect("doc messages before timeout")
             .expect("stream alive");
         let list: Vec<SessionMessageEntry> = serde_json::from_value(item).unwrap();
-        if list.len() == 2
-            && list[1].status == Some(MessageStatus::Complete)
-        {
+        if list.len() == 2 && list[1].status == Some(MessageStatus::Complete) {
             break list;
         }
     };
@@ -678,7 +794,11 @@ async fn respond_input_resolves_pending_question() {
                     .first()
                     .and_then(|a| a.labels.first().cloned())
                     .unwrap_or_else(|| "none".into());
-                let _ = tx.send(Ok(AgentEvent::TextDelta { text: format!("picked {picked}") })).await;
+                let _ = tx
+                    .send(Ok(AgentEvent::TextDelta {
+                        text: format!("picked {picked}"),
+                    }))
+                    .await;
                 let _ = tx.send(Ok(done(DoneStatus::Completed))).await;
             });
             Ok(futures::stream::unfold(rx, |mut rx| async move {
@@ -694,7 +814,10 @@ async fn respond_input_resolves_pending_question() {
     queue_as_viewer(
         handle.doc(),
         "cmd-run-ask",
-        SessionCommandPayload::Run { request: run_request("ask me"), message_id: "m-1".into() },
+        SessionCommandPayload::Run {
+            request: run_request("ask me"),
+            message_id: "m-1".into(),
+        },
     );
 
     // The input request surfaces: status AwaitingInput + an unresolved input part.
@@ -709,7 +832,15 @@ async fn respond_input_resolves_pending_question() {
     wait_for(
         || {
             entries(&core).iter().any(|e| {
-                e.parts.iter().any(|p| matches!(p, MessagePart::Input { resolved: false, .. }))
+                e.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::Input {
+                            resolved: false,
+                            ..
+                        }
+                    )
+                })
             })
         },
         "input part in doc",
@@ -742,9 +873,9 @@ async fn respond_input_resolves_pending_question() {
         || {
             entries(&core).iter().any(|e| {
                 e.status == Some(MessageStatus::Complete)
-                    && e.parts.iter().any(
-                        |p| matches!(p, MessagePart::Text { text, .. } if text == "picked b"),
-                    )
+                    && e.parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::Text { text, .. } if text == "picked b"))
             })
         },
         "answered turn to complete",
@@ -756,7 +887,9 @@ async fn respond_input_resolves_pending_question() {
     );
     // The input part is marked resolved in the doc.
     assert!(entries(&core).iter().any(|e| {
-        e.parts.iter().any(|p| matches!(p, MessagePart::Input { resolved: true, .. }))
+        e.parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::Input { resolved: true, .. }))
     }));
     assert_eq!(
         core.sessions.session_status(CHAT).map(|s| s.status),

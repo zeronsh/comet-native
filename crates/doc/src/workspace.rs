@@ -56,7 +56,9 @@ impl Default for WorkspaceDoc {
 impl WorkspaceDoc {
     /// Fresh, empty workspace doc.
     pub fn new() -> Self {
-        Self { doc: LoroDoc::new() }
+        Self {
+            doc: LoroDoc::new(),
+        }
     }
 
     /// Wrap an existing doc (e.g. imported from a snapshot).
@@ -136,12 +138,14 @@ impl WorkspaceDoc {
         set_opt_str(&row, "branch", chat.branch.as_deref())?;
         set_opt_str(&row, "checkoutId", chat.checkout_id.as_deref())?;
         match &chat.config {
-            Some(config) => {
-                row.insert("config", LoroValue::from(serde_json::to_value(config)?))?
-            }
+            Some(config) => row.insert("config", LoroValue::from(serde_json::to_value(config)?))?,
             None => row.delete("config")?,
         }
-        set_opt_str(&row, "lastMessagePreview", chat.last_message_preview.as_deref())?;
+        set_opt_str(
+            &row,
+            "lastMessagePreview",
+            chat.last_message_preview.as_deref(),
+        )?;
         set_opt_ms(&row, "lastMessageAt", chat.last_message_at)?;
         row.insert("createdAt", chat.created_at.timestamp_millis())?;
         self.doc.commit();
@@ -506,12 +510,16 @@ mod tests {
         let ws = WorkspaceDoc::new();
         ws.upsert_device(&device("dev-a", "laptop")).unwrap();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
-        ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working)).unwrap();
+        ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))
+            .unwrap();
 
         let state = ws.read_all().unwrap();
         assert_eq!(state.devices, vec![device("dev-a", "laptop")]);
         assert_eq!(state.chats, vec![chat("chat-1", "dev-a")]);
-        assert_eq!(state.sessions, vec![session("chat-1", "dev-a", SessionStatus::Working)]);
+        assert_eq!(
+            state.sessions,
+            vec![session("chat-1", "dev-a", SessionStatus::Working)]
+        );
 
         // Upsert refreshes in place — no duplicate rows, cleared options removed.
         let mut updated = chat("chat-1", "dev-a");
@@ -546,7 +554,10 @@ mod tests {
 
         assert!(ws.rename_chat("chat-1", "Renamed").unwrap());
         assert!(ws.set_chat_archived("chat-1", true).unwrap());
-        assert!(ws.set_chat_last_message("chat-1", "preview text", ts(5_000)).unwrap());
+        assert!(
+            ws.set_chat_last_message("chat-1", "preview text", ts(5_000))
+                .unwrap()
+        );
         assert!(ws.rename_device("dev-a", "workstation").unwrap());
         assert!(ws.set_device_last_seen("dev-a", ts(6_000)).unwrap());
         // Unknown rows report false, never invent rows.
@@ -568,7 +579,8 @@ mod tests {
     fn delete_chat_tombstones_row_and_session() {
         let ws = WorkspaceDoc::new();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
-        ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Idle)).unwrap();
+        ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Idle))
+            .unwrap();
         assert!(ws.delete_chat("chat-1").unwrap());
         assert!(ws.read_chats().unwrap().is_empty());
         assert!(ws.read_sessions().unwrap().is_empty());
@@ -582,7 +594,8 @@ mod tests {
         // Writer discipline: each device writes its own rows, concurrently.
         a.upsert_device(&device("dev-a", "laptop")).unwrap();
         a.upsert_chat(&chat("chat-a", "dev-a")).unwrap();
-        a.upsert_session(&session("chat-a", "dev-a", SessionStatus::Working)).unwrap();
+        a.upsert_session(&session("chat-a", "dev-a", SessionStatus::Working))
+            .unwrap();
         b.upsert_device(&device("dev-b", "vps")).unwrap();
         b.upsert_chat(&chat("chat-b", "dev-b")).unwrap();
 
@@ -621,7 +634,10 @@ mod tests {
         let title_b = b.chat("chat-1").unwrap().unwrap().title;
         // LWW: both peers settle on the SAME winner (whichever it is).
         assert_eq!(title_a, title_b);
-        assert!(matches!(title_a.as_deref(), Some("from a") | Some("from b")));
+        assert!(matches!(
+            title_a.as_deref(),
+            Some("from a") | Some("from b")
+        ));
         // Everything else on the row survived the conflict.
         assert_eq!(a.chat("chat-1").unwrap().unwrap().device_id, "dev-a");
     }

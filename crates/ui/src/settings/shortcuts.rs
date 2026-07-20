@@ -55,7 +55,12 @@ impl EventEmitter<ShortcutsEvent> for ShortcutsPage {}
 
 impl ShortcutsPage {
     pub fn new(state: Entity<AppState>, keymap: KeymapConfig, cx: &mut Context<Self>) -> Self {
-        Self { keymap, recording: None, focus: cx.focus_handle(), _state: state }
+        Self {
+            keymap,
+            recording: None,
+            focus: cx.focus_handle(),
+            _state: state,
+        }
     }
 
     fn commit(&mut self, cx: &mut Context<Self>) {
@@ -64,10 +69,17 @@ impl ShortcutsPage {
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
-        let Some(recording) = self.recording else { return };
+        let Some(recording) = self.recording else {
+            return;
+        };
         let mods = &event.keystroke.modifiers;
-        match record_key(&event.keystroke.key, mods.control, mods.alt, mods.shift, mods.platform)
-        {
+        match record_key(
+            &event.keystroke.key,
+            mods.control,
+            mods.alt,
+            mods.shift,
+            mods.platform,
+        ) {
             RecordOutcome::Cancelled => {
                 self.recording = None;
                 cx.notify();
@@ -125,9 +137,7 @@ impl Render for ShortcutsPage {
                                 div()
                                     .text_size(px(10.0))
                                     .text_color(theme.danger)
-                                    .child(SharedString::from(
-                                        "Conflicts with another shortcut",
-                                    )),
+                                    .child(SharedString::from("Conflicts with another shortcut")),
                             )
                         }),
                 )
@@ -148,7 +158,11 @@ impl Render for ShortcutsPage {
                         })
                         .text_size(px(11.0))
                         .font_family(theme.font_mono.clone())
-                        .text_color(if is_recording { theme.accent } else { theme.text })
+                        .text_color(if is_recording {
+                            theme.accent
+                        } else {
+                            theme.text
+                        })
                         .cursor_pointer()
                         .hover(|s| s.bg(theme.element_hover))
                         .on_click(cx.listener(move |this, _, window, cx| {
@@ -165,7 +179,11 @@ impl Render for ShortcutsPage {
                         .py(px(3.0))
                         .rounded(px(Theme::CONTROL_RADIUS))
                         .text_size(px(11.0))
-                        .text_color(if non_default { theme.text_muted } else { theme.text_faint })
+                        .text_color(if non_default {
+                            theme.text_muted
+                        } else {
+                            theme.text_faint
+                        })
                         .when(non_default, |el| {
                             el.cursor_pointer().hover(|s| s.bg(theme.element_hover))
                         })
@@ -183,9 +201,9 @@ impl Render for ShortcutsPage {
             .size_full()
             .overflow_y_scroll()
             .track_focus(&self.focus)
-            .on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
-                this.on_key_down(event, cx)
-            }))
+            .on_key_down(
+                cx.listener(|this, event: &KeyDownEvent, _, cx| this.on_key_down(event, cx)),
+            )
             .p(px(Theme::SPACE_LG))
             .flex()
             .flex_col()
@@ -232,8 +250,14 @@ mod tests {
 
     #[test]
     fn recording_outcomes() {
-        assert_eq!(record_key("escape", false, false, false, false), RecordOutcome::Cancelled);
-        assert_eq!(record_key("Escape", true, false, false, false), RecordOutcome::Cancelled);
+        assert_eq!(
+            record_key("escape", false, false, false, false),
+            RecordOutcome::Cancelled
+        );
+        assert_eq!(
+            record_key("Escape", true, false, false, false),
+            RecordOutcome::Cancelled
+        );
         assert_eq!(
             record_key("s", true, false, false, false),
             RecordOutcome::Set("mod-s".into())
@@ -243,8 +267,14 @@ mod tests {
             RecordOutcome::Set("mod-alt-shift-k".into())
         );
         // Bare modifiers stay recording.
-        assert_eq!(record_key("shift", false, false, true, false), RecordOutcome::Ignored);
-        assert_eq!(record_key("ctrl", true, false, false, false), RecordOutcome::Ignored);
+        assert_eq!(
+            record_key("shift", false, false, true, false),
+            RecordOutcome::Ignored
+        );
+        assert_eq!(
+            record_key("ctrl", true, false, false, false),
+            RecordOutcome::Ignored
+        );
     }
 
     #[test]

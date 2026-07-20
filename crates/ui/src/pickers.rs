@@ -20,7 +20,9 @@ use gpui::{
 };
 
 use comet_engine::registry::HarnessDescriptor;
-use comet_proto::{Chat, ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, Repo, SandboxLevel};
+use comet_proto::{
+    Chat, ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, Repo, SandboxLevel,
+};
 use comet_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
@@ -102,7 +104,11 @@ pub fn traits_summary(
             }
         }
     }
-    if parts.is_empty() { None } else { Some(parts.join(" · ")) }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" · "))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -127,7 +133,10 @@ pub fn recent_cwds(chats: &[Chat]) -> Vec<String> {
 /// most-recent-first) lead in that order; the rest follow alphabetically.
 pub fn order_repos(mut repos: Vec<Repo>, recents: &[String]) -> Vec<Repo> {
     repos.sort_by(|a, b| {
-        a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.path.cmp(&b.path))
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.path.cmp(&b.path))
     });
     let mut out: Vec<Repo> = Vec::new();
     for cwd in recents {
@@ -196,7 +205,11 @@ pub fn browse_enter(listing: &FolderListing, active: usize) -> Option<BrowseEnte
     let rows = browser_rows(listing);
     let entry = rows.get(active)?;
     let full = child_path(&listing.path, &entry.name);
-    if entry.is_repo { Some(BrowseEnter::Pick(full)) } else { Some(BrowseEnter::Descend(full)) }
+    if entry.is_repo {
+        Some(BrowseEnter::Pick(full))
+    } else {
+        Some(BrowseEnter::Descend(full))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -307,12 +320,18 @@ impl Pickers {
         if let Some(harness) = self.config.harness {
             return Some(harness);
         }
-        if let Some(config) =
-            self.state.read(cx).selected_chat_row().and_then(|c| c.config.as_ref())
+        if let Some(config) = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.config.as_ref())
         {
             return Some(config.harness);
         }
-        self.harnesses.ready().and_then(|list| list.first()).map(|d| d.id)
+        self.harnesses
+            .ready()
+            .and_then(|list| list.first())
+            .map(|d| d.id)
     }
 
     fn selected_model<'a>(&'a self, cx: &'a App) -> Option<&'a Model> {
@@ -386,10 +405,15 @@ impl Pickers {
         if matches!(self.harnesses, Loadable::Ready(_) | Loadable::Loading) {
             return;
         }
-        let Some(engine) = self.engine(cx) else { return };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
         self.harnesses = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::LIST_HARNESSES, serde_json::json!({})).await;
+            let result = engine
+                .client()
+                .call(methods::LIST_HARNESSES, serde_json::json!({}))
+                .await;
             this.update(cx, |pickers, cx| {
                 pickers.harnesses = match result {
                     Ok(value) => match serde_json::from_value::<Vec<HarnessDescriptor>>(value) {
@@ -414,7 +438,9 @@ impl Pickers {
         ) {
             return;
         }
-        let Some(engine) = self.engine(cx) else { return };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
         self.models.insert(harness, Loadable::Loading);
         cx.spawn(async move |this, cx| {
             let params = serde_json::json!({ "harness": harness });
@@ -439,10 +465,15 @@ impl Pickers {
         if !force && matches!(self.repos, Loadable::Ready(_) | Loadable::Loading) {
             return;
         }
-        let Some(engine) = self.engine(cx) else { return };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
         self.repos = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::LIST_REPOS, serde_json::json!({})).await;
+            let result = engine
+                .client()
+                .call(methods::LIST_REPOS, serde_json::json!({}))
+                .await;
             this.update(cx, |pickers, cx| {
                 pickers.repos = match result {
                     Ok(value) => match serde_json::from_value::<Vec<Repo>>(value) {
@@ -458,12 +489,16 @@ impl Pickers {
     }
 
     fn ensure_branches(&mut self, force: bool, cx: &mut Context<Self>) {
-        let Some(repo) = self.config.repo.clone() else { return };
+        let Some(repo) = self.config.repo.clone() else {
+            return;
+        };
         let fresh = self.branches_repo.as_deref() == Some(repo.path.as_str());
         if !force && fresh && matches!(self.branches, Loadable::Ready(_) | Loadable::Loading) {
             return;
         }
-        let Some(engine) = self.engine(cx) else { return };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
         self.branches = Loadable::Loading;
         self.branches_repo = Some(repo.path.clone());
         self.load_task = Some(cx.spawn(async move |this, cx| {
@@ -484,7 +519,9 @@ impl Pickers {
     }
 
     fn load_folders(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else { return };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
         self.browser_path = path.clone();
         self.browser = Loadable::Loading;
         self.active = 0;
@@ -523,7 +560,9 @@ impl Pickers {
 
     /// AddRepo for a browsed folder, then select the resulting repo.
     fn add_repo_path(&mut self, path: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else { return };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
         self.form_busy = true;
         self.form_error = None;
         cx.notify();
@@ -562,21 +601,29 @@ impl Pickers {
             RepoPane::CreateName => (methods::CREATE_REPO, serde_json::json!({ "name": text })),
             _ => return,
         };
-        let Some(engine) = self.engine(cx) else { return };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
         self.form_busy = true;
         self.form_error = None;
         cx.notify();
         self.form_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(method, params).await.and_then(|value| {
-                serde_json::from_value::<Repo>(value)
-                    .map_err(|e| comet_rpc::RpcError::Failed(e.to_string()))
-            });
+            let result = engine
+                .client()
+                .call(method, params)
+                .await
+                .and_then(|value| {
+                    serde_json::from_value::<Repo>(value)
+                        .map_err(|e| comet_rpc::RpcError::Failed(e.to_string()))
+                });
             this.update(cx, |pickers, cx| {
                 pickers.form_busy = false;
                 match result {
                     Ok(repo) => {
                         pickers.ensure_repos(true, cx);
-                        pickers.search.update(cx, |input, cx| input.set_text("", cx));
+                        pickers
+                            .search
+                            .update(cx, |input, cx| input.set_text("", cx));
                         pickers.pick_repo(repo, cx);
                     }
                     Err(err) => pickers.form_error = Some(format!("{err}").into()),
@@ -623,11 +670,19 @@ impl Pickers {
         cx.notify();
     }
 
-    fn pick_option(&mut self, option_id: String, choice_id: String, default: bool, cx: &mut Context<Self>) {
+    fn pick_option(
+        &mut self,
+        option_id: String,
+        choice_id: String,
+        default: bool,
+        cx: &mut Context<Self>,
+    ) {
         if default {
             self.config.model_options.remove(&option_id);
         } else {
-            self.config.model_options.insert(option_id, serde_json::Value::String(choice_id));
+            self.config
+                .model_options
+                .insert(option_id, serde_json::Value::String(choice_id));
         }
         cx.notify();
     }
@@ -635,7 +690,9 @@ impl Pickers {
     // ---- keyboard ----
 
     fn filtered_repo_rows(&self, cx: &App) -> Vec<Repo> {
-        let Some(repos) = self.repos.ready() else { return Vec::new() };
+        let Some(repos) = self.repos.ready() else {
+            return Vec::new();
+        };
         let recents = recent_cwds(&self.state.read(cx).chats);
         let ordered = order_repos(repos.clone(), &recents);
         let query = self.search.read(cx).text().to_string();
@@ -647,7 +704,9 @@ impl Pickers {
     }
 
     fn filtered_branch_rows(&self, cx: &App) -> Vec<String> {
-        let Some(branches) = self.branches.ready() else { return Vec::new() };
+        let Some(branches) = self.branches.ready() else {
+            return Vec::new();
+        };
         let query = self.search.read(cx).text().to_string();
         popover::filter_indices(&query, branches)
             .into_iter()
@@ -680,8 +739,7 @@ impl Pickers {
             event.keystroke.modifiers.platform,
             event.keystroke.modifiers.control,
         );
-        let search_focused =
-            self.search.read(cx).focus_handle(cx).is_focused(window);
+        let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
         let search_empty = self.search.read(cx).is_empty();
         match key {
             MenuKey::Escape => {
@@ -707,8 +765,7 @@ impl Pickers {
                     (Some(PickerKind::Branch), _) => self.filtered_branch_rows(cx).len(),
                     _ => 0,
                 };
-                self.active =
-                    popover::menu_step(Some(self.active), count, delta).unwrap_or(0);
+                self.active = popover::menu_step(Some(self.active), count, delta).unwrap_or(0);
                 cx.notify();
             }
             MenuKey::Enter if !search_focused => {
@@ -742,7 +799,9 @@ impl Pickers {
     }
 
     fn browser_activate(&mut self, cx: &mut Context<Self>) {
-        let Some(listing) = self.browser.ready() else { return };
+        let Some(listing) = self.browser.ready() else {
+            return;
+        };
         match browse_enter(listing, self.active) {
             Some(BrowseEnter::Descend(path)) => self.load_folders(Some(path), cx),
             Some(BrowseEnter::Pick(path)) => self.add_repo_path(path, cx),
@@ -777,7 +836,11 @@ impl Pickers {
             .py(px(3.0))
             .rounded(px(Theme::CONTROL_RADIUS))
             .border_1()
-            .border_color(if open { theme.border_strong } else { theme.border })
+            .border_color(if open {
+                theme.border_strong
+            } else {
+                theme.border
+            })
             .text_size(px(11.0))
             .text_color(if set { theme.text } else { theme.text_muted })
             .when(open, |el| el.bg(theme.element_active))
@@ -785,7 +848,11 @@ impl Pickers {
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.toggle(kind, window, cx)))
             .child(label)
-            .child(div().text_color(theme.text_faint).child(SharedString::from("▾")))
+            .child(
+                div()
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from("▾")),
+            )
     }
 
     fn popover_frame(&self, width: f32, content: AnyElement, cx: &mut Context<Self>) -> AnyElement {
@@ -942,9 +1009,17 @@ impl Pickers {
                     .child(self.search_box(&theme))
                     .child(body)
                     .child(div().h(px(1.0)).mx(px(4.0)).my(px(2.0)).bg(theme.border))
-                    .child(action("repo-open-folder", "Open folder…", RepoPane::Browser))
+                    .child(action(
+                        "repo-open-folder",
+                        "Open folder…",
+                        RepoPane::Browser,
+                    ))
                     .child(action("repo-clone", "Clone from URL…", RepoPane::CloneUrl))
-                    .child(action("repo-create", "Create new repo…", RepoPane::CreateName))
+                    .child(action(
+                        "repo-create",
+                        "Create new repo…",
+                        RepoPane::CreateName,
+                    ))
                     .into_any_element()
             }
             RepoPane::Browser => self.render_browser(&theme, cx),
@@ -969,7 +1044,10 @@ impl Pickers {
                     .child(self.search_box(&theme))
                     .when_some(self.form_error.clone(), |el, message| {
                         el.child(
-                            div().text_size(px(11.0)).text_color(theme.danger).child(message),
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(theme.danger)
+                                .child(message),
                         )
                     })
                     .child(
@@ -1009,9 +1087,9 @@ impl Pickers {
                                     .text_color(gpui::white())
                                     .when(busy, |el| el.opacity(0.6))
                                     .cursor_pointer()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.submit_repo_form(cx)
-                                    }))
+                                    .on_click(
+                                        cx.listener(|this, _, _, cx| this.submit_repo_form(cx)),
+                                    )
                                     .child(SharedString::from(if busy {
                                         "Working…"
                                     } else {
@@ -1041,7 +1119,11 @@ impl Pickers {
                     .pt(px(4.0))
                     .text_size(px(11.0))
                     .children(segments.into_iter().enumerate().map(|(ix, (label, full))| {
-                        let color = if ix == last { theme.text } else { theme.text_faint };
+                        let color = if ix == last {
+                            theme.text
+                        } else {
+                            theme.text_faint
+                        };
                         div()
                             .flex()
                             .flex_row()
@@ -1104,7 +1186,11 @@ impl Pickers {
                             .child(
                                 div()
                                     .flex_none()
-                                    .text_color(if is_repo { theme.accent } else { theme.text_faint })
+                                    .text_color(if is_repo {
+                                        theme.accent
+                                    } else {
+                                        theme.text_faint
+                                    })
                                     .child(SharedString::from(if is_repo { "◆" } else { "▸" })),
                             )
                             .child(div().flex_1().min_w_0().truncate().child(name))
@@ -1253,7 +1339,9 @@ impl Pickers {
                             .child(div().flex_1().min_w_0().truncate().child(label))
                             .when(is_selected, |el| {
                                 el.child(
-                                    div().text_color(theme.accent).child(SharedString::from("✓")),
+                                    div()
+                                        .text_color(theme.accent)
+                                        .child(SharedString::from("✓")),
                                 )
                             })
                     }))
@@ -1278,7 +1366,11 @@ impl Pickers {
                     .child(
                         div()
                             .flex_none()
-                            .text_color(if isolated { theme.accent } else { theme.text_faint })
+                            .text_color(if isolated {
+                                theme.accent
+                            } else {
+                                theme.text_faint
+                            })
                             .child(SharedString::from(if isolated { "☑" } else { "☐" })),
                     )
                     .child(
@@ -1314,7 +1406,13 @@ impl Pickers {
             }
             Loadable::Error(message) => {
                 let message = message.clone();
-                self.retry_row("harness-retry", &message, PickerKind::HarnessModel, &theme, cx)
+                self.retry_row(
+                    "harness-retry",
+                    &message,
+                    PickerKind::HarnessModel,
+                    &theme,
+                    cx,
+                )
             }
             Loadable::Ready(list) => {
                 let descriptors: Vec<HarnessDescriptor> = visible_harnesses(list);
@@ -1372,7 +1470,9 @@ impl Pickers {
                             .child(div().flex_1().min_w_0().truncate().child(label))
                             .when(is_selected, |el| {
                                 el.child(
-                                    div().text_color(theme.accent).child(SharedString::from("✓")),
+                                    div()
+                                        .text_color(theme.accent)
+                                        .child(SharedString::from("✓")),
                                 )
                             })
                     }))
@@ -1380,7 +1480,13 @@ impl Pickers {
             }
             Some((_, Some(Loadable::Error(message)))) => {
                 let message = message.clone();
-                self.retry_row("model-retry", &message, PickerKind::HarnessModel, &theme, cx)
+                self.retry_row(
+                    "model-retry",
+                    &message,
+                    PickerKind::HarnessModel,
+                    &theme,
+                    cx,
+                )
             }
             _ => popover::skeleton_rows("model-skeleton", &theme, 4),
         };
@@ -1416,8 +1522,11 @@ impl Pickers {
                     .map(|d| d.reasoning_levels.clone())
             })
             .unwrap_or_default();
-        let levels =
-            if model.reasoning_levels.is_empty() { harness_levels } else { model.reasoning_levels.clone() };
+        let levels = if model.reasoning_levels.is_empty() {
+            harness_levels
+        } else {
+            model.reasoning_levels.clone()
+        };
         let current = self.config.reasoning;
 
         let ladder: AnyElement = if levels.is_empty() {
@@ -1442,11 +1551,15 @@ impl Pickers {
                             this.pick_reasoning(level, cx);
                         }))
                         .child(
-                            div().flex_1().child(SharedString::from(reasoning_label(level))),
+                            div()
+                                .flex_1()
+                                .child(SharedString::from(reasoning_label(level))),
                         )
                         .when(is_active, |el| {
                             el.child(
-                                div().text_color(theme.accent).child(SharedString::from("✓")),
+                                div()
+                                    .text_color(theme.accent)
+                                    .child(SharedString::from("✓")),
                             )
                         })
                 }))
@@ -1454,56 +1567,75 @@ impl Pickers {
         };
 
         let selections = self.config.model_options.clone();
-        let options = div().flex().flex_col().gap(px(4.0)).children(
-            model.options.iter().enumerate().map(|(opt_ix, option)| {
-                let selected_choice = selections
-                    .get(&option.id)
-                    .and_then(|v| v.as_str())
-                    .unwrap_or(&option.default_choice)
-                    .to_string();
-                let option_id = option.id.clone();
-                let default_choice = option.default_choice.clone();
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(
-                        div()
-                            .px(px(Theme::SPACE_SM))
-                            .text_size(px(10.0))
-                            .text_color(theme.text_faint)
-                            .child(SharedString::from(option.label.clone())),
-                    )
-                    .child(div().flex().flex_row().flex_wrap().gap(px(4.0)).px(px(4.0)).children(
-                        option.choices.iter().enumerate().map(|(choice_ix, choice)| {
-                            let is_active = selected_choice == choice.id;
-                            let choice_id = choice.id.clone();
-                            let option_id = option_id.clone();
-                            let is_default = choice.id == default_choice;
+        let options =
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.0))
+                .children(model.options.iter().enumerate().map(|(opt_ix, option)| {
+                    let selected_choice = selections
+                        .get(&option.id)
+                        .and_then(|v| v.as_str())
+                        .unwrap_or(&option.default_choice)
+                        .to_string();
+                    let option_id = option.id.clone();
+                    let default_choice = option.default_choice.clone();
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
                             div()
-                                .id(("trait-choice", opt_ix * 32 + choice_ix))
                                 .px(px(Theme::SPACE_SM))
-                                .py(px(2.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .border_1()
-                                .border_color(if is_active { theme.accent } else { theme.border })
-                                .text_size(px(11.0))
-                                .text_color(if is_active { theme.text } else { theme.text_muted })
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme.element_hover))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.pick_option(
-                                        option_id.clone(),
-                                        choice_id.clone(),
-                                        is_default,
-                                        cx,
-                                    );
-                                }))
-                                .child(SharedString::from(choice.label.clone()))
-                        }),
-                    ))
-            }),
-        );
+                                .text_size(px(10.0))
+                                .text_color(theme.text_faint)
+                                .child(SharedString::from(option.label.clone())),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .flex_wrap()
+                                .gap(px(4.0))
+                                .px(px(4.0))
+                                .children(option.choices.iter().enumerate().map(
+                                    |(choice_ix, choice)| {
+                                        let is_active = selected_choice == choice.id;
+                                        let choice_id = choice.id.clone();
+                                        let option_id = option_id.clone();
+                                        let is_default = choice.id == default_choice;
+                                        div()
+                                            .id(("trait-choice", opt_ix * 32 + choice_ix))
+                                            .px(px(Theme::SPACE_SM))
+                                            .py(px(2.0))
+                                            .rounded(px(Theme::CONTROL_RADIUS))
+                                            .border_1()
+                                            .border_color(if is_active {
+                                                theme.accent
+                                            } else {
+                                                theme.border
+                                            })
+                                            .text_size(px(11.0))
+                                            .text_color(if is_active {
+                                                theme.text
+                                            } else {
+                                                theme.text_muted
+                                            })
+                                            .cursor_pointer()
+                                            .hover(|s| s.bg(theme.element_hover))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.pick_option(
+                                                    option_id.clone(),
+                                                    choice_id.clone(),
+                                                    is_default,
+                                                    cx,
+                                                );
+                                            }))
+                                            .child(SharedString::from(choice.label.clone()))
+                                    },
+                                )),
+                        )
+                }));
 
         div()
             .flex()
@@ -1518,8 +1650,11 @@ impl Pickers {
 
 /// Production pickers hide the mock harness unless it's all there is.
 pub fn visible_harnesses(list: &[HarnessDescriptor]) -> Vec<HarnessDescriptor> {
-    let real: Vec<HarnessDescriptor> =
-        list.iter().filter(|d| d.id != HarnessId::Mock).cloned().collect();
+    let real: Vec<HarnessDescriptor> = list
+        .iter()
+        .filter(|d| d.id != HarnessId::Mock)
+        .cloned()
+        .collect();
     if real.is_empty() { list.to_vec() } else { real }
 }
 
@@ -1574,8 +1709,10 @@ impl Render for Pickers {
             self.config.reasoning,
             &self.config.model_options,
         );
-        let traits_label: SharedString =
-            traits_set.clone().map(SharedString::from).unwrap_or_else(|| SharedString::from("Traits"));
+        let traits_label: SharedString = traits_set
+            .clone()
+            .map(SharedString::from)
+            .unwrap_or_else(|| SharedString::from("Traits"));
 
         // Render the open popover's body first (mutable borrow), then the chips.
         let mut overlay: Option<(PickerKind, AnyElement)> = match self.open {
@@ -1589,7 +1726,10 @@ impl Render for Pickers {
             }
             Some(PickerKind::HarnessModel) => {
                 let content = self.render_harness_model_popover(cx);
-                Some((PickerKind::HarnessModel, self.popover_frame(380.0, content, cx)))
+                Some((
+                    PickerKind::HarnessModel,
+                    self.popover_frame(380.0, content, cx),
+                ))
             }
             Some(PickerKind::Traits) => {
                 let content = self.render_traits_popover(cx);
@@ -1598,12 +1738,22 @@ impl Render for Pickers {
             None => None,
         };
 
-        let mut row = div().flex().flex_row().items_center().flex_wrap().gap(px(6.0));
+        let mut row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_wrap()
+            .gap(px(6.0));
         if new_chat {
             let repo_set = self.config.repo.is_some();
             let branch_set = self.config.branch.is_some();
             let repo_chip = self.trigger_chip(PickerKind::Repo, repo_label, repo_set, &theme, cx);
-            row = row.child(attach_overlay(repo_chip, &mut overlay, PickerKind::Repo, "repo-popover"));
+            row = row.child(attach_overlay(
+                repo_chip,
+                &mut overlay,
+                PickerKind::Repo,
+                "repo-popover",
+            ));
             let branch_chip =
                 self.trigger_chip(PickerKind::Branch, branch_label, branch_set, &theme, cx);
             row = row.child(attach_overlay(
@@ -1626,9 +1776,19 @@ impl Render for Pickers {
             PickerKind::HarnessModel,
             "model-popover",
         ));
-        let traits_chip =
-            self.trigger_chip(PickerKind::Traits, traits_label, traits_set.is_some(), &theme, cx);
-        row.child(attach_overlay(traits_chip, &mut overlay, PickerKind::Traits, "traits-popover"))
+        let traits_chip = self.trigger_chip(
+            PickerKind::Traits,
+            traits_label,
+            traits_set.is_some(),
+            &theme,
+            cx,
+        );
+        row.child(attach_overlay(
+            traits_chip,
+            &mut overlay,
+            PickerKind::Traits,
+            "traits-popover",
+        ))
     }
 }
 
@@ -1638,28 +1798,35 @@ mod tests {
     use comet_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
 
     fn repo(name: &str, path: &str) -> Repo {
-        Repo { path: path.into(), name: name.into(), default_branch: Some("main".into()) }
+        Repo {
+            path: path.into(),
+            name: name.into(),
+            default_branch: Some("main".into()),
+        }
     }
 
     #[test]
     fn repos_order_recents_first_then_alphabetical() {
-        let repos = vec![repo("zebra", "/r/zebra"), repo("Alpha", "/r/alpha"), repo("mango", "/r/mango")];
+        let repos = vec![
+            repo("zebra", "/r/zebra"),
+            repo("Alpha", "/r/alpha"),
+            repo("mango", "/r/mango"),
+        ];
         let recents = vec!["/r/mango".to_string(), "/r/missing".to_string()];
         let ordered = order_repos(repos, &recents);
         let names: Vec<&str> = ordered.iter().map(|r| r.name.as_str()).collect();
         assert_eq!(names, ["mango", "Alpha", "zebra"]);
         // No recents → purely alphabetical (case-insensitive).
-        let ordered = order_repos(
-            vec![repo("b", "/b"), repo("A", "/a")],
-            &[],
-        );
+        let ordered = order_repos(vec![repo("b", "/b"), repo("A", "/a")], &[]);
         assert_eq!(ordered[0].name, "A");
     }
 
     #[test]
     fn recent_cwds_dedupe_in_recency_order() {
         use chrono::TimeDelta;
-        let base = chrono::DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z").unwrap().to_utc();
+        let base = chrono::DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z")
+            .unwrap()
+            .to_utc();
         let chat = |id: &str, cwd: Option<&str>, min: i64| Chat {
             id: id.into(),
             device_id: "d".into(),
@@ -1681,7 +1848,10 @@ mod tests {
             chat("d", None, 0),
             chat("e", Some(""), 0),
         ];
-        assert_eq!(recent_cwds(&chats), vec!["/dev/comet".to_string(), "/dev/zed".to_string()]);
+        assert_eq!(
+            recent_cwds(&chats),
+            vec!["/dev/comet".to_string(), "/dev/zed".to_string()]
+        );
     }
 
     #[test]
@@ -1695,8 +1865,14 @@ mod tests {
                     id: "context".into(),
                     label: "Context window".into(),
                     choices: vec![
-                        ModelOptionChoice { id: "standard".into(), label: "Standard".into() },
-                        ModelOptionChoice { id: "1m".into(), label: "1M".into() },
+                        ModelOptionChoice {
+                            id: "standard".into(),
+                            label: "Standard".into(),
+                        },
+                        ModelOptionChoice {
+                            id: "1m".into(),
+                            label: "1M".into(),
+                        },
                     ],
                     default_choice: "standard".into(),
                 },
@@ -1704,8 +1880,14 @@ mod tests {
                     id: "speed".into(),
                     label: "Speed".into(),
                     choices: vec![
-                        ModelOptionChoice { id: "normal".into(), label: "Normal".into() },
-                        ModelOptionChoice { id: "fast".into(), label: "Fast".into() },
+                        ModelOptionChoice {
+                            id: "normal".into(),
+                            label: "Normal".into(),
+                        },
+                        ModelOptionChoice {
+                            id: "fast".into(),
+                            label: "Fast".into(),
+                        },
                     ],
                     default_choice: "normal".into(),
                 },
@@ -1719,14 +1901,21 @@ mod tests {
             Some("High · 1M · Fast".to_string())
         );
         // All defaults → no summary.
-        assert_eq!(traits_summary(Some(&model), None, &serde_json::Map::new()), None);
+        assert_eq!(
+            traits_summary(Some(&model), None, &serde_json::Map::new()),
+            None
+        );
         // Default-choice selections don't count as non-default.
         let mut defaults = serde_json::Map::new();
         defaults.insert("speed".into(), serde_json::Value::String("normal".into()));
         assert_eq!(traits_summary(Some(&model), None, &defaults), None);
         // Reasoning shows without a model too.
         assert_eq!(
-            traits_summary(None, Some(ReasoningLevel::Ultrathink), &serde_json::Map::new()),
+            traits_summary(
+                None,
+                Some(ReasoningLevel::Ultrathink),
+                &serde_json::Map::new()
+            ),
             Some("Ultrathink".to_string())
         );
     }
@@ -1752,9 +1941,21 @@ mod tests {
         let listing = FolderListing {
             path: "/home/w".into(),
             entries: vec![
-                FolderEntry { name: "notes.txt".into(), is_dir: false, is_repo: false },
-                FolderEntry { name: "dev".into(), is_dir: true, is_repo: false },
-                FolderEntry { name: "comet".into(), is_dir: true, is_repo: true },
+                FolderEntry {
+                    name: "notes.txt".into(),
+                    is_dir: false,
+                    is_repo: false,
+                },
+                FolderEntry {
+                    name: "dev".into(),
+                    is_dir: true,
+                    is_repo: false,
+                },
+                FolderEntry {
+                    name: "comet".into(),
+                    is_dir: true,
+                    is_repo: true,
+                },
             ],
             truncated: false,
         };
@@ -1765,7 +1966,10 @@ mod tests {
             browse_enter(&listing, 0),
             Some(BrowseEnter::Descend("/home/w/dev".into()))
         );
-        assert_eq!(browse_enter(&listing, 1), Some(BrowseEnter::Pick("/home/w/comet".into())));
+        assert_eq!(
+            browse_enter(&listing, 1),
+            Some(BrowseEnter::Pick("/home/w/comet".into()))
+        );
         // Out-of-range → None.
         assert_eq!(browse_enter(&listing, 5), None);
     }

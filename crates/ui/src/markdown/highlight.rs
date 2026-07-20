@@ -82,8 +82,18 @@ struct LangSpec {
     keywords: &'static [&'static str],
 }
 
-const DQ: StringSpec = StringSpec { open: "\"", close: "\"", multiline: false, escapes: true };
-const SQ: StringSpec = StringSpec { open: "'", close: "'", multiline: false, escapes: true };
+const DQ: StringSpec = StringSpec {
+    open: "\"",
+    close: "\"",
+    multiline: false,
+    escapes: true,
+};
+const SQ: StringSpec = StringSpec {
+    open: "'",
+    close: "'",
+    multiline: false,
+    escapes: true,
+};
 
 fn spec(lang: Lang) -> &'static LangSpec {
     match lang {
@@ -104,18 +114,71 @@ fn spec(lang: Lang) -> &'static LangSpec {
             comment_needs_boundary: false,
             block_comment: Some(("/*", "*/")),
             strings: &[
-                StringSpec { open: "`", close: "`", multiline: true, escapes: true },
+                StringSpec {
+                    open: "`",
+                    close: "`",
+                    multiline: true,
+                    escapes: true,
+                },
                 DQ,
                 SQ,
             ],
             keywords: &[
-                "abstract", "any", "as", "async", "await", "boolean", "break", "case", "catch",
-                "class", "const", "continue", "default", "delete", "do", "else", "enum", "export",
-                "extends", "false", "finally", "for", "from", "function", "if", "implements",
-                "import", "in", "instanceof", "interface", "let", "new", "null", "number", "of",
-                "private", "protected", "public", "readonly", "return", "static", "string",
-                "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined",
-                "var", "void", "while", "yield",
+                "abstract",
+                "any",
+                "as",
+                "async",
+                "await",
+                "boolean",
+                "break",
+                "case",
+                "catch",
+                "class",
+                "const",
+                "continue",
+                "default",
+                "delete",
+                "do",
+                "else",
+                "enum",
+                "export",
+                "extends",
+                "false",
+                "finally",
+                "for",
+                "from",
+                "function",
+                "if",
+                "implements",
+                "import",
+                "in",
+                "instanceof",
+                "interface",
+                "let",
+                "new",
+                "null",
+                "number",
+                "of",
+                "private",
+                "protected",
+                "public",
+                "readonly",
+                "return",
+                "static",
+                "string",
+                "super",
+                "switch",
+                "this",
+                "throw",
+                "true",
+                "try",
+                "type",
+                "typeof",
+                "undefined",
+                "var",
+                "void",
+                "while",
+                "yield",
             ],
         },
         Lang::Python => &LangSpec {
@@ -123,28 +186,71 @@ fn spec(lang: Lang) -> &'static LangSpec {
             comment_needs_boundary: true,
             block_comment: None,
             strings: &[
-                StringSpec { open: "\"\"\"", close: "\"\"\"", multiline: true, escapes: true },
-                StringSpec { open: "'''", close: "'''", multiline: true, escapes: true },
+                StringSpec {
+                    open: "\"\"\"",
+                    close: "\"\"\"",
+                    multiline: true,
+                    escapes: true,
+                },
+                StringSpec {
+                    open: "'''",
+                    close: "'''",
+                    multiline: true,
+                    escapes: true,
+                },
                 DQ,
                 SQ,
             ],
             keywords: &[
-                "False", "None", "True", "and", "as", "assert", "async", "await", "break",
-                "class", "continue", "def", "del", "elif", "else", "except", "finally", "for",
-                "from", "global", "if", "import", "in", "is", "lambda", "match", "nonlocal",
-                "not", "or", "pass", "raise", "return", "try", "while", "with", "yield",
+                "False", "None", "True", "and", "as", "assert", "async", "await", "break", "class",
+                "continue", "def", "del", "elif", "else", "except", "finally", "for", "from",
+                "global", "if", "import", "in", "is", "lambda", "match", "nonlocal", "not", "or",
+                "pass", "raise", "return", "try", "while", "with", "yield",
             ],
         },
         Lang::Go => &LangSpec {
             line_comments: &["//"],
             comment_needs_boundary: false,
             block_comment: Some(("/*", "*/")),
-            strings: &[StringSpec { open: "`", close: "`", multiline: true, escapes: false }, DQ, SQ],
+            strings: &[
+                StringSpec {
+                    open: "`",
+                    close: "`",
+                    multiline: true,
+                    escapes: false,
+                },
+                DQ,
+                SQ,
+            ],
             keywords: &[
-                "break", "case", "chan", "const", "continue", "default", "defer", "else",
-                "fallthrough", "false", "for", "func", "go", "goto", "if", "import", "interface",
-                "map", "nil", "package", "range", "return", "select", "struct", "switch", "true",
-                "type", "var",
+                "break",
+                "case",
+                "chan",
+                "const",
+                "continue",
+                "default",
+                "defer",
+                "else",
+                "fallthrough",
+                "false",
+                "for",
+                "func",
+                "go",
+                "goto",
+                "if",
+                "import",
+                "interface",
+                "map",
+                "nil",
+                "package",
+                "range",
+                "return",
+                "select",
+                "struct",
+                "switch",
+                "true",
+                "type",
+                "var",
             ],
         },
         Lang::Json => &LangSpec {
@@ -158,7 +264,15 @@ fn spec(lang: Lang) -> &'static LangSpec {
             line_comments: &["#"],
             comment_needs_boundary: true,
             block_comment: None,
-            strings: &[DQ, StringSpec { open: "'", close: "'", multiline: false, escapes: false }],
+            strings: &[
+                DQ,
+                StringSpec {
+                    open: "'",
+                    close: "'",
+                    multiline: false,
+                    escapes: false,
+                },
+            ],
             keywords: &[
                 "case", "do", "done", "elif", "else", "esac", "exit", "export", "fi", "for",
                 "function", "if", "in", "local", "return", "select", "then", "until", "while",
@@ -169,9 +283,19 @@ fn spec(lang: Lang) -> &'static LangSpec {
             comment_needs_boundary: true,
             block_comment: None,
             strings: &[
-                StringSpec { open: "\"\"\"", close: "\"\"\"", multiline: true, escapes: true },
+                StringSpec {
+                    open: "\"\"\"",
+                    close: "\"\"\"",
+                    multiline: true,
+                    escapes: true,
+                },
                 DQ,
-                StringSpec { open: "'", close: "'", multiline: false, escapes: false },
+                StringSpec {
+                    open: "'",
+                    close: "'",
+                    multiline: false,
+                    escapes: false,
+                },
             ],
             keywords: &["true", "false"],
         },
@@ -179,7 +303,12 @@ fn spec(lang: Lang) -> &'static LangSpec {
             line_comments: &[],
             comment_needs_boundary: false,
             block_comment: None,
-            strings: &[StringSpec { open: "`", close: "`", multiline: false, escapes: false }],
+            strings: &[StringSpec {
+                open: "`",
+                close: "`",
+                multiline: false,
+                escapes: false,
+            }],
             keywords: &[],
         },
     }
@@ -199,7 +328,10 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
     // Markdown gets a bespoke, ultra-shallow pass: heading lines highlight whole.
     if lang == Lang::Markdown && line.trim_start().starts_with('#') {
         if !line.is_empty() {
-            tokens.push(Token { range: 0..line.len(), class: TokenClass::Keyword });
+            tokens.push(Token {
+                range: 0..line.len(),
+                class: TokenClass::Keyword,
+            });
         }
         return (tokens, LineCarry::None);
     }
@@ -213,12 +345,18 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
             match line.find(close) {
                 Some(at) => {
                     let end = at + close.len();
-                    tokens.push(Token { range: 0..end, class: TokenClass::Comment });
+                    tokens.push(Token {
+                        range: 0..end,
+                        class: TokenClass::Comment,
+                    });
                     i = end;
                 }
                 None => {
                     if !line.is_empty() {
-                        tokens.push(Token { range: 0..line.len(), class: TokenClass::Comment });
+                        tokens.push(Token {
+                            range: 0..line.len(),
+                            class: TokenClass::Comment,
+                        });
                     }
                     return (tokens, LineCarry::BlockComment);
                 }
@@ -230,12 +368,18 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
             };
             match find_string_close(line, 0, string) {
                 Some(end) => {
-                    tokens.push(Token { range: 0..end, class: TokenClass::StringLit });
+                    tokens.push(Token {
+                        range: 0..end,
+                        class: TokenClass::StringLit,
+                    });
                     i = end;
                 }
                 None => {
                     if !line.is_empty() {
-                        tokens.push(Token { range: 0..line.len(), class: TokenClass::StringLit });
+                        tokens.push(Token {
+                            range: 0..line.len(),
+                            class: TokenClass::StringLit,
+                        });
                     }
                     return (tokens, LineCarry::InString(spec_ix));
                 }
@@ -249,11 +393,13 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
 
         // Line comment.
         if spec.line_comments.iter().any(|p| rest.starts_with(p)) {
-            let boundary_ok = !spec.comment_needs_boundary
-                || i == 0
-                || bytes[i - 1].is_ascii_whitespace();
+            let boundary_ok =
+                !spec.comment_needs_boundary || i == 0 || bytes[i - 1].is_ascii_whitespace();
             if boundary_ok {
-                tokens.push(Token { range: i..line.len(), class: TokenClass::Comment });
+                tokens.push(Token {
+                    range: i..line.len(),
+                    class: TokenClass::Comment,
+                });
                 return (tokens, LineCarry::None);
             }
         }
@@ -265,12 +411,18 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
             match line[i + open.len()..].find(close) {
                 Some(at) => {
                     let end = i + open.len() + at + close.len();
-                    tokens.push(Token { range: i..end, class: TokenClass::Comment });
+                    tokens.push(Token {
+                        range: i..end,
+                        class: TokenClass::Comment,
+                    });
                     i = end;
                     continue;
                 }
                 None => {
-                    tokens.push(Token { range: i..line.len(), class: TokenClass::Comment });
+                    tokens.push(Token {
+                        range: i..line.len(),
+                        class: TokenClass::Comment,
+                    });
                     return (tokens, LineCarry::BlockComment);
                 }
             }
@@ -285,12 +437,18 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
         {
             match find_string_close(line, i + string.open.len(), string) {
                 Some(end) => {
-                    tokens.push(Token { range: i..end, class: TokenClass::StringLit });
+                    tokens.push(Token {
+                        range: i..end,
+                        class: TokenClass::StringLit,
+                    });
                     i = end;
                     continue;
                 }
                 None => {
-                    tokens.push(Token { range: i..line.len(), class: TokenClass::StringLit });
+                    tokens.push(Token {
+                        range: i..line.len(),
+                        class: TokenClass::StringLit,
+                    });
                     let carry = if string.multiline {
                         LineCarry::InString(spec_ix as u8)
                     } else {
@@ -311,7 +469,10 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
             {
                 end += 1;
             }
-            tokens.push(Token { range: i..end, class: TokenClass::Number });
+            tokens.push(Token {
+                range: i..end,
+                class: TokenClass::Number,
+            });
             i = end;
             continue;
         }
@@ -323,7 +484,10 @@ pub fn tokenize_line(lang: Lang, line: &str, carry: LineCarry) -> (Vec<Token>, L
                 end += 1;
             }
             if spec.keywords.iter().any(|k| *k == &line[i..end]) {
-                tokens.push(Token { range: i..end, class: TokenClass::Keyword });
+                tokens.push(Token {
+                    range: i..end,
+                    class: TokenClass::Keyword,
+                });
             }
             i = end;
             continue;
@@ -395,16 +559,27 @@ mod tests {
                 .any(|(t, c)| t.starts_with("//") && *c == TokenClass::Comment)
         );
         // Nothing after a line comment is tokenized separately.
-        assert!(toks.iter().filter(|(_, c)| *c == TokenClass::Comment).count() == 1);
+        assert!(
+            toks.iter()
+                .filter(|(_, c)| *c == TokenClass::Comment)
+                .count()
+                == 1
+        );
     }
 
     #[test]
     fn string_with_escapes_and_embedded_comment_marker() {
         let toks = classes(Lang::Rust, r#"print("a \" // not comment") // real"#);
-        let strings: Vec<_> = toks.iter().filter(|(_, c)| *c == TokenClass::StringLit).collect();
+        let strings: Vec<_> = toks
+            .iter()
+            .filter(|(_, c)| *c == TokenClass::StringLit)
+            .collect();
         assert_eq!(strings.len(), 1);
         assert!(strings[0].0.contains("not comment"));
-        assert!(toks.iter().any(|(t, c)| t == "// real" && *c == TokenClass::Comment));
+        assert!(
+            toks.iter()
+                .any(|(t, c)| t == "// real" && *c == TokenClass::Comment)
+        );
     }
 
     #[test]
@@ -414,10 +589,22 @@ mod tests {
         assert!(t1.iter().any(|t| t.class == TokenClass::Comment));
         let (t2, c2) = tokenize_line(Lang::Rust, "middle of comment", c1);
         assert_eq!(c2, LineCarry::BlockComment);
-        assert_eq!(t2, vec![Token { range: 0..17, class: TokenClass::Comment }]);
+        assert_eq!(
+            t2,
+            vec![Token {
+                range: 0..17,
+                class: TokenClass::Comment
+            }]
+        );
         let (t3, c3) = tokenize_line(Lang::Rust, "end */ let b = 2;", c2);
         assert_eq!(c3, LineCarry::None);
-        assert_eq!(t3[0], Token { range: 0..6, class: TokenClass::Comment });
+        assert_eq!(
+            t3[0],
+            Token {
+                range: 0..6,
+                class: TokenClass::Comment
+            }
+        );
         assert!(t3.iter().any(|t| t.class == TokenClass::Keyword));
     }
 
@@ -432,7 +619,10 @@ mod tests {
     #[test]
     fn bash_hash_needs_word_boundary() {
         let toks = classes(Lang::Bash, "echo $#ARGS # trailing");
-        let comments: Vec<_> = toks.iter().filter(|(_, c)| *c == TokenClass::Comment).collect();
+        let comments: Vec<_> = toks
+            .iter()
+            .filter(|(_, c)| *c == TokenClass::Comment)
+            .collect();
         assert_eq!(comments.len(), 1);
         assert_eq!(comments[0].0, "# trailing");
     }
@@ -443,7 +633,10 @@ mod tests {
         assert!(toks.contains(&("true".into(), TokenClass::Keyword)));
         assert!(toks.contains(&("null".into(), TokenClass::Keyword)));
         assert!(toks.contains(&("3.14".into(), TokenClass::Number)));
-        assert!(toks.iter().any(|(t, c)| t == "\"a\"" && *c == TokenClass::StringLit));
+        assert!(
+            toks.iter()
+                .any(|(t, c)| t == "\"a\"" && *c == TokenClass::StringLit)
+        );
     }
 
     #[test]
@@ -460,10 +653,7 @@ mod tests {
         assert!(toks.is_empty());
         let toks = classes(Lang::Go, "x1 = 2");
         // "1" is inside identifier x1 — only the standalone 2 is a number.
-        assert_eq!(
-            toks,
-            vec![("2".to_string(), TokenClass::Number)]
-        );
+        assert_eq!(toks, vec![("2".to_string(), TokenClass::Number)]);
     }
 
     #[test]
@@ -484,7 +674,10 @@ mod tests {
     #[test]
     fn tokens_never_overlap_and_stay_in_bounds() {
         for (lang, line) in [
-            (Lang::Rust, "fn f(x: &str) -> u32 { x.len() as u32 } // done"),
+            (
+                Lang::Rust,
+                "fn f(x: &str) -> u32 { x.len() as u32 } // done",
+            ),
             (Lang::Python, "def f(x): return f\"{x}\" # end"),
             (Lang::Toml, "key = \"value\" # note"),
         ] {

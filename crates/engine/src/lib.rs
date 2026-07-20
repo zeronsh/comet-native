@@ -133,7 +133,11 @@ impl EngineCore {
         let sessions = SessionsEngine::new(device_id.clone(), journal, registry.clone());
         let doc_host = DocHost::new(
             store.clone(),
-            DocHostConfig { device_id: device_id.clone(), default_harness, edge: edge.clone() },
+            DocHostConfig {
+                device_id: device_id.clone(),
+                default_harness,
+                edge: edge.clone(),
+            },
         );
         let workspace = WorkspaceHost::open(
             store,
@@ -162,8 +166,7 @@ impl EngineCore {
             registry.clone(),
             repos.clone(),
         ));
-        let diff_sync =
-            CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
+        let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
         Ok(Self {
             sessions,
             doc_host,
@@ -182,13 +185,19 @@ impl EngineCore {
 
     /// Attach the auth service (before building the RPC service / relays).
     pub fn set_auth(&self, auth: Auth) {
-        *self.auth.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(auth);
+        *self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(auth);
     }
 
     /// The attached auth service, or a lazily-created dev-mode one (in-process embeds
     /// that never wired WorkOS still answer AuthStatus honestly).
     pub fn auth(&self) -> Auth {
-        let mut slot = self.auth.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut slot = self
+            .auth
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         slot.get_or_insert_with(|| {
             let dev_user = std::env::var("COMET_EDGE_TOKEN")
                 .ok()
@@ -203,11 +212,17 @@ impl EngineCore {
 
     /// Attach the peer link cache — enables `targetDeviceId` routing and [`Self::dial_device`].
     pub fn set_links(&self, links: Arc<comet_rpc::LinkCache>) {
-        *self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(links);
+        *self
+            .links
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(links);
     }
 
     pub fn links(&self) -> Option<Arc<comet_rpc::LinkCache>> {
-        self.links.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        self.links
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     /// A live RPC client to another device's engine through its relay DO (the router's
@@ -219,7 +234,10 @@ impl EngineCore {
         let links = self
             .links()
             .ok_or_else(|| EngineError::Other("peer links unavailable (offline)".into()))?;
-        links.client(device_id).await.map_err(|e| EngineError::Other(e.to_string()))
+        links
+            .client(device_id)
+            .await
+            .map_err(|e| EngineError::Other(e.to_string()))
     }
 
     /// Start hosting our device room: serve the full RPC surface to relay clients and
@@ -227,11 +245,8 @@ impl EngineCore {
     /// re-reads auth on every (re)dial, so token refreshes take effect at reconnect.
     pub fn start_host_relay(&self, edge_url: &str) -> comet_rpc::HostRelay {
         let auth = self.auth();
-        let config = comet_rpc::HostRelayConfig::new(
-            edge_url,
-            self.device_id.clone(),
-            Arc::new(auth),
-        );
+        let config =
+            comet_rpc::HostRelayConfig::new(edge_url, self.device_id.clone(), Arc::new(auth));
         let doc_host = self.doc_host.clone();
         let on_nudge: comet_rpc::NudgeHandler = Arc::new(move |chat_id: String| {
             // Opening the doc joins its room + syncs; drain fires on the change
@@ -296,10 +311,10 @@ impl Engine {
         std::fs::create_dir_all(&config.data_dir)?;
         let mut auth_config = AuthConfig::new(config.edge_url.clone(), config.data_dir.clone());
         auth_config.workos_client_id = config.workos_client_id.clone();
-        if let Ok(base) = std::env::var("COMET_WORKOS_API_BASE") {
-            if !base.trim().is_empty() {
-                auth_config.workos_api_base = base;
-            }
+        if let Ok(base) = std::env::var("COMET_WORKOS_API_BASE")
+            && !base.trim().is_empty()
+        {
+            auth_config.workos_api_base = base;
         }
         if let Some(token) = &config.edge_token {
             auth_config.dev_user_id = token.clone();
@@ -315,13 +330,21 @@ impl Engine {
 
         // Edge sync token: WorkOS access token, or the configured dev bearer. `None`
         // runs fully offline (no rooms, no relay) — M2 behavior preserved.
-        let edge_token = auth.access_token().await.filter(|_| {
-            auth.workos_enabled() || config.edge_token.is_some()
+        let edge_token = auth
+            .access_token()
+            .await
+            .filter(|_| auth.workos_enabled() || config.edge_token.is_some());
+        let edge = edge_token.map(|token| EdgeConfig {
+            url: config.edge_url.clone(),
+            token,
         });
-        let edge = edge_token.map(|token| EdgeConfig { url: config.edge_url.clone(), token });
 
         // Workspace org: the session's org claim (WorkOS) beats the configured one.
-        let org_id = auth.state().org_id().map(str::to_string).or(config.org_id.clone());
+        let org_id = auth
+            .state()
+            .org_id()
+            .map(str::to_string)
+            .or(config.org_id.clone());
         let core = match &org_id {
             Some(org_id) => EngineCore::assemble_with_org(
                 &config.data_dir,
@@ -352,8 +375,7 @@ impl Engine {
             core.start_host_relay(&edge.url)
         });
 
-        let listener =
-            tokio::net::TcpListener::bind(("127.0.0.1", config.ipc_port)).await?;
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", config.ipc_port)).await?;
         tracing::info!(port = config.ipc_port, "IPC server listening");
         let server = tokio::spawn(comet_rpc::serve_ws_listener(listener, core.rpc_service()));
 

@@ -214,21 +214,29 @@ per `docs/research/durable-objects-language.md`.
 
 ## 8. Milestones
 
-- **M0 Scaffold** — workspace builds; `proto`/`doc` crates with ledger + parts + continuation
+Status legend: ✅ shipped · 🟡 shipped with named gaps (see `docs/PARITY.md`).
+
+- ✅ **M0 Scaffold** — workspace builds; `proto`/`doc` crates with ledger + parts + continuation
   unit tests; gpui hello-window runs.
-- **M1 Doc + sync core** — `comet-doc` mirror over loro 1.13; room client syncs with the edge
+- ✅ **M1 Doc + sync core** — `comet-doc` mirror over loro 1.13; room client syncs with the edge
   running under `wrangler dev`; Rust⇄edge⇄Rust convergence test (M1 exit: two Rust peers converge
   through a real SessionRoom DO, tail endpoint serves).
-- **M2 Engine core** — Claude harness end-to-end headless: `comet headless` + dev auth runs a
+- ✅ **M2 Engine core** — Claude harness end-to-end headless: `comet headless` + dev auth runs a
   turn, journal + doc writes, recovery test.
-- **M3 UI core** — shell (sidebar/panes/header), transcript (virtualized, markdown, streaming,
+- ✅ **M3 UI core** — shell (sidebar/panes/header), transcript (virtualized, markdown, streaming,
   stick-to-bottom), composer (send/steer/stop, question panel); local chat fully usable headed.
-- **M4 Multi-device** — device-room host/client virtual sockets, remote device control, workspace
-  doc entity sync, WorkOS auth + org gate, presence.
-- **M5 Full surface** — terminals, diff pane, repo/branch/folder pickers + worktrees, attachments,
-  agent accounts UI, settings (devices/shortcuts/archived), Codex harness.
-- **M6 Polish** — animation catalog complete, keyboard map, staleness edge cases, packaging
-  (macOS/Linux), edge deploy config.
+- ✅ **M4 Multi-device** — device-room host/client virtual sockets, remote device control, workspace
+  doc entity sync, WorkOS auth + org gate, presence. Proven live by `scripts/e2e-smoke.sh`:
+  two headless engines against a real edge — B queues a run into the chat doc, the durable
+  nudge wakes host A, A executes (mock harness), transcript + session status sync back to B.
+- 🟡 **M5 Full surface** — terminals, diff pane, repo/branch/folder pickers + worktrees,
+  agent accounts UI, settings (devices/shortcuts/archived), Codex harness. Gaps: composer
+  attachment UI (engine upload RPCs exist), Cursor harness.
+- 🟡 **M6 Polish** — wire reconciliation (proto AuthState on the wire, `LocalDevice`),
+  two-device e2e smoke, keyboard map, clippy/fmt sweep, Linux packaging
+  (`scripts/package-linux.sh` + release profile), macOS bundling config (`dist/macos/`,
+  not executed — needs a Mac). Gaps: prefers-reduced-motion, engine hardening
+  (instance lock, watchdogs), edge production deploy.
 
 ## 9. Open questions (tracked, non-blocking)
 

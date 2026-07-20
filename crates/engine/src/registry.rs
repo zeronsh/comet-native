@@ -35,7 +35,10 @@ type Factory = Box<dyn Fn() -> Result<Arc<dyn Harness>, HarnessError> + Send + S
 
 enum Slot {
     Ready(Arc<dyn Harness>),
-    Lazy { descriptor: HarnessDescriptor, factory: Factory },
+    Lazy {
+        descriptor: HarnessDescriptor,
+        factory: Factory,
+    },
 }
 
 pub struct HarnessRegistry {
@@ -51,7 +54,10 @@ impl Default for HarnessRegistry {
 
 impl HarnessRegistry {
     pub fn new() -> Self {
-        Self { slots: Mutex::new(HashMap::new()), order: Mutex::new(Vec::new()) }
+        Self {
+            slots: Mutex::new(HashMap::new()),
+            order: Mutex::new(Vec::new()),
+        }
     }
 
     fn slots(&self) -> MutexGuard<'_, HashMap<HarnessId, Slot>> {
@@ -72,7 +78,17 @@ impl HarnessRegistry {
     /// Register a slot resolved on first `resolve` (the factory result is cached).
     pub fn register_lazy(&self, descriptor: HarnessDescriptor, factory: Factory) {
         let id = descriptor.id;
-        if self.slots().insert(id, Slot::Lazy { descriptor, factory }).is_none() {
+        if self
+            .slots()
+            .insert(
+                id,
+                Slot::Lazy {
+                    descriptor,
+                    factory,
+                },
+            )
+            .is_none()
+        {
             self.order().push(id);
         }
     }
@@ -111,7 +127,9 @@ pub fn default_registry() -> HarnessRegistry {
     let registry = HarnessRegistry::new();
     registry.register(Arc::new(MockHarness {
         script: vec![
-            AgentEvent::TextDelta { text: "Mock harness reporting in.".into() },
+            AgentEvent::TextDelta {
+                text: "Mock harness reporting in.".into(),
+            },
             AgentEvent::Done {
                 status: DoneStatus::Completed,
                 result: None,
@@ -159,7 +177,11 @@ mod tests {
         let listed = registry.descriptors();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].name, "Lazy Mock");
-        assert_eq!(calls.load(Ordering::SeqCst), 0, "listing must not force a resolve");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "listing must not force a resolve"
+        );
         assert!(registry.resolve(HarnessId::Mock).is_err());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
     }

@@ -19,7 +19,11 @@ fn base64url(bytes: &[u8]) -> String {
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::new();
     for chunk in bytes.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
         out.push(ALPHABET[(n >> 18) as usize & 63] as char);
         out.push(ALPHABET[(n >> 12) as usize & 63] as char);
@@ -79,7 +83,9 @@ impl StubEdge {
         let handler_state = state.clone();
         let task = tokio::spawn(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else { break };
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
                 tokio::spawn(handle(stream, handler_state.clone()));
             }
         });
@@ -109,10 +115,10 @@ async fn read_request(stream: &mut tokio::net::TcpStream) -> Option<(String, Str
     let request_line = lines.next()?.to_string();
     let mut content_length = 0usize;
     for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            if k.eq_ignore_ascii_case("content-length") {
-                content_length = v.trim().parse().unwrap_or(0);
-            }
+        if let Some((k, v)) = line.split_once(':')
+            && k.eq_ignore_ascii_case("content-length")
+        {
+            content_length = v.trim().parse().unwrap_or(0);
         }
     }
     let mut body = buf[header_end..].to_vec();
@@ -139,7 +145,9 @@ async fn respond(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
 }
 
 async fn handle(mut stream: tokio::net::TcpStream, state: Arc<StubState>) {
-    let Some((method, target, body)) = read_request(&mut stream).await else { return };
+    let Some((method, target, body)) = read_request(&mut stream).await else {
+        return;
+    };
     let path = target.split('?').next().unwrap_or("");
     let ttl = state.token_ttl.load(Ordering::SeqCst) as i64;
     match (method.as_str(), path) {
@@ -149,7 +157,12 @@ async fn handle(mut stream: tokio::net::TcpStream, state: Arc<StubState>) {
         ("POST", "/auth/exchange") => {
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
             if parsed.get("code").and_then(|v| v.as_str()).is_none() {
-                respond(&mut stream, "400 Bad Request", r#"{"error":"missing code"}"#).await;
+                respond(
+                    &mut stream,
+                    "400 Bad Request",
+                    r#"{"error":"missing code"}"#,
+                )
+                .await;
                 return;
             }
             let n = state.exchanges.fetch_add(1, Ordering::SeqCst) + 1;
@@ -165,9 +178,15 @@ async fn handle(mut stream: tokio::net::TcpStream, state: Arc<StubState>) {
         }
         ("POST", "/auth/refresh") => {
             let parsed: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
-            let refresh_token =
-                parsed.get("refreshToken").and_then(|v| v.as_str()).unwrap_or_default();
-            state.refresh_tokens.lock().expect("lock").push(refresh_token.to_string());
+            let refresh_token = parsed
+                .get("refreshToken")
+                .and_then(|v| v.as_str())
+                .unwrap_or_default();
+            state
+                .refresh_tokens
+                .lock()
+                .expect("lock")
+                .push(refresh_token.to_string());
             if refresh_token == "dead" {
                 respond(&mut stream, "401 Unauthorized", r#"{"error":"revoked"}"#).await;
                 return;
@@ -246,7 +265,9 @@ async fn dev_mode_is_signed_in_with_configured_bearer() {
     assert_eq!(auth.access_token().await.as_deref(), Some("wing-dev"));
     // Dev sign-in mirrors the TS service: a no-op URL, CompleteSignIn accepted.
     assert_eq!(auth.start_sign_in().await.expect("dev sign-in"), "");
-    auth.complete_sign_in("whatever").await.expect("dev complete is a no-op");
+    auth.complete_sign_in("whatever")
+        .await
+        .expect("dev complete is a no-op");
 }
 
 #[tokio::test]
@@ -260,9 +281,15 @@ async fn headless_flow_exchanges_pasted_code_and_gates_on_org() {
 
     let url = auth.start_headless_sign_in();
     assert!(url.starts_with("https://authkit.example/user_management/authorize?"));
-    assert_eq!(query_param(&url, "client_id").as_deref(), Some("client_test"));
+    assert_eq!(
+        query_param(&url, "client_id").as_deref(),
+        Some("client_test")
+    );
     let redirect = query_param(&url, "redirect_uri").expect("redirect");
-    assert!(redirect.contains("auth%2Fcli%2Fcallback"), "hosted paste-code page: {redirect}");
+    assert!(
+        redirect.contains("auth%2Fcli%2Fcallback"),
+        "hosted paste-code page: {redirect}"
+    );
     let state = query_param(&url, "state").expect("state param");
 
     // A code minted for someone else's flow (unknown state) is rejected — CSRF check.
@@ -270,9 +297,13 @@ async fn headless_flow_exchanges_pasted_code_and_gates_on_org() {
 
     // The real paste: `state.code`. The exchange-minted token carries no org claim, so
     // the session lands in NeedsOrganization (the org gate).
-    auth.complete_sign_in(&format!("{state}.code123")).await.expect("paste-code sign-in");
+    auth.complete_sign_in(&format!("{state}.code123"))
+        .await
+        .expect("paste-code sign-in");
     assert_eq!(edge.state.exchanges.load(Ordering::SeqCst), 1);
-    assert!(matches!(auth.state(), AuthState::NeedsOrganization { user } if user.email == "w@example.com"));
+    assert!(
+        matches!(auth.state(), AuthState::NeedsOrganization { user } if user.email == "w@example.com")
+    );
 
     // Session persisted 0600 with the exchange's refresh token.
     let session_file = dir.path().join("session.json");
@@ -281,7 +312,10 @@ async fn headless_flow_exchanges_pasted_code_and_gates_on_org() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&session_file).expect("meta").permissions().mode();
+        let mode = std::fs::metadata(&session_file)
+            .expect("meta")
+            .permissions()
+            .mode();
         assert_eq!(mode & 0o777, 0o600, "session file must be private");
     }
 
@@ -291,15 +325,25 @@ async fn headless_flow_exchanges_pasted_code_and_gates_on_org() {
     assert_eq!(orgs.len(), 1);
     assert_eq!(orgs[0].organization_id, "org_1");
     auth.select_org("org_1").await.expect("select org");
-    assert!(matches!(auth.state(), AuthState::SignedIn { org_id: Some(org), .. } if org == "org_1"));
+    assert!(
+        matches!(auth.state(), AuthState::SignedIn { org_id: Some(org), .. } if org == "org_1")
+    );
     assert_eq!(
-        edge.state.refresh_tokens.lock().expect("lock").first().map(String::as_str),
+        edge.state
+            .refresh_tokens
+            .lock()
+            .expect("lock")
+            .first()
+            .map(String::as_str),
         Some("refresh-1"),
         "org refresh presents the stored refresh token"
     );
     // Rotation persisted.
     let raw = std::fs::read_to_string(&session_file).expect("session persisted");
-    assert!(raw.contains("rotated-1"), "rotated refresh token stored: {raw}");
+    assert!(
+        raw.contains("rotated-1"),
+        "rotated refresh token stored: {raw}"
+    );
 
     // Sign-out clears state and removes the persisted session.
     auth.sign_out();
@@ -318,13 +362,23 @@ async fn short_lived_tokens_refresh_on_demand() {
 
     let url = auth.start_headless_sign_in();
     let state = query_param(&url, "state").expect("state");
-    auth.complete_sign_in(&format!("{state}.codeX")).await.expect("sign in");
+    auth.complete_sign_in(&format!("{state}.codeX"))
+        .await
+        .expect("sign in");
     assert!(auth.state().is_signed_in());
 
     let first = auth.access_token().await.expect("token after refresh");
-    assert_eq!(edge.state.refreshes.load(Ordering::SeqCst), 1, "stale exchange token refreshed");
+    assert_eq!(
+        edge.state.refreshes.load(Ordering::SeqCst),
+        1,
+        "stale exchange token refreshed"
+    );
     let second = auth.access_token().await.expect("token again");
-    assert_eq!(edge.state.refreshes.load(Ordering::SeqCst), 2, "still under slack → refreshed");
+    assert_eq!(
+        edge.state.refreshes.load(Ordering::SeqCst),
+        2,
+        "still under slack → refreshed"
+    );
     assert_eq!(first, second, "same claims → same fake token bytes");
     // Rotated refresh tokens are chained: refresh N presents rotation N-1's token.
     let seen = edge.state.refresh_tokens.lock().expect("lock").clone();
@@ -342,7 +396,10 @@ async fn revoked_refresh_token_signs_out() {
     )
     .expect("seed session");
     let auth = Auth::new(workos_config(&edge.url(), dir.path()));
-    assert!(auth.state().is_signed_in(), "boots from the persisted session");
+    assert!(
+        auth.state().is_signed_in(),
+        "boots from the persisted session"
+    );
 
     // The refresh is doomed → the session degrades to SignedOut and the file is gone.
     assert_eq!(auth.access_token().await, None);
@@ -359,25 +416,32 @@ async fn loopback_callback_completes_headed_sign_in() {
 
     let url = auth.start_sign_in().await.expect("authorize url");
     let redirect = query_param(&url, "redirect_uri").expect("redirect");
-    assert!(redirect.starts_with("http%3A%2F%2F127.0.0.1%3A"), "loopback redirect: {redirect}");
+    assert!(
+        redirect.starts_with("http%3A%2F%2F127.0.0.1%3A"),
+        "loopback redirect: {redirect}"
+    );
     let state = query_param(&url, "state").expect("state");
-    let callback: String = redirect
-        .replace("%3A", ":")
-        .replace("%2F", "/");
+    let callback: String = redirect.replace("%3A", ":").replace("%2F", "/");
 
     // A wrong/expired state is rejected without touching the exchange endpoint.
-    let bad = reqwest::get(format!("{callback}?code=abc&state=wrong")).await.expect("bad cb");
+    let bad = reqwest::get(format!("{callback}?code=abc&state=wrong"))
+        .await
+        .expect("bad cb");
     assert_eq!(bad.status().as_u16(), 400);
     assert_eq!(edge.state.exchanges.load(Ordering::SeqCst), 0);
 
     // The browser hits the loopback callback → the engine exchanges the code with the
     // edge and the session lands org-scoped.
-    let ok = reqwest::get(format!("{callback}?code=abc&state={state}")).await.expect("cb");
+    let ok = reqwest::get(format!("{callback}?code=abc&state={state}"))
+        .await
+        .expect("cb");
     assert_eq!(ok.status().as_u16(), 200);
     let mut state_rx = auth.watch_state();
     wait_for(&mut state_rx, |s| s.is_signed_in()).await;
     assert_eq!(edge.state.exchanges.load(Ordering::SeqCst), 1);
-    assert!(matches!(auth.state(), AuthState::SignedIn { org_id: Some(org), user } if org == "org_1" && user.name.as_deref() == Some("Wing Test")));
+    assert!(
+        matches!(auth.state(), AuthState::SignedIn { org_id: Some(org), user } if org == "org_1" && user.name.as_deref() == Some("Wing Test"))
+    );
 }
 
 #[tokio::test]
@@ -387,7 +451,9 @@ async fn detect_probes_edge_dev_mode() {
     let port = listener.local_addr().expect("addr").port();
     let task = tokio::spawn(async move {
         loop {
-            let Ok((mut stream, _)) = listener.accept().await else { break };
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
             if read_request(&mut stream).await.is_some() {
                 respond(&mut stream, "200 OK", r#"{"ok":true,"auth":"dev"}"#).await;
             }

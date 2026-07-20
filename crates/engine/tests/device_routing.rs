@@ -3,13 +3,17 @@
 //! minimal in-memory device-room standing in for the edge DO (route client→host with
 //! `from` stamped, host→client by `to`).
 
+// tungstenite's `accept_hdr_async` callback signature fixes the Err type as a full
+// `Response` — its size is not ours to shrink.
+#![allow(clippy::result_large_err)]
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use futures::{SinkExt, StreamExt};
 use futures::stream::BoxStream;
+use futures::{SinkExt, StreamExt};
 use tokio::net::TcpListener;
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::Message as WsMessage;
@@ -41,11 +45,16 @@ struct RelayState {
 
 async fn fake_device_room() -> (String, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind relay");
-    let url = format!("http://127.0.0.1:{}", listener.local_addr().expect("addr").port());
+    let url = format!(
+        "http://127.0.0.1:{}",
+        listener.local_addr().expect("addr").port()
+    );
     let state = Arc::new(Mutex::new(RelayState::default()));
     let task = tokio::spawn(async move {
         loop {
-            let Ok((stream, _)) = listener.accept().await else { break };
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
             let state = state.clone();
             tokio::spawn(async move {
                 let mut uri = String::new();
@@ -85,22 +94,24 @@ async fn fake_device_room() -> (String, tokio::task::JoinHandle<()>) {
                     }
                 });
                 while let Some(Ok(message)) = ws_stream.next().await {
-                    let WsMessage::Binary(bytes) = message else { continue };
-                    let Ok((header, payload)) = decode_device_frame(&bytes) else { break };
+                    let WsMessage::Binary(bytes) = message else {
+                        continue;
+                    };
+                    let Ok((header, payload)) = decode_device_frame(&bytes) else {
+                        break;
+                    };
                     let st = state.lock().expect("lock");
                     if is_host {
                         let Some(to) = header.to else { continue };
                         if let Some(client) = st.clients.get(&to) {
                             let stripped = DeviceFrameHeader::new(header.s, header.k);
-                            let _ = client.send(
-                                encode_device_frame(&stripped, &payload).expect("encode"),
-                            );
+                            let _ = client
+                                .send(encode_device_frame(&stripped, &payload).expect("encode"));
                         }
                     } else if let Some(host) = &st.host {
                         let mut routed = DeviceFrameHeader::new(header.s, header.k);
                         routed.from = Some(conn_id.clone());
-                        let _ =
-                            host.send(encode_device_frame(&routed, &payload).expect("encode"));
+                        let _ = host.send(encode_device_frame(&routed, &payload).expect("encode"));
                     }
                 }
                 writer.abort();
@@ -151,7 +162,9 @@ impl Harness for InstantHarness {
                 session_id: "hs-1".into(),
                 assistant_message_id: "a-1".into(),
             }),
-            Ok(AgentEvent::TextDelta { text: "remote reply".into() }),
+            Ok(AgentEvent::TextDelta {
+                text: "remote reply".into(),
+            }),
             Ok(AgentEvent::Done {
                 status: DoneStatus::Completed,
                 result: None,
@@ -197,13 +210,18 @@ async fn target_device_id_routes_over_the_relay() {
 
     // Seed a transcript on B only — proves reads come from B, not A's (empty) doc.
     let handle_b = core_b.doc_host.open("chat-remote").expect("open chat on B");
-    handle_b.write_user_message("m-b-1", "hello from B", 1_000).expect("write user message");
+    handle_b
+        .write_user_message("m-b-1", "hello from B", 1_000)
+        .expect("write user message");
 
     let client = comet_rpc::memory_client(core_a.rpc_service());
 
     // Our own id in targetDeviceId: handled locally, no forward.
     let local = client
-        .call(methods::LIST_HARNESSES, serde_json::json!({ "targetDeviceId": "device-a" }))
+        .call(
+            methods::LIST_HARNESSES,
+            serde_json::json!({ "targetDeviceId": "device-a" }),
+        )
         .await
         .expect("local list");
     assert!(local.is_array());
@@ -213,7 +231,10 @@ async fn target_device_id_routes_over_the_relay() {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
     let remote = loop {
         match client
-            .call(methods::LIST_HARNESSES, serde_json::json!({ "targetDeviceId": "device-b" }))
+            .call(
+                methods::LIST_HARNESSES,
+                serde_json::json!({ "targetDeviceId": "device-b" }),
+            )
             .await
         {
             Ok(value) => break value,
@@ -275,7 +296,10 @@ async fn target_device_id_routes_over_the_relay() {
         )
         .await
         .expect("queue on B");
-    let command_id = queued["commandId"].as_str().expect("command id").to_string();
+    let command_id = queued["commandId"]
+        .as_str()
+        .expect("command id")
+        .to_string();
     let commands = handle_b.doc().read_commands().expect("read B commands");
     assert!(
         commands.iter().any(|c| c.id == command_id),
@@ -302,7 +326,12 @@ async fn terminal_stream_proxies_over_the_relay() {
     let core_b = assemble(&dirs.path().join("b"), "device-b");
     core_b
         .workspace
-        .create_chat("chat-term", "device-b", None, Some(cwd.to_string_lossy().into()))
+        .create_chat(
+            "chat-term",
+            "device-b",
+            None,
+            Some(cwd.to_string_lossy().into()),
+        )
         .expect("chat row on B");
     let _host = core_b.start_host_relay(&relay_url);
 
@@ -339,7 +368,11 @@ async fn terminal_stream_proxies_over_the_relay() {
         }
     };
     let terminal_id = session["id"].as_str().expect("terminal id").to_string();
-    assert_eq!(session["cwd"].as_str(), Some(&*cwd.to_string_lossy()), "cwd from B's chat row");
+    assert_eq!(
+        session["cwd"].as_str(),
+        Some(&*cwd.to_string_lossy()),
+        "cwd from B's chat row"
+    );
 
     // SubscribeTerminal: the stream is proxied item-by-item through the relay.
     let mut stream = client
@@ -368,8 +401,9 @@ async fn terminal_stream_proxies_over_the_relay() {
             .expect("proxied terminal output before timeout")
             .expect("stream alive");
         if item["type"] == "data" {
-            let bytes =
-                BASE64.decode(item["data"].as_str().expect("data")).expect("valid base64");
+            let bytes = BASE64
+                .decode(item["data"].as_str().expect("data"))
+                .expect("valid base64");
             transcript.extend(bytes);
         }
         if String::from_utf8_lossy(&transcript).contains("r3lay-22") {
@@ -395,7 +429,10 @@ async fn remote_target_without_links_fails_clearly() {
     let core = assemble(&dirs.path().join("solo"), "device-solo");
     let client = comet_rpc::memory_client(core.rpc_service());
     let err = client
-        .call(methods::LIST_HARNESSES, serde_json::json!({ "targetDeviceId": "device-elsewhere" }))
+        .call(
+            methods::LIST_HARNESSES,
+            serde_json::json!({ "targetDeviceId": "device-elsewhere" }),
+        )
         .await
         .expect_err("offline forward must fail");
     assert!(

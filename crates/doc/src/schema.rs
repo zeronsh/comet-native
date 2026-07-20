@@ -3,9 +3,9 @@
 //! Container layout (MUST stay shape-compatible with the TS edge/tail materializer):
 //! - `meta`:     LoroMap  { chatId: string, schemaVersion: number }         (host-only writer)
 //! - `messages`: LoroList of LoroMap {
-//!       id, role, parts: LoroList<part map>, createdAt, deviceId, status?, continuationOf? }
+//!   id, role, parts: LoroList<part map>, createdAt, deviceId, status?, continuationOf? }
 //! - `commands`: LoroList of LoroMap {
-//!       id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
+//!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
 //!
 //! Part maps: { id, kind: "text"|"tool"|"input"|"error", text?: LoroText, call?: json,
 //! isError?, questions?: json, resolved?, message? }. Text bodies are **LoroText** so streaming
@@ -201,7 +201,10 @@ impl SessionDoc {
     /// Read all entries (continuations NOT joined — see `join_continuation_entries`).
     pub fn read_entries(&self) -> Result<Vec<SessionMessageEntry>, DocError> {
         let value = self.doc.get_deep_value().to_json_value();
-        let messages = value.get("messages").cloned().unwrap_or(serde_json::json!([]));
+        let messages = value
+            .get("messages")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
         let raw: Vec<serde_json::Value> = serde_json::from_value(messages)?;
         raw.into_iter().map(entry_from_json).collect()
     }
@@ -209,7 +212,10 @@ impl SessionDoc {
     /// Read the commands ledger.
     pub fn read_commands(&self) -> Result<Vec<SessionCommandEntry>, DocError> {
         let value = self.doc.get_deep_value().to_json_value();
-        let commands = value.get("commands").cloned().unwrap_or(serde_json::json!([]));
+        let commands = value
+            .get("commands")
+            .cloned()
+            .unwrap_or(serde_json::json!([]));
         let raw: Vec<serde_json::Value> = serde_json::from_value(commands)?;
         raw.into_iter()
             .map(|v| serde_json::from_value(v).map_err(DocError::from))
@@ -494,7 +500,9 @@ impl<'a> SegmentWriter<'a> {
     fn parts_list(&self) -> Result<LoroList, DocError> {
         match self.entry_map()?.get("parts") {
             Some(loro::ValueOrContainer::Container(loro::Container::List(list))) => Ok(list),
-            _ => Err(DocError::Schema("streaming entry parts list missing".into())),
+            _ => Err(DocError::Schema(
+                "streaming entry parts list missing".into(),
+            )),
         }
     }
 
@@ -618,10 +626,18 @@ pub struct SessionTail {
 }
 
 /// Materialize the last-N joined messages (`materializeTail` in TS).
-pub fn materialize_tail(doc: &SessionDoc, now: i64, tail_count: usize) -> Result<SessionTail, DocError> {
+pub fn materialize_tail(
+    doc: &SessionDoc,
+    now: i64,
+    tail_count: usize,
+) -> Result<SessionTail, DocError> {
     let all = join_continuation_entries(doc.read_entries()?);
     let total = all.len();
-    let start = total.saturating_sub(if tail_count == 0 { TAIL_MESSAGE_COUNT } else { tail_count });
+    let start = total.saturating_sub(if tail_count == 0 {
+        TAIL_MESSAGE_COUNT
+    } else {
+        tail_count
+    });
     Ok(SessionTail {
         chat_id: doc.chat_id().unwrap_or_default(),
         schema_version: SESSION_SCHEMA_VERSION,
@@ -678,7 +694,10 @@ mod tests {
         let other = LoroDoc::new();
         other.import(&bytes).unwrap();
         let restored = SessionDoc::from_doc(other);
-        assert_eq!(restored.read_entries().unwrap(), doc.read_entries().unwrap());
+        assert_eq!(
+            restored.read_entries().unwrap(),
+            doc.read_entries().unwrap()
+        );
     }
 
     #[test]
@@ -724,7 +743,9 @@ mod tests {
             &folded,
             &AgentEvent::ToolCall {
                 id: "tool-1".into(),
-                call: ToolCall::Exec { command: "ls".into() },
+                call: ToolCall::Exec {
+                    command: "ls".into(),
+                },
             },
         );
         writer.sync(&folded).unwrap();
@@ -747,7 +768,9 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
         match &entries[0].parts[1] {
-            MessagePart::Tool { resolved, is_error, .. } => {
+            MessagePart::Tool {
+                resolved, is_error, ..
+            } => {
                 assert!(*resolved);
                 assert!(!*is_error);
             }
@@ -763,8 +786,14 @@ mod tests {
         entry.status = Some(MessageStatus::Streaming);
         doc.push_message(&entry).unwrap();
 
-        assert!(doc.set_message_status("m1", MessageStatus::Aborted).unwrap());
-        assert!(!doc.set_message_status("nope", MessageStatus::Aborted).unwrap());
+        assert!(
+            doc.set_message_status("m1", MessageStatus::Aborted)
+                .unwrap()
+        );
+        assert!(
+            !doc.set_message_status("nope", MessageStatus::Aborted)
+                .unwrap()
+        );
         let entries = doc.read_entries().unwrap();
         assert_eq!(entries[0].status, Some(MessageStatus::Aborted));
     }

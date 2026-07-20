@@ -132,11 +132,10 @@ impl SessionsEngine {
     }
 
     fn doc_handle(&self, chat_id: &str) -> Result<Arc<ChatDocHandle>, EngineError> {
-        let host = self
-            .inner
-            .doc_host
-            .get()
-            .ok_or_else(|| EngineError::Other("doc host not wired into sessions engine".into()))?;
+        let host =
+            self.inner.doc_host.get().ok_or_else(|| {
+                EngineError::Other("doc host not wired into sessions engine".into())
+            })?;
         host.open(chat_id)
     }
 
@@ -237,7 +236,10 @@ impl SessionsEngine {
                 let (tx, rx) = oneshot::channel();
                 let request_id = new_id();
                 lock(&pending).insert(request_id.clone(), tx);
-                let _ = engine_tx.send(AgentEvent::InputRequested { request_id, questions });
+                let _ = engine_tx.send(AgentEvent::InputRequested {
+                    request_id,
+                    questions,
+                });
                 rx
             })
         };
@@ -291,7 +293,10 @@ impl SessionsEngine {
         let Some(steer_tx) = target else {
             return Ok(SteerOutcome::NotSteerable);
         };
-        let message = SteerMessage { prompt: prompt.to_string(), message_id: message_id.clone() };
+        let message = SteerMessage {
+            prompt: prompt.to_string(),
+            message_id: message_id.clone(),
+        };
         if steer_tx.try_send(message).is_err() {
             return Ok(SteerOutcome::NotSteerable);
         }
@@ -308,7 +313,12 @@ impl SessionsEngine {
     /// (bounded) for that settlement so callers observe a consistent doc.
     pub async fn interrupt(&self, chat_id: &str) -> Result<bool, EngineError> {
         let target = lock(&self.inner.runs).get(chat_id).map(|h| {
-            (h.run_id.clone(), h.interrupt_token.clone(), h.cancel.clone(), h.pending_inputs.clone())
+            (
+                h.run_id.clone(),
+                h.interrupt_token.clone(),
+                h.cancel.clone(),
+                h.pending_inputs.clone(),
+            )
         });
         let Some((run_id, token, cancel, pending)) = target else {
             return Ok(false);
@@ -352,7 +362,9 @@ impl SessionsEngine {
             return Ok(false);
         };
         let _ = resolver.send(answers);
-        let _ = engine_tx.send(AgentEvent::InputResolved { request_id: request_id.to_string() });
+        let _ = engine_tx.send(AgentEvent::InputResolved {
+            request_id: request_id.to_string(),
+        });
         Ok(true)
     }
 
@@ -414,7 +426,10 @@ impl Inner {
             }
         };
         if let Some(hub) = lock(&self.hubs).get(chat_id) {
-            let _ = hub.send(JournaledEvent { seq, event: event.clone() });
+            let _ = hub.send(JournaledEvent {
+                seq,
+                event: event.clone(),
+            });
         }
         seq
     }
@@ -423,13 +438,15 @@ impl Inner {
         let now = Utc::now();
         let session = {
             let mut statuses = lock(&self.statuses);
-            let entry = statuses.entry(chat_id.to_string()).or_insert_with(|| Session {
-                chat_id: chat_id.to_string(),
-                device_id: self.device_id.clone(),
-                status,
-                started_at: None,
-                updated_at: now,
-            });
+            let entry = statuses
+                .entry(chat_id.to_string())
+                .or_insert_with(|| Session {
+                    chat_id: chat_id.to_string(),
+                    device_id: self.device_id.clone(),
+                    status,
+                    started_at: None,
+                    updated_at: now,
+                });
             entry.status = status;
             entry.updated_at = now;
             if fresh_start {
@@ -438,7 +455,9 @@ impl Inner {
             let session = entry.clone();
             let mut list: Vec<Session> = statuses.values().cloned().collect();
             list.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
-            let _ = self.sessions_tx.send(list);
+            // send_replace: keep the current value fresh even with no receivers,
+            // so late WatchSessions subscribers see the last transition.
+            self.sessions_tx.send_replace(list);
             session
         };
         // Mirror the transition into the workspace doc's session-status row so
@@ -484,7 +503,12 @@ fn render_parts(parts: &[MessagePart]) -> Vec<MessagePart> {
     parts
         .iter()
         .map(|part| match part {
-            MessagePart::Tool { id, call, is_error, resolved } => MessagePart::Tool {
+            MessagePart::Tool {
+                id,
+                call,
+                is_error,
+                resolved,
+            } => MessagePart::Tool {
                 id: id.clone(),
                 call: sanitize_tool_call(call),
                 is_error: *is_error,
@@ -568,7 +592,12 @@ async fn drive_run(
         Ok(stream) => stream,
         Err(err) => {
             let message = err.to_string();
-            inner.publish(&chat_id, &AgentEvent::Error { message: message.clone() });
+            inner.publish(
+                &chat_id,
+                &AgentEvent::Error {
+                    message: message.clone(),
+                },
+            );
             inner.publish(
                 &chat_id,
                 &AgentEvent::Done {
@@ -650,7 +679,11 @@ async fn drive_run(
         };
 
         // A steer boundary splits the assistant entry exactly where the fold resets.
-        if let AgentEvent::Steered { next_assistant_message_id, .. } = &event {
+        if let AgentEvent::Steered {
+            next_assistant_message_id,
+            ..
+        } = &event
+        {
             inner.publish(&chat_id, &event);
             if let Err(err) = finish_segment(
                 doc_ref,
@@ -675,7 +708,10 @@ async fn drive_run(
             AgentEvent::SessionStarted { session_id, .. } => {
                 inner.remember_harness_session(&chat_id, session_id);
             }
-            AgentEvent::Done { session_id: Some(session_id), .. } => {
+            AgentEvent::Done {
+                session_id: Some(session_id),
+                ..
+            } => {
                 inner.remember_harness_session(&chat_id, session_id);
             }
             AgentEvent::InputRequested { .. } => {
@@ -691,8 +727,7 @@ async fn drive_run(
 
         // Defensive rule from comet: a mid-run SessionStarted re-emission (Claude SDK
         // background re-invocations) must not wipe the segment being written.
-        let skip_fold =
-            matches!(&event, AgentEvent::SessionStarted { .. }) && !folded.is_empty();
+        let skip_fold = matches!(&event, AgentEvent::SessionStarted { .. }) && !folded.is_empty();
         if !skip_fold {
             folded = fold_event_into_parts(&folded, &event);
         }
@@ -729,8 +764,8 @@ async fn drive_run(
 
         if !folded.is_empty() && !dirty {
             dirty = true;
-            flush_at = tokio::time::Instant::now()
-                + std::time::Duration::from_millis(STREAM_COMMIT_MS);
+            flush_at =
+                tokio::time::Instant::now() + std::time::Duration::from_millis(STREAM_COMMIT_MS);
         }
     };
 

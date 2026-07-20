@@ -120,7 +120,10 @@ impl Connector for WsConnector {
             let (out_tx, out_rx) = mpsc::channel(64);
             let (in_tx, in_rx) = mpsc::channel(64);
             tokio::spawn(pump(ws, out_rx, in_tx));
-            Ok(Pipe { tx: out_tx, rx: in_rx })
+            Ok(Pipe {
+                tx: out_tx,
+                rx: in_rx,
+            })
         })
     }
 }
@@ -201,7 +204,9 @@ impl RoomClient {
     /// (unreachable edge, `JoinError`) is returned as `Err`; only after a
     /// successful join does the client keep reconnecting in the background.
     pub async fn connect(url: &str, room_id: &str, doc: LoroDoc) -> Result<Self, SyncError> {
-        let connector = Arc::new(WsConnector { url: url.to_string() });
+        let connector = Arc::new(WsConnector {
+            url: url.to_string(),
+        });
         Self::connect_with(connector, room_id, doc).await
     }
 
@@ -281,7 +286,10 @@ impl RoomClient {
         let _ = self.shutdown.send(true);
         if let Some(task) = self.task.take() {
             let abort = task.abort_handle();
-            if tokio::time::timeout(Duration::from_secs(5), task).await.is_err() {
+            if tokio::time::timeout(Duration::from_secs(5), task)
+                .await
+                .is_err()
+            {
                 abort.abort();
             }
         }
@@ -482,7 +490,11 @@ impl Session {
     fn local_version_bytes(&self) -> Vec<u8> {
         let vv = self.doc.oplog_vv();
         // Empty bytes ask the server for a full snapshot (its fresh-doc path).
-        if vv.is_empty() { Vec::new() } else { vv.encode() }
+        if vv.is_empty() {
+            Vec::new()
+        } else {
+            vv.encode()
+        }
     }
 
     async fn send(&self, message: &ProtocolMessage) -> Result<(), SyncError> {
@@ -512,11 +524,21 @@ impl Session {
     ) -> Result<Option<SessionEnd>, SyncError> {
         let message = decode(bytes).map_err(SyncError::Protocol)?;
         match message {
-            ProtocolMessage::JoinResponseOk { crdt, version, permission, .. } => {
+            ProtocolMessage::JoinResponseOk {
+                crdt,
+                version,
+                permission,
+                ..
+            } => {
                 self.on_join_ok(crdt, version, permission, ready).await?;
                 Ok(None)
             }
-            ProtocolMessage::JoinError { crdt, code, message, .. } => {
+            ProtocolMessage::JoinError {
+                crdt,
+                code,
+                message,
+                ..
+            } => {
                 if crdt == CrdtType::Loro {
                     if code == JoinErrorCode::VersionUnknown {
                         // Server can't diff from our VV — fall back to a full
@@ -563,11 +585,21 @@ impl Session {
                 );
                 Ok(None)
             }
-            ProtocolMessage::DocUpdateFragment { batch_id, index, fragment, .. } => {
+            ProtocolMessage::DocUpdateFragment {
+                batch_id,
+                index,
+                fragment,
+                ..
+            } => {
                 self.on_fragment(batch_id, index, fragment).await?;
                 Ok(None)
             }
-            ProtocolMessage::Ack { crdt, ref_id, status, .. } => {
+            ProtocolMessage::Ack {
+                crdt,
+                ref_id,
+                status,
+                ..
+            } => {
                 self.on_ack(crdt, ref_id, status).await?;
                 Ok(None)
             }

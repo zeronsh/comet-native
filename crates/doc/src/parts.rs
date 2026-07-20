@@ -126,11 +126,10 @@ pub fn fold_event_into_parts(parts: &[MessagePart], event: &AgentEvent) -> Vec<M
                     resolved,
                     ..
                 } = p
+                    && pid == id
                 {
-                    if pid == id {
-                        *e = *is_error;
-                        *resolved = true;
-                    }
+                    *e = *is_error;
+                    *resolved = true;
                 }
             }
         }
@@ -155,10 +154,9 @@ pub fn fold_event_into_parts(parts: &[MessagePart], event: &AgentEvent) -> Vec<M
                     resolved,
                     ..
                 } = p
+                    && rid == request_id
                 {
-                    if rid == request_id {
-                        *resolved = true;
-                    }
+                    *resolved = true;
                 }
             }
         }
@@ -178,8 +176,7 @@ pub fn fold_event_into_parts(parts: &[MessagePart], event: &AgentEvent) -> Vec<M
                 });
             }
         }
-        AgentEvent::AssistantMessageCompleted { .. }
-        | AgentEvent::Usage { .. } => {}
+        AgentEvent::AssistantMessageCompleted { .. } | AgentEvent::Usage { .. } => {}
     }
     out
 }
@@ -405,7 +402,11 @@ mod tests {
             },
         ];
         let chunks = split_parts(&parts);
-        assert!(chunks.len() >= 3, "expected >=3 chunks, got {}", chunks.len());
+        assert!(
+            chunks.len() >= 3,
+            "expected >=3 chunks, got {}",
+            chunks.len()
+        );
         for chunk in &chunks {
             let bytes: usize = chunk.iter().map(|p| p.byte_len()).sum();
             assert!(bytes <= MSG_INLINE_MAX, "chunk over cap: {bytes}");

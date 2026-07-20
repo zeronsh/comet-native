@@ -14,14 +14,12 @@ use async_trait::async_trait;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 
-use comet_doc::{
-    CommandBasedOn, SessionCommandEntry, SessionCommandPayload, SessionCommandStatus,
-};
+use comet_doc::{CommandBasedOn, SessionCommandEntry, SessionCommandPayload, SessionCommandStatus};
 use comet_engine::{EngineCore, HarnessRegistry};
 use comet_harness::{Harness, HarnessError, RunControls};
 use comet_proto::{
-    AgentEvent, ChatConfig, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest,
-    SandboxLevel, SessionStatus, SteeringMode,
+    AgentEvent, ChatConfig, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
+    SessionStatus, SteeringMode,
 };
 use comet_rpc::methods;
 
@@ -144,7 +142,10 @@ where
 {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
     while !predicate() {
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
 }
@@ -358,9 +359,16 @@ async fn non_host_engine_leaves_remote_chats_commands_alone() {
     let handle = a.doc_host.open("chat-remote").expect("open chat");
     let commands = handle.doc().read_commands().expect("read commands");
     assert_eq!(commands.len(), 1);
-    assert_eq!(commands[0].status, SessionCommandStatus::Pending, "command must stay pending");
+    assert_eq!(
+        commands[0].status,
+        SessionCommandStatus::Pending,
+        "command must stay pending"
+    );
     let entries = handle.doc().read_entries().expect("read entries");
-    assert!(entries.is_empty(), "non-host must not write entries: {entries:#?}");
+    assert!(
+        entries.is_empty(),
+        "non-host must not write entries: {entries:#?}"
+    );
     assert!(a.sessions.session_status("chat-remote").is_none());
 
     a.shutdown().await;
@@ -423,7 +431,10 @@ async fn two_engines_converge_through_a_real_workspace_room() {
         std::fs::create_dir_all(dir).expect("create data dir");
         std::fs::write(dir.join("device-id"), device_id).expect("write device id");
         // Dev-mode bearer `user@org` carries the org claim the workspace route checks.
-        let edge = Some(EdgeConfig { url: base.clone(), token: format!("{user}@{org}") });
+        let edge = Some(EdgeConfig {
+            url: base.clone(),
+            token: format!("{user}@{org}"),
+        });
         EngineCore::assemble_with_org(dir, registry(), HarnessId::Mock, edge, &org)
             .expect("engine core assembles")
     };
@@ -453,7 +464,9 @@ async fn two_engines_converge_through_a_real_workspace_room() {
     }
 
     // A rename from B lands on A.
-    b.workspace.rename_device("dev-live-a", "renamed by b").expect("rename");
+    b.workspace
+        .rename_device("dev-live-a", "renamed by b")
+        .expect("rename");
     wait_for(
         || {
             a.workspace

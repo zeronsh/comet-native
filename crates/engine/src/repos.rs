@@ -30,12 +30,12 @@ const FOLDER_LIST_TIMEOUT: Duration = Duration::from_secs(6);
 const FOLDER_LIST_MAX_ENTRIES: usize = 500;
 
 const ADJECTIVES: &[&str] = &[
-    "swift", "calm", "bright", "bold", "keen", "brave", "clever", "lucky", "quiet", "warm",
-    "cool", "sharp", "gentle", "vivid", "amber", "cobalt",
+    "swift", "calm", "bright", "bold", "keen", "brave", "clever", "lucky", "quiet", "warm", "cool",
+    "sharp", "gentle", "vivid", "amber", "cobalt",
 ];
 const NOUNS: &[&str] = &[
-    "otter", "harbor", "falcon", "cedar", "meadow", "comet", "delta", "ember", "lynx",
-    "maple", "onyx", "quartz", "raven", "summit", "willow", "aspen",
+    "otter", "harbor", "falcon", "cedar", "meadow", "comet", "delta", "ember", "lynx", "maple",
+    "onyx", "quartz", "raven", "summit", "willow", "aspen",
 ];
 
 /// Canonical identity shared by every chat operating in this exact worktree.
@@ -54,7 +54,11 @@ pub(crate) fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .filter(|s| !s.is_empty())
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("USERPROFILE").filter(|s| !s.is_empty()).map(PathBuf::from))
+        .or_else(|| {
+            std::env::var_os("USERPROFILE")
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+        })
         .unwrap_or_else(|| PathBuf::from("/"))
 }
 
@@ -144,7 +148,11 @@ impl Repos {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let message = stderr.trim();
             return Err(EngineError::Other(if message.is_empty() {
-                format!("git {} failed ({})", args.first().unwrap_or(&"?"), output.status)
+                format!(
+                    "git {} failed ({})",
+                    args.first().unwrap_or(&"?"),
+                    output.status
+                )
             } else {
                 format!("git: {message}")
             }));
@@ -172,21 +180,32 @@ impl Repos {
     /// The branch currently checked out at a repo/worktree path (`"HEAD"` when detached).
     pub async fn current_branch(&self, path: &Path) -> Result<String, EngineError> {
         let branch = self.git(&["branch", "--show-current"], Some(path)).await?;
-        Ok(if branch.is_empty() { "HEAD".to_string() } else { branch })
+        Ok(if branch.is_empty() {
+            "HEAD".to_string()
+        } else {
+            branch
+        })
     }
 
     /// The absolute Git `HEAD` file for event-driven external branch reconciliation.
     pub async fn git_head_path(&self, path: &Path) -> Result<PathBuf, EngineError> {
-        let git_dir = self.git(&["rev-parse", "--absolute-git-dir"], Some(path)).await?;
+        let git_dir = self
+            .git(&["rev-parse", "--absolute-git-dir"], Some(path))
+            .await?;
         Ok(PathBuf::from(git_dir).join("HEAD"))
     }
 
     /// Canonical identity shared by every chat operating in this exact worktree:
     /// `sha256(deviceId ‖ NUL ‖ canonical git dir)`.
     pub async fn checkout_identity(&self, path: &Path) -> Result<CheckoutIdentity, EngineError> {
-        let root = self.git(&["rev-parse", "--show-toplevel"], Some(path)).await?;
+        let root = self
+            .git(&["rev-parse", "--show-toplevel"], Some(path))
+            .await?;
         let git_dir = self
-            .git(&["rev-parse", "--path-format=absolute", "--git-dir"], Some(path))
+            .git(
+                &["rev-parse", "--path-format=absolute", "--git-dir"],
+                Some(path),
+            )
             .await?;
         let canonical_root = std::fs::canonicalize(&root).unwrap_or_else(|_| PathBuf::from(&root));
         let canonical_git_dir =
@@ -196,7 +215,11 @@ impl Repos {
         hasher.update([0u8]);
         hasher.update(canonical_git_dir.to_string_lossy().as_bytes());
         let id = hex(&hasher.finalize());
-        Ok(CheckoutIdentity { id, root: canonical_root, git_dir: canonical_git_dir })
+        Ok(CheckoutIdentity {
+            id,
+            root: canonical_root,
+            git_dir: canonical_git_dir,
+        })
     }
 
     async fn to_repo(&self, path: &Path) -> Result<Repo, EngineError> {
@@ -224,7 +247,9 @@ impl Repos {
             }
             match self.to_repo(&path).await {
                 Ok(repo) => repos.push(repo),
-                Err(err) => tracing::debug!(path = %path.display(), error = %err, "repo listing skip"),
+                Err(err) => {
+                    tracing::debug!(path = %path.display(), error = %err, "repo listing skip")
+                }
             }
         }
         repos
@@ -234,10 +259,16 @@ impl Repos {
     pub async fn add(&self, path: &str) -> Result<Repo, EngineError> {
         let abs = absolutize(Path::new(path));
         if !Self::path_exists(&abs).await {
-            return Err(EngineError::Other(format!("No such folder: {}", abs.display())));
+            return Err(EngineError::Other(format!(
+                "No such folder: {}",
+                abs.display()
+            )));
         }
         if !self.is_repo(&abs).await {
-            return Err(EngineError::Other(format!("Not a git repository: {}", abs.display())));
+            return Err(EngineError::Other(format!(
+                "Not a git repository: {}",
+                abs.display()
+            )));
         }
         self.register(&abs.to_string_lossy())?;
         self.to_repo(&abs).await
@@ -257,10 +288,14 @@ impl Repos {
         let repos_dir = self.inner.data_dir.join("repos");
         let target = repos_dir.join(&name);
         if target.exists() {
-            return Err(EngineError::Other(format!("Already exists: {}", target.display())));
+            return Err(EngineError::Other(format!(
+                "Already exists: {}",
+                target.display()
+            )));
         }
         std::fs::create_dir_all(&repos_dir)?;
-        self.git(&["clone", trimmed, &target.to_string_lossy()], None).await?;
+        self.git(&["clone", trimmed, &target.to_string_lossy()], None)
+            .await?;
         self.register(&target.to_string_lossy())?;
         self.to_repo(&target).await
     }
@@ -270,14 +305,23 @@ impl Repos {
         let clean: String = name
             .trim()
             .chars()
-            .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') { c } else { '-' })
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-') {
+                    c
+                } else {
+                    '-'
+                }
+            })
             .collect();
         if clean.is_empty() || clean.chars().all(|c| c == '-' || c == '.') {
             return Err(EngineError::Other("Invalid repository name".into()));
         }
         let target = self.inner.data_dir.join("repos").join(&clean);
         if target.exists() {
-            return Err(EngineError::Other(format!("Already exists: {}", target.display())));
+            return Err(EngineError::Other(format!(
+                "Already exists: {}",
+                target.display()
+            )));
         }
         std::fs::create_dir_all(&target)?;
         self.git(&["init", "-b", "main"], Some(&target)).await?;
@@ -290,7 +334,9 @@ impl Repos {
     /// All branches (`git branch -a`), local first, deduped against their remote
     /// counterparts, with the repo's default branch first.
     pub async fn branches(&self, repo_path: &Path) -> Result<Vec<String>, EngineError> {
-        let out = self.git(&["branch", "-a", "--format=%(refname)"], Some(repo_path)).await?;
+        let out = self
+            .git(&["branch", "-a", "--format=%(refname)"], Some(repo_path))
+            .await?;
         let mut names: Vec<String> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut push = |name: &str| {
@@ -305,15 +351,18 @@ impl Repos {
             }
         }
         for line in out.lines().map(str::trim) {
-            if let Some(remote) = line.strip_prefix("refs/remotes/") {
-                if let Some((_, name)) = remote.split_once('/') {
-                    push(name);
-                }
+            if let Some(remote) = line.strip_prefix("refs/remotes/")
+                && let Some((_, name)) = remote.split_once('/')
+            {
+                push(name);
             }
         }
         // Default branch first: origin/HEAD's target, else the checked-out branch.
         let default = match self
-            .git(&["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], Some(repo_path))
+            .git(
+                &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+                Some(repo_path),
+            )
             .await
         {
             Ok(short) => short.split_once('/').map(|(_, b)| b.to_string()),
@@ -321,13 +370,17 @@ impl Repos {
         };
         let default = match default {
             Some(branch) => Some(branch),
-            None => self.current_branch(repo_path).await.ok().filter(|b| b != "HEAD"),
+            None => self
+                .current_branch(repo_path)
+                .await
+                .ok()
+                .filter(|b| b != "HEAD"),
         };
-        if let Some(default) = default {
-            if let Some(pos) = names.iter().position(|n| *n == default) {
-                let head = names.remove(pos);
-                names.insert(0, head);
-            }
+        if let Some(default) = default
+            && let Some(pos) = names.iter().position(|n| *n == default)
+        {
+            let head = names.remove(pos);
+            names.insert(0, head);
         }
         Ok(names)
     }
@@ -349,8 +402,12 @@ impl Repos {
         let base = self.inner.worktrees_root.join(&repo_name);
         std::fs::create_dir_all(&base)?;
         // Auto-generate a name colliding with neither an existing dir nor branch.
-        let existing: HashSet<String> =
-            self.branches(repo_path).await.unwrap_or_default().into_iter().collect();
+        let existing: HashSet<String> = self
+            .branches(repo_path)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .collect();
         let mut name = None;
         for attempt in 0..50u64 {
             let seed = std::time::SystemTime::now()
@@ -369,12 +426,19 @@ impl Repos {
                 break;
             }
         }
-        let name = name
-            .ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
+        let name =
+            name.ok_or_else(|| EngineError::Other("Could not allocate a worktree name".into()))?;
         let path = base.join(&name);
         let branch_name = format!("comet/{name}");
         self.git(
-            &["worktree", "add", "-b", &branch_name, &path.to_string_lossy(), branch],
+            &[
+                "worktree",
+                "add",
+                "-b",
+                &branch_name,
+                &path.to_string_lossy(),
+                branch,
+            ],
             Some(repo_path),
         )
         .await?;
@@ -390,7 +454,12 @@ impl Repos {
 
     async fn branch_exists(&self, path: &Path, branch: &str) -> bool {
         self.git(
-            &["show-ref", "--verify", "--quiet", &format!("refs/heads/{branch}")],
+            &[
+                "show-ref",
+                "--verify",
+                "--quiet",
+                &format!("refs/heads/{branch}"),
+            ],
             Some(path),
         )
         .await
@@ -433,9 +502,15 @@ impl Repos {
             preferred
         };
         if self.branch_exists(worktree_path, &target).await {
-            return Err(EngineError::Other(format!("Branch already exists: {target}")));
+            return Err(EngineError::Other(format!(
+                "Branch already exists: {target}"
+            )));
         }
-        self.git(&["branch", "-m", "--", &current, &target], Some(worktree_path)).await?;
+        self.git(
+            &["branch", "-m", "--", &current, &target],
+            Some(worktree_path),
+        )
+        .await?;
         self.current_branch(worktree_path).await
     }
 
@@ -455,7 +530,12 @@ impl Repos {
         if worktree_path.exists() {
             let removed = self
                 .git(
-                    &["worktree", "remove", "--force", &worktree_path.to_string_lossy()],
+                    &[
+                        "worktree",
+                        "remove",
+                        "--force",
+                        &worktree_path.to_string_lossy(),
+                    ],
                     Some(repo_path),
                 )
                 .await;
@@ -479,7 +559,8 @@ impl Repos {
     /// (dead mount, permission-gated folder) fails this listing without blocking
     /// anything else; the abandoned task unwinds on its own thread.
     pub async fn list_folders(&self, path: Option<String>) -> Result<FolderListing, EngineError> {
-        self.list_folders_with(path, FOLDER_LIST_TIMEOUT, false).await
+        self.list_folders_with(path, FOLDER_LIST_TIMEOUT, false)
+            .await
     }
 
     /// `hang_for_test` makes the worker never respond — exercises the timeout path.
@@ -517,7 +598,9 @@ impl Repos {
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(EngineError::Other("folder listing worker exited".into())),
-            Err(_) => Err(EngineError::Other("folder listing timed out on the device".into())),
+            Err(_) => Err(EngineError::Other(
+                "folder listing timed out on the device".into(),
+            )),
         }
     }
 }
@@ -539,7 +622,11 @@ fn list_folders_blocking(target: &Path) -> Result<FolderListing, EngineError> {
         }
         let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
         let is_repo = is_dir && entry.path().join(".git").exists();
-        entries.push(FolderEntry { name, is_dir, is_repo });
+        entries.push(FolderEntry {
+            name,
+            is_dir,
+            is_repo,
+        });
     }
     // Directories first, each group name-sorted (case-insensitive).
     entries.sort_by(|a, b| {
@@ -549,7 +636,11 @@ fn list_folders_blocking(target: &Path) -> Result<FolderListing, EngineError> {
     });
     let truncated = entries.len() > FOLDER_LIST_MAX_ENTRIES;
     entries.truncate(FOLDER_LIST_MAX_ENTRIES);
-    Ok(FolderListing { path: target.to_string_lossy().to_string(), entries, truncated })
+    Ok(FolderListing {
+        path: target.to_string_lossy().to_string(),
+        entries,
+        truncated,
+    })
 }
 
 /// Turn a generated chat title into the semantic portion of a Comet branch
@@ -578,7 +669,9 @@ fn absolutize(path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.to_path_buf()
     } else {
-        std::env::current_dir().map(|cwd| cwd.join(path)).unwrap_or_else(|_| path.to_path_buf())
+        std::env::current_dir()
+            .map(|cwd| cwd.join(path))
+            .unwrap_or_else(|_| path.to_path_buf())
     }
 }
 

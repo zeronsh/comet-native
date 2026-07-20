@@ -127,7 +127,9 @@ impl WorkspaceHost {
 
     /// Edge room join — offline-tolerant: a failed join logs and stays local-first.
     fn join_room(&self) {
-        let Some(edge) = &self.inner.config.edge else { return };
+        let Some(edge) = &self.inner.config.edge else {
+            return;
+        };
         let ws_base = edge.url.replacen("http", "ws", 1);
         let org_id = self.inner.config.org_id.clone();
         let url = format!("{}/workspace/{}/ws?token={}", ws_base, org_id, edge.token);
@@ -266,14 +268,12 @@ impl WorkspaceHost {
     /// message's text. Claims the row first so a pre-workspace chat gains one.
     pub fn note_message(&self, chat_id: &str, text: &str) {
         let preview: String = text.chars().take(120).collect();
-        let result = self
-            .claim_chat(chat_id, None)
-            .and_then(|_| {
-                self.inner
-                    .doc
-                    .set_chat_last_message(chat_id, &preview, Utc::now())
-                    .map_err(EngineError::from)
-            });
+        let result = self.claim_chat(chat_id, None).and_then(|_| {
+            self.inner
+                .doc
+                .set_chat_last_message(chat_id, &preview, Utc::now())
+                .map_err(EngineError::from)
+        });
         if let Err(err) = result {
             tracing::warn!(chat = %chat_id, error = %err, "workspace last-message write failed");
         }
@@ -371,9 +371,12 @@ impl WorkspaceHostInner {
     fn publish(&self) {
         match self.doc.read_all() {
             Ok(state) => {
-                let _ = self.chats_tx.send(state.chats);
-                let _ = self.devices_tx.send(state.devices);
-                let _ = self.sessions_tx.send(state.sessions);
+                // send_replace, NOT send: `watch::Sender::send` drops the value when
+                // no receiver exists yet, so a stream subscribed later would start
+                // from a stale snapshot (found the hard way by the e2e smoke).
+                self.chats_tx.send_replace(state.chats);
+                self.devices_tx.send_replace(state.devices);
+                self.sessions_tx.send_replace(state.sessions);
             }
             Err(err) => {
                 tracing::warn!(error = %err, "workspace read failed");
@@ -424,7 +427,8 @@ fn merge_sessions(device_id: &str, rows: &[Session], local: &[Session]) -> Vec<S
 /// presence every [`PRESENCE_INTERVAL_MS`]. Holds only a weak handle so a dropped
 /// host tears the task down.
 async fn workspace_task(weak: Weak<WorkspaceHostInner>, mut changed_rx: watch::Receiver<u64>) {
-    let mut presence = tokio::time::interval(std::time::Duration::from_millis(PRESENCE_INTERVAL_MS));
+    let mut presence =
+        tokio::time::interval(std::time::Duration::from_millis(PRESENCE_INTERVAL_MS));
     presence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     presence.tick().await; // consume the immediate first tick
     let mut save_deadline: Option<tokio::time::Instant> = None;

@@ -20,7 +20,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use comet_doc::{MessagePart, MessageStatus, SessionMessageEntry, SessionCommandPayload};
+use comet_doc::{MessagePart, MessageStatus, SessionCommandPayload, SessionMessageEntry};
 use comet_proto::{RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion};
 use comet_rpc::methods;
 
@@ -91,9 +91,12 @@ pub fn pending_input_request(
         return None;
     }
     entry.parts.iter().rev().find_map(|part| match part {
-        MessagePart::Input { request_id, questions, resolved: false, .. } => {
-            Some((request_id.clone(), questions.clone()))
-        }
+        MessagePart::Input {
+            request_id,
+            questions,
+            resolved: false,
+            ..
+        } => Some((request_id.clone(), questions.clone())),
         _ => None,
     })
 }
@@ -126,7 +129,13 @@ pub struct Wizard {
 impl Wizard {
     pub fn new(request_id: String, questions: Vec<UserInputQuestion>) -> Self {
         let n = questions.len();
-        Self { request_id, questions, page: 0, picked: vec![Vec::new(); n], typed: vec![String::new(); n] }
+        Self {
+            request_id,
+            questions,
+            page: 0,
+            picked: vec![Vec::new(); n],
+            typed: vec![String::new(); n],
+        }
     }
 
     pub fn counter(&self) -> String {
@@ -138,17 +147,23 @@ impl Wizard {
     }
 
     pub fn is_picked(&self, option_ix: usize) -> bool {
-        self.picked.get(self.page).is_some_and(|p| p.contains(&option_ix))
+        self.picked
+            .get(self.page)
+            .is_some_and(|p| p.contains(&option_ix))
     }
 
     /// Click/tap an option.
     pub fn select(&mut self, option_ix: usize) -> WizardStep {
-        let Some(question) = self.questions.get(self.page) else { return WizardStep::Stay };
+        let Some(question) = self.questions.get(self.page) else {
+            return WizardStep::Stay;
+        };
         if option_ix >= question.options.len() {
             return WizardStep::Stay;
         }
         let multi = question.multi_select;
-        let Some(picked) = self.picked.get_mut(self.page) else { return WizardStep::Stay };
+        let Some(picked) = self.picked.get_mut(self.page) else {
+            return WizardStep::Stay;
+        };
         if multi {
             match picked.iter().position(|&p| p == option_ix) {
                 Some(at) => {
@@ -210,11 +225,17 @@ impl Wizard {
                     self.picked
                         .get(ix)
                         .map(|picked| {
-                            picked.iter().filter_map(|&p| q.options.get(p).cloned()).collect()
+                            picked
+                                .iter()
+                                .filter_map(|&p| q.options.get(p).cloned())
+                                .collect()
                         })
                         .unwrap_or_default()
                 };
-                UserInputAnswer { question_id: q.id.clone(), labels }
+                UserInputAnswer {
+                    question_id: q.id.clone(),
+                    labels,
+                }
             })
             .collect()
     }
@@ -227,8 +248,24 @@ impl Wizard {
 actions!(
     composer,
     [
-        Backspace, Delete, Left, Right, Up, Down, SelectLeft, SelectRight, SelectAll, Home, End,
-        WordLeft, WordRight, Copy, Cut, Paste, Newline, Submit,
+        Backspace,
+        Delete,
+        Left,
+        Right,
+        Up,
+        Down,
+        SelectLeft,
+        SelectRight,
+        SelectAll,
+        Home,
+        End,
+        WordLeft,
+        WordRight,
+        Copy,
+        Cut,
+        Paste,
+        Newline,
+        Submit,
     ]
 );
 
@@ -337,7 +374,11 @@ impl ComposerInput {
         self.content_height
     }
 
-    pub fn set_placeholder(&mut self, placeholder: impl Into<SharedString>, cx: &mut Context<Self>) {
+    pub fn set_placeholder(
+        &mut self,
+        placeholder: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
         self.placeholder = placeholder.into();
         cx.notify();
     }
@@ -356,7 +397,11 @@ impl ComposerInput {
     // ---- editing ops ----
 
     fn cursor_offset(&self) -> usize {
-        if self.selection_reversed { self.selected_range.start } else { self.selected_range.end }
+        if self.selection_reversed {
+            self.selected_range.start
+        } else {
+            self.selected_range.end
+        }
     }
 
     fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
@@ -396,9 +441,7 @@ impl ComposerInput {
         self.content
             .split_word_bound_indices()
             .rev()
-            .find_map(|(ix, word)| {
-                (ix < offset && !word.trim().is_empty()).then_some(ix)
-            })
+            .find_map(|(ix, word)| (ix < offset && !word.trim().is_empty()).then_some(ix))
             .unwrap_or(0)
     }
 
@@ -414,8 +457,14 @@ impl ComposerInput {
 
     /// Byte range of the logical line containing `offset`.
     fn line_range_at(&self, offset: usize) -> Range<usize> {
-        let start = self.content[..offset].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let end = self.content[offset..].find('\n').map(|i| offset + i).unwrap_or(self.content.len());
+        let start = self.content[..offset]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let end = self.content[offset..]
+            .find('\n')
+            .map(|i| offset + i)
+            .unwrap_or(self.content.len());
         start..end
     }
 
@@ -468,7 +517,9 @@ impl ComposerInput {
     }
 
     fn move_vertical(&mut self, dir: f32, cx: &mut Context<Self>) {
-        let Some(current) = self.point_for_index(self.cursor_offset()) else { return };
+        let Some(current) = self.point_for_index(self.cursor_offset()) else {
+            return;
+        };
         let target_y = f32::from(current.y) + dir * f32::from(self.line_height);
         if target_y < 0.0 {
             self.move_to(0, cx);
@@ -596,7 +647,9 @@ impl ComposerInput {
     }
 
     fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
-        let Some(bounds) = self.last_bounds else { return 0 };
+        let Some(bounds) = self.last_bounds else {
+            return 0;
+        };
         let local = point(
             position.x - bounds.left(),
             position.y - bounds.top() + px(self.scroll_top),
@@ -604,7 +657,12 @@ impl ComposerInput {
         self.index_for_point(local)
     }
 
-    fn on_mouse_down(&mut self, event: &MouseDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_mouse_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         window.focus(&self.focus_handle, cx);
         self.is_selecting = true;
         let index = self.index_for_mouse_position(event.position);
@@ -713,10 +771,14 @@ impl ComposerInput {
             line_starts.push(0);
         }
 
-        let content_height: f32 =
-            lines.iter().map(|l| f32::from(l.size(self.line_height).height)).sum();
-        let max_line_width: f32 =
-            lines.iter().map(|l| f32::from(l.unwrapped_layout.width)).fold(0.0, f32::max);
+        let content_height: f32 = lines
+            .iter()
+            .map(|l| f32::from(l.size(self.line_height).height))
+            .sum();
+        let max_line_width: f32 = lines
+            .iter()
+            .map(|l| f32::from(l.unwrapped_layout.width))
+            .fold(0.0, f32::max);
 
         self.display_is_placeholder = is_placeholder;
         self.last_lines = lines;
@@ -777,7 +839,9 @@ impl EntityInputHandler for ComposerInput {
     }
 
     fn marked_text_range(&self, _: &mut Window, _: &mut Context<Self>) -> Option<Range<usize>> {
-        self.marked_range.as_ref().map(|range| self.range_to_utf16(range))
+        self.marked_range
+            .as_ref()
+            .map(|range| self.range_to_utf16(range))
     }
 
     fn unmark_text(&mut self, _: &mut Window, _: &mut Context<Self>) {
@@ -904,9 +968,8 @@ impl gpui::Element for ComposerTextElement {
         let input = self.input.clone();
         let text_style = window.text_style();
         let max_content = self.max_content_height;
-        let layout_id = window.request_measured_layout(
-            style,
-            move |known, available, window, cx| {
+        let layout_id =
+            window.request_measured_layout(style, move |known, available, window, cx| {
                 let width = known.width.unwrap_or(match available.width {
                     gpui::AvailableSpace::Definite(width) => width,
                     _ => px(320.0),
@@ -914,8 +977,7 @@ impl gpui::Element for ComposerTextElement {
                 let content_height =
                     input.update(cx, |input, _| input.layout_text(width, &text_style, window));
                 size(width, px(content_height.min(max_content)))
-            },
-        );
+            });
         (layout_id, ())
     }
 
@@ -994,7 +1056,10 @@ impl gpui::Element for ComposerTextElement {
                 ));
             }
         }
-        ComposerTextPrepaint { cursor, selection_quads }
+        ComposerTextPrepaint {
+            cursor,
+            selection_quads,
+        }
     }
 
     fn paint(
@@ -1017,7 +1082,11 @@ impl gpui::Element for ComposerTextElement {
         // WrappedLine isn't Clone — temporarily take the shaped lines out of the
         // entity for painting, then put them back for mouse mapping.
         let (lines, line_height, scroll) = self.input.update(cx, |input, _| {
-            (std::mem::take(&mut input.last_lines), input.line_height, input.scroll_top)
+            (
+                std::mem::take(&mut input.last_lines),
+                input.line_height,
+                input.scroll_top,
+            )
         });
 
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
@@ -1052,7 +1121,11 @@ impl gpui::Element for ComposerTextElement {
 impl Render for ComposerInput {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx);
-        let text_color = if self.content.is_empty() { theme.text_faint } else { theme.text };
+        let text_color = if self.content.is_empty() {
+            theme.text_faint
+        } else {
+            theme.text
+        };
         div()
             .key_context("Composer")
             .track_focus(&self.focus_handle)
@@ -1184,7 +1257,10 @@ impl Composer {
         // Question panel lifecycle (wizard state cached per request id).
         match pending {
             Some((request_id, questions)) if !self.answered_requests.contains(&request_id) => {
-                let same = self.wizard.as_ref().is_some_and(|w| w.request_id == request_id);
+                let same = self
+                    .wizard
+                    .as_ref()
+                    .is_some_and(|w| w.request_id == request_id);
                 if !same {
                     self.wizard = Some(Wizard::new(request_id, questions));
                     self.advance_task = None;
@@ -1202,7 +1278,9 @@ impl Composer {
 
     fn run_live(&self, cx: &App) -> bool {
         let s = self.state.read(cx);
-        let Some(chat_id) = s.selected_chat.as_deref() else { return false };
+        let Some(chat_id) = s.selected_chat.as_deref() else {
+            return false;
+        };
         matches!(
             s.indicator_for(chat_id, chrono::Utc::now()),
             Indicator::Working | Indicator::AwaitingInput
@@ -1250,8 +1328,11 @@ impl Composer {
             None => (uuid::Uuid::new_v4().to_string(), true),
         };
         let draft = self.pickers.read(cx).draft().clone();
-        let existing_cwd =
-            self.state.read(cx).selected_chat_row().and_then(|c| c.cwd.clone());
+        let existing_cwd = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.cwd.clone());
         let device_id = {
             let state = self.state.read(cx);
             state
@@ -1267,7 +1348,10 @@ impl Composer {
         let echo = SessionMessageEntry {
             id: message_id.clone(),
             role: comet_doc::MessageRole::User,
-            parts: vec![MessagePart::Text { id: "t0".into(), text: text.clone() }],
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: text.clone(),
+            }],
             created_at: chrono::Utc::now().timestamp_millis(),
             device_id: "local".into(),
             status: None,
@@ -1285,7 +1369,9 @@ impl Composer {
         self.drafts.remove(&self.current_key);
         self.failure = None;
         self.sending = true;
-        cx.emit(ComposerEvent::Sent { chat_id: chat_id.clone() });
+        cx.emit(ComposerEvent::Sent {
+            chat_id: chat_id.clone(),
+        });
         cx.notify();
 
         let steer_cmd = steer && !is_new;
@@ -1391,8 +1477,12 @@ impl Composer {
     }
 
     fn interrupt(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
-        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            return;
+        };
         let params = serde_json::json!({
             "chatId": chat_id,
             "command": { "kind": "interrupt" },
@@ -1412,7 +1502,9 @@ impl Composer {
     // ---- wizard glue ----
 
     fn wizard_select(&mut self, option_ix: usize, cx: &mut Context<Self>) {
-        let Some(wizard) = self.wizard.as_mut() else { return };
+        let Some(wizard) = self.wizard.as_mut() else {
+            return;
+        };
         match wizard.select(option_ix) {
             WizardStep::AutoAdvance => self.schedule_auto_advance(cx),
             WizardStep::Done(answers) => self.wizard_finish(answers, cx),
@@ -1423,13 +1515,18 @@ impl Composer {
 
     fn schedule_auto_advance(&mut self, cx: &mut Context<Self>) {
         self.advance_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(AUTO_ADVANCE_MS)).await;
-            this.update(cx, |composer, cx| composer.wizard_advance(cx)).ok();
+            cx.background_executor()
+                .timer(Duration::from_millis(AUTO_ADVANCE_MS))
+                .await;
+            this.update(cx, |composer, cx| composer.wizard_advance(cx))
+                .ok();
         }));
     }
 
     fn wizard_advance(&mut self, cx: &mut Context<Self>) {
-        let Some(wizard) = self.wizard.as_mut() else { return };
+        let Some(wizard) = self.wizard.as_mut() else {
+            return;
+        };
         match wizard.advance() {
             WizardStep::Done(answers) => self.wizard_finish(answers, cx),
             _ => {
@@ -1449,12 +1546,18 @@ impl Composer {
 
     /// Submit RespondInput and retire the panel.
     fn wizard_finish(&mut self, answers: Vec<UserInputAnswer>, cx: &mut Context<Self>) {
-        let Some(wizard) = self.wizard.take() else { return };
+        let Some(wizard) = self.wizard.take() else {
+            return;
+        };
         self.advance_task = None;
         self.answered_requests.insert(wizard.request_id.clone());
         self.input.update(cx, |input, cx| input.set_text("", cx));
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
-        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            return;
+        };
         let command = SessionCommandPayload::RespondInput {
             request_id: wizard.request_id.clone(),
             answers,
@@ -1534,7 +1637,11 @@ impl Composer {
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.wizard_select(ix, cx)))
                 .child(
-                    div().flex_none().text_size(px(11.0)).text_color(theme.text_faint).child(marker),
+                    div()
+                        .flex_none()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(marker),
                 )
                 .child(
                     div()
@@ -1599,9 +1706,14 @@ impl Composer {
                             .py(px(4.0))
                             .rounded(px(Theme::CONTROL_RADIUS))
                             .text_size(px(12.0))
-                            .text_color(if page > 0 { theme.text_muted } else { theme.text_faint })
+                            .text_color(if page > 0 {
+                                theme.text_muted
+                            } else {
+                                theme.text_faint
+                            })
                             .when(page > 0, |el| {
-                                el.cursor_pointer().hover(|s| s.bg(Theme::dark().element_hover))
+                                el.cursor_pointer()
+                                    .hover(|s| s.bg(Theme::dark().element_hover))
                             })
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
                             .child(SharedString::from("Back")),
@@ -1623,7 +1735,11 @@ impl Composer {
             .into_any_element()
     }
 
-    fn render_send_button(&mut self, mode: SendButtonMode, cx: &mut Context<Self>) -> gpui::AnyElement {
+    fn render_send_button(
+        &mut self,
+        mode: SendButtonMode,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
         let theme = Theme::of(cx);
         match mode {
             SendButtonMode::Stop => div()
@@ -1639,8 +1755,11 @@ impl Composer {
                 .child(div().size(px(10.0)).rounded(px(1.5)).bg(gpui::white()))
                 .into_any_element(),
             SendButtonMode::Send | SendButtonMode::Steer => {
-                let label: SharedString =
-                    if mode == SendButtonMode::Steer { "Send · steers".into() } else { "Send".into() };
+                let label: SharedString = if mode == SendButtonMode::Steer {
+                    "Send · steers".into()
+                } else {
+                    "Send".into()
+                };
                 div()
                     .id("composer-send")
                     .px(px(12.0))
@@ -1675,7 +1794,11 @@ impl Render for Composer {
         };
         // Pill capacity ≈ the input's own last measured width (compact renders
         // constrain it); before first measure default to compact.
-        let capacity = if last_width > 0.0 { last_width - 8.0 } else { f32::MAX };
+        let capacity = if last_width > 0.0 {
+            last_width - 8.0
+        } else {
+            f32::MAX
+        };
         let expanded = composer_expanded(text_width, capacity, has_newline);
         let total_height = composer_total_height(content_height);
 
@@ -1713,7 +1836,13 @@ impl Render for Composer {
 
         // Composer actions row: repo/branch pickers (new-chat mode) +
         // harness-model + traits (§1.7).
-        let container = container.child(div().flex().flex_row().items_center().child(self.pickers.clone()));
+        let container = container.child(
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .child(self.pickers.clone()),
+        );
 
         let send_button = self.render_send_button(mode, cx);
         let body = if expanded {
@@ -1729,7 +1858,15 @@ impl Render for Composer {
                 .px(px(12.0))
                 .py(px(10.0))
                 .child(div().flex_1().min_h_0().child(self.input.clone()))
-                .child(div().flex().flex_row().justify_end().items_center().pt(px(6.0)).child(send_button))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .justify_end()
+                        .items_center()
+                        .pt(px(6.0))
+                        .child(send_button),
+                )
         } else {
             // Compact pill: input and send side by side.
             div()
@@ -1781,12 +1918,18 @@ mod tests {
     #[test]
     fn auto_grow_math() {
         // One line sits at the 76px floor.
-        assert_eq!(composer_total_height(input_content_height(1)), COMPOSER_MIN_HEIGHT);
+        assert_eq!(
+            composer_total_height(input_content_height(1)),
+            COMPOSER_MIN_HEIGHT
+        );
         // Growth is linear once content exceeds the floor.
         let h4 = composer_total_height(input_content_height(4));
         assert_eq!(h4, 4.0 * INPUT_LINE_HEIGHT + INPUT_VERTICAL_CHROME);
         // Caps at 260.
-        assert_eq!(composer_total_height(input_content_height(100)), COMPOSER_MAX_HEIGHT);
+        assert_eq!(
+            composer_total_height(input_content_height(100)),
+            COMPOSER_MAX_HEIGHT
+        );
         // Zero lines still measures one.
         assert_eq!(input_content_height(0), INPUT_LINE_HEIGHT);
     }
@@ -1803,7 +1946,10 @@ mod tests {
     fn wizard_single_select_auto_advances_and_completes() {
         let mut w = Wizard::new(
             "req".into(),
-            vec![question("q1", &["a", "b"], false), question("q2", &["x"], false)],
+            vec![
+                question("q1", &["a", "b"], false),
+                question("q2", &["x"], false),
+            ],
         );
         assert_eq!(w.counter(), "1/2");
         assert_eq!(w.select(1), WizardStep::AutoAdvance);
@@ -1811,7 +1957,9 @@ mod tests {
         assert_eq!(w.advance(), WizardStep::Stay);
         assert_eq!(w.counter(), "2/2");
         assert_eq!(w.select(0), WizardStep::AutoAdvance);
-        let WizardStep::Done(answers) = w.advance() else { panic!("expected Done") };
+        let WizardStep::Done(answers) = w.advance() else {
+            panic!("expected Done")
+        };
         assert_eq!(answers.len(), 2);
         assert_eq!(answers[0].labels, vec!["b"]);
         assert_eq!(answers[1].labels, vec!["x"]);
@@ -1826,7 +1974,9 @@ mod tests {
         // Toggle off.
         assert_eq!(w.select(0), WizardStep::Stay);
         assert!(!w.is_picked(0));
-        let WizardStep::Done(answers) = w.advance() else { panic!() };
+        let WizardStep::Done(answers) = w.advance() else {
+            panic!()
+        };
         assert_eq!(answers[0].labels, vec!["c"]);
     }
 
@@ -1844,7 +1994,10 @@ mod tests {
     fn wizard_typed_answer_overrides_and_back_pages() {
         let mut w = Wizard::new(
             "req".into(),
-            vec![question("q1", &["a"], false), question("q2", &["x", "y"], false)],
+            vec![
+                question("q1", &["a"], false),
+                question("q2", &["x", "y"], false),
+            ],
         );
         w.select(0);
         w.advance();
@@ -1854,9 +2007,15 @@ mod tests {
         assert!(!w.back(), "already at first page");
         w.advance();
         w.set_typed("  custom answer  ".into());
-        let WizardStep::Done(answers) = w.advance() else { panic!() };
+        let WizardStep::Done(answers) = w.advance() else {
+            panic!()
+        };
         assert_eq!(answers[0].labels, vec!["a"]);
-        assert_eq!(answers[1].labels, vec!["custom answer"], "typed overrides picked, trimmed");
+        assert_eq!(
+            answers[1].labels,
+            vec!["custom answer"],
+            "typed overrides picked, trimmed"
+        );
     }
 
     #[test]
@@ -1878,10 +2037,19 @@ mod tests {
             continuation_of: None,
         };
         // Streaming entry with unresolved input → panel.
-        let t = vec![entry(Some(MessageStatus::Streaming), vec![input_part.clone()])];
-        assert_eq!(pending_input_request(&t).map(|(id, _)| id), Some("r1".into()));
+        let t = vec![entry(
+            Some(MessageStatus::Streaming),
+            vec![input_part.clone()],
+        )];
+        assert_eq!(
+            pending_input_request(&t).map(|(id, _)| id),
+            Some("r1".into())
+        );
         // Completed entry → no panel even if unresolved (run is gone).
-        let t = vec![entry(Some(MessageStatus::Complete), vec![input_part.clone()])];
+        let t = vec![entry(
+            Some(MessageStatus::Complete),
+            vec![input_part.clone()],
+        )];
         assert!(pending_input_request(&t).is_none());
         // Resolved part → no panel.
         let resolved = MessagePart::Input {

@@ -121,7 +121,12 @@ impl FakeEdge {
     async fn handle(&self, reply_to: &mpsc::Sender<Vec<u8>>, bytes: &[u8]) {
         let message = decode(bytes).expect("client sent an undecodable frame");
         match message {
-            ProtocolMessage::JoinRequest { crdt: CrdtType::Loro, room_id, version, .. } => {
+            ProtocolMessage::JoinRequest {
+                crdt: CrdtType::Loro,
+                room_id,
+                version,
+                ..
+            } => {
                 self.join_requests.fetch_add(1, Ordering::SeqCst);
                 self.reply(
                     reply_to,
@@ -144,11 +149,14 @@ impl FakeEdge {
                 }
                 .expect("export backfill");
                 if !backfill.is_empty() {
-                    self.send_updates(reply_to, CrdtType::Loro, &room_id, backfill).await;
+                    self.send_updates(reply_to, CrdtType::Loro, &room_id, backfill)
+                        .await;
                 }
             }
             ProtocolMessage::JoinRequest {
-                crdt: CrdtType::LoroEphemeralStore, room_id, ..
+                crdt: CrdtType::LoroEphemeralStore,
+                room_id,
+                ..
             } => {
                 self.reply(
                     reply_to,
@@ -163,11 +171,18 @@ impl FakeEdge {
                 .await;
                 let all = self.eph.encode_all();
                 if !all.is_empty() {
-                    self.send_updates(reply_to, CrdtType::LoroEphemeralStore, &room_id, all).await;
+                    self.send_updates(reply_to, CrdtType::LoroEphemeralStore, &room_id, all)
+                        .await;
                 }
             }
-            ProtocolMessage::DocUpdate { crdt, room_id, updates, batch_id } => {
-                self.apply(reply_to, crdt, &room_id, batch_id, updates).await;
+            ProtocolMessage::DocUpdate {
+                crdt,
+                room_id,
+                updates,
+                batch_id,
+            } => {
+                self.apply(reply_to, crdt, &room_id, batch_id, updates)
+                    .await;
             }
             ProtocolMessage::DocUpdateFragmentHeader {
                 crdt,
@@ -186,7 +201,13 @@ impl FakeEdge {
                     },
                 );
             }
-            ProtocolMessage::DocUpdateFragment { crdt, room_id, batch_id, index, fragment } => {
+            ProtocolMessage::DocUpdateFragment {
+                crdt,
+                room_id,
+                batch_id,
+                index,
+                fragment,
+            } => {
                 enum Outcome {
                     /// Header lost (hibernation analogue) — FragmentTimeout.
                     Timeout,
@@ -230,7 +251,8 @@ impl FakeEdge {
                     }
                     Outcome::Incomplete => {}
                     Outcome::Complete(total) => {
-                        self.apply(reply_to, crdt, &room_id, batch_id, vec![total]).await;
+                        self.apply(reply_to, crdt, &room_id, batch_id, vec![total])
+                            .await;
                     }
                 }
             }
@@ -257,7 +279,8 @@ impl FakeEdge {
             status,
         };
         if crdt == CrdtType::Loro && self.reject_next_update.swap(false, Ordering::SeqCst) {
-            self.reply(reply_to, &ack(UpdateStatusCode::InvalidUpdate)).await;
+            self.reply(reply_to, &ack(UpdateStatusCode::InvalidUpdate))
+                .await;
             return;
         }
         let ok = match crdt {
@@ -272,7 +295,8 @@ impl FakeEdge {
             _ => false,
         };
         if !ok {
-            self.reply(reply_to, &ack(UpdateStatusCode::InvalidUpdate)).await;
+            self.reply(reply_to, &ack(UpdateStatusCode::InvalidUpdate))
+                .await;
             return;
         }
         self.reply(reply_to, &ack(UpdateStatusCode::Ok)).await;
@@ -287,7 +311,8 @@ impl FakeEdge {
             .collect();
         for peer in peers {
             for update in &updates {
-                self.send_updates(&peer, crdt, room_id, update.clone()).await;
+                self.send_updates(&peer, crdt, room_id, update.clone())
+                    .await;
             }
         }
     }
@@ -310,8 +335,14 @@ impl Connector for FakeConnector {
                     handler_edge.handle(&reply_to, &bytes).await;
                 }
             });
-            edge.conns.lock().unwrap().push(FakeConn { tx: server_tx, task });
-            Ok(Pipe { tx: client_tx, rx: client_rx })
+            edge.conns.lock().unwrap().push(FakeConn {
+                tx: server_tx,
+                task,
+            });
+            Ok(Pipe {
+                tx: client_tx,
+                rx: client_rx,
+            })
         })
     }
 }
@@ -385,7 +416,10 @@ async fn invalid_update_ack_triggers_rejoin_and_resubmit_from_vv() {
     // The edge rejected the first submission without importing; the client
     // must rejoin (resync) and resubmit from the server's VV until converged.
     wait_until(|| doc_text(&edge.doc) == "retried write").await;
-    assert!(edge.join_requests.load(Ordering::SeqCst) > joins_before, "client must rejoin");
+    assert!(
+        edge.join_requests.load(Ordering::SeqCst) > joins_before,
+        "client must rejoin"
+    );
     client.shutdown().await.unwrap();
 }
 
@@ -464,7 +498,10 @@ async fn reconnects_with_backoff_and_rejoins_after_connection_loss() {
             _ => {}
         }
     }
-    assert!(saw_disconnect && saw_reconnect, "expected Disconnected then Connected");
+    assert!(
+        saw_disconnect && saw_reconnect,
+        "expected Disconnected then Connected"
+    );
     client.shutdown().await.unwrap();
 }
 
@@ -486,7 +523,8 @@ async fn first_connect_failure_is_returned() {
             Box::pin(async { Err(SyncError::WebSocket("refused".into())) })
         }
     }
-    let result = RoomClient::connect_with(Arc::new(FailingConnector), "room-1", LoroDoc::new()).await;
+    let result =
+        RoomClient::connect_with(Arc::new(FailingConnector), "room-1", LoroDoc::new()).await;
     match result {
         Ok(_) => panic!("connect must fail"),
         Err(err) => assert!(matches!(err, SyncError::WebSocket(_))),

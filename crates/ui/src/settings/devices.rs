@@ -22,12 +22,15 @@ pub const DEVICE_ONLINE_WINDOW_SECS: i64 = 70;
 
 /// Presence: last-seen within the online window (future timestamps count). Pure.
 pub fn device_online(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> bool {
-    last_seen.is_some_and(|at| now.signed_duration_since(at).num_seconds() <= DEVICE_ONLINE_WINDOW_SECS)
+    last_seen
+        .is_some_and(|at| now.signed_duration_since(at).num_seconds() <= DEVICE_ONLINE_WINDOW_SECS)
 }
 
 /// Compact last-seen line. Pure.
 pub fn format_last_seen(last_seen: Option<DateTime<Utc>>, now: DateTime<Utc>) -> String {
-    let Some(at) = last_seen else { return "never seen".to_string() };
+    let Some(at) = last_seen else {
+        return "never seen".to_string();
+    };
     let secs = now.signed_duration_since(at).num_seconds();
     if secs < 60 {
         "just now".to_string()
@@ -79,18 +82,26 @@ impl DevicesPage {
                 this.submit_rename(cx);
             }
         });
-        self.rename = Some(RenameDialog { device_id, input, _events: events });
+        self.rename = Some(RenameDialog {
+            device_id,
+            input,
+            _events: events,
+        });
         cx.notify();
     }
 
     fn submit_rename(&mut self, cx: &mut Context<Self>) {
-        let Some(dialog) = self.rename.take() else { return };
+        let Some(dialog) = self.rename.take() else {
+            return;
+        };
         let name = dialog.input.read(cx).text().trim().to_string();
         if name.is_empty() {
             cx.notify();
             return;
         }
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         let params = serde_json::json!({
             "op": "renameDevice",
             "deviceId": dialog.device_id,
@@ -113,7 +124,9 @@ impl DevicesPage {
         cx.write_to_clipboard(ClipboardItem::new_string(device_id.clone()));
         self.copied = Some(device_id);
         self.copy_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(1500)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(1500))
+                .await;
             this.update(cx, |page, cx| {
                 page.copied = None;
                 cx.notify();
@@ -215,7 +228,11 @@ impl Render for DevicesPage {
                     "Copied".into()
                 } else {
                     let id = &device.id;
-                    if id.len() > 14 { format!("{}…", &id[..12]).into() } else { id.clone().into() }
+                    if id.len() > 14 {
+                        format!("{}…", &id[..12]).into()
+                    } else {
+                        id.clone().into()
+                    }
                 };
                 let copy_id = device.id.clone();
                 let rename_id = device.id.clone();
@@ -235,7 +252,11 @@ impl Render for DevicesPage {
                             .size(px(7.0))
                             .rounded_full()
                             .flex_none()
-                            .bg(if online { theme.accent } else { theme.border_strong }),
+                            .bg(if online {
+                                theme.accent
+                            } else {
+                                theme.border_strong
+                            }),
                     )
                     .child(
                         div()
@@ -292,7 +313,11 @@ impl Render for DevicesPage {
                             .border_color(theme.border)
                             .text_size(px(10.0))
                             .font_family(theme.font_mono.clone())
-                            .text_color(if id_copied { theme.accent } else { theme.text_faint })
+                            .text_color(if id_copied {
+                                theme.accent
+                            } else {
+                                theme.text_faint
+                            })
                             .cursor_pointer()
                             .hover(|s| s.bg(theme.element_hover))
                             .on_click(cx.listener(move |this, _, _, cx| {
@@ -385,9 +410,21 @@ mod tests {
     fn last_seen_formatting() {
         let now = Utc::now();
         assert_eq!(format_last_seen(None, now), "never seen");
-        assert_eq!(format_last_seen(Some(now - TimeDelta::seconds(30)), now), "just now");
-        assert_eq!(format_last_seen(Some(now - TimeDelta::minutes(5)), now), "5m ago");
-        assert_eq!(format_last_seen(Some(now - TimeDelta::hours(3)), now), "3h ago");
-        assert_eq!(format_last_seen(Some(now - TimeDelta::days(2)), now), "2d ago");
+        assert_eq!(
+            format_last_seen(Some(now - TimeDelta::seconds(30)), now),
+            "just now"
+        );
+        assert_eq!(
+            format_last_seen(Some(now - TimeDelta::minutes(5)), now),
+            "5m ago"
+        );
+        assert_eq!(
+            format_last_seen(Some(now - TimeDelta::hours(3)), now),
+            "3h ago"
+        );
+        assert_eq!(
+            format_last_seen(Some(now - TimeDelta::days(2)), now),
+            "2d ago"
+        );
     }
 }

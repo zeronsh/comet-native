@@ -191,7 +191,9 @@ impl Uploads {
         // The id becomes a directory name — jail it to a safe charset.
         let ok = !upload_id.is_empty()
             && upload_id.len() <= 64
-            && upload_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+            && upload_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
         if !ok {
             return Err(EngineError::Other("Invalid upload id".into()));
         }
@@ -201,7 +203,9 @@ impl Uploads {
     /// Reclaim staging dirs whose newest chunk is older than the TTL (an upload
     /// abandoned mid-stream must not hold up to 32MB forever).
     fn sweep(&self) {
-        let Ok(entries) = std::fs::read_dir(&self.inner.tmp) else { return };
+        let Ok(entries) = std::fs::read_dir(&self.inner.tmp) else {
+            return;
+        };
         for entry in entries.flatten() {
             let newest = std::fs::read_dir(entry.path())
                 .ok()
@@ -254,9 +258,13 @@ impl Uploads {
     /// Best-effort content-addressed mirror (`PUT /attachments/{sha256}`, bearer
     /// auth). Failures only log — local commit already succeeded.
     fn mirror_to_edge(&self, path: &Path, bytes: Vec<u8>) {
-        let Some(edge) = self.inner.edge.clone() else { return };
+        let Some(edge) = self.inner.edge.clone() else {
+            return;
+        };
         let sha = hex(&Sha256::digest(&bytes));
-        let mime = mime_by_ext(path).unwrap_or("application/octet-stream").to_string();
+        let mime = mime_by_ext(path)
+            .unwrap_or("application/octet-stream")
+            .to_string();
         let url = format!("{}/attachments/{sha}", edge.url.trim_end_matches('/'));
         let http = self.inner.http.clone();
         tokio::spawn(async move {
@@ -290,7 +298,9 @@ struct InspectedFile {
 }
 
 fn chunk_files(dir: &Path) -> Result<Vec<(u64, PathBuf)>, EngineError> {
-    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(Vec::new()) };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Ok(Vec::new());
+    };
     let mut files = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -308,7 +318,11 @@ fn chunk_files(dir: &Path) -> Result<Vec<(u64, PathBuf)>, EngineError> {
 }
 
 fn next_free_seq(dir: &Path) -> Result<u64, EngineError> {
-    Ok(chunk_files(dir)?.iter().map(|(seq, _)| seq + 1).max().unwrap_or(0))
+    Ok(chunk_files(dir)?
+        .iter()
+        .map(|(seq, _)| seq + 1)
+        .max()
+        .unwrap_or(0))
 }
 
 fn sanitize(file_name: &str) -> String {
@@ -318,7 +332,13 @@ fn sanitize(file_name: &str) -> String {
         .unwrap_or_default();
     let cleaned: String = base
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     let tail: String = cleaned
         .chars()
@@ -328,7 +348,11 @@ fn sanitize(file_name: &str) -> String {
         .into_iter()
         .rev()
         .collect();
-    if tail.is_empty() { "upload".into() } else { tail }
+    if tail.is_empty() {
+        "upload".into()
+    } else {
+        tail
+    }
 }
 
 fn mime_by_ext(path: &Path) -> Option<&'static str> {

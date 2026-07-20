@@ -35,8 +35,7 @@ use crate::settings::devices::DevicesPage;
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
     KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MAX, RIGHT_PANE_MIN, SAVE_DEBOUNCE_MS,
-    SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings,
-    platform_combo,
+    SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings, platform_combo,
 };
 use crate::state::{
     AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator, OrgRow,
@@ -64,9 +63,21 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     cx.clear_key_bindings();
     crate::composer::init(cx);
     cx.bind_keys([
-        KeyBinding::new(&valid_or_default(&keymap.toggle_sidebar, "mod-s"), ToggleSidebar, None),
-        KeyBinding::new(&valid_or_default(&keymap.toggle_changes, "mod-b"), ToggleChanges, None),
-        KeyBinding::new(&valid_or_default(&keymap.toggle_terminal, "mod-j"), ToggleTerminal, None),
+        KeyBinding::new(
+            &valid_or_default(&keymap.toggle_sidebar, "mod-s"),
+            ToggleSidebar,
+            None,
+        ),
+        KeyBinding::new(
+            &valid_or_default(&keymap.toggle_changes, "mod-b"),
+            ToggleChanges,
+            None,
+        ),
+        KeyBinding::new(
+            &valid_or_default(&keymap.toggle_terminal, "mod-j"),
+            ToggleTerminal,
+            None,
+        ),
     ]);
 }
 
@@ -227,9 +238,9 @@ impl Shell {
                 let alive = this.update(cx, |shell: &mut Shell, cx| {
                     let live = {
                         let s = shell.state.read(cx);
-                        s.selected_chat.as_deref().is_some_and(|id| {
-                            s.indicator_for(id, Utc::now()) != Indicator::None
-                        })
+                        s.selected_chat
+                            .as_deref()
+                            .is_some_and(|id| s.indicator_for(id, Utc::now()) != Indicator::None)
                     };
                     if live {
                         cx.notify();
@@ -311,19 +322,30 @@ impl Shell {
     // ---- layout state ----
 
     fn sidebar_target(&self) -> f32 {
-        if self.settings.sidebar_collapsed { 0.0 } else { self.settings.sidebar_width }
+        if self.settings.sidebar_collapsed {
+            0.0
+        } else {
+            self.settings.sidebar_width
+        }
     }
 
     fn right_target(&self) -> f32 {
-        if self.settings.right_pane_open { self.settings.right_pane_width } else { 0.0 }
+        if self.settings.right_pane_open {
+            self.settings.right_pane_width
+        } else {
+            0.0
+        }
     }
 
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         let from = self.sidebar_target();
         self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
         self.tween_epoch += 1;
-        self.sidebar_tween =
-            Some(WidthTween { from, to: self.sidebar_target(), epoch: self.tween_epoch });
+        self.sidebar_tween = Some(WidthTween {
+            from,
+            to: self.sidebar_target(),
+            epoch: self.tween_epoch,
+        });
         self.schedule_save(cx);
         cx.notify();
     }
@@ -332,8 +354,11 @@ impl Shell {
         let from = self.right_target();
         self.settings.right_pane_open = !self.settings.right_pane_open;
         self.tween_epoch += 1;
-        self.right_tween =
-            Some(WidthTween { from, to: self.right_target(), epoch: self.tween_epoch });
+        self.right_tween = Some(WidthTween {
+            from,
+            to: self.right_target(),
+            epoch: self.tween_epoch,
+        });
         if self.settings.right_pane_open {
             // Lazy: the Changes entity (and its WatchCheckoutDiffs) exists only
             // once the pane has been opened.
@@ -363,7 +388,11 @@ impl Shell {
     }
 
     fn terminal_target(&self) -> f32 {
-        if self.settings.terminal_open { self.settings.terminal_height } else { 0.0 }
+        if self.settings.terminal_open {
+            self.settings.terminal_height
+        } else {
+            0.0
+        }
     }
 
     /// Cmd/Ctrl+J and the header button (feature-inventory §1.10). Height
@@ -372,8 +401,11 @@ impl Shell {
         let from = self.terminal_target();
         self.settings.terminal_open = !self.settings.terminal_open;
         self.tween_epoch += 1;
-        self.terminal_tween =
-            Some(WidthTween { from, to: self.terminal_target(), epoch: self.tween_epoch });
+        self.terminal_tween = Some(WidthTween {
+            from,
+            to: self.terminal_target(),
+            epoch: self.tween_epoch,
+        });
         let open = self.settings.terminal_open;
         let panel = self.terminal_panel(cx);
         panel.update(cx, |panel, cx| panel.set_open(open, cx));
@@ -397,7 +429,9 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((anchor_y, anchor_h)) = self.terminal_drag_anchor else { return };
+        let Some((anchor_y, anchor_h)) = self.terminal_drag_anchor else {
+            return;
+        };
         let dy = anchor_y - f32::from(event.event.position.y);
         let viewport_h = f32::from(window.viewport_size().height);
         self.settings.terminal_height = clamp_terminal_height(anchor_h + dy, viewport_h);
@@ -442,7 +476,9 @@ impl Shell {
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         let dir = self.data_dir.clone();
         self.save_task = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(Duration::from_millis(SAVE_DEBOUNCE_MS)).await;
+            cx.background_executor()
+                .timer(Duration::from_millis(SAVE_DEBOUNCE_MS))
+                .await;
             let Ok(snapshot) = this.update(cx, |shell, _| shell.settings.clone()) else {
                 return;
             };
@@ -576,12 +612,18 @@ impl Shell {
                 this.submit_rename_chat(cx);
             }
         });
-        self.rename_dialog = Some(RenameChatDialog { chat_id, input, _events: events });
+        self.rename_dialog = Some(RenameChatDialog {
+            chat_id,
+            input,
+            _events: events,
+        });
         cx.notify();
     }
 
     fn submit_rename_chat(&mut self, cx: &mut Context<Self>) {
-        let Some(dialog) = self.rename_dialog.take() else { return };
+        let Some(dialog) = self.rename_dialog.take() else {
+            return;
+        };
         let title = dialog.input.read(cx).text().trim().to_string();
         if !title.is_empty() {
             self.mutate(
@@ -606,15 +648,24 @@ impl Shell {
         if self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str()) {
             self.state.update(cx, |s, cx| s.select_chat(None, cx));
         }
-        self.mutate(serde_json::json!({ "op": "deleteChat", "chatId": chat_id }), cx);
+        self.mutate(
+            serde_json::json!({ "op": "deleteChat", "chatId": chat_id }),
+            cx,
+        );
         cx.notify();
     }
 
     fn sign_out(&mut self, cx: &mut Context<Self>) {
         self.user_menu_open = false;
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         self.auth_task = Some(cx.spawn(async move |this, cx| {
-            if let Err(err) = engine.client().call(methods::SIGN_OUT, serde_json::json!({})).await {
+            if let Err(err) = engine
+                .client()
+                .call(methods::SIGN_OUT, serde_json::json!({}))
+                .await
+            {
                 this.update(cx, |shell, cx| {
                     shell.sidebar_notice = Some(format!("Sign out failed: {err}").into());
                     cx.notify();
@@ -626,9 +677,14 @@ impl Shell {
     }
 
     fn start_sign_in(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         self.auth_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::SIGN_IN, serde_json::json!({})).await;
+            let result = engine
+                .client()
+                .call(methods::SIGN_IN, serde_json::json!({}))
+                .await;
             this.update(cx, |shell, cx| match result {
                 Ok(value) => {
                     if let Some(url) = value.get("url").and_then(|u| u.as_str()) {
@@ -668,11 +724,16 @@ impl Shell {
     }
 
     fn load_orgs(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         let Some(org) = self.org.as_mut() else { return };
         org.orgs = Loadable::Loading;
         org.task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::LIST_ORGS, serde_json::json!({})).await;
+            let result = engine
+                .client()
+                .call(methods::LIST_ORGS, serde_json::json!({}))
+                .await;
             this.update(cx, |shell, cx| {
                 if let Some(org) = shell.org.as_mut() {
                     org.orgs = match result {
@@ -688,7 +749,9 @@ impl Shell {
     }
 
     fn create_org(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         let Some(org) = self.org.as_mut() else { return };
         if org.submitting {
             return;
@@ -723,14 +786,19 @@ impl Shell {
     }
 
     fn select_org(&mut self, organization_id: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         let Some(org) = self.org.as_mut() else { return };
         org.submitting = true;
         org.error = None;
         org.task = Some(cx.spawn(async move |this, cx| {
             let result = engine
                 .client()
-                .call(methods::SELECT_ORG, serde_json::json!({ "organizationId": organization_id }))
+                .call(
+                    methods::SELECT_ORG,
+                    serde_json::json!({ "organizationId": organization_id }),
+                )
                 .await;
             this.update(cx, |shell, cx| {
                 if let Some(org) = shell.org.as_mut() {
@@ -782,7 +850,9 @@ impl Shell {
             div()
                 .h_full()
                 .bg(theme.surface)
-                .when(target > 0.0, |el| el.border_r_1().border_color(theme.border))
+                .when(target > 0.0, |el| {
+                    el.border_r_1().border_color(theme.border)
+                })
                 .child(inner)
                 .into_any_element(),
         )
@@ -837,10 +907,14 @@ impl Shell {
                         popover::menu_row(theme, selected)
                             .id(SharedString::from(format!("settings-nav-{}", item.label())))
                             .text_size(px(13.0))
-                            .text_color(if selected { theme.text } else { theme.text_muted })
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.open_settings(item, cx)
-                            }))
+                            .text_color(if selected {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            })
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.open_settings(item, cx)),
+                            )
                             .child(SharedString::from(item.label()))
                     })),
             )
@@ -864,8 +938,12 @@ impl Shell {
             Indicator::Errored => Some(theme.danger),
             Indicator::None => None,
         };
-        let (hover, active, text, muted) =
-            (theme.element_hover, theme.element_active, theme.text, theme.text_muted);
+        let (hover, active, text, muted) = (
+            theme.element_hover,
+            theme.element_active,
+            theme.text,
+            theme.text_muted,
+        );
         let select_id = id.clone();
         let menu_id = id.clone();
         div()
@@ -924,11 +1002,16 @@ impl Shell {
 
         let mut list_items: Vec<AnyElement> = Vec::new();
         let row_for = |shell: &Self, chat: &comet_proto::Chat, cx: &mut Context<Self>| {
-            let (indicator, selected) =
-                meta.get(&chat.id).copied().unwrap_or((Indicator::None, false));
+            let (indicator, selected) = meta
+                .get(&chat.id)
+                .copied()
+                .unwrap_or((Indicator::None, false));
             shell.render_chat_row(
                 chat.id.clone(),
-                chat.title.clone().unwrap_or_else(|| "New session".into()).into(),
+                chat.title
+                    .clone()
+                    .unwrap_or_else(|| "New session".into())
+                    .into(),
                 indicator,
                 selected,
                 theme,
@@ -1020,9 +1103,17 @@ impl Shell {
                             .py(px(6.0))
                             .rounded(px(Theme::CONTROL_RADIUS))
                             .border_1()
-                            .border_color(if grouped { theme.border_strong } else { theme.border })
+                            .border_color(if grouped {
+                                theme.border_strong
+                            } else {
+                                theme.border
+                            })
                             .text_size(px(12.0))
-                            .text_color(if grouped { theme.text } else { theme.text_faint })
+                            .text_color(if grouped {
+                                theme.text
+                            } else {
+                                theme.text_faint
+                            })
                             .when(grouped, |el| el.bg(theme.element_active))
                             .cursor_pointer()
                             .hover(|s| s.bg(Theme::dark().element_hover))
@@ -1152,7 +1243,10 @@ impl Shell {
                         .flex()
                         .flex_col()
                         .child(
-                            div().text_size(px(12.0)).text_color(theme.text).child(user_line),
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(theme.text)
+                                .child(user_line),
                         )
                         .when_some(user_email, |el, email| {
                             el.child(
@@ -1300,9 +1394,7 @@ impl Shell {
                                 .text_size(px(12.0))
                                 .text_color(gpui::white())
                                 .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.submit_rename_chat(cx)
-                                }))
+                                .on_click(cx.listener(|this, _, _, cx| this.submit_rename_chat(cx)))
                                 .child(SharedString::from("Save")),
                         ),
                 )
@@ -1445,9 +1537,13 @@ impl Shell {
                         .px(px(Theme::SPACE_MD))
                         .border_b_1()
                         .border_color(border)
-                        .child(header_button("toggle-sidebar", "☰", hover, muted, cx.listener(
-                            |this, _, _, cx| this.toggle_sidebar(cx),
-                        )))
+                        .child(header_button(
+                            "toggle-sidebar",
+                            "☰",
+                            hover,
+                            muted,
+                            cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                        ))
                         .child(
                             div()
                                 .flex_1()
@@ -1525,9 +1621,13 @@ impl Shell {
                     .px(px(Theme::SPACE_MD))
                     .border_b_1()
                     .border_color(border)
-                    .child(header_button("toggle-sidebar", "☰", hover, muted, cx.listener(
-                        |this, _, _, cx| this.toggle_sidebar(cx),
-                    )))
+                    .child(header_button(
+                        "toggle-sidebar",
+                        "☰",
+                        hover,
+                        muted,
+                        cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
+                    ))
                     .child(
                         div()
                             .flex_1()
@@ -1537,12 +1637,20 @@ impl Shell {
                             .text_color(text)
                             .child(title),
                     )
-                    .child(header_button("toggle-terminal", "Terminal", hover, muted, cx.listener(
-                        |this, _, _, cx| this.toggle_terminal(cx),
-                    )))
-                    .child(header_button("toggle-changes", "Changes", hover, muted, cx.listener(
-                        |this, _, _, cx| this.toggle_right_pane(cx),
-                    ))),
+                    .child(header_button(
+                        "toggle-terminal",
+                        "Terminal",
+                        hover,
+                        muted,
+                        cx.listener(|this, _, _, cx| this.toggle_terminal(cx)),
+                    ))
+                    .child(header_button(
+                        "toggle-changes",
+                        "Changes",
+                        hover,
+                        muted,
+                        cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
+                    )),
             )
             .child(div().flex_1().min_h_0().child(outlet))
             .child(self.render_terminal_container(cx))
@@ -1622,9 +1730,11 @@ impl Shell {
             .child(inner);
         match tween {
             Some(WidthTween { from, to, epoch }) => container
-                .with_animation(("terminal-height", epoch), RESIZE.animation(), move |el, t| {
-                    el.h(px(motion::lerp(from, to, t)))
-                })
+                .with_animation(
+                    ("terminal-height", epoch),
+                    RESIZE.animation(),
+                    move |el, t| el.h(px(motion::lerp(from, to, t))),
+                )
                 .into_any_element(),
             None => container.h(px(target)).into_any_element(),
         }
@@ -1653,7 +1763,10 @@ impl Shell {
             .text_size(px(11.0));
 
         let Some(chat_id) = state.selected_chat.clone() else {
-            return strip.text_color(theme.text_faint).child(mode_line).into_any_element();
+            return strip
+                .text_color(theme.text_faint)
+                .child(mode_line)
+                .into_any_element();
         };
         let indicator = state.indicator_for(&chat_id, now);
         let elapsed_secs = state
@@ -1665,7 +1778,8 @@ impl Shell {
 
         match indicator {
             Indicator::Working => {
-                let word = transcript::flavour_word(transcript::flavour_seed(&chat_id), elapsed_secs);
+                let word =
+                    transcript::flavour_word(transcript::flavour_seed(&chat_id), elapsed_secs);
                 strip
                     .child(loaders::gradient_spinner("working-indicator", &theme, 3.0))
                     .child(
@@ -1692,9 +1806,10 @@ impl Shell {
                 .text_color(theme.text_muted)
                 .child(SharedString::from("Sending…"))
                 .into_any_element(),
-            Indicator::None => {
-                strip.text_color(theme.text_faint).child(mode_line).into_any_element()
-            }
+            Indicator::None => strip
+                .text_color(theme.text_faint)
+                .child(mode_line)
+                .into_any_element(),
         }
     }
 
@@ -1720,7 +1835,10 @@ impl Shell {
             "right-pane-width",
             self.right_tween,
             target,
-            div().h_full().bg(bg).when(target > 0.0, |el| el.border_l_1().border_color(border))
+            div()
+                .h_full()
+                .bg(bg)
+                .when(target > 0.0, |el| el.border_l_1().border_color(border))
                 .child(inner)
                 .into_any_element(),
         )
@@ -1749,8 +1867,16 @@ impl Shell {
             .text_size(px(13.0));
         let card = match phase {
             GatePhase::Failed(error) => card
-                .child(div().text_color(danger).child(SharedString::from("Backend unreachable")))
-                .child(div().text_color(muted).child(SharedString::from(error.clone())))
+                .child(
+                    div()
+                        .text_color(danger)
+                        .child(SharedString::from("Backend unreachable")),
+                )
+                .child(
+                    div()
+                        .text_color(muted)
+                        .child(SharedString::from(error.clone())),
+                )
                 .child(
                     div()
                         .id("retry-engine")
@@ -1809,9 +1935,7 @@ impl Shell {
         let orgs = org.orgs.clone();
 
         let memberships: AnyElement = match &orgs {
-            Loadable::Idle | Loadable::Loading => {
-                popover::skeleton_rows("org-skeleton", &theme, 2)
-            }
+            Loadable::Idle | Loadable::Loading => popover::skeleton_rows("org-skeleton", &theme, 2),
             Loadable::Error(message) => popover::error_row(&theme, message)
                 .child(
                     div()
@@ -1894,7 +2018,12 @@ impl Shell {
                     .child(name_input),
             )
             .when_some(error, |el, message| {
-                el.child(div().text_size(px(11.0)).text_color(theme.danger).child(message))
+                el.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme.danger)
+                        .child(message),
+                )
             })
             .child(
                 div()
@@ -1909,7 +2038,11 @@ impl Shell {
                     .cursor_pointer()
                     .hover(|s| s.opacity(0.9))
                     .on_click(cx.listener(|this, _, _, cx| this.create_org(cx)))
-                    .child(SharedString::from(if submitting { "Creating…" } else { "Create workspace" })),
+                    .child(SharedString::from(if submitting {
+                        "Creating…"
+                    } else {
+                        "Create workspace"
+                    })),
             )
             .child(memberships)
             .child(
@@ -1980,8 +2113,7 @@ impl Render for Shell {
             GatePhase::Ready => {
                 // MessageRail width gate: hide below 48rem of main-panel width.
                 let viewport = f32::from(window.viewport_size().width);
-                let main_width =
-                    viewport - self.sidebar_target() - self.right_target() - 10.0;
+                let main_width = viewport - self.sidebar_target() - self.right_target() - 10.0;
                 self.transcript.update(cx, |t, cx| {
                     t.set_rail_enabled(rail::rail_visible(main_width), cx)
                 });

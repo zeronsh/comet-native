@@ -28,11 +28,19 @@ pub struct ArchivedPage {
 impl ArchivedPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
-        Self { state, error: None, busy: None, task: None, _observe: observe }
+        Self {
+            state,
+            error: None,
+            busy: None,
+            task: None,
+            _observe: observe,
+        }
     }
 
     fn unarchive(&mut self, chat_id: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         self.busy = Some(chat_id.clone());
         self.error = None;
         let params = serde_json::json!({
@@ -61,7 +69,11 @@ impl Render for ArchivedPage {
         let (rows, device_names): (Vec<Chat>, std::collections::HashMap<String, String>) = {
             let state = self.state.read(cx);
             let rows = archived_chats(&state.chats).into_iter().cloned().collect();
-            let names = state.devices.iter().map(|d| (d.id.clone(), d.name.clone())).collect();
+            let names = state
+                .devices
+                .iter()
+                .map(|d| (d.id.clone(), d.name.clone()))
+                .collect();
             (rows, names)
         };
         let busy = self.busy.clone();
@@ -70,8 +82,11 @@ impl Render for ArchivedPage {
             .into_iter()
             .enumerate()
             .map(|(ix, chat)| {
-                let title: SharedString =
-                    chat.title.clone().unwrap_or_else(|| "Untitled session".into()).into();
+                let title: SharedString = chat
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| "Untitled session".into())
+                    .into();
                 let device: SharedString = device_names
                     .get(&chat.device_id)
                     .cloned()
@@ -113,9 +128,7 @@ impl Render for ArchivedPage {
                                     .text_color(theme.text_faint)
                                     .child(device)
                                     .when_some(preview, |el, preview| {
-                                        el.child(
-                                            div().min_w_0().truncate().child(preview),
-                                        )
+                                        el.child(div().min_w_0().truncate().child(preview))
                                     }),
                             ),
                     )
@@ -135,7 +148,11 @@ impl Render for ArchivedPage {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.unarchive(chat_id.clone(), cx);
                             }))
-                            .child(SharedString::from(if is_busy { "Unarchiving…" } else { "Unarchive" })),
+                            .child(SharedString::from(if is_busy {
+                                "Unarchiving…"
+                            } else {
+                                "Unarchive"
+                            })),
                     )
                     .into_any_element()
             })

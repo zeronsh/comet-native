@@ -9,7 +9,9 @@ use comet_doc::{
 use comet_proto::{AgentEvent, ToolCall};
 
 fn main() {
-    let out = std::env::args().nth(1).expect("usage: gen_fixture <out-path>");
+    let out = std::env::args()
+        .nth(1)
+        .expect("usage: gen_fixture <out-path>");
     let doc = SessionDoc::init("chat-fixture-1").expect("init");
 
     // User message.
@@ -28,9 +30,8 @@ fn main() {
     .expect("push user message");
 
     // Streamed assistant message: text -> tool -> result -> text, exactly as the engine writes it.
-    let mut writer =
-        SegmentWriter::begin(&doc, "m-assistant-1", "device-rust", 1_700_000_001_000)
-            .expect("begin");
+    let mut writer = SegmentWriter::begin(&doc, "m-assistant-1", "device-rust", 1_700_000_001_000)
+        .expect("begin");
     let mut folded = Vec::new();
     for delta in ["Sure — ", "running", " them now."] {
         folded = fold_event_into_parts(&folded, &AgentEvent::TextDelta { text: delta.into() });
@@ -53,7 +54,12 @@ fn main() {
             is_error: false,
         },
     );
-    folded = fold_event_into_parts(&folded, &AgentEvent::TextDelta { text: "All green." .into() });
+    folded = fold_event_into_parts(
+        &folded,
+        &AgentEvent::TextDelta {
+            text: "All green.".into(),
+        },
+    );
     writer
         .finish(&folded, MessageStatus::Complete)
         .expect("finish");

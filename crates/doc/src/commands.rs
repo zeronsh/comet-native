@@ -162,14 +162,13 @@ pub fn evaluate_command(
         }
     }
     // An interrupt aimed at a turn that already finished is moot.
-    if kind == SessionCommandKind::Interrupt {
-        if let Some(based_on) = &entry.based_on {
-            if let Some(turn_id) = &based_on.turn_id {
-                let is_current = cx.current_turn_id == Some(turn_id.as_str());
-                if !is_current && (cx.turn_is_past)(turn_id) {
-                    return CommandDisposition::Superseded;
-                }
-            }
+    if kind == SessionCommandKind::Interrupt
+        && let Some(based_on) = &entry.based_on
+        && let Some(turn_id) = &based_on.turn_id
+    {
+        let is_current = cx.current_turn_id == Some(turn_id.as_str());
+        if !is_current && (cx.turn_is_past)(turn_id) {
+            return CommandDisposition::Superseded;
         }
     }
     CommandDisposition::Execute
@@ -244,7 +243,10 @@ mod tests {
         let newer = steer("c2", 2_000);
         let entries = vec![older.clone(), newer.clone()];
         let cx1 = cx(&entries, &NEVER, &NEVER, 3_000, None);
-        assert_eq!(evaluate_command(&older, &cx1), CommandDisposition::Superseded);
+        assert_eq!(
+            evaluate_command(&older, &cx1),
+            CommandDisposition::Superseded
+        );
         assert_eq!(evaluate_command(&newer, &cx1), CommandDisposition::Execute);
     }
 

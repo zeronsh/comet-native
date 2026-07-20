@@ -12,6 +12,7 @@
 //!   remote devices' workspace session rows
 //! - `Mutate {op, …}` → `{ok}` — workspace entity mutations (createChat, renameChat,
 //!   setChatArchived, deleteChat, renameDevice, markChatSeen)
+//! - `LocalDevice` → `{deviceId}` — this engine's identity (never forwarded)
 //! - AuthRpc (feature-inventory §2): `AuthStatus` (stream), `SignIn`/`SignInHeadless` →
 //!   `{url}`, `CompleteSignIn {code}`, `SignOut`, `ListOrgs`, `CreateOrg {name}`,
 //!   `SelectOrg {organizationId}`
@@ -295,7 +296,9 @@ impl EngineRpc {
     }
 
     fn auth(&self) -> Result<&Auth, RpcError> {
-        self.auth.as_ref().ok_or_else(|| RpcError::Failed("auth unavailable".into()))
+        self.auth
+            .as_ref()
+            .ok_or_else(|| RpcError::Failed("auth unavailable".into()))
     }
 
     /// Forward a device-addressed call over the target device's relay. On transport
@@ -342,7 +345,12 @@ impl EngineRpc {
     fn mutate(&self, params: MutateParams) -> Result<(), RpcError> {
         let failed = |e: crate::EngineError| RpcError::Failed(e.to_string());
         match params {
-            MutateParams::CreateChat { chat_id, device_id, config, cwd } => self
+            MutateParams::CreateChat {
+                chat_id,
+                device_id,
+                config,
+                cwd,
+            } => self
                 .workspace
                 .create_chat(&chat_id, &device_id, config, cwd)
                 .map_err(failed),
@@ -356,9 +364,11 @@ impl EngineRpc {
                 .set_chat_archived(&chat_id, archived)
                 .map_err(failed)
                 .map(drop),
-            MutateParams::DeleteChat { chat_id } => {
-                self.workspace.delete_chat(&chat_id).map_err(failed).map(drop)
-            }
+            MutateParams::DeleteChat { chat_id } => self
+                .workspace
+                .delete_chat(&chat_id)
+                .map_err(failed)
+                .map(drop),
             MutateParams::RenameDevice { device_id, name } => self
                 .workspace
                 .rename_device(&device_id, &name)
@@ -413,7 +423,10 @@ fn forwardable(method: &str) -> bool {
 
 /// Forwardable methods whose reply is a stream (proxied item-by-item).
 fn is_stream_method(method: &str) -> bool {
-    matches!(method, methods::WATCH_DOC_MESSAGES | methods::SUBSCRIBE_TERMINAL)
+    matches!(
+        method,
+        methods::WATCH_DOC_MESSAGES | methods::SUBSCRIBE_TERMINAL
+    )
 }
 
 /// A watch receiver as a stream: current value first, then every change.
@@ -436,20 +449,15 @@ where
 
 #[async_trait]
 impl RpcService for EngineRpc {
-    async fn handle(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<RpcReply, RpcError> {
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         // Device-addressed routing: forward calls that target another device over its
         // relay. The target compares the id to its own, so forwards cannot loop.
-        if forwardable(method) {
-            if let Some(target) = params.get("targetDeviceId").and_then(|v| v.as_str()) {
-                if target != self.doc_host.device_id() {
-                    let target = target.to_string();
-                    return self.forward(&target, method, params).await;
-                }
-            }
+        if forwardable(method)
+            && let Some(target) = params.get("targetDeviceId").and_then(|v| v.as_str())
+            && target != self.doc_host.device_id()
+        {
+            let target = target.to_string();
+            return self.forward(&target, method, params).await;
         }
         match method {
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
@@ -459,8 +467,10 @@ impl RpcService for EngineRpc {
                     .registry
                     .resolve(p.harness)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
-                let models =
-                    harness.models().await.map_err(|e| RpcError::Failed(e.to_string()))?;
+                let models = harness
+                    .models()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&models)
             }
             methods::QUEUE_COMMAND => {
@@ -482,15 +492,18 @@ impl RpcService for EngineRpc {
             methods::WATCH_CHATS => {
                 Ok(RpcReply::Stream(watch_stream(self.workspace.watch_chats())))
             }
-            methods::WATCH_DEVICES => {
-                Ok(RpcReply::Stream(watch_stream(self.workspace.watch_devices())))
-            }
+            methods::WATCH_DEVICES => Ok(RpcReply::Stream(watch_stream(
+                self.workspace.watch_devices(),
+            ))),
             methods::WATCH_SESSIONS => {
                 // Local live statuses merged with remote devices' workspace rows.
                 let merged = self
                     .workspace
                     .merged_sessions_watch(self.sessions.watch_sessions());
                 Ok(RpcReply::Stream(watch_stream(merged)))
+            }
+            methods::LOCAL_DEVICE => {
+                RpcReply::value(&serde_json::json!({ "deviceId": self.doc_host.device_id() }))
             }
             methods::MUTATE => {
                 let p: MutateParams = parse_params(params)?;
@@ -507,8 +520,11 @@ impl RpcService for EngineRpc {
                     path: String,
                 }
                 let p: P = parse_params(params)?;
-                let repo =
-                    self.repos.add(&p.path).await.map_err(|e| RpcError::Failed(e.to_string()))?;
+                let repo = self
+                    .repos
+                    .add(&p.path)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&repo)
             }
             methods::CLONE_REPO => {
@@ -719,9 +735,7 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&chunk)
             }
-            methods::AUTH_STATUS => {
-                Ok(RpcReply::Stream(watch_stream(self.auth()?.watch_state())))
-            }
+            methods::AUTH_STATUS => Ok(RpcReply::Stream(watch_stream(self.auth()?.watch_state()))),
             methods::SIGN_IN => {
                 let url = self
                     .auth()?
@@ -785,5 +799,31 @@ impl RpcService for EngineRpc {
             }
             other => Err(RpcError::UnknownMethod(other.to_string())),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The UI's Switch/Forget calls send `{id, accountId, harness}` (+ optional
+    /// `targetDeviceId`); the extra fields must be tolerated, `accountId` wins.
+    #[test]
+    fn agent_account_params_accept_ui_shape() {
+        let p: AgentAccountParams = parse_params(serde_json::json!({
+            "id": "acct-1",
+            "accountId": "acct-1",
+            "harness": "claude-code",
+            "targetDeviceId": "dev-2",
+        }))
+        .expect("ui param shape");
+        assert_eq!(p.account_id, "acct-1");
+        assert_eq!(p.harness, HarnessId::ClaudeCode);
+    }
+
+    #[test]
+    fn local_device_is_not_forwardable() {
+        assert!(!forwardable(methods::LOCAL_DEVICE));
+        assert!(forwardable(methods::QUEUE_COMMAND));
     }
 }

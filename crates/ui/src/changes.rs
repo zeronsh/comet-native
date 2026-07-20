@@ -112,7 +112,9 @@ impl FileDiff {
 }
 
 fn strip_git_prefix(path: &str) -> &str {
-    path.strip_prefix("a/").or_else(|| path.strip_prefix("b/")).unwrap_or(path)
+    path.strip_prefix("a/")
+        .or_else(|| path.strip_prefix("b/"))
+        .unwrap_or(path)
 }
 
 /// Split the tail of a `diff --git a/… b/…` line into (old, new) paths.
@@ -122,7 +124,9 @@ fn parse_git_paths(rest: &str) -> (String, String) {
     fn unquote(s: &str) -> String {
         let trimmed = s.trim();
         if trimmed.len() >= 2 && trimmed.starts_with('"') && trimmed.ends_with('"') {
-            trimmed[1..trimmed.len() - 1].replace("\\\"", "\"").replace("\\\\", "\\")
+            trimmed[1..trimmed.len() - 1]
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
         } else {
             trimmed.to_string()
         }
@@ -130,7 +134,10 @@ fn parse_git_paths(rest: &str) -> (String, String) {
     if let Some(pos) = rest.rfind(" b/").or_else(|| rest.rfind(" \"b/")) {
         let old = unquote(&rest[..pos]);
         let new = unquote(&rest[pos + 1..]);
-        (strip_git_prefix(&old).to_string(), strip_git_prefix(&new).to_string())
+        (
+            strip_git_prefix(&old).to_string(),
+            strip_git_prefix(&new).to_string(),
+        )
     } else {
         let p = strip_git_prefix(&unquote(rest)).to_string();
         (p.clone(), p)
@@ -173,13 +180,18 @@ pub fn parse_patch(patch: &str) -> Vec<FileDiff> {
             in_hunk = false;
             continue;
         }
-        let Some(file) = files.last_mut() else { continue };
+        let Some(file) = files.last_mut() else {
+            continue;
+        };
 
         if raw.starts_with("@@") {
             if let Some((o, n)) = parse_hunk_header(raw) {
                 old_no = o;
                 new_no = n;
-                file.hunks.push(Hunk { header: raw.to_string(), lines: Vec::new() });
+                file.hunks.push(Hunk {
+                    header: raw.to_string(),
+                    lines: Vec::new(),
+                });
                 in_hunk = true;
             }
             continue;
@@ -260,7 +272,8 @@ pub fn parse_patch(patch: &str) -> Vec<FileDiff> {
         } else if raw.starts_with("Binary files") || raw.starts_with("GIT binary patch") {
             file.binary = true;
         } else if let Some(mode) = raw.strip_prefix("new mode ") {
-            file.notices.push(format!("Mode changed to {}", mode.trim()));
+            file.notices
+                .push(format!("Mode changed to {}", mode.trim()));
         } else if let Some(new) = raw.strip_prefix("+++ ") {
             let new = new.trim();
             if new == "/dev/null" {
@@ -344,7 +357,11 @@ pub fn diff_phase(resolved: Option<&CheckoutDiff>) -> DiffPhase {
 
 /// Header label: "N Uncommitted change(s)".
 pub fn uncommitted_label(count: usize) -> String {
-    if count == 1 { "1 Uncommitted change".to_string() } else { format!("{count} Uncommitted changes") }
+    if count == 1 {
+        "1 Uncommitted change".to_string()
+    } else {
+        format!("{count} Uncommitted changes")
+    }
 }
 
 /// Fold a `WatchCheckoutDiffs` frame into the diff set. Accepts either a full
@@ -566,14 +583,23 @@ impl Changes {
         let deletions = diff.deletions;
         let file_count = diff.files.len();
         self.parse_task = Some(cx.spawn(async move |this, cx| {
-            let files = cx.background_executor().spawn(async move { parse_patch(&patch) }).await;
+            let files = cx
+                .background_executor()
+                .spawn(async move { parse_patch(&patch) })
+                .await;
             this.update(cx, |changes, cx| {
                 // Late results for a superseded diff are re-checked by key.
-                let current = changes.resolved(cx).map(|d| format!("{}:{}", d.checkout_id, d.checksum));
+                let current = changes
+                    .resolved(cx)
+                    .map(|d| format!("{}:{}", d.checkout_id, d.checksum));
                 if current.as_deref() != Some(key.as_str()) {
                     return;
                 }
-                let file_count = if file_count > 0 { file_count } else { files.len() };
+                let file_count = if file_count > 0 {
+                    file_count
+                } else {
+                    files.len()
+                };
                 changes.list.reset(files.len());
                 changes.folds.clear();
                 changes.highlights.clear();
@@ -594,8 +620,16 @@ impl Changes {
     fn toggle_fold(&mut self, path: &str, expanded_height: f32) {
         let fold = self.folds.entry(path.to_string()).or_default();
         let currently_collapsed = fold.collapsed;
-        fold.from = if currently_collapsed { 0.0 } else { expanded_height };
-        fold.to = if currently_collapsed { expanded_height } else { 0.0 };
+        fold.from = if currently_collapsed {
+            0.0
+        } else {
+            expanded_height
+        };
+        fold.to = if currently_collapsed {
+            expanded_height
+        } else {
+            0.0
+        };
         fold.collapsed = !currently_collapsed;
         fold.epoch += 1;
     }
@@ -650,8 +684,14 @@ impl Changes {
             })
             .ok();
         });
-        self.highlights
-            .insert(file.path.clone(), HighlightSlot { fingerprint, lines: None, _task: Some(task) });
+        self.highlights.insert(
+            file.path.clone(),
+            HighlightSlot {
+                fingerprint,
+                lines: None,
+                _task: Some(task),
+            },
+        );
         None
     }
 
@@ -695,7 +735,11 @@ impl Changes {
                 .into_any_element()
         } else {
             let target = if fold.collapsed { 0.0 } else { expanded_height };
-            div().overflow_hidden().h(px(target)).child(body).into_any_element()
+            div()
+                .overflow_hidden()
+                .h(px(target))
+                .child(body)
+                .into_any_element()
         };
 
         div()
@@ -1014,9 +1058,7 @@ fn render_file_body(
                             .font_family(theme.font_mono.clone())
                             .text_size(px(DIFF_TEXT_SIZE))
                             .whitespace_nowrap()
-                            .child(
-                                gpui::StyledText::new(line.text.clone()).with_runs(runs),
-                            ),
+                            .child(gpui::StyledText::new(line.text.clone()).with_runs(runs)),
                     )
                     .into_any_element(),
             );
@@ -1046,7 +1088,11 @@ impl Render for Changes {
                 .items_center()
                 .justify_center()
                 .gap(px(Theme::SPACE_SM))
-                .child(crate::loaders::gradient_spinner("changes-preparing", &theme, 3.0))
+                .child(crate::loaders::gradient_spinner(
+                    "changes-preparing",
+                    &theme,
+                    3.0,
+                ))
                 .child(
                     div()
                         .text_size(px(12.0))
@@ -1084,7 +1130,11 @@ impl Render for Changes {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .child(crate::loaders::gradient_spinner("changes-parsing", &theme, 3.0))
+                        .child(crate::loaders::gradient_spinner(
+                            "changes-parsing",
+                            &theme,
+                            3.0,
+                        ))
                         .into_any_element()
                 }
             }
@@ -1213,7 +1263,11 @@ rename to new_name.rs
         assert_eq!(renamed.status, FileStatus::Renamed);
         assert_eq!(renamed.path, "new_name.rs");
         assert_eq!(renamed.old_path.as_deref(), Some("old_name.rs"));
-        assert!(file_notices(renamed).iter().any(|n| n.contains("old_name.rs")));
+        assert!(
+            file_notices(renamed)
+                .iter()
+                .any(|n| n.contains("old_name.rs"))
+        );
     }
 
     #[test]
@@ -1345,14 +1399,23 @@ rename to new_name.rs
         let mut diffs = Vec::new();
         let one = diff("co-1", "d", "/w", "p1");
         // Single frame inserts.
-        assert!(apply_diff_frame(&mut diffs, serde_json::to_value(&one).unwrap()));
+        assert!(apply_diff_frame(
+            &mut diffs,
+            serde_json::to_value(&one).unwrap()
+        ));
         assert_eq!(diffs.len(), 1);
         // Identical frame is a no-op.
-        assert!(!apply_diff_frame(&mut diffs, serde_json::to_value(&one).unwrap()));
+        assert!(!apply_diff_frame(
+            &mut diffs,
+            serde_json::to_value(&one).unwrap()
+        ));
         // Same checkout upserts in place.
         let mut updated = one.clone();
         updated.patch = "p2".into();
-        assert!(apply_diff_frame(&mut diffs, serde_json::to_value(&updated).unwrap()));
+        assert!(apply_diff_frame(
+            &mut diffs,
+            serde_json::to_value(&updated).unwrap()
+        ));
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].patch, "p2");
         // List frame replaces wholesale.
@@ -1364,7 +1427,10 @@ rename to new_name.rs
         assert_eq!(diffs.len(), 1);
         assert_eq!(diffs[0].checkout_id, "co-2");
         // Malformed frames change nothing.
-        assert!(!apply_diff_frame(&mut diffs, serde_json::json!({"nope": true})));
+        assert!(!apply_diff_frame(
+            &mut diffs,
+            serde_json::json!({"nope": true})
+        ));
         assert_eq!(diffs[0].checkout_id, "co-2");
     }
 

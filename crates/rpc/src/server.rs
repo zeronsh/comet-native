@@ -79,22 +79,40 @@ async fn handle_request(
     };
     match service.handle(&method, params).await {
         Ok(RpcReply::Value(value)) => {
-            let _ = send(ServerFrame { id, ok: Some(value), ..Default::default() }).await;
+            let _ = send(ServerFrame {
+                id,
+                ok: Some(value),
+                ..Default::default()
+            })
+            .await;
         }
         Ok(RpcReply::Stream(mut stream)) => {
             while let Some(item) = stream.next().await {
-                if send(ServerFrame { id, item: Some(item), ..Default::default() })
-                    .await
-                    .is_err()
+                if send(ServerFrame {
+                    id,
+                    item: Some(item),
+                    ..Default::default()
+                })
+                .await
+                .is_err()
                 {
                     return; // connection gone
                 }
             }
-            let _ = send(ServerFrame { id, done: true, ..Default::default() }).await;
+            let _ = send(ServerFrame {
+                id,
+                done: true,
+                ..Default::default()
+            })
+            .await;
         }
         Err(err) => {
-            let _ = send(ServerFrame { id, err: Some(err.to_string()), ..Default::default() })
-                .await;
+            let _ = send(ServerFrame {
+                id,
+                err: Some(err.to_string()),
+                ..Default::default()
+            })
+            .await;
         }
     }
 }

@@ -52,11 +52,16 @@ impl RunJournal {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, JournalError> {
         let dir = dir.as_ref().to_path_buf();
         std::fs::create_dir_all(&dir)?;
-        Ok(Self { dir, open_files: Mutex::new(HashMap::new()) })
+        Ok(Self {
+            dir,
+            open_files: Mutex::new(HashMap::new()),
+        })
     }
 
     fn lock(&self) -> MutexGuard<'_, HashMap<String, ChatJournal>> {
-        self.open_files.lock().unwrap_or_else(PoisonError::into_inner)
+        self.open_files
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn path_for(&self, chat_id: &str) -> PathBuf {
@@ -72,7 +77,11 @@ impl RunJournal {
             let file = OpenOptions::new().create(true).append(true).open(&path)?;
             files.insert(
                 chat_id.to_string(),
-                ChatJournal { file, next_seq, needs_newline },
+                ChatJournal {
+                    file,
+                    next_seq,
+                    needs_newline,
+                },
             );
         }
         // Entry guaranteed present; avoid unwrap in a library path regardless.
@@ -82,7 +91,10 @@ impl RunJournal {
             )));
         };
         let seq = journal.next_seq;
-        let line = serde_json::to_string(&JournalLine { seq, event: event.clone() })?;
+        let line = serde_json::to_string(&JournalLine {
+            seq,
+            event: event.clone(),
+        })?;
         let mut buf = Vec::with_capacity(line.len() + 2);
         if journal.needs_newline {
             buf.push(b'\n');
@@ -199,7 +211,13 @@ fn scan_tail(path: &Path) -> Result<(u64, bool), JournalError> {
 fn sanitize_id(chat_id: &str) -> String {
     chat_id
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -272,7 +290,8 @@ mod tests {
         // Simulate a crash mid-write: garbage with no trailing newline.
         let path = dir.path().join("chat-1.jsonl");
         let mut f = OpenOptions::new().append(true).open(&path).unwrap();
-        f.write_all(b"{\"seq\":2,\"event\":{\"type\":\"textD").unwrap();
+        f.write_all(b"{\"seq\":2,\"event\":{\"type\":\"textD")
+            .unwrap();
         drop(f);
 
         let journal = RunJournal::open(dir.path()).unwrap();

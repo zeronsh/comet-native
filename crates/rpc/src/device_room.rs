@@ -67,7 +67,12 @@ pub struct DeviceFrameHeader {
 
 impl DeviceFrameHeader {
     pub fn new(s: impl Into<String>, k: impl Into<String>) -> Self {
-        Self { s: s.into(), k: k.into(), to: None, from: None }
+        Self {
+            s: s.into(),
+            k: k.into(),
+            to: None,
+            from: None,
+        }
     }
 
     pub fn with_to(mut self, conn_id: impl Into<String>) -> Self {
@@ -119,10 +124,14 @@ pub fn decode_device_frame(bytes: &[u8]) -> Result<(DeviceFrameHeader, Vec<u8>),
         }
         shift += 7;
     }
-    let header_end = offset.checked_add(len).ok_or_else(|| bad("header length overflow"))?;
-    let header_bytes = bytes.get(offset..header_end).ok_or_else(|| bad("truncated header"))?;
-    let header: DeviceFrameHeader = serde_json::from_slice(header_bytes)
-        .map_err(|e| bad(&format!("bad header JSON: {e}")))?;
+    let header_end = offset
+        .checked_add(len)
+        .ok_or_else(|| bad("header length overflow"))?;
+    let header_bytes = bytes
+        .get(offset..header_end)
+        .ok_or_else(|| bad("truncated header"))?;
+    let header: DeviceFrameHeader =
+        serde_json::from_slice(header_bytes).map_err(|e| bad(&format!("bad header JSON: {e}")))?;
     Ok((header, bytes[header_end..].to_vec()))
 }
 
@@ -132,7 +141,9 @@ pub fn relay_error_code(payload: &[u8]) -> Option<String> {
     struct RelayError {
         error: String,
     }
-    serde_json::from_slice::<RelayError>(payload).ok().map(|e| e.error)
+    serde_json::from_slice::<RelayError>(payload)
+        .ok()
+        .map(|e| e.error)
 }
 
 /// Build the device-room WebSocket URL from the http(s) edge base URL.
@@ -188,7 +199,11 @@ pub struct HostRelayConfig {
 }
 
 impl HostRelayConfig {
-    pub fn new(edge_url: impl Into<String>, device_id: impl Into<String>, token: Arc<dyn TokenSource>) -> Self {
+    pub fn new(
+        edge_url: impl Into<String>,
+        device_id: impl Into<String>,
+        token: Arc<dyn TokenSource>,
+    ) -> Self {
         Self {
             edge_url: edge_url.into(),
             device_id: device_id.into(),
@@ -367,7 +382,9 @@ async fn handle_host_frame(
             chat_id: Option<String>,
         }
         match serde_json::from_slice::<Nudge>(&payload) {
-            Ok(Nudge { chat_id: Some(chat_id) }) => on_nudge(chat_id),
+            Ok(Nudge {
+                chat_id: Some(chat_id),
+            }) => on_nudge(chat_id),
             _ => tracing::warn!("device-room: malformed nudge — ignoring"),
         }
         return;
@@ -464,7 +481,11 @@ impl DeviceLink {
             let _ = closed_tx.send(Some(reason));
         });
 
-        Ok(Self { client: Arc::new(RpcClient::new(out_tx, in_rx)), closed_rx, pump })
+        Ok(Self {
+            client: Arc::new(RpcClient::new(out_tx, in_rx)),
+            closed_rx,
+            pump,
+        })
     }
 
     pub fn client(&self) -> Arc<RpcClient> {
@@ -644,8 +665,12 @@ impl LinkCache {
         let probe = client.call(crate::methods::LIST_HARNESSES, serde_json::json!({}));
         tokio::time::timeout(self.config.probe_timeout, probe)
             .await
-            .map_err(|_| RpcError::Transport(format!("peer {device_id}: readiness check timed out")))?
-            .map_err(|e| RpcError::Transport(format!("peer {device_id}: readiness check failed: {e}")))?;
+            .map_err(|_| {
+                RpcError::Transport(format!("peer {device_id}: readiness check timed out"))
+            })?
+            .map_err(|e| {
+                RpcError::Transport(format!("peer {device_id}: readiness check failed: {e}"))
+            })?;
         Ok(link)
     }
 
@@ -665,7 +690,10 @@ impl LinkCache {
             let Some(cache) = cache.upgrade() else { return };
             let mut links = lock(&cache.links);
             // Evict only if this exact link is still the cached one.
-            if links.get(&device_id).is_some_and(|l| Arc::as_ptr(l) as usize == link_ptr) {
+            if links
+                .get(&device_id)
+                .is_some_and(|l| Arc::as_ptr(l) as usize == link_ptr)
+            {
                 tracing::info!(device = %device_id, "peer: link dropped — evicting");
                 links.remove(&device_id);
             }
@@ -722,7 +750,8 @@ mod tests {
         assert_eq!(&frame[1..1 + expected_json.len()], expected_json);
         assert_eq!(&frame[1 + expected_json.len()..], &[1, 2]);
 
-        let routed = encode_device_frame(&header("s1", "term").with_to("c9"), b"x").expect("encode");
+        let routed =
+            encode_device_frame(&header("s1", "term").with_to("c9"), b"x").expect("encode");
         let expected = br#"{"s":"s1","k":"term","to":"c9"}"#;
         assert_eq!(routed[0] as usize, expected.len());
         assert_eq!(&routed[1..1 + expected.len()], expected);
@@ -754,8 +783,17 @@ mod tests {
 
     #[test]
     fn ws_url_shapes() {
-        let url = device_room_ws_url("https://edge.example/", "dev-1", "client", Some("c1"), "tok");
-        assert_eq!(url, "wss://edge.example/device/dev-1/ws?role=client&connId=c1&token=tok");
+        let url = device_room_ws_url(
+            "https://edge.example/",
+            "dev-1",
+            "client",
+            Some("c1"),
+            "tok",
+        );
+        assert_eq!(
+            url,
+            "wss://edge.example/device/dev-1/ws?role=client&connId=c1&token=tok"
+        );
         let host = device_room_ws_url("http://localhost:26640", "d", "host", None, "t");
         assert_eq!(host, "ws://localhost:26640/device/d/ws?role=host&token=t");
     }

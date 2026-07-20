@@ -13,9 +13,8 @@
 //!   colors — paint never changes layout), and the cursor block.
 
 use gpui::{
-    App, Bounds, Entity, GlobalElementId, Hsla, LayoutId, Modifiers, PaintQuad, Pixels,
-    ShapedLine, SharedString, Style, TextRun, Window, fill, font, outline, point, px, relative,
-    size,
+    App, Bounds, Entity, GlobalElementId, Hsla, LayoutId, Modifiers, PaintQuad, Pixels, ShapedLine,
+    SharedString, Style, TextRun, Window, fill, font, outline, point, px, relative, size,
 };
 
 use crate::theme::{Theme, rgb_to_hsl};
@@ -78,7 +77,11 @@ pub fn indexed_rgb(index: u8) -> (u8, u8, u8) {
         0..=15 => ANSI16[index as usize],
         16..=231 => {
             let n = index as usize - 16;
-            (CUBE_LEVELS[n / 36], CUBE_LEVELS[(n / 6) % 6], CUBE_LEVELS[n % 6])
+            (
+                CUBE_LEVELS[n / 36],
+                CUBE_LEVELS[(n / 6) % 6],
+                CUBE_LEVELS[n % 6],
+            )
         }
         232..=255 => {
             let v = 8 + 10 * (index - 232);
@@ -121,7 +124,15 @@ pub fn keystroke_bytes(
     }
     if mods.alt {
         // ESC-prefix the same keystroke without alt.
-        let inner = keystroke_bytes(key, key_char, &Modifiers { alt: false, ..*mods }, app_cursor)?;
+        let inner = keystroke_bytes(
+            key,
+            key_char,
+            &Modifiers {
+                alt: false,
+                ..*mods
+            },
+            app_cursor,
+        )?;
         let mut out = vec![0x1b];
         out.extend(inner);
         return Some(out);
@@ -130,11 +141,21 @@ pub fn keystroke_bytes(
         return control_bytes(key);
     }
 
-    let seq = |csi: &[u8], ss3: &[u8]| Some(if app_cursor { ss3.to_vec() } else { csi.to_vec() });
+    let seq = |csi: &[u8], ss3: &[u8]| {
+        Some(if app_cursor {
+            ss3.to_vec()
+        } else {
+            csi.to_vec()
+        })
+    };
     match key {
         "enter" => Some(b"\r".to_vec()),
         "backspace" => Some(vec![0x7f]),
-        "tab" => Some(if mods.shift { b"\x1b[Z".to_vec() } else { b"\t".to_vec() }),
+        "tab" => Some(if mods.shift {
+            b"\x1b[Z".to_vec()
+        } else {
+            b"\t".to_vec()
+        }),
         "escape" => Some(vec![0x1b]),
         "space" => Some(b" ".to_vec()),
         "up" => seq(b"\x1b[A", b"\x1bOA"),
@@ -163,7 +184,11 @@ pub fn keystroke_bytes(
             // Printable: prefer the typed character (IME/shift-aware).
             let text = key_char.filter(|c| !c.is_empty()).or({
                 // Fall back to single-char key names ("a", "/", …).
-                if key.chars().count() == 1 { Some(key) } else { None }
+                if key.chars().count() == 1 {
+                    Some(key)
+                } else {
+                    None
+                }
             })?;
             Some(text.as_bytes().to_vec())
         }
@@ -327,10 +352,17 @@ impl gpui::Element for TerminalElement {
             panel.active_grid_snapshot(cx)
         });
         let Some(snapshot) = snapshot else {
-            return TerminalPrepaint { bg_quads: Vec::new(), lines: Vec::new(), cursor: None };
+            return TerminalPrepaint {
+                bg_quads: Vec::new(),
+                lines: Vec::new(),
+                cursor: None,
+            };
         };
 
-        let origin = point(bounds.left() + px(TERM_PADDING), bounds.top() + px(TERM_PADDING));
+        let origin = point(
+            bounds.left() + px(TERM_PADDING),
+            bounds.top() + px(TERM_PADDING),
+        );
         let mut bg_quads = Vec::new();
         let mut lines = Vec::with_capacity(snapshot.lines.len());
 
@@ -368,18 +400,29 @@ impl gpui::Element for TerminalElement {
 
         let cursor = snapshot.cursor.map(|c| {
             let cursor_bounds = Bounds::new(
-                point(origin.x + cell_w * c.col as f32, origin.y + line_h * c.row as f32),
+                point(
+                    origin.x + cell_w * c.col as f32,
+                    origin.y + line_h * c.row as f32,
+                ),
                 size(cell_w, line_h),
             );
             if self.focused {
                 // Translucent block: the glyph underneath stays legible.
                 fill(cursor_bounds, gpui::hsla(0.0, 0.0, 1.0, 0.35))
             } else {
-                outline(cursor_bounds, gpui::hsla(0.0, 0.0, 1.0, 0.35), gpui::BorderStyle::Solid)
+                outline(
+                    cursor_bounds,
+                    gpui::hsla(0.0, 0.0, 1.0, 0.35),
+                    gpui::BorderStyle::Solid,
+                )
             }
         });
 
-        TerminalPrepaint { bg_quads, lines, cursor }
+        TerminalPrepaint {
+            bg_quads,
+            lines,
+            cursor,
+        }
     }
 
     fn paint(
@@ -393,7 +436,10 @@ impl gpui::Element for TerminalElement {
         cx: &mut App,
     ) {
         let line_h = px(TERM_LINE_HEIGHT);
-        let origin = point(bounds.left() + px(TERM_PADDING), bounds.top() + px(TERM_PADDING));
+        let origin = point(
+            bounds.left() + px(TERM_PADDING),
+            bounds.top() + px(TERM_PADDING),
+        );
         window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
             for quad in prepaint.bg_quads.drain(..) {
                 window.paint_quad(quad);
@@ -437,10 +483,16 @@ fn shape_row(
             color.a *= 0.6;
         }
         let mut cell_font = mono.clone();
-        cell_font.weight =
-            if cell.bold { gpui::FontWeight::BOLD } else { gpui::FontWeight::NORMAL };
-        cell_font.style =
-            if cell.italic { gpui::FontStyle::Italic } else { gpui::FontStyle::Normal };
+        cell_font.weight = if cell.bold {
+            gpui::FontWeight::BOLD
+        } else {
+            gpui::FontWeight::NORMAL
+        };
+        cell_font.style = if cell.italic {
+            gpui::FontStyle::Italic
+        } else {
+            gpui::FontStyle::Normal
+        };
         let underline = cell.underline.then_some(gpui::UnderlineStyle {
             color: Some(color),
             thickness: px(1.0),
@@ -450,9 +502,7 @@ fn shape_row(
         text.push(ch);
         match runs.last_mut() {
             Some(last)
-                if last.color == color
-                    && last.font == cell_font
-                    && last.underline == underline =>
+                if last.color == color && last.font == cell_font && last.underline == underline =>
             {
                 last.len += len;
             }
@@ -466,7 +516,9 @@ fn shape_row(
             }),
         }
     }
-    window.text_system().shape_line(SharedString::from(text), font_size, &runs, None)
+    window
+        .text_system()
+        .shape_line(SharedString::from(text), font_size, &runs, None)
 }
 
 #[cfg(test)]
@@ -479,45 +531,115 @@ mod tests {
 
     #[test]
     fn printables_prefer_key_char() {
-        assert_eq!(keystroke_bytes("a", Some("a"), &mods(), false), Some(b"a".to_vec()));
-        assert_eq!(keystroke_bytes("a", Some("A"), &Modifiers { shift: true, ..mods() }, false), Some(b"A".to_vec()));
+        assert_eq!(
+            keystroke_bytes("a", Some("a"), &mods(), false),
+            Some(b"a".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes(
+                "a",
+                Some("A"),
+                &Modifiers {
+                    shift: true,
+                    ..mods()
+                },
+                false
+            ),
+            Some(b"A".to_vec())
+        );
         // Multi-byte characters pass through as UTF-8.
-        assert_eq!(keystroke_bytes("e", Some("é"), &mods(), false), Some("é".as_bytes().to_vec()));
+        assert_eq!(
+            keystroke_bytes("e", Some("é"), &mods(), false),
+            Some("é".as_bytes().to_vec())
+        );
         // Named single-char keys fall back to the key name.
-        assert_eq!(keystroke_bytes("/", None, &mods(), false), Some(b"/".to_vec()));
+        assert_eq!(
+            keystroke_bytes("/", None, &mods(), false),
+            Some(b"/".to_vec())
+        );
         // Unknown multi-char keys are not ours.
         assert_eq!(keystroke_bytes("capslock", None, &mods(), false), None);
     }
 
     #[test]
     fn control_keys_and_sequences() {
-        assert_eq!(keystroke_bytes("enter", None, &mods(), false), Some(b"\r".to_vec()));
-        assert_eq!(keystroke_bytes("backspace", None, &mods(), false), Some(vec![0x7f]));
-        assert_eq!(keystroke_bytes("tab", None, &mods(), false), Some(b"\t".to_vec()));
         assert_eq!(
-            keystroke_bytes("tab", None, &Modifiers { shift: true, ..mods() }, false),
+            keystroke_bytes("enter", None, &mods(), false),
+            Some(b"\r".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes("backspace", None, &mods(), false),
+            Some(vec![0x7f])
+        );
+        assert_eq!(
+            keystroke_bytes("tab", None, &mods(), false),
+            Some(b"\t".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes(
+                "tab",
+                None,
+                &Modifiers {
+                    shift: true,
+                    ..mods()
+                },
+                false
+            ),
             Some(b"\x1b[Z".to_vec())
         );
-        assert_eq!(keystroke_bytes("escape", None, &mods(), false), Some(vec![0x1b]));
-        assert_eq!(keystroke_bytes("delete", None, &mods(), false), Some(b"\x1b[3~".to_vec()));
-        assert_eq!(keystroke_bytes("pageup", None, &mods(), false), Some(b"\x1b[5~".to_vec()));
-        assert_eq!(keystroke_bytes("f5", None, &mods(), false), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(
+            keystroke_bytes("escape", None, &mods(), false),
+            Some(vec![0x1b])
+        );
+        assert_eq!(
+            keystroke_bytes("delete", None, &mods(), false),
+            Some(b"\x1b[3~".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes("pageup", None, &mods(), false),
+            Some(b"\x1b[5~".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes("f5", None, &mods(), false),
+            Some(b"\x1b[15~".to_vec())
+        );
     }
 
     #[test]
     fn arrows_respect_app_cursor_mode() {
-        assert_eq!(keystroke_bytes("up", None, &mods(), false), Some(b"\x1b[A".to_vec()));
-        assert_eq!(keystroke_bytes("up", None, &mods(), true), Some(b"\x1bOA".to_vec()));
-        assert_eq!(keystroke_bytes("home", None, &mods(), false), Some(b"\x1b[H".to_vec()));
-        assert_eq!(keystroke_bytes("end", None, &mods(), true), Some(b"\x1bOF".to_vec()));
+        assert_eq!(
+            keystroke_bytes("up", None, &mods(), false),
+            Some(b"\x1b[A".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes("up", None, &mods(), true),
+            Some(b"\x1bOA".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes("home", None, &mods(), false),
+            Some(b"\x1b[H".to_vec())
+        );
+        assert_eq!(
+            keystroke_bytes("end", None, &mods(), true),
+            Some(b"\x1bOF".to_vec())
+        );
     }
 
     #[test]
     fn ctrl_combos_map_to_control_bytes() {
-        let ctrl = Modifiers { control: true, ..mods() };
-        assert_eq!(keystroke_bytes("c", Some("c"), &ctrl, false), Some(vec![0x03]));
+        let ctrl = Modifiers {
+            control: true,
+            ..mods()
+        };
+        assert_eq!(
+            keystroke_bytes("c", Some("c"), &ctrl, false),
+            Some(vec![0x03])
+        );
         assert_eq!(keystroke_bytes("z", None, &ctrl, false), Some(vec![0x1a]));
-        assert_eq!(keystroke_bytes("space", None, &ctrl, false), Some(vec![0x00]));
+        assert_eq!(
+            keystroke_bytes("space", None, &ctrl, false),
+            Some(vec![0x00])
+        );
         assert_eq!(keystroke_bytes("[", None, &ctrl, false), Some(vec![0x1b]));
         assert_eq!(keystroke_bytes("_", None, &ctrl, false), Some(vec![0x1f]));
         // Ctrl+1 has no caret encoding — not ours.
@@ -526,15 +648,31 @@ mod tests {
 
     #[test]
     fn alt_prefixes_escape() {
-        let alt = Modifiers { alt: true, ..mods() };
-        assert_eq!(keystroke_bytes("b", Some("b"), &alt, false), Some(vec![0x1b, b'b']));
-        let alt_ctrl = Modifiers { alt: true, control: true, ..mods() };
-        assert_eq!(keystroke_bytes("c", None, &alt_ctrl, false), Some(vec![0x1b, 0x03]));
+        let alt = Modifiers {
+            alt: true,
+            ..mods()
+        };
+        assert_eq!(
+            keystroke_bytes("b", Some("b"), &alt, false),
+            Some(vec![0x1b, b'b'])
+        );
+        let alt_ctrl = Modifiers {
+            alt: true,
+            control: true,
+            ..mods()
+        };
+        assert_eq!(
+            keystroke_bytes("c", None, &alt_ctrl, false),
+            Some(vec![0x1b, 0x03])
+        );
     }
 
     #[test]
     fn platform_primary_combos_fall_through() {
-        let cmd = Modifiers { platform: true, ..mods() };
+        let cmd = Modifiers {
+            platform: true,
+            ..mods()
+        };
         assert_eq!(keystroke_bytes("j", Some("j"), &cmd, false), None);
         assert_eq!(keystroke_bytes("enter", None, &cmd, false), None);
     }

@@ -9,13 +9,13 @@
 //! ~1.03x oplog overhead, whereas rewriting whole part values costs ~125x.
 
 pub mod commands;
-pub mod schema;
 pub mod constants;
 pub mod parts;
+pub mod schema;
 pub mod workspace;
 
 pub use commands::*;
-pub use schema::*;
 pub use constants::*;
 pub use parts::*;
+pub use schema::*;
 pub use workspace::*;

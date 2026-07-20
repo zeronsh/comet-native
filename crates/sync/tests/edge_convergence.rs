@@ -33,7 +33,10 @@ fn text_message(id: &str, device: &str, text: &str) -> SessionMessageEntry {
     SessionMessageEntry {
         id: id.to_string(),
         role: MessageRole::User,
-        parts: vec![MessagePart::Text { id: format!("{id}-p0"), text: text.to_string() }],
+        parts: vec![MessagePart::Text {
+            id: format!("{id}-p0"),
+            text: text.to_string(),
+        }],
         created_at: 1,
         device_id: device.to_string(),
         status: None,
@@ -68,7 +71,9 @@ async fn two_session_docs_converge_through_a_real_room() {
     host.push_message(&text_message("m1", "device-host", "hello from host"))
         .expect("push m1");
     wait_until(|| {
-        peer.read_entries().map(|e| e.iter().any(|m| m.id == "m1")).unwrap_or(false)
+        peer.read_entries()
+            .map(|e| e.iter().any(|m| m.id == "m1"))
+            .unwrap_or(false)
     })
     .await;
 
@@ -76,7 +81,9 @@ async fn two_session_docs_converge_through_a_real_room() {
     peer.push_message(&text_message("m2", "device-peer", "hello from peer"))
         .expect("push m2");
     wait_until(|| {
-        host.read_entries().map(|e| e.iter().any(|m| m.id == "m2")).unwrap_or(false)
+        host.read_entries()
+            .map(|e| e.iter().any(|m| m.id == "m2"))
+            .unwrap_or(false)
     })
     .await;
 

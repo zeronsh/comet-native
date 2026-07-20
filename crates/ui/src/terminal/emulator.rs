@@ -40,7 +40,10 @@ pub struct GridSize {
 
 impl GridSize {
     pub fn new(cols: u16, rows: u16) -> Self {
-        Self { cols: cols.max(2), rows: rows.max(1) }
+        Self {
+            cols: cols.max(2),
+            rows: rows.max(1),
+        }
     }
 }
 
@@ -120,7 +123,11 @@ pub struct CellSnapshot {
 impl CellSnapshot {
     /// Effective paint colors after INVERSE/HIDDEN resolution.
     pub fn display_colors(&self) -> (CellColor, CellColor) {
-        let (fg, bg) = if self.inverse { (self.bg, self.fg) } else { (self.fg, self.bg) };
+        let (fg, bg) = if self.inverse {
+            (self.bg, self.fg)
+        } else {
+            (self.fg, self.bg)
+        };
         if self.hidden { (bg, bg) } else { (fg, bg) }
     }
 }
@@ -157,9 +164,18 @@ pub struct Emulator {
 impl Emulator {
     pub fn new(cols: u16, rows: u16) -> Self {
         let capture = EventCapture::default();
-        let config = Config { scrolling_history: SCROLLBACK_LINES, ..Config::default() };
+        let config = Config {
+            scrolling_history: SCROLLBACK_LINES,
+            ..Config::default()
+        };
         let term = Term::new(config, &GridSize::new(cols, rows), capture.clone());
-        Self { term, parser: Processor::new(), capture, title: None, bell: false }
+        Self {
+            term,
+            parser: Processor::new(),
+            capture,
+            title: None,
+            bell: false,
+        }
     }
 
     /// Advance the state machine over decoded PTY output. Returns bytes the
@@ -274,7 +290,10 @@ impl Emulator {
         if row < 0 || row >= self.rows() as i32 {
             return None;
         }
-        Some(CursorSnapshot { row: row as usize, col: column.0 })
+        Some(CursorSnapshot {
+            row: row as usize,
+            col: column.0,
+        })
     }
 
     /// Test/diagnostic helper: a viewport row as trimmed text (wide-char
@@ -369,7 +388,10 @@ mod tests {
         e.feed(b"\x1b[7mI\x1b[0m\x1b[8mH");
         let inv = e.line(0)[0];
         assert!(inv.inverse);
-        assert_eq!(inv.display_colors(), (CellColor::Background, CellColor::Foreground));
+        assert_eq!(
+            inv.display_colors(),
+            (CellColor::Background, CellColor::Foreground)
+        );
         let hid = e.line(0)[1];
         assert!(hid.hidden);
         let (fg, bg) = hid.display_colors();

@@ -130,7 +130,10 @@ impl CheckoutDiffSync {
                 diffs_tx,
             }),
         };
-        tokio::spawn(diff_sync_task(Arc::downgrade(&sync.inner), workspace.watch_chats()));
+        tokio::spawn(diff_sync_task(
+            Arc::downgrade(&sync.inner),
+            workspace.watch_chats(),
+        ));
         sync
     }
 
@@ -165,7 +168,9 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>) {
         if chat.device_id != inner.device_id {
             continue;
         }
-        let Some(cwd) = chat.cwd.clone() else { continue };
+        let Some(cwd) = chat.cwd.clone() else {
+            continue;
+        };
         let identity = match inner.repos.checkout_identity(Path::new(&cwd)).await {
             Ok(identity) => identity,
             Err(err) => {
@@ -174,19 +179,26 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>) {
             }
         };
         // Stamp the row's checkoutId so every device groups this chat correctly.
-        if chat.checkout_id.as_deref() != Some(identity.id.as_str()) {
-            if let Err(err) = inner.workspace.set_chat_checkout(&chat.id, &identity.id) {
-                tracing::debug!(chat = %chat.id, error = %err, "diff-sync: checkoutId write failed");
-            }
+        if chat.checkout_id.as_deref() != Some(identity.id.as_str())
+            && let Err(err) = inner.workspace.set_chat_checkout(&chat.id, &identity.id)
+        {
+            tracing::debug!(chat = %chat.id, error = %err, "diff-sync: checkoutId write failed");
         }
-        groups.entry(identity.id.clone()).or_insert_with(|| (identity, Vec::new())).1.push(chat);
+        groups
+            .entry(identity.id.clone())
+            .or_insert_with(|| (identity, Vec::new()))
+            .1
+            .push(chat);
     }
 
     // Close entries whose checkout no longer has chats; drop their published diff.
     let removed: Vec<String> = {
         let mut entries = lock(&inner.entries);
-        let removed: Vec<String> =
-            entries.keys().filter(|id| !groups.contains_key(*id)).cloned().collect();
+        let removed: Vec<String> = entries
+            .keys()
+            .filter(|id| !groups.contains_key(*id))
+            .cloned()
+            .collect();
         for id in &removed {
             entries.remove(id); // dropping the entry drops watchers + ends its task
         }
@@ -203,8 +215,7 @@ async fn reconcile(inner: &Arc<DiffSyncInner>, chats: Vec<Chat>) {
             Some(entry) => {
                 let has_new = {
                     let mut held = lock(&entry.chats);
-                    let previous: HashSet<String> =
-                        held.iter().map(|c| c.id.clone()).collect();
+                    let previous: HashSet<String> = held.iter().map(|c| c.id.clone()).collect();
                     let has_new = chats.iter().any(|c| !previous.contains(&c.id));
                     *held = chats;
                     has_new
@@ -231,11 +242,12 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
     }
     for target in targets {
         let tx = kick_tx.clone();
-        let watcher = notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
-            if event.is_ok() {
-                let _ = tx.send(());
-            }
-        });
+        let watcher =
+            notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
+                if event.is_ok() {
+                    let _ = tx.send(());
+                }
+            });
         match watcher {
             Ok(mut watcher) => {
                 use notify::Watcher as _;
@@ -258,7 +270,11 @@ fn add_entry(inner: &Arc<DiffSyncInner>, identity: CheckoutIdentity, chats: Vec<
         _watchers: watchers,
     });
     lock(&inner.entries).insert(entry.identity.id.clone(), entry.clone());
-    tokio::spawn(entry_task(Arc::downgrade(inner), Arc::downgrade(&entry), kick_rx));
+    tokio::spawn(entry_task(
+        Arc::downgrade(inner),
+        Arc::downgrade(&entry),
+        kick_rx,
+    ));
     let _ = kick_tx.send(()); // initial snapshot
 }
 
@@ -278,7 +294,9 @@ async fn entry_task(
                 Err(_) => break,
             }
         }
-        let (Some(inner), Some(entry)) = (inner.upgrade(), entry.upgrade()) else { return };
+        let (Some(inner), Some(entry)) = (inner.upgrade(), entry.upgrade()) else {
+            return;
+        };
         sync_entry(&inner, &entry).await;
     }
 }
@@ -301,10 +319,10 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
     // reconciles mismatched rows (repair tick covers dropped events).
     let chats = lock(&entry.chats).clone();
     for chat in &chats {
-        if chat.branch.as_deref() != Some(snapshot.branch.as_str()) {
-            if let Err(err) = inner.workspace.set_chat_branch(&chat.id, &snapshot.branch) {
-                tracing::debug!(chat = %chat.id, error = %err, "diff-sync: branch write failed");
-            }
+        if chat.branch.as_deref() != Some(snapshot.branch.as_str())
+            && let Err(err) = inner.workspace.set_chat_branch(&chat.id, &snapshot.branch)
+        {
+            tracing::debug!(chat = %chat.id, error = %err, "diff-sync: branch write failed");
         }
     }
 
@@ -378,7 +396,10 @@ fn publish_watch_with(inner: &Arc<DiffSyncInner>, updated: Option<CheckoutDiff>)
     inner.diffs_tx.send_modify(|diffs| {
         diffs.retain(|d| live.contains(&d.checkout_id));
         if let Some(updated) = updated {
-            match diffs.iter_mut().find(|d| d.checkout_id == updated.checkout_id) {
+            match diffs
+                .iter_mut()
+                .find(|d| d.checkout_id == updated.checkout_id)
+            {
                 Some(slot) => *slot = updated,
                 None => diffs.push(updated),
             }
@@ -436,8 +457,9 @@ async fn capture_git(cwd: &Path, args: &[&str], max_bytes: usize) -> Result<Capt
     cmd.stdin(std::process::Stdio::null());
     cmd.stdout(std::process::Stdio::piped());
     cmd.stderr(std::process::Stdio::piped());
-    let mut child =
-        cmd.spawn().map_err(|e| EngineError::Other(format!("git spawn failed: {e}")))?;
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| EngineError::Other(format!("git spawn failed: {e}")))?;
     let mut stdout = child
         .stdout
         .take()
@@ -475,7 +497,10 @@ async fn capture_git(cwd: &Path, args: &[&str], max_bytes: usize) -> Result<Capt
             format!("git: {message}")
         }));
     }
-    Ok(Capture { stdout: out, truncated })
+    Ok(Capture {
+        stdout: out,
+        truncated,
+    })
 }
 
 fn split_z(value: &[u8]) -> Vec<String> {
@@ -494,7 +519,9 @@ fn parse_name_status(value: &[u8]) -> Vec<DiffFileSummary> {
         let raw = fields[i].clone();
         i += 1;
         let code = raw.chars().next().unwrap_or('M');
-        let Some(first) = fields.get(i).cloned() else { break };
+        let Some(first) = fields.get(i).cloned() else {
+            break;
+        };
         i += 1;
         let renamed = code == 'R' || code == 'C';
         let second = if renamed {
@@ -526,8 +553,10 @@ fn parse_name_status(value: &[u8]) -> Vec<DiffFileSummary> {
 
 fn apply_numstat(files: &mut [DiffFileSummary], value: &[u8]) {
     // With -z, a rename record is `adds<TAB>dels<TAB><NUL>old<NUL>new<NUL>`.
-    let records: Vec<String> =
-        value.split(|b| *b == 0).map(|part| String::from_utf8_lossy(part).to_string()).collect();
+    let records: Vec<String> = value
+        .split(|b| *b == 0)
+        .map(|part| String::from_utf8_lossy(part).to_string())
+        .collect();
     let mut i = 0usize;
     while i < records.len() {
         let record = &records[i];
@@ -557,7 +586,10 @@ fn apply_numstat(files: &mut [DiffFileSummary], value: &[u8]) {
 }
 
 fn quote_patch_path(path: &str) -> String {
-    if path.chars().any(|c| c.is_whitespace() || c == '"' || c == '\\') {
+    if path
+        .chars()
+        .any(|c| c.is_whitespace() || c == '"' || c == '\\')
+    {
         serde_json::to_string(path).unwrap_or_else(|_| format!("\"{path}\""))
     } else {
         path.to_string()
@@ -570,8 +602,11 @@ fn untracked_patch(path: &str, content: &str) -> String {
     if lines.last() == Some(&"") {
         lines.pop();
     }
-    let body: String =
-        lines.iter().map(|line| format!("+{line}")).collect::<Vec<_>>().join("\n");
+    let body: String = lines
+        .iter()
+        .map(|line| format!("+{line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
     let a = quote_patch_path(&format!("a/{path}"));
     let b = quote_patch_path(&format!("b/{path}"));
     format!(
@@ -589,8 +624,15 @@ pub async fn capture_diff(repos: &Repos, root: &Path) -> Result<DiffSnapshot, En
         .await
         .map(|c| String::from_utf8_lossy(&c.stdout).trim().to_string())
         .unwrap_or_default();
-    let base: &str = if head.is_empty() { EMPTY_TREE_SHA } else { &head };
-    let branch = repos.current_branch(root).await.unwrap_or_else(|_| "HEAD".into());
+    let base: &str = if head.is_empty() {
+        EMPTY_TREE_SHA
+    } else {
+        &head
+    };
+    let branch = repos
+        .current_branch(root)
+        .await
+        .unwrap_or_else(|_| "HEAD".into());
 
     let names = capture_git(
         root,
@@ -606,7 +648,15 @@ pub async fn capture_diff(repos: &Repos, root: &Path) -> Result<DiffSnapshot, En
     .await?;
     let tracked = capture_git(
         root,
-        &["diff", "--no-ext-diff", "--no-color", "--find-renames", "--unified=3", base, "--"],
+        &[
+            "diff",
+            "--no-ext-diff",
+            "--no-color",
+            "--find-renames",
+            "--unified=3",
+            base,
+            "--",
+        ],
         MAX_PATCH_BYTES,
     )
     .await?;
@@ -622,8 +672,7 @@ pub async fn capture_diff(repos: &Repos, root: &Path) -> Result<DiffSnapshot, En
     let mut files = parse_name_status(&names.stdout);
     apply_numstat(&mut files, &nums.stdout);
     let mut patch = String::from_utf8_lossy(&tracked.stdout).to_string();
-    let mut truncated =
-        tracked.truncated || names.truncated || nums.truncated || status.truncated;
+    let mut truncated = tracked.truncated || names.truncated || nums.truncated || status.truncated;
 
     if tracked.truncated {
         let boundary = patch.rfind('\n').unwrap_or(0);
@@ -655,7 +704,10 @@ pub async fn capture_diff(repos: &Repos, root: &Path) -> Result<DiffSnapshot, En
         let full = root.join(&path);
         let binary;
         let mut additions = 0u32;
-        let size = tokio::fs::metadata(&full).await.map(|m| m.len()).unwrap_or(0);
+        let size = tokio::fs::metadata(&full)
+            .await
+            .map(|m| m.len())
+            .unwrap_or(0);
         if size > MAX_PATCH_BYTES as u64 {
             binary = true;
             truncated = true;
@@ -668,9 +720,7 @@ pub async fn capture_diff(repos: &Repos, root: &Path) -> Result<DiffSnapshot, En
                         additions = if text.is_empty() {
                             0
                         } else {
-                            (text.split('\n').count()
-                                - usize::from(text.ends_with('\n')))
-                                as u32
+                            (text.split('\n').count() - usize::from(text.ends_with('\n'))) as u32
                         };
                         let addition = untracked_patch(&path, &text);
                         if patch.len() + addition.len() <= MAX_PATCH_BYTES {

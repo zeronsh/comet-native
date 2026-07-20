@@ -22,8 +22,9 @@ use crate::theme::Theme;
 
 /// One async-loaded slot: `Idle` (never requested) → `Loading` (skeletons) →
 /// `Ready` / `Error` (inline message + Retry).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum Loadable<T> {
+    #[default]
     Idle,
     Loading,
     Ready(T),
@@ -47,12 +48,6 @@ impl<T> Loadable<T> {
             Loadable::Error(message) => Some(message),
             _ => None,
         }
-    }
-}
-
-impl<T> Default for Loadable<T> {
-    fn default() -> Self {
-        Loadable::Idle
     }
 }
 
@@ -189,17 +184,19 @@ pub fn menu_at(
 /// The scrim swallows clicks; the caller wires its own dismiss/confirm.
 pub fn modal(id: impl Into<ElementId>, card: AnyElement) -> AnyElement {
     gpui::deferred(
-        gpui::anchored().position(gpui::point(px(0.0), px(0.0))).child(
-            div()
-                .occlude()
-                .w_full()
-                .h_full()
-                .bg(gpui::hsla(0.0, 0.0, 0.0, 0.5))
-                .flex()
-                .items_center()
-                .justify_center()
-                .child(motion::dialog_in(id, div().child(card))),
-        ),
+        gpui::anchored()
+            .position(gpui::point(px(0.0), px(0.0)))
+            .child(
+                div()
+                    .occlude()
+                    .w_full()
+                    .h_full()
+                    .bg(gpui::hsla(0.0, 0.0, 0.0, 0.5))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(motion::dialog_in(id, div().child(card))),
+            ),
     )
     .priority(2)
     .into_any_element()
@@ -230,14 +227,14 @@ pub fn skeleton_rows(id: &'static str, theme: &Theme, count: usize) -> AnyElemen
         .gap(px(6.0))
         .py(px(4.0))
         .children((0..count).map(move |i| {
-            div().h(px(22.0)).rounded(px(Theme::CONTROL_RADIUS)).bg(wash).with_animation(
-                (id, i),
-                COMET_PULSE.repeating(),
-                move |el, delta| {
+            div()
+                .h(px(22.0))
+                .rounded(px(Theme::CONTROL_RADIUS))
+                .bg(wash)
+                .with_animation((id, i), COMET_PULSE.repeating(), move |el, delta| {
                     let phase = motion::staggered_phase(delta, i, 0.08);
                     el.opacity(0.35 + 0.4 * motion::pulse_wave(phase))
-                },
-            )
+                })
         }))
         .into_any_element()
 }

@@ -26,10 +26,10 @@ use comet_proto::{
     UserInputAnswer, UserInputQuestion,
 };
 
+use crate::EngineError;
 use crate::registry::HarnessRegistry;
 use crate::repos::Repos;
 use crate::workspace_host::WorkspaceHost;
-use crate::EngineError;
 
 /// Throwaway title runs are cheap but still cross a process boundary — retry a
 /// couple of times with a short backoff before falling back (comet's ladder).
@@ -48,7 +48,13 @@ pub struct TitleGenerator {
 
 impl TitleGenerator {
     pub fn new(workspace: WorkspaceHost, registry: Arc<HarnessRegistry>, repos: Repos) -> Self {
-        Self { inner: Arc::new(Inner { workspace, registry, repos }) }
+        Self {
+            inner: Arc::new(Inner {
+                workspace,
+                registry,
+                repos,
+            }),
+        }
     }
 
     /// Fire-and-forget: title `chat_id` if it's still untitled. Called by the run
@@ -100,7 +106,11 @@ impl TitleGenerator {
         // Re-read after the model call: a user may have named the chat or checked
         // out another branch while the throwaway generation was live.
         let latest = self.inner.workspace.doc().chat(chat_id)?.unwrap_or(chat);
-        if latest.title.as_deref().is_some_and(|t| !t.trim().is_empty()) {
+        if latest
+            .title
+            .as_deref()
+            .is_some_and(|t| !t.trim().is_empty())
+        {
             return Ok(());
         }
 
@@ -255,13 +265,21 @@ mod tests {
     use comet_proto::Model;
 
     fn model(id: &str, label: &str) -> Model {
-        Model { id: id.into(), label: label.into(), reasoning_levels: vec![], options: vec![] }
+        Model {
+            id: id.into(),
+            label: label.into(),
+            reasoning_levels: vec![],
+            options: vec![],
+        }
     }
 
     #[test]
     fn cheapest_prefers_small_tier_then_last() {
-        let models =
-            vec![model("opus-4", "Opus"), model("haiku-3", "Haiku"), model("sonnet-4", "Sonnet")];
+        let models = vec![
+            model("opus-4", "Opus"),
+            model("haiku-3", "Haiku"),
+            model("sonnet-4", "Sonnet"),
+        ];
         assert_eq!(cheapest_model(&models).as_deref(), Some("haiku-3"));
         let no_small = vec![model("opus-4", "Opus"), model("sonnet-4", "Sonnet")];
         assert_eq!(cheapest_model(&no_small).as_deref(), Some("sonnet-4"));

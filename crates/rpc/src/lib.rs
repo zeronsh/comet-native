@@ -44,6 +44,9 @@ pub mod methods {
     /// Params are tagged `{op: createChat|renameChat|setChatArchived|deleteChat|
     /// renameDevice|markChatSeen, …}`.
     pub const MUTATE: &str = "Mutate";
+    /// This engine's identity → `{deviceId}` (IPC-only; never relay-forwarded —
+    /// the answer is about whichever engine you are directly connected to).
+    pub const LOCAL_DEVICE: &str = "LocalDevice";
     pub const AUTH_STATUS: &str = "AuthStatus";
     // AuthRpc mutations (feature-inventory §2 AuthRpc; IPC-only).
     pub const SIGN_IN: &str = "SignIn";
@@ -144,8 +147,7 @@ impl RpcReply {
 /// Server-side dispatch: one implementation serves every transport.
 #[async_trait]
 pub trait RpcService: Send + Sync + 'static {
-    async fn handle(&self, method: &str, params: serde_json::Value)
-    -> Result<RpcReply, RpcError>;
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError>;
 }
 
 /// Deserialize typed params out of the envelope's `params` value.
@@ -212,9 +214,19 @@ mod tests {
         while let Some(v) = items.recv().await {
             seen.push(v);
         }
-        assert_eq!(seen, vec![serde_json::json!(0), serde_json::json!(1), serde_json::json!(2)]);
+        assert_eq!(
+            seen,
+            vec![
+                serde_json::json!(0),
+                serde_json::json!(1),
+                serde_json::json!(2)
+            ]
+        );
 
-        let err = client.call("Boom", serde_json::Value::Null).await.unwrap_err();
+        let err = client
+            .call("Boom", serde_json::Value::Null)
+            .await
+            .unwrap_err();
         assert!(matches!(err, RpcError::Failed(m) if m == "boom"));
     }
 

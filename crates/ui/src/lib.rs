@@ -80,9 +80,10 @@ pub fn run_app(config: UiConfig) {
         // doc snapshots before the process exits (remote engines outlive us).
         let quit_state = state.clone();
         cx.on_app_quit(move |cx| {
-            let shutdown = quit_state.read(cx).engine().cloned().map(|handle| {
-                gpui_tokio::Tokio::spawn(cx, async move { handle.shutdown().await })
-            });
+            let shutdown =
+                quit_state.read(cx).engine().cloned().map(|handle| {
+                    gpui_tokio::Tokio::spawn(cx, async move { handle.shutdown().await })
+                });
             async move {
                 if let Some(task) = shutdown {
                     let _ = task.await;

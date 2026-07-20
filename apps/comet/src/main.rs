@@ -18,8 +18,7 @@ enum Command {
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
         )
         .init();
 
@@ -40,7 +39,7 @@ fn main() -> anyhow::Result<()> {
                         .ok()
                         .and_then(|p| p.parse().ok())
                         .unwrap_or(26654),
-                    default_harness: comet_engine::HarnessId::ClaudeCode,
+                    default_harness: harness_from_env(),
                     // WorkOS mode: the signed-in session's org wins; COMET_ORG_ID (dev
                     // default "dev-org") scopes the workspace room otherwise.
                     org_id: std::env::var("COMET_ORG_ID").ok(),
@@ -70,6 +69,17 @@ fn main() -> anyhow::Result<()> {
             });
             Ok(())
         }
+    }
+}
+
+/// `COMET_HARNESS` (kebab-case id) picks the default harness for chats without a
+/// config row — `mock` powers the e2e smoke; default `claude-code`.
+fn harness_from_env() -> comet_engine::HarnessId {
+    match std::env::var("COMET_HARNESS").as_deref().map(str::trim) {
+        Ok("mock") => comet_engine::HarnessId::Mock,
+        Ok("codex") => comet_engine::HarnessId::Codex,
+        Ok("cursor") => comet_engine::HarnessId::Cursor,
+        _ => comet_engine::HarnessId::ClaudeCode,
     }
 }
 

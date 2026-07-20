@@ -51,7 +51,9 @@ impl DocsStore {
         conn.pragma_update(None, "synchronous", "NORMAL")?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         migrate(&mut conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// Latest saved snapshot for `doc_id`, if any.
@@ -154,7 +156,10 @@ mod tests {
 
         assert_eq!(store.load_snapshot("chat-1").unwrap(), None);
         store.save_snapshot("chat-1", b"v1").unwrap();
-        assert_eq!(store.load_snapshot("chat-1").unwrap().as_deref(), Some(&b"v1"[..]));
+        assert_eq!(
+            store.load_snapshot("chat-1").unwrap().as_deref(),
+            Some(&b"v1"[..])
+        );
         store.save_snapshot("chat-1", b"v2-longer-bytes").unwrap();
         assert_eq!(
             store.load_snapshot("chat-1").unwrap().as_deref(),
@@ -162,7 +167,10 @@ mod tests {
         );
         // Distinct docs do not collide.
         store.save_snapshot("chat-2", b"other").unwrap();
-        assert_eq!(store.load_snapshot("chat-1").unwrap().as_deref(), Some(&b"v2-longer-bytes"[..]));
+        assert_eq!(
+            store.load_snapshot("chat-1").unwrap().as_deref(),
+            Some(&b"v2-longer-bytes"[..])
+        );
     }
 
     #[test]
@@ -173,7 +181,10 @@ mod tests {
         assert!(!store.is_processed("cmd-1").unwrap());
         assert!(store.mark_processed("cmd-1").unwrap(), "first mark claims");
         assert!(store.is_processed("cmd-1").unwrap());
-        assert!(!store.mark_processed("cmd-1").unwrap(), "second mark must not re-claim");
+        assert!(
+            !store.mark_processed("cmd-1").unwrap(),
+            "second mark must not re-claim"
+        );
     }
 
     #[test]
@@ -185,7 +196,10 @@ mod tests {
             store.mark_processed("cmd-1").unwrap();
         }
         let store = DocsStore::open(dir.path()).unwrap(); // re-runs migrate()
-        assert_eq!(store.load_snapshot("chat-1").unwrap().as_deref(), Some(&b"persisted"[..]));
+        assert_eq!(
+            store.load_snapshot("chat-1").unwrap().as_deref(),
+            Some(&b"persisted"[..])
+        );
         assert!(store.is_processed("cmd-1").unwrap());
         assert!(!store.mark_processed("cmd-1").unwrap());
     }

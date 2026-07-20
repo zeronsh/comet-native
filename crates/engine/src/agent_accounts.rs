@@ -87,7 +87,9 @@ impl AgentAccountsConfig {
     /// json and the credentials file; `CODEX_HOME` relocates the Codex auth file.
     pub fn detect(data_dir: &Path) -> Self {
         let env_dir = |name: &str| {
-            std::env::var_os(name).filter(|s| !s.is_empty()).map(PathBuf::from)
+            std::env::var_os(name)
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
         };
         let claude_dir = env_dir("CLAUDE_CONFIG_DIR");
         let claude_config_file = match &claude_dir {
@@ -257,7 +259,10 @@ impl AgentAccounts {
 
         let (claude, claude_warning) = self.detect_claude().await;
         if let Some(message) = claude_warning {
-            warnings.push(AgentAccountWarning { harness: HarnessId::ClaudeCode, message });
+            warnings.push(AgentAccountWarning {
+                harness: HarnessId::ClaudeCode,
+                message,
+            });
         }
         if let Some(detected) = claude {
             active_keys.insert(HarnessId::ClaudeCode, detected.account_key.clone());
@@ -334,7 +339,9 @@ impl AgentAccounts {
             .into_iter()
             .find(|s| s.id == account_id)
             .ok_or_else(|| {
-                EngineError::Other("That saved login no longer exists — refresh and try again.".into())
+                EngineError::Other(
+                    "That saved login no longer exists — refresh and try again.".into(),
+                )
             })?;
         match harness {
             HarnessId::ClaudeCode => self.activate_claude(&slot).await?,
@@ -416,7 +423,9 @@ impl AgentAccounts {
         // the filesystem: `account_id` is a raw RPC string that becomes a path,
         // so a crafted id (`../../…`) must never reach `remove_file`.
         if account_id.len() != 16
-            || !account_id.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || !account_id
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
         {
             return Err(EngineError::Other("Unknown account.".into()));
         }
@@ -472,9 +481,16 @@ impl AgentAccounts {
         );
         lock(&self.inner.flows).insert(
             login_id.clone(),
-            LoginFlow::Claude { verifier, started_at: Instant::now() },
+            LoginFlow::Claude {
+                verifier,
+                started_at: Instant::now(),
+            },
         );
-        AgentLoginStart { login_id, url, mode: AgentLoginMode::PasteCode }
+        AgentLoginStart {
+            login_id,
+            url,
+            mode: AgentLoginMode::PasteCode,
+        }
     }
 
     async fn start_codex_login(&self) -> Result<AgentLoginStart, EngineError> {
@@ -493,7 +509,11 @@ impl AgentAccounts {
         let login_id = new_id();
         // A throwaway CODEX_HOME isolates the new login completely — the live
         // ~/.codex session is never touched until the user explicitly switches.
-        let home = self.inner.config.root_dir().join(format!(".login-{login_id}"));
+        let home = self
+            .inner
+            .config
+            .root_dir()
+            .join(format!(".login-{login_id}"));
         std::fs::create_dir_all(&home)?;
         let mut child = match tokio::process::Command::new("codex")
             .arg("login")
@@ -521,8 +541,14 @@ impl AgentAccounts {
         // open it too.
         let output = Arc::new(Mutex::new(String::new()));
         for pipe in [
-            child.stdout.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
-            child.stderr.take().map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+            child
+                .stdout
+                .take()
+                .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
+            child
+                .stderr
+                .take()
+                .map(|s| Box::new(s) as Box<dyn tokio::io::AsyncRead + Send + Unpin>),
         ]
         .into_iter()
         .flatten()
@@ -593,7 +619,11 @@ impl AgentAccounts {
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         };
-        Ok(AgentLoginStart { login_id, url, mode: AgentLoginMode::Browser })
+        Ok(AgentLoginStart {
+            login_id,
+            url,
+            mode: AgentLoginMode::Browser,
+        })
     }
 
     /// Exchange the pasted `code#state` for tokens and save the account as a slot
@@ -616,7 +646,9 @@ impl AgentAccounts {
             None => (code.trim().to_string(), verifier.clone()),
         };
         if auth_code.is_empty() {
-            return Err(EngineError::Other("That code looks empty — paste the whole code.".into()));
+            return Err(EngineError::Other(
+                "That code looks empty — paste the whole code.".into(),
+            ));
         }
         let token = self
             .inner
@@ -649,7 +681,10 @@ impl AgentAccounts {
 
         let access_token = str_field(&token, "access_token");
         let refresh_token = str_field(&token, "refresh_token");
-        let expires_in = token.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(3600);
+        let expires_in = token
+            .get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3600);
         let (Some(access_token), Some(refresh_token)) = (access_token, refresh_token) else {
             return Err(EngineError::Other(
                 "Anthropic returned no usable tokens — try signing in again.".into(),
@@ -670,14 +705,22 @@ impl AgentAccounts {
             _ => None,
         };
         let empty = serde_json::json!({});
-        let p_account = profile.as_ref().and_then(|p| p.get("account")).unwrap_or(&empty);
-        let p_org = profile.as_ref().and_then(|p| p.get("organization")).unwrap_or(&empty);
+        let p_account = profile
+            .as_ref()
+            .and_then(|p| p.get("account"))
+            .unwrap_or(&empty);
+        let p_org = profile
+            .as_ref()
+            .and_then(|p| p.get("organization"))
+            .unwrap_or(&empty);
         let t_account = token.get("account").unwrap_or(&empty);
         let t_org = token.get("organization").unwrap_or(&empty);
 
         let email = str_field(p_account, "email_address")
             .or_else(|| str_field(t_account, "email_address"))
-            .ok_or_else(|| EngineError::Other("Could not identify the signed-in account.".into()))?;
+            .ok_or_else(|| {
+                EngineError::Other("Could not identify the signed-in account.".into())
+            })?;
         let account_uuid = str_field(p_account, "uuid")
             .or_else(|| str_field(t_account, "uuid"))
             .unwrap_or_else(|| email.clone());
@@ -753,16 +796,22 @@ impl AgentAccounts {
                 ));
             }
             Some(LoginFlow::Claude { .. }) => {
-                return Ok(AgentLoginPoll { status: AgentLoginStatus::Pending, message: None });
+                return Ok(AgentLoginPoll {
+                    status: AgentLoginStatus::Pending,
+                    message: None,
+                });
             }
-            Some(LoginFlow::Codex { home, exit, output, .. }) => {
-                (home.clone(), exit.clone(), output.clone())
-            }
+            Some(LoginFlow::Codex {
+                home, exit, output, ..
+            }) => (home.clone(), exit.clone(), output.clone()),
         };
         if let Some(detected) = read_json(&home.join("auth.json")).and_then(parse_codex_auth) {
             self.snapshot_detected(HarnessId::Codex, &detected)?;
             self.cancel_login(login_id);
-            return Ok(AgentLoginPoll { status: AgentLoginStatus::Done, message: None });
+            return Ok(AgentLoginPoll {
+                status: AgentLoginStatus::Done,
+                message: None,
+            });
         }
         let exited = *lock(&exit);
         if let Some(code) = exited {
@@ -782,7 +831,10 @@ impl AgentAccounts {
                 message: Some(message),
             });
         }
-        Ok(AgentLoginPoll { status: AgentLoginStatus::Pending, message: None })
+        Ok(AgentLoginPoll {
+            status: AgentLoginStatus::Pending,
+            message: None,
+        })
     }
 
     /// Drop a flow: kill a pending `codex login` child (it holds the fixed
@@ -863,7 +915,9 @@ impl AgentAccounts {
 
     /// Persist a detected login into its slot (refreshing stored tokens).
     fn snapshot_detected(&self, harness: HarnessId, d: &Detected) -> Result<(), EngineError> {
-        let Some(credentials) = &d.credentials else { return Ok(()) };
+        let Some(credentials) = &d.credentials else {
+            return Ok(());
+        };
         self.write_slot(&Slot {
             id: slot_id_for(harness, &d.account_key),
             harness,
@@ -892,7 +946,10 @@ impl AgentAccounts {
         (None, None)
     }
 
-    async fn write_claude_credentials(&self, credentials: &serde_json::Value) -> Result<(), EngineError> {
+    async fn write_claude_credentials(
+        &self,
+        credentials: &serde_json::Value,
+    ) -> Result<(), EngineError> {
         let json = credentials.to_string();
         #[cfg(target_os = "macos")]
         {
@@ -904,7 +961,11 @@ impl AgentAccounts {
         }
         std::fs::create_dir_all(&self.inner.config.claude_config_dir)?;
         // Atomic + owner-only from birth — live tokens.
-        write_file_atomic(&self.inner.config.claude_creds_file(), json.as_bytes(), true)
+        write_file_atomic(
+            &self.inner.config.claude_creds_file(),
+            json.as_bytes(),
+            true,
+        )
     }
 
     // ── slot files ──────────────────────────────────────────────────────────
@@ -916,8 +977,12 @@ impl AgentAccounts {
     }
 
     fn read_slots(&self, harness: HarnessId) -> Vec<Slot> {
-        let Ok(dir) = self.slots_dir(harness) else { return Vec::new() };
-        let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+        let Ok(dir) = self.slots_dir(harness) else {
+            return Vec::new();
+        };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            return Vec::new();
+        };
         let mut slots: Vec<Slot> = Vec::new();
         for entry in entries.flatten() {
             let path = entry.path();
@@ -939,7 +1004,9 @@ impl AgentAccounts {
     }
 
     fn write_slot(&self, slot: &Slot) -> Result<(), EngineError> {
-        let file = self.slots_dir(slot.harness)?.join(format!("{}.json", slot.id));
+        let file = self
+            .slots_dir(slot.harness)?
+            .join(format!("{}.json", slot.id));
         let existing: Option<Slot> = std::fs::read_to_string(&file)
             .ok()
             .and_then(|raw| serde_json::from_str(&raw).ok());
@@ -1035,7 +1102,10 @@ impl AgentAccounts {
             .http
             .get(CODEX_USAGE_URL)
             .bearer_auth(&access_token)
-            .header("chatgpt-account-id", str_field(tokens, "account_id").unwrap_or_default())
+            .header(
+                "chatgpt-account-id",
+                str_field(tokens, "account_id").unwrap_or_default(),
+            )
             .send()
             .await
             .ok()?
@@ -1050,7 +1120,10 @@ impl AgentAccounts {
             if let Some(w) = rl.get(key)
                 && let Some(used) = w.get("used_percent").and_then(|v| v.as_f64())
             {
-                let span = w.get("limit_window_seconds").and_then(|v| v.as_i64()).unwrap_or(0);
+                let span = w
+                    .get("limit_window_seconds")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
                 windows.push(AgentUsageWindow {
                     label: if span > 86_400 { "Week" } else { "Session" }.to_string(),
                     used_fraction: (used / 100.0) as f32,
@@ -1095,7 +1168,10 @@ impl AgentAccounts {
             .await
             .ok()?;
         let access_token = str_field(&body, "access_token")?;
-        let expires_in = body.get("expires_in").and_then(|v| v.as_i64()).unwrap_or(3600);
+        let expires_in = body
+            .get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3600);
         let mut updated = oauth;
         if let Some(map) = updated.as_object_mut() {
             map.insert("accessToken".into(), serde_json::json!(access_token));
@@ -1103,7 +1179,10 @@ impl AgentAccounts {
                 "refreshToken".into(),
                 serde_json::json!(str_field(&body, "refresh_token").unwrap_or(refresh_token)),
             );
-            map.insert("expiresAt".into(), serde_json::json!(now_ms() + expires_in * 1000));
+            map.insert(
+                "expiresAt".into(),
+                serde_json::json!(now_ms() + expires_in * 1000),
+            );
         }
         let mut refreshed = slot.clone();
         refreshed.credentials = serde_json::json!({ "claudeAiOauth": updated });
@@ -1175,7 +1254,10 @@ mod keychain {
         }
         match serde_json::from_str(stdout.trim()) {
             Ok(creds) => (Some(creds), None),
-            Err(_) => (None, Some("The Claude Code Keychain entry could not be parsed.".into())),
+            Err(_) => (
+                None,
+                Some("The Claude Code Keychain entry could not be parsed.".into()),
+            ),
         }
     }
 
@@ -1196,7 +1278,11 @@ mod keychain {
         } else {
             Err(EngineError::Other(format!(
                 "Keychain write failed: {}",
-                if stderr.trim().is_empty() { "unknown error" } else { stderr.trim() }
+                if stderr.trim().is_empty() {
+                    "unknown error"
+                } else {
+                    stderr.trim()
+                }
             )))
         }
     }
@@ -1215,11 +1301,17 @@ fn harness_slug(harness: HarnessId) -> &'static str {
 
 fn read_json(file: &Path) -> Option<serde_json::Value> {
     let raw = std::fs::read_to_string(file).ok()?;
-    serde_json::from_str(&raw).ok().filter(serde_json::Value::is_object)
+    serde_json::from_str(&raw)
+        .ok()
+        .filter(serde_json::Value::is_object)
 }
 
 fn str_field(value: &serde_json::Value, key: &str) -> Option<String> {
-    value.get(key).and_then(|v| v.as_str()).filter(|s| !s.is_empty()).map(str::to_string)
+    value
+        .get(key)
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
 }
 
 /// Decode a JWT payload without verifying — we only mine identity claims from a
@@ -1250,9 +1342,14 @@ fn claude_plan(org_type: Option<&str>, tier: Option<&str>) -> Option<String> {
     // "…_20x" style tiers carry a multiplier suffix.
     let mult = tier.and_then(|t| {
         let stem = t.strip_suffix('x')?;
-        let digits: String =
-            stem.chars().rev().take_while(char::is_ascii_digit).collect::<Vec<_>>()
-                .into_iter().rev().collect();
+        let digits: String = stem
+            .chars()
+            .rev()
+            .take_while(char::is_ascii_digit)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
         let preceded = stem.len() > digits.len()
             && stem.as_bytes().get(stem.len() - digits.len() - 1) == Some(&b'_');
         (!digits.is_empty() && preceded).then_some(digits)
@@ -1267,15 +1364,25 @@ fn codex_plan(plan: Option<&str>) -> Option<String> {
     let plan = plan?;
     let mut chars = plan.chars();
     let first = chars.next()?;
-    Some(format!("ChatGPT {}{}", first.to_uppercase(), chars.as_str()))
+    Some(format!(
+        "ChatGPT {}{}",
+        first.to_uppercase(),
+        chars.as_str()
+    ))
 }
 
 /// Parse a codex `auth.json` (the live one or a fresh login's).
 fn parse_codex_auth(auth: serde_json::Value) -> Option<Detected> {
-    if let Some(id_token) = auth.get("tokens").and_then(|t| t.get("id_token")).and_then(|v| v.as_str())
+    if let Some(id_token) = auth
+        .get("tokens")
+        .and_then(|t| t.get("id_token"))
+        .and_then(|v| v.as_str())
     {
         let claims = jwt_claims(id_token).unwrap_or_else(|| serde_json::json!({}));
-        let oa = claims.get("https://api.openai.com/auth").cloned().unwrap_or_default();
+        let oa = claims
+            .get("https://api.openai.com/auth")
+            .cloned()
+            .unwrap_or_default();
         let email = str_field(&claims, "email")?;
         return Some(Detected {
             account_key: str_field(&oa, "chatgpt_account_id").unwrap_or_else(|| email.clone()),
@@ -1292,7 +1399,14 @@ fn parse_codex_auth(auth: serde_json::Value) -> Option<Detected> {
     }
     let api_key = str_field(&auth, "OPENAI_API_KEY")?;
     let digest = Sha256::digest(api_key.as_bytes());
-    let tail: String = api_key.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let tail: String = api_key
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     Some(Detected {
         account_key: format!("api-key:{}", &crate::repos::hex(&digest)[..12]),
         profile: SlotProfile {
@@ -1311,9 +1425,9 @@ fn parse_codex_auth(auth: serde_json::Value) -> Option<Detected> {
 fn parse_when(value: Option<&serde_json::Value>) -> Option<DateTime<Utc>> {
     match value? {
         serde_json::Value::Number(n) => DateTime::<Utc>::from_timestamp(n.as_i64()?, 0),
-        serde_json::Value::String(s) => {
-            DateTime::parse_from_rfc3339(s).ok().map(|t| t.with_timezone(&Utc))
-        }
+        serde_json::Value::String(s) => DateTime::parse_from_rfc3339(s)
+            .ok()
+            .map(|t| t.with_timezone(&Utc)),
         _ => None,
     }
 }
@@ -1331,8 +1445,18 @@ fn urlencode(input: &str) -> String {
     let mut out = String::with_capacity(input.len() * 3);
     for byte in input.bytes() {
         match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'!' | b'~' | b'*'
-            | b'\'' | b'(' | b')' => out.push(byte as char),
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(byte as char),
             _ => out.push_str(&format!("%{byte:02X}")),
         }
     }
@@ -1370,8 +1494,14 @@ mod tests {
             claude_plan(Some("claude_max"), Some("default_claude_max_20x")).as_deref(),
             Some("Max 20×")
         );
-        assert_eq!(claude_plan(Some("claude_pro"), None).as_deref(), Some("Pro"));
-        assert_eq!(claude_plan(Some("claude_team"), Some("weird")).as_deref(), Some("Team"));
+        assert_eq!(
+            claude_plan(Some("claude_pro"), None).as_deref(),
+            Some("Pro")
+        );
+        assert_eq!(
+            claude_plan(Some("claude_team"), Some("weird")).as_deref(),
+            Some("Team")
+        );
         assert_eq!(claude_plan(Some("free"), None), None);
         assert_eq!(codex_plan(Some("plus")).as_deref(), Some("ChatGPT Plus"));
         assert_eq!(codex_plan(None), None);

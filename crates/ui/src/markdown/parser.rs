@@ -40,12 +40,28 @@ pub struct InlineRun {
 /// A markdown block. Containers nest.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Block {
-    Paragraph { runs: Vec<InlineRun> },
-    Heading { level: u8, runs: Vec<InlineRun> },
-    CodeBlock { language: Option<String>, code: String },
-    BlockQuote { children: Vec<Block> },
-    List { ordered_start: Option<u64>, items: Vec<Vec<Block>> },
-    Table { header: Vec<Vec<InlineRun>>, rows: Vec<Vec<Vec<InlineRun>>> },
+    Paragraph {
+        runs: Vec<InlineRun>,
+    },
+    Heading {
+        level: u8,
+        runs: Vec<InlineRun>,
+    },
+    CodeBlock {
+        language: Option<String>,
+        code: String,
+    },
+    BlockQuote {
+        children: Vec<Block>,
+    },
+    List {
+        ordered_start: Option<u64>,
+        items: Vec<Vec<Block>>,
+    },
+    Table {
+        header: Vec<Vec<InlineRun>>,
+        rows: Vec<Vec<Vec<InlineRun>>>,
+    },
     Rule,
 }
 
@@ -83,20 +99,30 @@ fn options() -> Options {
 
 /// Parse a whole source into a [`BlockTree`].
 pub fn parse_full(source: &str) -> BlockTree {
-    let events: Vec<(Event, Range<usize>)> =
-        Parser::new_ext(source, options()).into_offset_iter().collect();
-    let mut cur = Cursor { events: &events, ix: 0 };
+    let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options())
+        .into_offset_iter()
+        .collect();
+    let mut cur = Cursor {
+        events: &events,
+        ix: 0,
+    };
     let mut blocks = Vec::new();
     while let Some((event, range)) = cur.peek() {
         let range = range.clone();
         match event {
             Event::Rule => {
                 cur.bump();
-                blocks.push(TopBlock { range, block: Block::Rule });
+                blocks.push(TopBlock {
+                    range,
+                    block: Block::Rule,
+                });
             }
             Event::Start(_) => {
                 for block in parse_started_block(&mut cur) {
-                    blocks.push(TopBlock { range: range.clone(), block });
+                    blocks.push(TopBlock {
+                        range: range.clone(),
+                        block,
+                    });
                 }
             }
             // Stray inline events at top level (shouldn't happen): skip.
@@ -156,7 +182,9 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
     };
     match tag {
         Tag::Paragraph => {
-            vec![Block::Paragraph { runs: parse_inline_container(cur, &InlineStyle::default()) }]
+            vec![Block::Paragraph {
+                runs: parse_inline_container(cur, &InlineStyle::default()),
+            }]
         }
         Tag::Heading { level, .. } => vec![Block::Heading {
             level: heading_level(level),
@@ -166,7 +194,11 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
             let language = match kind {
                 CodeBlockKind::Fenced(info) => {
                     let lang = info.split_whitespace().next().unwrap_or("");
-                    if lang.is_empty() { None } else { Some(lang.to_string()) }
+                    if lang.is_empty() {
+                        None
+                    } else {
+                        Some(lang.to_string())
+                    }
                 }
                 CodeBlockKind::Indented => None,
             };
@@ -184,7 +216,9 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
             }
             vec![Block::CodeBlock { language, code }]
         }
-        Tag::BlockQuote(_) => vec![Block::BlockQuote { children: parse_block_sequence(cur) }],
+        Tag::BlockQuote(_) => vec![Block::BlockQuote {
+            children: parse_block_sequence(cur),
+        }],
         Tag::List(ordered_start) => {
             let mut items = Vec::new();
             loop {
@@ -200,7 +234,10 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
                     Some(_) => cur.bump(),
                 }
             }
-            vec![Block::List { ordered_start, items }]
+            vec![Block::List {
+                ordered_start,
+                items,
+            }]
         }
         Tag::Table(_) => vec![parse_table(cur)],
         Tag::HtmlBlock => {
@@ -218,7 +255,10 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
                 Vec::new()
             } else {
                 vec![Block::Paragraph {
-                    runs: vec![InlineRun { text, style: InlineStyle::default() }],
+                    runs: vec![InlineRun {
+                        text,
+                        style: InlineStyle::default(),
+                    }],
                 }]
             }
         }
@@ -232,8 +272,7 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
 fn parse_block_sequence(cur: &mut Cursor) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     let mut inline_acc: Vec<InlineRun> = Vec::new();
-    loop {
-        let Some(event) = cur.peek_event() else { break };
+    while let Some(event) = cur.peek_event() {
         match event {
             Event::End(_) => {
                 cur.bump();
@@ -257,7 +296,9 @@ fn parse_block_sequence(cur: &mut Cursor) -> Vec<Block> {
 
 fn flush_paragraph(out: &mut Vec<Block>, acc: &mut Vec<InlineRun>) {
     if !acc.is_empty() {
-        out.push(Block::Paragraph { runs: merge_runs(std::mem::take(acc)) });
+        out.push(Block::Paragraph {
+            runs: merge_runs(std::mem::take(acc)),
+        });
     }
 }
 
@@ -305,8 +346,7 @@ fn parse_table_cells(cur: &mut Cursor) -> Vec<Vec<InlineRun>> {
 /// Parse inline events until the container's `End` (consumed).
 fn parse_inline_container(cur: &mut Cursor, style: &InlineStyle) -> Vec<InlineRun> {
     let mut runs = Vec::new();
-    loop {
-        let Some(event) = cur.peek_event() else { break };
+    while let Some(event) = cur.peek_event() {
         if matches!(event, Event::End(_)) {
             cur.bump();
             break;
@@ -317,7 +357,9 @@ fn parse_inline_container(cur: &mut Cursor, style: &InlineStyle) -> Vec<InlineRu
 }
 
 fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &InlineStyle) {
-    let Some(event) = cur.next_event() else { return };
+    let Some(event) = cur.next_event() else {
+        return;
+    };
     let push = |runs: &mut Vec<InlineRun>, text: String, style: InlineStyle| {
         if !text.is_empty() {
             runs.push(InlineRun { text, style });
@@ -333,9 +375,11 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
         Event::SoftBreak => push(runs, " ".into(), style.clone()),
         Event::HardBreak => push(runs, "\n".into(), style.clone()),
         Event::Html(t) | Event::InlineHtml(t) => push(runs, t.into_string(), style.clone()),
-        Event::TaskListMarker(done) => {
-            push(runs, if done { "[x] ".into() } else { "[ ] ".into() }, style.clone())
-        }
+        Event::TaskListMarker(done) => push(
+            runs,
+            if done { "[x] ".into() } else { "[ ] ".into() },
+            style.clone(),
+        ),
         Event::FootnoteReference(t) => push(runs, format!("[{t}]"), style.clone()),
         Event::Start(tag) => {
             let mut inner = style.clone();
@@ -451,7 +495,10 @@ impl IncrementalParser {
             0 | 1 => 0,
             n => self.tree.blocks[n - 2].range.start,
         };
-        let boundary = self.source[..boundary].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let boundary = self.source[..boundary]
+            .rfind('\n')
+            .map(|i| i + 1)
+            .unwrap_or(0);
 
         let tail = parse_full(&self.source[boundary..]);
         self.tree.blocks.retain(|b| b.range.start < boundary);
@@ -583,7 +630,11 @@ mod tests {
     #[test]
     fn nested_lists_and_tight_items() {
         let tree = parse_full("- a\n  - a1\n  - a2\n- b\n");
-        let Block::List { ordered_start, items } = &tree.blocks[0].block else {
+        let Block::List {
+            ordered_start,
+            items,
+        } = &tree.blocks[0].block
+        else {
             panic!("expected list");
         };
         assert_eq!(*ordered_start, None);
@@ -607,8 +658,13 @@ mod tests {
     #[test]
     fn links_carry_urls() {
         let tree = parse_full("go to [zed](https://zed.dev) now\n");
-        let Block::Paragraph { runs } = &tree.blocks[0].block else { panic!() };
-        let link = runs.iter().find(|r| r.style.link.is_some()).expect("link run");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!()
+        };
+        let link = runs
+            .iter()
+            .find(|r| r.style.link.is_some())
+            .expect("link run");
         assert_eq!(link.text, "zed");
         assert_eq!(link.style.link.as_deref(), Some("https://zed.dev"));
     }
@@ -618,7 +674,11 @@ mod tests {
         let src = "first\n\nsecond\n\nthird";
         let tree = parse_full(src);
         assert_eq!(tree.len(), 3);
-        assert!(tree.blocks.windows(2).all(|w| w[0].range.start < w[1].range.start));
+        assert!(
+            tree.blocks
+                .windows(2)
+                .all(|w| w[0].range.start < w[1].range.start)
+        );
         assert_eq!(&src[tree.blocks[1].range.clone()], "second\n");
     }
 

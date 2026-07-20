@@ -77,16 +77,21 @@ pub fn format_reset(resets_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Opt
 }
 
 /// The provider cards, in display order.
-pub const PROVIDERS: [(HarnessId, &str); 2] =
-    [(HarnessId::ClaudeCode, "Claude Code"), (HarnessId::Codex, "Codex")];
+pub const PROVIDERS: [(HarnessId, &str); 2] = [
+    (HarnessId::ClaudeCode, "Claude Code"),
+    (HarnessId::Codex, "Codex"),
+];
 
 /// Accounts of one provider, active first (stable otherwise). Pure.
-pub fn provider_accounts<'a>(
-    snapshot: &'a AgentAccountsSnapshot,
+pub fn provider_accounts(
+    snapshot: &AgentAccountsSnapshot,
     harness: HarnessId,
-) -> Vec<&'a AgentAccount> {
-    let mut accounts: Vec<&AgentAccount> =
-        snapshot.accounts.iter().filter(|a| a.harness == harness).collect();
+) -> Vec<&AgentAccount> {
+    let mut accounts: Vec<&AgentAccount> = snapshot
+        .accounts
+        .iter()
+        .filter(|a| a.harness == harness)
+        .collect();
     accounts.sort_by_key(|a| !a.active);
     accounts
 }
@@ -99,9 +104,17 @@ enum LoginFlow {
     /// StartAgentLogin in flight.
     Starting,
     /// Claude-style: open the URL, paste the code back.
-    PasteCode { start: AgentLoginStart, submitting: bool, error: Option<SharedString> },
+    PasteCode {
+        start: AgentLoginStart,
+        submitting: bool,
+        error: Option<SharedString>,
+    },
     /// Codex-style: open the URL, poll until the browser flow lands.
-    Browser { start: AgentLoginStart, message: Option<SharedString>, error: Option<SharedString> },
+    Browser {
+        start: AgentLoginStart,
+        message: Option<SharedString>,
+        error: Option<SharedString>,
+    },
 }
 
 pub struct AccountsPage {
@@ -167,7 +180,10 @@ impl AccountsPage {
         self.snapshot = Loadable::Loading;
         let params = self.params(serde_json::json!({ "forceUsage": force_usage }));
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::LIST_AGENT_ACCOUNTS, params).await;
+            let result = engine
+                .client()
+                .call(methods::LIST_AGENT_ACCOUNTS, params)
+                .await;
             this.update(cx, |page, cx| {
                 page.snapshot = match result {
                     Ok(value) => match serde_json::from_value::<AgentAccountsSnapshot>(value) {
@@ -195,8 +211,15 @@ impl AccountsPage {
     }
 
     /// Switch / Forget an account.
-    fn account_action(&mut self, method: &'static str, account: &AgentAccount, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+    fn account_action(
+        &mut self,
+        method: &'static str,
+        account: &AgentAccount,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         self.busy_account = Some(account.id.clone());
         self.error = None;
         // Tolerant param shape: both `id` and `accountId` plus the harness.
@@ -223,12 +246,17 @@ impl AccountsPage {
     // ---- add-account flows ----
 
     fn start_login(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         self.login = Some(LoginFlow::Starting);
         self.error = None;
         let params = self.params(serde_json::json!({ "harness": harness }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::START_AGENT_LOGIN, params).await;
+            let result = engine
+                .client()
+                .call(methods::START_AGENT_LOGIN, params)
+                .await;
             this.update(cx, |page, cx| {
                 match result.and_then(|value| {
                     serde_json::from_value::<AgentLoginStart>(value)
@@ -238,7 +266,8 @@ impl AccountsPage {
                         cx.open_url(&start.url);
                         match start.mode {
                             AgentLoginMode::PasteCode => {
-                                page.code_input.update(cx, |input, cx| input.set_text("", cx));
+                                page.code_input
+                                    .update(cx, |input, cx| input.set_text("", cx));
                                 page.login = Some(LoginFlow::PasteCode {
                                     start,
                                     submitting: false,
@@ -268,7 +297,12 @@ impl AccountsPage {
     }
 
     fn submit_code(&mut self, cx: &mut Context<Self>) {
-        let Some(LoginFlow::PasteCode { start, submitting, .. }) = &mut self.login else { return };
+        let Some(LoginFlow::PasteCode {
+            start, submitting, ..
+        }) = &mut self.login
+        else {
+            return;
+        };
         if *submitting {
             return;
         }
@@ -278,10 +312,15 @@ impl AccountsPage {
         }
         let login_id = start.login_id.clone();
         *submitting = true;
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         let params = self.params(serde_json::json!({ "loginId": login_id, "code": code }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine.client().call(methods::COMPLETE_AGENT_LOGIN, params).await;
+            let result = engine
+                .client()
+                .call(methods::COMPLETE_AGENT_LOGIN, params)
+                .await;
             this.update(cx, |page, cx| {
                 match result {
                     Ok(_) => {
@@ -289,8 +328,9 @@ impl AccountsPage {
                         page.load(true, cx);
                     }
                     Err(err) => {
-                        if let Some(LoginFlow::PasteCode { submitting, error, .. }) =
-                            &mut page.login
+                        if let Some(LoginFlow::PasteCode {
+                            submitting, error, ..
+                        }) = &mut page.login
                         {
                             *submitting = false;
                             *error = Some(format!("{err}").into());
@@ -306,14 +346,23 @@ impl AccountsPage {
 
     /// The browser-wait poll loop: PollAgentLogin every 1.5s until Done/Error.
     fn spawn_poll(&mut self, cx: &mut Context<Self>) {
-        let Some(LoginFlow::Browser { start, .. }) = &self.login else { return };
+        let Some(LoginFlow::Browser { start, .. }) = &self.login else {
+            return;
+        };
         let login_id = start.login_id.clone();
-        let Some(engine) = self.state.read(cx).engine().cloned() else { return };
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
         let params = self.params(serde_json::json!({ "loginId": login_id }));
         self.poll_task = Some(cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_millis(1500)).await;
-                let result = engine.client().call(methods::POLL_AGENT_LOGIN, params.clone()).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(1500))
+                    .await;
+                let result = engine
+                    .client()
+                    .call(methods::POLL_AGENT_LOGIN, params.clone())
+                    .await;
                 let outcome = this.update(cx, |page, cx| {
                     let Some(LoginFlow::Browser { message, error, .. }) = &mut page.login else {
                         return true; // dialog dismissed — stop polling
@@ -326,7 +375,7 @@ impl AccountsPage {
                                 page.login = None;
                                 page.load(true, cx);
                                 cx.notify();
-                                return true;
+                                true
                             }
                             AgentLoginStatus::Error => {
                                 *error = Some(
@@ -335,7 +384,7 @@ impl AccountsPage {
                                         .into(),
                                 );
                                 cx.notify();
-                                return true;
+                                true
                             }
                             AgentLoginStatus::Pending => {
                                 if let Some(text) = poll.message {
@@ -373,12 +422,14 @@ impl AccountsPage {
         };
         self.login = None;
         self.poll_task = None;
-        if let (Some(login_id), Some(engine)) =
-            (login_id, self.state.read(cx).engine().cloned())
-        {
+        if let (Some(login_id), Some(engine)) = (login_id, self.state.read(cx).engine().cloned()) {
             let params = self.params(serde_json::json!({ "loginId": login_id }));
             self.action_task = Some(cx.spawn(async move |_, _| {
-                if let Err(err) = engine.client().call(methods::CANCEL_AGENT_LOGIN, params).await {
+                if let Err(err) = engine
+                    .client()
+                    .call(methods::CANCEL_AGENT_LOGIN, params)
+                    .await
+                {
                     tracing::debug!(error = %err, "CancelAgentLogin failed (best-effort)");
                 }
             }));
@@ -457,7 +508,11 @@ impl AccountsPage {
             .py(px(Theme::SPACE_SM))
             .rounded(px(Theme::CONTROL_RADIUS))
             .border_1()
-            .border_color(if account.active { theme.border_strong } else { theme.border })
+            .border_color(if account.active {
+                theme.border_strong
+            } else {
+                theme.border
+            })
             .child(
                 div()
                     .flex()
@@ -555,7 +610,7 @@ impl AccountsPage {
         let theme = Theme::of(cx).clone();
         let login = self.login.as_ref()?;
         let body: AnyElement = match login {
-            LoginFlow::Starting { .. } => div()
+            LoginFlow::Starting => div()
                 .flex()
                 .flex_col()
                 .gap(px(Theme::SPACE_SM))
@@ -567,7 +622,11 @@ impl AccountsPage {
                 )
                 .child(popover::skeleton_rows("login-starting", &theme, 2))
                 .into_any_element(),
-            LoginFlow::PasteCode { start, submitting, error } => {
+            LoginFlow::PasteCode {
+                start,
+                submitting,
+                error,
+            } => {
                 let url: SharedString = start.url.clone().into();
                 let open_url = start.url.clone();
                 let submitting = *submitting;
@@ -612,7 +671,10 @@ impl AccountsPage {
                     )
                     .when_some(error.clone(), |el, message| {
                         el.child(
-                            div().text_size(px(11.0)).text_color(theme.danger).child(message),
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(theme.danger)
+                                .child(message),
                         )
                     })
                     .child(
@@ -635,7 +697,11 @@ impl AccountsPage {
                     )
                     .into_any_element()
             }
-            LoginFlow::Browser { start, message, error } => {
+            LoginFlow::Browser {
+                start,
+                message,
+                error,
+            } => {
                 let url: SharedString = start.url.clone().into();
                 let open_url = start.url.clone();
                 div()
@@ -688,7 +754,10 @@ impl AccountsPage {
                     )
                     .when_some(error.clone(), |el, message| {
                         el.child(
-                            div().text_size(px(11.0)).text_color(theme.danger).child(message),
+                            div()
+                                .text_size(px(11.0))
+                                .text_color(theme.danger)
+                                .child(message),
                         )
                     })
                     .into_any_element()
@@ -769,7 +838,11 @@ impl AccountsPage {
                 cx.notify();
             }))
             .child(current)
-            .child(div().text_color(theme.text_faint).child(SharedString::from("▾")));
+            .child(
+                div()
+                    .text_color(theme.text_faint)
+                    .child(SharedString::from("▾")),
+            );
         if open {
             let menu = popover::popover_card(&theme)
                 .w(px(220.0))
@@ -1019,7 +1092,10 @@ mod tests {
             format_reset(Some(now + TimeDelta::minutes(125)), now),
             Some("resets in 2h 05m".into())
         );
-        assert_eq!(format_reset(Some(now - TimeDelta::minutes(1)), now), Some("resets soon".into()));
+        assert_eq!(
+            format_reset(Some(now - TimeDelta::minutes(1)), now),
+            Some("resets soon".into())
+        );
     }
 
     #[test]

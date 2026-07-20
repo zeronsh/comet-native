@@ -111,15 +111,26 @@ fn selected_shell() -> String {
     if cfg!(windows) {
         return std::env::var("COMSPEC").unwrap_or_else(|_| "powershell.exe".into());
     }
-    std::env::var("SHELL").ok().filter(|s| !s.trim().is_empty()).unwrap_or_else(|| {
-        if cfg!(target_os = "macos") { "/bin/zsh".into() } else { "/bin/bash".into() }
-    })
+    std::env::var("SHELL")
+        .ok()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if cfg!(target_os = "macos") {
+                "/bin/zsh".into()
+            } else {
+                "/bin/bash".into()
+            }
+        })
 }
 
 impl Terminals {
     /// Requires a tokio runtime (spawns the exited-session reaper).
     pub fn new() -> Self {
-        let terminals = Self { inner: Arc::new(TerminalsInner { sessions: Mutex::new(HashMap::new()) }) };
+        let terminals = Self {
+            inner: Arc::new(TerminalsInner {
+                sessions: Mutex::new(HashMap::new()),
+            }),
+        };
         tokio::spawn(reaper_task(Arc::downgrade(&terminals.inner)));
         terminals
     }
@@ -144,7 +155,9 @@ impl Terminals {
             )));
         }
         if !std::fs::metadata(cwd).map(|m| m.is_dir()).unwrap_or(false) {
-            return Err(EngineError::Other("Session working directory is unavailable".into()));
+            return Err(EngineError::Other(
+                "Session working directory is unavailable".into(),
+            ));
         }
 
         let shell = shell.map(str::to_string).unwrap_or_else(selected_shell);
@@ -203,7 +216,11 @@ impl Terminals {
         let wait = tokio::task::spawn_blocking(move || child.wait());
         tokio::spawn(pump_output(Arc::downgrade(&session), raw_rx, wait));
 
-        Ok(TerminalSession { id, cwd: cwd.to_string(), shell: shell_name })
+        Ok(TerminalSession {
+            id,
+            cwd: cwd.to_string(),
+            shell: shell_name,
+        })
     }
 
     fn session(&self, terminal_id: &str) -> Result<Arc<Mutex<LiveTerminal>>, EngineError> {
@@ -243,7 +260,9 @@ impl Terminals {
     /// Write input bytes; `data` is base64 (matching `Data` events), with a plain
     /// UTF-8 fallback for lenient callers.
     pub fn write(&self, terminal_id: &str, data: &str) -> Result<(), EngineError> {
-        let bytes = BASE64.decode(data).unwrap_or_else(|_| data.as_bytes().to_vec());
+        let bytes = BASE64
+            .decode(data)
+            .unwrap_or_else(|_| data.as_bytes().to_vec());
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(EngineError::Other("Terminal input is too large".into()));
         }
@@ -294,10 +313,11 @@ impl Terminals {
 fn dispose(session: &Arc<Mutex<LiveTerminal>>, kill: bool) {
     let mut session = lock(session);
     session.subscribers.clear();
-    if kill && !session.exited {
-        if let Err(err) = session.killer.kill() {
-            tracing::debug!(error = %err, "terminal kill failed (already exited?)");
-        }
+    if kill
+        && !session.exited
+        && let Err(err) = session.killer.kill()
+    {
+        tracing::debug!(error = %err, "terminal kill failed (already exited?)");
     }
 }
 
@@ -327,10 +347,15 @@ async fn pump_output(
 ) {
     let batch = Duration::from_millis(TERMINAL_OUTPUT_BATCH_MS);
     let emit = |buffer: Vec<u8>| -> bool {
-        let Some(session) = session.upgrade() else { return false };
+        let Some(session) = session.upgrade() else {
+            return false;
+        };
         let mut session = lock(&session);
         let seq = session.next_seq();
-        session.emit(TerminalEvent::Data { seq, data: BASE64.encode(&buffer) });
+        session.emit(TerminalEvent::Data {
+            seq,
+            data: BASE64.encode(&buffer),
+        });
         true
     };
     'outer: while let Some(first) = raw_rx.recv().await {
@@ -365,7 +390,11 @@ async fn pump_output(
     if let Some(session) = session.upgrade() {
         let mut session = lock(&session);
         let seq = session.next_seq();
-        session.emit(TerminalEvent::Exit { seq, exit_code, signal: None });
+        session.emit(TerminalEvent::Exit {
+            seq,
+            exit_code,
+            signal: None,
+        });
     }
 }
 

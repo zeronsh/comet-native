@@ -70,6 +70,12 @@ pulldown-cmark = "0.12"
 unicode-segmentation = "1"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json", "stream"] }
 
+[profile.release]
+# Distribution profile (scripts/package-linux.sh): thin LTO buys most of fat
+# LTO's size/speed win at a fraction of the link time; strip debug symbols.
+lto = "thin"
+strip = "symbols"
+
 [profile.dev]
 # gpui is slow unoptimized; match zed's approach for deps
 opt-level = 0

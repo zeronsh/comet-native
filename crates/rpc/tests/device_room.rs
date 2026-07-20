@@ -7,6 +7,10 @@
 //! on host disconnect; `host_offline` bounce when a client sends with no host; nudge
 //! frames delivered to the host.
 
+// tungstenite's `accept_hdr_async` callback signature fixes the Err type as a full
+// `Response` — its size is not ours to shrink.
+#![allow(clippy::result_large_err)]
+
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -65,7 +69,9 @@ impl FakeRelay {
         let accept_state = state.clone();
         let task = tokio::spawn(async move {
             loop {
-                let Ok((stream, _)) = listener.accept().await else { break };
+                let Ok((stream, _)) = listener.accept().await else {
+                    break;
+                };
                 tokio::spawn(handle_socket(stream, accept_state.clone()));
             }
         });
@@ -90,25 +96,33 @@ impl FakeRelay {
         let payload = serde_json::json!({ "chatId": chat_id }).to_string();
         let frame = encode_device_frame(&header, payload.as_bytes()).expect("encode nudge");
         let state = self.state.lock().expect("lock");
-        state.host.as_ref().expect("host connected").send(Out::Frame(frame)).expect("send");
+        state
+            .host
+            .as_ref()
+            .expect("host connected")
+            .send(Out::Frame(frame))
+            .expect("send");
     }
 }
 
 fn relay_error(code: &str) -> Vec<u8> {
-    serde_json::json!({ "error": code }).to_string().into_bytes()
+    serde_json::json!({ "error": code })
+        .to_string()
+        .into_bytes()
 }
 
 async fn handle_socket(stream: tokio::net::TcpStream, state: Arc<Mutex<RelayState>>) {
     let mut uri = String::new();
-    let ws = match tokio_tungstenite::accept_hdr_async(stream, |req: &WsRequest, res: WsResponse| {
-        uri = req.uri().to_string();
-        Ok(res)
-    })
-    .await
-    {
-        Ok(ws) => ws,
-        Err(_) => return,
-    };
+    let ws =
+        match tokio_tungstenite::accept_hdr_async(stream, |req: &WsRequest, res: WsResponse| {
+            uri = req.uri().to_string();
+            Ok(res)
+        })
+        .await
+        {
+            Ok(ws) => ws,
+            Err(_) => return,
+        };
     let query: HashMap<String, String> = uri
         .split_once('?')
         .map(|(_, q)| q)
@@ -118,7 +132,10 @@ async fn handle_socket(stream: tokio::net::TcpStream, state: Arc<Mutex<RelayStat
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     let is_host = query.get("role").map(String::as_str) == Some("host");
-    let conn_id = query.get("connId").cloned().unwrap_or_else(|| "anon".into());
+    let conn_id = query
+        .get("connId")
+        .cloned()
+        .unwrap_or_else(|| "anon".into());
 
     let (mut sink, mut ws_stream) = ws.split();
     let (tx, mut rx) = mpsc::unbounded_channel::<Out>();
@@ -157,7 +174,9 @@ async fn handle_socket(stream: tokio::net::TcpStream, state: Arc<Mutex<RelayStat
             Ok(WsMessage::Close(_)) | Err(_) => break,
             Ok(_) => continue,
         };
-        let Ok((header, payload)) = decode_device_frame(&bytes) else { break };
+        let Ok((header, payload)) = decode_device_frame(&bytes) else {
+            break;
+        };
         let st = state.lock().expect("lock");
         if !is_host {
             match &st.host {
@@ -233,7 +252,10 @@ struct TestService {
 
 impl TestService {
     fn new(label: &str) -> Arc<Self> {
-        Arc::new(Self { label: label.into(), active_streams: Arc::new(AtomicUsize::new(0)) })
+        Arc::new(Self {
+            label: label.into(),
+            active_streams: Arc::new(AtomicUsize::new(0)),
+        })
     }
 }
 
@@ -247,11 +269,7 @@ impl Drop for StreamGuard {
 
 #[async_trait]
 impl RpcService for TestService {
-    async fn handle(
-        &self,
-        method: &str,
-        params: serde_json::Value,
-    ) -> Result<RpcReply, RpcError> {
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
         match method {
             methods::LIST_HARNESSES => Ok(RpcReply::Value(serde_json::json!([]))),
             "Echo" => Ok(RpcReply::Value(
@@ -323,17 +341,30 @@ async fn relay_serves_multiple_clients_end_to_end() {
     let a = links.client("dev-a").await.expect("client a dials");
     let b = links.client("dev-a").await.expect("client b reuses/dials");
 
-    let echoed = a.call("Echo", serde_json::json!({ "who": "a" })).await.expect("echo a");
+    let echoed = a
+        .call("Echo", serde_json::json!({ "who": "a" }))
+        .await
+        .expect("echo a");
     assert_eq!(echoed["host"], "host-a");
     assert_eq!(echoed["params"]["who"], "a");
 
     // Streaming through the relay: items arrive in order, stream terminates.
-    let mut items = b.subscribe("Count", serde_json::json!({ "n": 3 })).await.expect("count");
+    let mut items = b
+        .subscribe("Count", serde_json::json!({ "n": 3 }))
+        .await
+        .expect("count");
     let mut seen = Vec::new();
     while let Some(v) = items.recv().await {
         seen.push(v);
     }
-    assert_eq!(seen, vec![serde_json::json!(0), serde_json::json!(1), serde_json::json!(2)]);
+    assert_eq!(
+        seen,
+        vec![
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!(2)
+        ]
+    );
 
     // Concurrent calls from the same cached link multiplex fine.
     let (x, y) = tokio::join!(
@@ -355,7 +386,10 @@ async fn client_disconnect_tears_down_virtual_conn() {
     let url = device_room_ws_url(&relay.edge_url(), "dev-a", "client", Some("conn-x"), "t");
     let link = DeviceLink::connect(&url).await.expect("link connects");
     let client = link.client();
-    let _items = client.subscribe("Never", serde_json::Value::Null).await.expect("subscribe");
+    let _items = client
+        .subscribe("Never", serde_json::Value::Null)
+        .await
+        .expect("subscribe");
     wait_until(|| active.load(Ordering::SeqCst) == 1).await;
 
     // Dropping the link closes the relay socket → the DO tells the host client_closed →
@@ -371,7 +405,9 @@ async fn host_offline_fails_fast_and_cools_down() {
 
     // No host connected: the readiness probe is bounced with host_offline → link-down →
     // the dial fails quickly instead of hanging.
-    let Err(err) = links.client("dev-a").await else { panic!("dial must fail with no host") };
+    let Err(err) = links.client("dev-a").await else {
+        panic!("dial must fail with no host")
+    };
     let message = err.to_string();
     assert!(
         message.contains("readiness check"),
@@ -379,7 +415,9 @@ async fn host_offline_fails_fast_and_cools_down() {
     );
 
     // Immediately after, the cooldown makes callers fail fast without redialing.
-    let Err(err) = links.client("dev-a").await else { panic!("must fail fast while cooling") };
+    let Err(err) = links.client("dev-a").await else {
+        panic!("must fail fast while cooling")
+    };
     assert!(err.to_string().contains("backing off"), "got: {err}");
 
     // After the cooldown a host is up — dial succeeds and clears the slate.
@@ -388,7 +426,13 @@ async fn host_offline_fails_fast_and_cools_down() {
     relay.wait_host_connected().await;
     tokio::time::sleep(Duration::from_millis(150)).await;
     let client = links.client("dev-a").await.expect("dials after cooldown");
-    assert_eq!(client.call("Echo", serde_json::json!({})).await.expect("echo")["host"], "host-a");
+    assert_eq!(
+        client
+            .call("Echo", serde_json::json!({}))
+            .await
+            .expect("echo")["host"],
+        "host-a"
+    );
 }
 
 #[tokio::test]
@@ -406,7 +450,9 @@ async fn host_supersede_drops_old_links_and_recovers() {
     // the rogue's socket later closes, clients see host_closed. The HostRelay backs off
     // and reclaims the room; old links are down and the cache re-dials.
     let rogue_url = device_room_ws_url(&relay.edge_url(), "dev-a", "host", None, "t");
-    let (rogue_ws, _) = tokio_tungstenite::connect_async(&rogue_url).await.expect("rogue joins");
+    let (rogue_ws, _) = tokio_tungstenite::connect_async(&rogue_url)
+        .await
+        .expect("rogue joins");
     // Wait for the supersede to land, then let the rogue die: the HostRelay's reconnect
     // supersedes it right back (proved by its socket closing).
     let (_, mut rogue_stream) = rogue_ws.split();
@@ -419,8 +465,14 @@ async fn host_supersede_drops_old_links_and_recovers() {
     relay.wait_host_connected().await;
 
     // The pre-supersede link died; in-flight/new calls on it fail rather than hang.
-    let err = client.call("Echo", serde_json::json!({})).await.expect_err("old link dead");
-    assert!(matches!(err, RpcError::Closed | RpcError::Transport(_)), "got: {err}");
+    let err = client
+        .call("Echo", serde_json::json!({}))
+        .await
+        .expect_err("old link dead");
+    assert!(
+        matches!(err, RpcError::Closed | RpcError::Transport(_)),
+        "got: {err}"
+    );
 
     // The cache notices the dead link and re-dials the reclaimed host (allowing for a
     // cooldown window if a re-dial raced the reclaim).
@@ -430,7 +482,10 @@ async fn host_supersede_drops_old_links_and_recovers() {
             Err(_) => tokio::time::sleep(Duration::from_millis(120)).await,
         }
     };
-    let echoed = recovered.call("Echo", serde_json::json!({})).await.expect("echo");
+    let echoed = recovered
+        .call("Echo", serde_json::json!({}))
+        .await
+        .expect("echo");
     assert_eq!(echoed["host"], "host-a");
 }
 
@@ -466,8 +521,11 @@ async fn live_edge_relay_round_trip() {
     let device_id = format!("relay-live-{}", uuid::Uuid::new_v4());
 
     let service = TestService::new("live-host");
-    let mut config =
-        HostRelayConfig::new(edge_url.clone(), device_id.clone(), Arc::new(StaticToken(token.clone())));
+    let mut config = HostRelayConfig::new(
+        edge_url.clone(),
+        device_id.clone(),
+        Arc::new(StaticToken(token.clone())),
+    );
     config.retry = Duration::from_millis(500);
     let _host = HostRelay::spawn(config, service, noop_nudge());
 
@@ -485,7 +543,10 @@ async fn live_edge_relay_round_trip() {
             }
         }
     };
-    let echoed = client.call("Echo", serde_json::json!({ "live": true })).await.expect("echo");
+    let echoed = client
+        .call("Echo", serde_json::json!({ "live": true }))
+        .await
+        .expect("echo");
     assert_eq!(echoed["host"], "live-host");
     assert_eq!(echoed["params"]["live"], true);
 }

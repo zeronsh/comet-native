@@ -78,12 +78,25 @@ pub enum RowKind {
         pending: bool,
     },
     /// One top-level markdown block of a completed message.
-    Markdown { tree: Arc<BlockTree>, block_ix: usize },
+    Markdown {
+        tree: Arc<BlockTree>,
+        block_ix: usize,
+    },
     /// A whole streaming text part, unsplit (boundaries shift while streaming).
-    LiveMarkdown { tree: Arc<BlockTree> },
-    ToolGroup { tools: Arc<Vec<ToolItem>>, auto_open: bool },
-    InputChip { questions: usize, resolved: bool },
-    ErrorChip { message: SharedString },
+    LiveMarkdown {
+        tree: Arc<BlockTree>,
+    },
+    ToolGroup {
+        tools: Arc<Vec<ToolItem>>,
+        auto_open: bool,
+    },
+    InputChip {
+        questions: usize,
+        resolved: bool,
+    },
+    ErrorChip {
+        message: SharedString,
+    },
 }
 
 /// A transcript row: stable id + content version (diff key) + block payload.
@@ -144,7 +157,10 @@ pub fn rows_for_entry(
             id: entry.id.clone().into(),
             version: (text.len() as u64) << 1 | pending as u64,
             turn_start: true,
-            kind: RowKind::User { text: text.into(), pending },
+            kind: RowKind::User {
+                text: text.into(),
+                pending,
+            },
         }];
     }
 
@@ -165,14 +181,22 @@ pub fn rows_for_entry(
                 id: format!("{}#g{}", entry.id, group_ix).into(),
                 version: tool_fingerprint(&tools, auto_open),
                 turn_start: false,
-                kind: RowKind::ToolGroup { tools: Arc::new(tools), auto_open },
+                kind: RowKind::ToolGroup {
+                    tools: Arc::new(tools),
+                    auto_open,
+                },
             });
             *group_ix += 1;
         };
 
     for (part_ix, part) in entry.parts.iter().enumerate() {
         match part {
-            MessagePart::Tool { call, is_error, resolved, .. } => {
+            MessagePart::Tool {
+                call,
+                is_error,
+                resolved,
+                ..
+            } => {
                 pending_group.push(ToolItem {
                     call: call.clone(),
                     is_error: *is_error,
@@ -181,7 +205,12 @@ pub fn rows_for_entry(
                 group_last_part_ix = part_ix;
             }
             other => {
-                flush_group(&mut rows, &mut pending_group, &mut group_ix, group_last_part_ix);
+                flush_group(
+                    &mut rows,
+                    &mut pending_group,
+                    &mut group_ix,
+                    group_last_part_ix,
+                );
                 match other {
                     MessagePart::Text { id: part_id, text } => {
                         if text.trim().is_empty() {
@@ -205,12 +234,20 @@ pub fn rows_for_entry(
                                     id: format!("{key}.{block_ix}").into(),
                                     version: (end as u64) << 1,
                                     turn_start: false,
-                                    kind: RowKind::Markdown { tree: tree.clone(), block_ix },
+                                    kind: RowKind::Markdown {
+                                        tree: tree.clone(),
+                                        block_ix,
+                                    },
                                 });
                             }
                         }
                     }
-                    MessagePart::Input { id: part_id, questions, resolved, .. } => {
+                    MessagePart::Input {
+                        id: part_id,
+                        questions,
+                        resolved,
+                        ..
+                    } => {
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: (questions.len() as u64) << 1 | *resolved as u64,
@@ -221,12 +258,17 @@ pub fn rows_for_entry(
                             },
                         });
                     }
-                    MessagePart::Error { id: part_id, message } => {
+                    MessagePart::Error {
+                        id: part_id,
+                        message,
+                    } => {
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: message.len() as u64,
                             turn_start: false,
-                            kind: RowKind::ErrorChip { message: message.clone().into() },
+                            kind: RowKind::ErrorChip {
+                                message: message.clone().into(),
+                            },
                         });
                     }
                     // Tools are grouped by the outer arm; nothing reaches here.
@@ -235,7 +277,12 @@ pub fn rows_for_entry(
             }
         }
     }
-    flush_group(&mut rows, &mut pending_group, &mut group_ix, group_last_part_ix);
+    flush_group(
+        &mut rows,
+        &mut pending_group,
+        &mut group_ix,
+        group_last_part_ix,
+    );
 
     if let Some(first) = rows.first_mut() {
         first.turn_start = true;
@@ -268,7 +315,11 @@ pub fn diff_rows(old: &[Row], new: &[Row]) -> Option<(Range<usize>, usize)> {
 // ---------------------------------------------------------------------------
 
 fn plural(n: usize, one: &str, many: &str) -> String {
-    if n == 1 { format!("{n} {one}") } else { format!("{n} {many}") }
+    if n == 1 {
+        format!("{n} {one}")
+    } else {
+        format!("{n} {many}")
+    }
 }
 
 /// The ToolGroup summary line — "Ran 3 commands · edited 2 files".
@@ -351,9 +402,10 @@ pub fn tool_chip_content(call: &ToolCall) -> (&'static str, String) {
         ToolCall::ReadFile { path } => ("Read", path.clone()),
         ToolCall::WriteFile { path, .. } => ("Wrote", path.clone()),
         ToolCall::EditFile { path, .. } => ("Edited", path.clone()),
-        ToolCall::ApplyPatch { path } => {
-            ("Patched", path.clone().unwrap_or_else(|| "workspace".into()))
-        }
+        ToolCall::ApplyPatch { path } => (
+            "Patched",
+            path.clone().unwrap_or_else(|| "workspace".into()),
+        ),
         ToolCall::Search { pattern, path } => (
             "Searched",
             match path {
@@ -387,9 +439,26 @@ pub fn chips_height(count: usize) -> f32 {
 
 /// Rotating flavour vocabulary (20 words / 7s, seeded per chat).
 pub const FLAVOUR_WORDS: [&str; 20] = [
-    "Thinking", "Pondering", "Scheming", "Brewing", "Weaving", "Tinkering", "Musing",
-    "Composing", "Sifting", "Untangling", "Distilling", "Sketching", "Plotting", "Riffing",
-    "Combobulating", "Percolating", "Marinating", "Noodling", "Puzzling", "Conjuring",
+    "Thinking",
+    "Pondering",
+    "Scheming",
+    "Brewing",
+    "Weaving",
+    "Tinkering",
+    "Musing",
+    "Composing",
+    "Sifting",
+    "Untangling",
+    "Distilling",
+    "Sketching",
+    "Plotting",
+    "Riffing",
+    "Combobulating",
+    "Percolating",
+    "Marinating",
+    "Noodling",
+    "Puzzling",
+    "Conjuring",
 ];
 pub const FLAVOUR_ROTATE_SECS: i64 = 7;
 
@@ -407,7 +476,11 @@ pub fn flavour_seed(chat_id: &str) -> u64 {
 /// "1m 32s"-style elapsed formatting.
 pub fn format_elapsed(secs: i64) -> String {
     let secs = secs.max(0);
-    if secs < 60 { format!("{secs}s") } else { format!("{}m {}s", secs / 60, secs % 60) }
+    if secs < 60 {
+        format!("{secs}s")
+    } else {
+        format!("{}m {}s", secs / 60, secs % 60)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,7 +565,11 @@ impl HighlightStore {
         });
         self.entries.insert(
             (row_id, block_ix),
-            HighlightEntry { code_len, lines: stale.clone(), _task: Some(task) },
+            HighlightEntry {
+                code_len,
+                lines: stale.clone(),
+                _task: Some(task),
+            },
         );
         stale
     }
@@ -542,7 +619,10 @@ impl Transcript {
         list.set_follow_mode(FollowMode::Tail);
         let weak = cx.weak_entity();
         list.set_scroll_handler(move |event: &ListScrollEvent, _window, cx| {
-            weak.update(cx, |this: &mut Transcript, cx| this.handle_scroll(event, cx)).ok();
+            weak.update(cx, |this: &mut Transcript, cx| {
+                this.handle_scroll(event, cx)
+            })
+            .ok();
         });
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.sync(cx));
         let mut this = Self {
@@ -639,7 +719,9 @@ impl Transcript {
     fn animate_scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
         self.scroll_anim = Some(cx.spawn(async move |this, cx| {
             for _ in 0..60 {
-                cx.background_executor().timer(Duration::from_millis(16)).await;
+                cx.background_executor()
+                    .timer(Duration::from_millis(16))
+                    .await;
                 let done = this.update(cx, |t, cx| {
                     let remaining = t.distance_from_bottom();
                     if remaining <= 2.0 {
@@ -668,7 +750,11 @@ impl Transcript {
     fn sync(&mut self, cx: &mut Context<Self>) {
         let (selected, entries, echoes) = {
             let s = self.state.read(cx);
-            (s.selected_chat.clone(), s.transcript.clone(), s.pending_echoes().to_vec())
+            (
+                s.selected_chat.clone(),
+                s.transcript.clone(),
+                s.pending_echoes().to_vec(),
+            )
         };
 
         if selected != self.chat_id {
@@ -746,8 +832,13 @@ impl Transcript {
         let rows = rows_for_entry(entry, pending, &mut parse);
 
         if !streaming {
-            self.row_cache
-                .insert(entry.id.clone(), CachedRows { fingerprint, rows: rows.clone() });
+            self.row_cache.insert(
+                entry.id.clone(),
+                CachedRows {
+                    fingerprint,
+                    rows: rows.clone(),
+                },
+            );
         }
         rows
     }
@@ -755,15 +846,28 @@ impl Transcript {
     fn toggle_fold(&mut self, row_id: SharedString, tool_count: usize, auto_open: bool) {
         let entry = self.folds.entry(row_id).or_default();
         let currently_open = entry.open.unwrap_or(auto_open);
-        entry.from = if currently_open { chips_height(tool_count) } else { 0.0 };
-        entry.to = if currently_open { 0.0 } else { chips_height(tool_count) };
+        entry.from = if currently_open {
+            chips_height(tool_count)
+        } else {
+            0.0
+        };
+        entry.to = if currently_open {
+            0.0
+        } else {
+            chips_height(tool_count)
+        };
         entry.open = Some(!currently_open);
         entry.epoch += 1;
     }
 
     // ---- rendering ----
 
-    fn render_row(&mut self, ix: usize, _window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn render_row(
+        &mut self,
+        ix: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let Some(row) = self.rows.get(ix).cloned() else {
             return gpui::Empty.into_any_element();
         };
@@ -779,26 +883,26 @@ impl Transcript {
 
         let inner: AnyElement = match &row.kind {
             RowKind::User { text, pending } => {
-                let bubble = div()
-                    .flex()
-                    .justify_end()
-                    .child(
-                        div()
-                            .max_w(px(MAX_CONTENT_WIDTH * 0.8))
-                            .bg(theme.surface_raised)
-                            .rounded(px(Theme::BUBBLE_RADIUS))
-                            .px(px(14.0))
-                            .py(px(8.0))
-                            .text_size(px(14.0))
-                            .line_height(px(21.0))
-                            .text_color(theme.text)
-                            .when(*pending, |el| el.opacity(0.65))
-                            .child(text.clone()),
-                    );
+                let bubble = div().flex().justify_end().child(
+                    div()
+                        .max_w(px(MAX_CONTENT_WIDTH * 0.8))
+                        .bg(theme.surface_raised)
+                        .rounded(px(Theme::BUBBLE_RADIUS))
+                        .px(px(14.0))
+                        .py(px(8.0))
+                        .text_size(px(14.0))
+                        .line_height(px(21.0))
+                        .text_color(theme.text)
+                        .when(*pending, |el| el.opacity(0.65))
+                        .child(text.clone()),
+                );
                 bubble.into_any_element()
             }
             RowKind::Markdown { tree, block_ix } => {
-                let opts = RenderOptions { row_key: row.id.clone(), fade_last_key: None };
+                let opts = RenderOptions {
+                    row_key: row.id.clone(),
+                    fade_last_key: None,
+                };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
                     return gpui::Empty.into_any_element();
@@ -808,13 +912,18 @@ impl Transcript {
                     *block_ix,
                     &opts,
                     &theme,
-                    highlight.get(block_ix).and_then(|o| o.as_deref()).map(|v| v.as_slice()),
+                    highlight
+                        .get(block_ix)
+                        .and_then(|o| o.as_deref())
+                        .map(|v| v.as_slice()),
                 )
             }
             RowKind::LiveMarkdown { tree } => {
                 let fade_key = tree.blocks.len().saturating_sub(1) as u64;
-                let opts =
-                    RenderOptions { row_key: row.id.clone(), fade_last_key: Some(fade_key) };
+                let opts = RenderOptions {
+                    row_key: row.id.clone(),
+                    fade_last_key: Some(fade_key),
+                };
                 let highlight = self.code_highlight_for(&row.id, tree, None, cx);
                 render::render_tree(tree, &opts, &theme, &|ix| {
                     highlight.get(&ix).and_then(|o| o.clone())
@@ -823,7 +932,10 @@ impl Transcript {
             RowKind::ToolGroup { tools, auto_open } => {
                 self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
             }
-            RowKind::InputChip { questions, resolved } => {
+            RowKind::InputChip {
+                questions,
+                resolved,
+            } => {
                 let (label, color) = if *resolved {
                     ("Input provided", theme.text_muted)
                 } else {
@@ -835,9 +947,7 @@ impl Transcript {
                     &theme,
                 )
             }
-            RowKind::ErrorChip { message } => {
-                chip_row(message.to_string(), theme.danger, &theme)
-            }
+            RowKind::ErrorChip { message } => chip_row(message.to_string(), theme.danger, &theme),
         };
 
         div()
@@ -847,7 +957,13 @@ impl Transcript {
             .pt(px(top_gap))
             .pb(px(bottom_pad))
             .px(px(24.0))
-            .child(div().w_full().max_w(px(MAX_CONTENT_WIDTH)).min_w_0().child(inner))
+            .child(
+                div()
+                    .w_full()
+                    .max_w(px(MAX_CONTENT_WIDTH))
+                    .min_w_0()
+                    .child(inner),
+            )
             .into_any_element()
     }
 
@@ -868,7 +984,10 @@ impl Transcript {
             if let Block::CodeBlock { language, code } = &top.block
                 && let Some(lang) = language.as_deref().and_then(lang_for_tag)
             {
-                out.insert(ix, self.highlights.request(row_id.clone(), ix, lang, code, cx));
+                out.insert(
+                    ix,
+                    self.highlights.request(row_id.clone(), ix, lang, code, cx),
+                );
             }
         }
         out
@@ -899,7 +1018,11 @@ impl Transcript {
             .py(px(2.0))
             .cursor_pointer()
             .text_size(px(12.0))
-            .text_color(if any_error { theme.danger } else { theme.text_muted })
+            .text_color(if any_error {
+                theme.danger
+            } else {
+                theme.text_muted
+            })
             .hover(|s| s.text_color(gpui::white()))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(toggle_id.clone(), tool_count, auto_open);
@@ -930,10 +1053,19 @@ impl Transcript {
                 )
                 .into_any_element()
         } else {
-            div().overflow_hidden().h(px(target)).child(chips).into_any_element()
+            div()
+                .overflow_hidden()
+                .h(px(target))
+                .child(chips)
+                .into_any_element()
         };
 
-        div().flex().flex_col().child(header).child(body).into_any_element()
+        div()
+            .flex()
+            .flex_col()
+            .child(header)
+            .child(body)
+            .into_any_element()
     }
 }
 
@@ -958,7 +1090,11 @@ fn chip_row(text: String, color: gpui::Hsla, theme: &Theme) -> AnyElement {
 
 fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
     let (label, detail) = tool_chip_content(&tool.call);
-    let tint = if tool.is_error { theme.danger } else { theme.text_muted };
+    let tint = if tool.is_error {
+        theme.danger
+    } else {
+        theme.text_muted
+    };
     div()
         .h(px(CHIP_HEIGHT))
         .flex_none()
@@ -984,13 +1120,22 @@ fn tool_chip(tool: &ToolItem, theme: &Theme) -> AnyElement {
                     theme.accent
                 }),
         )
-        .child(div().flex_none().text_color(tint).child(SharedString::from(label)))
+        .child(
+            div()
+                .flex_none()
+                .text_color(tint)
+                .child(SharedString::from(label)),
+        )
         .child(
             div()
                 .flex_1()
                 .min_w_0()
                 .truncate()
-                .text_color(if tool.is_error { theme.danger } else { theme.text_faint })
+                .text_color(if tool.is_error {
+                    theme.danger
+                } else {
+                    theme.text_faint
+                })
                 .child(SharedString::from(detail)),
         )
         .into_any_element()
@@ -1009,7 +1154,10 @@ fn entry_fingerprint(entry: &SessionMessageEntry, pending: bool) -> u64 {
     for part in &entry.parts {
         acc.extend_from_slice(part.id().as_bytes());
         acc.extend_from_slice(&(part.byte_len() as u64).to_le_bytes());
-        if let MessagePart::Tool { is_error, resolved, .. } = part {
+        if let MessagePart::Tool {
+            is_error, resolved, ..
+        } = part
+        {
             acc.push(*is_error as u8 | (*resolved as u8) << 1);
         }
         if let MessagePart::Input { resolved, .. } = part {
@@ -1037,8 +1185,14 @@ impl Render for Transcript {
             .child(rail)
             .when(jump, |el| {
                 el.child(
-                    div().absolute().bottom(px(16.0)).left_0().right_0().flex().justify_center().child(
-                        motion::fade_quick(
+                    div()
+                        .absolute()
+                        .bottom(px(16.0))
+                        .left_0()
+                        .right_0()
+                        .flex()
+                        .justify_center()
+                        .child(motion::fade_quick(
                             "jump-to-bottom",
                             div()
                                 .id("jump-to-bottom-btn")
@@ -1057,8 +1211,7 @@ impl Render for Transcript {
                                     this.animate_scroll_to_bottom(cx);
                                 }))
                                 .child(SharedString::from("↓")),
-                        ),
-                    ),
+                        )),
                 )
             })
     }
@@ -1086,13 +1239,18 @@ mod tests {
     }
 
     fn text_part(id: &str, text: &str) -> MessagePart {
-        MessagePart::Text { id: id.into(), text: text.into() }
+        MessagePart::Text {
+            id: id.into(),
+            text: text.into(),
+        }
     }
 
     fn tool_part(id: &str, command: &str) -> MessagePart {
         MessagePart::Tool {
             id: id.into(),
-            call: ToolCall::Exec { command: command.into() },
+            call: ToolCall::Exec {
+                command: command.into(),
+            },
             is_error: false,
             resolved: true,
         }
@@ -1114,7 +1272,10 @@ mod tests {
         // First split block reuses the live row id — no flicker on handoff.
         assert_eq!(done_rows[0].id, live_rows[0].id);
         assert_eq!(done_rows[1].id.as_ref(), "m1#t0.1");
-        assert!(matches!(done_rows[0].kind, RowKind::Markdown { block_ix: 0, .. }));
+        assert!(matches!(
+            done_rows[0].kind,
+            RowKind::Markdown { block_ix: 0, .. }
+        ));
         // The flip changes the version even at identical text, forcing a splice.
         assert_ne!(done_rows[0].version, live_rows[0].version);
     }
@@ -1135,7 +1296,9 @@ mod tests {
         let rows = rows_for_entry(&entry, false, &mut parse);
         let ids: Vec<&str> = rows.iter().map(|r| r.id.as_ref()).collect();
         assert_eq!(ids, ["m2#t0.0", "m2#g0", "m2#t1.0", "m2#g1"]);
-        let RowKind::ToolGroup { tools, .. } = &rows[1].kind else { panic!("group expected") };
+        let RowKind::ToolGroup { tools, .. } = &rows[1].kind else {
+            panic!("group expected")
+        };
         assert_eq!(tools.len(), 2);
         assert!(rows[0].turn_start && !rows[1].turn_start);
     }
@@ -1145,12 +1308,16 @@ mod tests {
         let parts = vec![text_part("t0", "hi"), tool_part("a", "ls")];
         let streaming = assistant("m3", MessageStatus::Streaming, parts.clone());
         let rows = rows_for_entry(&streaming, false, &mut parse);
-        let RowKind::ToolGroup { auto_open, .. } = rows[1].kind else { panic!() };
+        let RowKind::ToolGroup { auto_open, .. } = rows[1].kind else {
+            panic!()
+        };
         assert!(auto_open, "trailing group opens while streaming");
 
         let complete = assistant("m3", MessageStatus::Complete, parts);
         let rows = rows_for_entry(&complete, false, &mut parse);
-        let RowKind::ToolGroup { auto_open, .. } = rows[1].kind else { panic!() };
+        let RowKind::ToolGroup { auto_open, .. } = rows[1].kind else {
+            panic!()
+        };
         assert!(!auto_open);
 
         // A non-trailing group never auto-opens.
@@ -1160,7 +1327,9 @@ mod tests {
             vec![tool_part("a", "ls"), text_part("t0", "hi")],
         );
         let rows = rows_for_entry(&mid, false, &mut parse);
-        let RowKind::ToolGroup { auto_open, .. } = rows[0].kind else { panic!() };
+        let RowKind::ToolGroup { auto_open, .. } = rows[0].kind else {
+            panic!()
+        };
         assert!(!auto_open);
     }
 
@@ -1176,7 +1345,10 @@ mod tests {
         assert_eq!(confirmed[0].id, echoed[0].id);
         // Pending → confirmed changes the version so the row re-renders.
         assert_ne!(confirmed[0].version, echoed[0].version);
-        assert!(matches!(&echoed[0].kind, RowKind::User { pending: true, .. }));
+        assert!(matches!(
+            &echoed[0].kind,
+            RowKind::User { pending: true, .. }
+        ));
     }
 
     #[test]
@@ -1195,7 +1367,11 @@ mod tests {
         assert_eq!(diff_rows(&both, &r1), Some((1..2, 0)));
 
         // Middle content change: only the changed row splices.
-        let entry1b = assistant("m1", MessageStatus::Complete, vec![text_part("t0", "one more")]);
+        let entry1b = assistant(
+            "m1",
+            MessageStatus::Complete,
+            vec![text_part("t0", "one more")],
+        );
         let mut both_b = rows_for_entry(&entry1b, false, &mut parse);
         both_b.extend(rows_for_entry(&entry2, false, &mut parse));
         assert_eq!(diff_rows(&both, &both_b), Some((0..1, 1)));
@@ -1223,12 +1399,25 @@ mod tests {
             resolved: true,
         };
         let edit = |p: &str| ToolItem {
-            call: ToolCall::EditFile { path: p.into(), old_string: None, new_string: None },
+            call: ToolCall::EditFile {
+                path: p.into(),
+                old_string: None,
+                new_string: None,
+            },
             is_error: false,
             resolved: true,
         };
-        let tools = vec![exec("ls"), exec("pwd"), exec("make"), edit("a.rs"), edit("b.rs")];
-        assert_eq!(tool_group_summary(&tools), "Ran 3 commands · edited 2 files");
+        let tools = vec![
+            exec("ls"),
+            exec("pwd"),
+            exec("make"),
+            edit("a.rs"),
+            edit("b.rs"),
+        ];
+        assert_eq!(
+            tool_group_summary(&tools),
+            "Ran 3 commands · edited 2 files"
+        );
         // Distinct-path dedupe: editing one file twice counts once.
         let tools = vec![edit("a.rs"), edit("a.rs")];
         assert_eq!(tool_group_summary(&tools), "Edited 1 file");
@@ -1238,8 +1427,18 @@ mod tests {
         assert_eq!(tool_group_summary(&[failing]), "Ran 1 command · 1 failed");
         // Reads / searches / misc.
         let tools = vec![
-            ToolItem { call: ToolCall::ReadFile { path: "x".into() }, is_error: false, resolved: true },
-            ToolItem { call: ToolCall::Glob { pattern: "*.rs".into() }, is_error: false, resolved: true },
+            ToolItem {
+                call: ToolCall::ReadFile { path: "x".into() },
+                is_error: false,
+                resolved: true,
+            },
+            ToolItem {
+                call: ToolCall::Glob {
+                    pattern: "*.rs".into(),
+                },
+                is_error: false,
+                resolved: true,
+            },
             ToolItem {
                 call: ToolCall::WebSearch { query: "q".into() },
                 is_error: false,
@@ -1252,11 +1451,16 @@ mod tests {
     #[test]
     fn tool_chip_labels_per_kind() {
         assert_eq!(
-            tool_chip_content(&ToolCall::Exec { command: "cargo test".into() }),
+            tool_chip_content(&ToolCall::Exec {
+                command: "cargo test".into()
+            }),
             ("Ran", "cargo test".to_string())
         );
         assert_eq!(
-            tool_chip_content(&ToolCall::Search { pattern: "foo".into(), path: Some("src".into()) }),
+            tool_chip_content(&ToolCall::Search {
+                pattern: "foo".into(),
+                path: Some("src".into())
+            }),
             ("Searched", "foo in src".to_string())
         );
         assert_eq!(
@@ -1264,13 +1468,23 @@ mod tests {
             ("Patched", "workspace".to_string())
         );
         assert_eq!(
-            tool_chip_content(&ToolCall::Mcp { server: "gh".into(), tool: "issues".into(), input: None }),
+            tool_chip_content(&ToolCall::Mcp {
+                server: "gh".into(),
+                tool: "issues".into(),
+                input: None
+            }),
             ("MCP", "gh · issues".to_string())
         );
         let todo = ToolCall::Todo {
             items: vec![
-                comet_proto::TodoItem { text: "a".into(), done: true },
-                comet_proto::TodoItem { text: "b".into(), done: false },
+                comet_proto::TodoItem {
+                    text: "a".into(),
+                    done: true,
+                },
+                comet_proto::TodoItem {
+                    text: "b".into(),
+                    done: false,
+                },
             ],
         };
         assert_eq!(tool_chip_content(&todo), ("Todos", "1/2 done".to_string()));
@@ -1280,7 +1494,10 @@ mod tests {
     fn chips_height_is_analytic() {
         assert_eq!(chips_height(0), 0.0);
         assert_eq!(chips_height(1), CHIPS_TOP_PAD + CHIP_HEIGHT);
-        assert_eq!(chips_height(3), CHIPS_TOP_PAD + 3.0 * CHIP_HEIGHT + 2.0 * CHIP_GAP);
+        assert_eq!(
+            chips_height(3),
+            CHIPS_TOP_PAD + 3.0 * CHIP_HEIGHT + 2.0 * CHIP_GAP
+        );
     }
 
     #[test]

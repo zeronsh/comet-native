@@ -37,7 +37,9 @@ pub struct RpcClient {
 impl RpcClient {
     /// Wrap an existing duplex: `out` carries client frames, `inbound` server frames.
     pub fn new(out: mpsc::Sender<String>, mut inbound: mpsc::Receiver<String>) -> Self {
-        let shared = Arc::new(Shared { pending: Mutex::new(HashMap::new()) });
+        let shared = Arc::new(Shared {
+            pending: Mutex::new(HashMap::new()),
+        });
         let reader_shared = shared.clone();
         let reader_out = out.clone();
         let reader = tokio::spawn(async move {
@@ -69,7 +71,12 @@ impl RpcClient {
                 // Streams end by sender drop.
             }
         });
-        Self { out, shared, next_id: AtomicU64::new(1), reader }
+        Self {
+            out,
+            shared,
+            next_id: AtomicU64::new(1),
+            reader,
+        }
     }
 
     /// Unary request.
@@ -81,11 +88,16 @@ impl RpcClient {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.shared.lock().insert(id, Pending::Call(tx));
-        self.send(ClientFrame { id, method: Some(method.into()), params, cancel: false })
-            .await
-            .inspect_err(|_| {
-                self.shared.lock().remove(&id);
-            })?;
+        self.send(ClientFrame {
+            id,
+            method: Some(method.into()),
+            params,
+            cancel: false,
+        })
+        .await
+        .inspect_err(|_| {
+            self.shared.lock().remove(&id);
+        })?;
         rx.await.map_err(|_| RpcError::Closed)?
     }
 
@@ -110,11 +122,16 @@ impl RpcClient {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = mpsc::unbounded_channel();
         self.shared.lock().insert(id, Pending::Stream(tx));
-        self.send(ClientFrame { id, method: Some(method.into()), params, cancel: false })
-            .await
-            .inspect_err(|_| {
-                self.shared.lock().remove(&id);
-            })?;
+        self.send(ClientFrame {
+            id,
+            method: Some(method.into()),
+            params,
+            cancel: false,
+        })
+        .await
+        .inspect_err(|_| {
+            self.shared.lock().remove(&id);
+        })?;
         Ok(rx)
     }
 

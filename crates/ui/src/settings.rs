@@ -81,8 +81,11 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 3] =
-        [ShortcutId::ToggleSidebar, ShortcutId::ToggleChanges, ShortcutId::ToggleTerminal];
+    pub const ALL: [ShortcutId; 3] = [
+        ShortcutId::ToggleSidebar,
+        ShortcutId::ToggleChanges,
+        ShortcutId::ToggleTerminal,
+    ];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -155,7 +158,10 @@ pub fn combo_from_keystroke(
 ) -> Option<String> {
     let key = key.trim().to_lowercase();
     if key.is_empty()
-        || matches!(key.as_str(), "ctrl" | "control" | "alt" | "shift" | "cmd" | "platform" | "fn")
+        || matches!(
+            key.as_str(),
+            "ctrl" | "control" | "alt" | "shift" | "cmd" | "platform" | "fn"
+        )
     {
         return None;
     }
@@ -180,14 +186,20 @@ pub fn conflicted_shortcuts(keymap: &KeymapConfig) -> Vec<ShortcutId> {
         .filter(|&id| {
             let combo = keymap.get(id);
             !combo.is_empty()
-                && ShortcutId::ALL.into_iter().any(|other| other != id && keymap.get(other) == combo)
+                && ShortcutId::ALL
+                    .into_iter()
+                    .any(|other| other != id && keymap.get(other) == combo)
         })
         .collect()
 }
 
 /// Translate a stored combo into a bindable keystroke for this platform.
 pub fn platform_combo(combo: &str) -> String {
-    let primary = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+    let primary = if cfg!(target_os = "macos") {
+        "cmd"
+    } else {
+        "ctrl"
+    };
     combo
         .split('-')
         .map(|part| if part == "mod" { primary } else { part })
@@ -224,9 +236,18 @@ pub fn display_combo(combo: &str) -> String {
 impl UiSettings {
     /// Clamp widths into their legal ranges (also heals NaN to defaults).
     pub fn clamped(mut self) -> Self {
-        self.sidebar_width = clamp_or(self.sidebar_width, SIDEBAR_MIN, SIDEBAR_MAX, SIDEBAR_DEFAULT);
-        self.right_pane_width =
-            clamp_or(self.right_pane_width, RIGHT_PANE_MIN, RIGHT_PANE_MAX, RIGHT_PANE_DEFAULT);
+        self.sidebar_width = clamp_or(
+            self.sidebar_width,
+            SIDEBAR_MIN,
+            SIDEBAR_MAX,
+            SIDEBAR_DEFAULT,
+        );
+        self.right_pane_width = clamp_or(
+            self.right_pane_width,
+            RIGHT_PANE_MIN,
+            RIGHT_PANE_MAX,
+            RIGHT_PANE_DEFAULT,
+        );
         self.terminal_height = clamp_or(
             self.terminal_height,
             TERMINAL_MIN_HEIGHT,
@@ -267,7 +288,11 @@ impl UiSettings {
 }
 
 fn clamp_or(value: f32, min: f32, max: f32, default: f32) -> f32 {
-    if value.is_finite() { value.clamp(min, max) } else { default }
+    if value.is_finite() {
+        value.clamp(min, max)
+    } else {
+        default
+    }
 }
 
 #[cfg(test)]
@@ -317,7 +342,11 @@ mod tests {
 
     #[test]
     fn nan_heals_to_default() {
-        let healed = UiSettings { sidebar_width: f32::NAN, ..Default::default() }.clamped();
+        let healed = UiSettings {
+            sidebar_width: f32::NAN,
+            ..Default::default()
+        }
+        .clamped();
         assert_eq!(healed.sidebar_width, SIDEBAR_DEFAULT);
     }
 
@@ -345,17 +374,32 @@ mod tests {
     #[test]
     fn combo_recording() {
         // Primary modifier (ctrl or cmd) normalizes to "mod".
-        assert_eq!(combo_from_keystroke(true, false, false, false, "s"), Some("mod-s".into()));
-        assert_eq!(combo_from_keystroke(false, false, false, true, "s"), Some("mod-s".into()));
+        assert_eq!(
+            combo_from_keystroke(true, false, false, false, "s"),
+            Some("mod-s".into())
+        );
+        assert_eq!(
+            combo_from_keystroke(false, false, false, true, "s"),
+            Some("mod-s".into())
+        );
         assert_eq!(
             combo_from_keystroke(true, true, true, false, "K"),
             Some("mod-alt-shift-k".into())
         );
         // Plain keys record without modifiers (Esc is filtered by the caller).
-        assert_eq!(combo_from_keystroke(false, false, false, false, "f5"), Some("f5".into()));
+        assert_eq!(
+            combo_from_keystroke(false, false, false, false, "f5"),
+            Some("f5".into())
+        );
         // Bare modifier presses record nothing.
-        assert_eq!(combo_from_keystroke(true, false, false, false, "ctrl"), None);
-        assert_eq!(combo_from_keystroke(false, false, true, false, "shift"), None);
+        assert_eq!(
+            combo_from_keystroke(true, false, false, false, "ctrl"),
+            None
+        );
+        assert_eq!(
+            combo_from_keystroke(false, false, true, false, "shift"),
+            None
+        );
         assert_eq!(combo_from_keystroke(false, false, false, false, ""), None);
     }
 
@@ -374,11 +418,22 @@ mod tests {
 
     #[test]
     fn combo_translation() {
-        let primary = if cfg!(target_os = "macos") { "cmd" } else { "ctrl" };
+        let primary = if cfg!(target_os = "macos") {
+            "cmd"
+        } else {
+            "ctrl"
+        };
         assert_eq!(platform_combo("mod-s"), format!("{primary}-s"));
         assert_eq!(platform_combo("alt-f4"), "alt-f4");
-        let display_primary = if cfg!(target_os = "macos") { "Cmd" } else { "Ctrl" };
-        assert_eq!(display_combo("mod-shift-s"), format!("{display_primary}+Shift+S"));
+        let display_primary = if cfg!(target_os = "macos") {
+            "Cmd"
+        } else {
+            "Ctrl"
+        };
+        assert_eq!(
+            display_combo("mod-shift-s"),
+            format!("{display_primary}+Shift+S")
+        );
         assert_eq!(display_combo("f5"), "F5");
     }
 
@@ -396,8 +451,14 @@ mod tests {
     fn terminal_height_clamps_on_load() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(UiSettings::path(dir.path()), r#"{"terminalHeight": 5}"#).unwrap();
-        assert_eq!(UiSettings::load(dir.path()).terminal_height, TERMINAL_MIN_HEIGHT);
+        assert_eq!(
+            UiSettings::load(dir.path()).terminal_height,
+            TERMINAL_MIN_HEIGHT
+        );
         std::fs::write(UiSettings::path(dir.path()), r#"{"terminalHeight": 99999}"#).unwrap();
-        assert_eq!(UiSettings::load(dir.path()).terminal_height, TERMINAL_ABS_MAX_HEIGHT);
+        assert_eq!(
+            UiSettings::load(dir.path()).terminal_height,
+            TERMINAL_ABS_MAX_HEIGHT
+        );
     }
 }

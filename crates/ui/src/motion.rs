@@ -93,7 +93,11 @@ impl CubicBezier {
         let (mut lo, mut hi) = (0.0_f32, 1.0_f32);
         for _ in 0..32 {
             let mid = (lo + hi) / 2.0;
-            if self.sample_x(mid) < x { lo = mid } else { hi = mid }
+            if self.sample_x(mid) < x {
+                lo = mid
+            } else {
+                hi = mid
+            }
         }
         (lo + hi) / 2.0
     }
@@ -141,7 +145,11 @@ pub struct MotionSpec {
 
 impl MotionSpec {
     pub const fn new(duration_ms: u64, curve: CubicBezier) -> Self {
-        Self { duration_ms, delay_ms: 0, curve }
+        Self {
+            duration_ms,
+            delay_ms: 0,
+            curve,
+        }
     }
 
     pub const fn with_delay(mut self, delay_ms: u64) -> Self {
@@ -161,8 +169,8 @@ impl MotionSpec {
         if total <= 0.0 || self.duration_ms == 0 {
             return 1.0;
         }
-        let t = (raw_delta.clamp(0.0, 1.0) * total - self.delay_ms as f32)
-            / self.duration_ms as f32;
+        let t =
+            (raw_delta.clamp(0.0, 1.0) * total - self.delay_ms as f32) / self.duration_ms as f32;
         self.curve.eval(t.clamp(0.0, 1.0))
     }
 
@@ -232,7 +240,9 @@ where
     E: Styled + IntoElement + 'static,
 {
     element.with_animation(id, MENU_IN.animation(), |el, t| {
-        el.relative().opacity(0.3 + 0.7 * t).top(px(-2.0 * (1.0 - t)))
+        el.relative()
+            .opacity(0.3 + 0.7 * t)
+            .top(px(-2.0 * (1.0 - t)))
     })
 }
 
@@ -339,9 +349,21 @@ mod tests {
     fn bezier_known_values() {
         // References computed independently with 80-step bisection.
         let cases: [(&str, CubicBezier, [f32; 5]); 3] = [
-            ("expo", EASE_OUT_EXPO, [0.494391, 0.825622, 0.971779, 0.997677, 0.999878]),
-            ("ease-out", EASE_OUT, [0.160572, 0.378138, 0.684643, 0.906535, 0.982973]),
-            ("ease", EASE, [0.094796, 0.408511, 0.802403, 0.960459, 0.994316]),
+            (
+                "expo",
+                EASE_OUT_EXPO,
+                [0.494391, 0.825622, 0.971779, 0.997677, 0.999878],
+            ),
+            (
+                "ease-out",
+                EASE_OUT,
+                [0.160572, 0.378138, 0.684643, 0.906535, 0.982973],
+            ),
+            (
+                "ease",
+                EASE,
+                [0.094796, 0.408511, 0.802403, 0.960459, 0.994316],
+            ),
         ];
         for (name, curve, expected) in cases {
             for (x, want) in [0.1, 0.25, 0.5, 0.75, 0.9].into_iter().zip(expected) {
@@ -386,7 +408,12 @@ mod tests {
         let mid = SPLASH_OUT.progress(0.65);
         assert!(mid > 0.0 && mid < 1.0);
         // No-delay specs pass straight through the curve.
-        assert_close(FADE_IN.progress(0.5), EASE_OUT_EXPO.eval(0.5), 1e-6, "no-delay");
+        assert_close(
+            FADE_IN.progress(0.5),
+            EASE_OUT_EXPO.eval(0.5),
+            1e-6,
+            "no-delay",
+        );
     }
 
     #[test]

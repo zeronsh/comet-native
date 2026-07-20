@@ -18,9 +18,7 @@ use comet_engine::{
     worktree_branch_from_title,
 };
 use comet_harness::mock::MockHarness;
-use comet_proto::{
-    AgentAccountsSnapshot, AgentEvent, DoneStatus, HarnessId, SandboxLevel,
-};
+use comet_proto::{AgentAccountsSnapshot, AgentEvent, DoneStatus, HarnessId, SandboxLevel};
 use comet_rpc::methods;
 
 // ---------------------------------------------------------------------------
@@ -155,7 +153,10 @@ async fn wait_for<T>(what: &str, mut probe: impl FnMut() -> Option<T>) -> T {
         if let Some(value) = probe() {
             return value;
         }
-        assert!(tokio::time::Instant::now() < deadline, "timed out waiting for {what}");
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
@@ -177,7 +178,11 @@ async fn claude_slot_swap_round_trip() {
         vec![("alice@example.com".to_string(), true)]
     );
     let alice = &snapshot.accounts[0];
-    assert_eq!(alice.plan_label.as_deref(), Some("Max 20×"), "plan label parse");
+    assert_eq!(
+        alice.plan_label.as_deref(),
+        Some("Max 20×"),
+        "plan label parse"
+    );
     assert_eq!(alice.display_name.as_deref(), Some("Test User"));
     assert_eq!(alice.organization.as_deref(), Some("Test Org"));
     assert!(alice.switchable);
@@ -201,7 +206,10 @@ async fn claude_slot_swap_round_trip() {
 
     // Activate Alice: her slot's tokens land in the live files, Bob's live
     // session is auto-snapshotted first, identity merged into claude.json.
-    let snapshot = accounts.activate(HarnessId::ClaudeCode, &alice_id).await.expect("activate");
+    let snapshot = accounts
+        .activate(HarnessId::ClaudeCode, &alice_id)
+        .await
+        .expect("activate");
     let mut emails = account_emails(&snapshot, HarnessId::ClaudeCode);
     emails.sort();
     assert_eq!(
@@ -223,7 +231,10 @@ async fn claude_slot_swap_round_trip() {
     assert_eq!(cfg["oauthAccount"]["emailAddress"], "alice@example.com");
     assert_eq!(cfg["userID"], "user-uuid-alice");
     // The rest of the config survived the merge (only identity fields swapped).
-    assert!(cfg["projects"]["/keep/me"].is_object(), "unrelated config keys preserved");
+    assert!(
+        cfg["projects"]["/keep/me"].is_object(),
+        "unrelated config keys preserved"
+    );
 
     // Slot files: exactly two, under data/agent-accounts/claude-code.
     let slots_dir = config.data_dir.join("agent-accounts").join("claude-code");
@@ -272,7 +283,10 @@ async fn codex_slot_swap_and_api_key_detection() {
     // Second login (Dave) becomes live; swap back to Carol.
     write_codex_login(&config, "dave@example.com", "acct-dave");
     accounts.list(false).await.expect("list dave");
-    let snapshot = accounts.activate(HarnessId::Codex, &carol_id).await.expect("activate carol");
+    let snapshot = accounts
+        .activate(HarnessId::Codex, &carol_id)
+        .await
+        .expect("activate carol");
     let mut emails = account_emails(&snapshot, HarnessId::Codex);
     emails.sort();
     assert_eq!(
@@ -313,15 +327,33 @@ async fn forget_guards_and_removes_slots() {
     let alice_id = snapshot.accounts[0].id.clone();
 
     // Path-shaped ids never reach the filesystem.
-    assert!(accounts.forget(HarnessId::ClaudeCode, "../../evil").await.is_err());
-    assert!(accounts.forget(HarnessId::ClaudeCode, "ABCDEF0123456789").await.is_err());
+    assert!(
+        accounts
+            .forget(HarnessId::ClaudeCode, "../../evil")
+            .await
+            .is_err()
+    );
+    assert!(
+        accounts
+            .forget(HarnessId::ClaudeCode, "ABCDEF0123456789")
+            .await
+            .is_err()
+    );
     // The live login can't be forgotten (it would just be re-detected).
-    assert!(accounts.forget(HarnessId::ClaudeCode, &alice_id).await.is_err());
+    assert!(
+        accounts
+            .forget(HarnessId::ClaudeCode, &alice_id)
+            .await
+            .is_err()
+    );
 
     // A non-active slot forgets cleanly.
     write_claude_login(&config, "bob@example.com", "uuid-bob", "token-bob");
     accounts.list(false).await.expect("list bob");
-    let snapshot = accounts.forget(HarnessId::ClaudeCode, &alice_id).await.expect("forget alice");
+    let snapshot = accounts
+        .forget(HarnessId::ClaudeCode, &alice_id)
+        .await
+        .expect("forget alice");
     assert_eq!(
         account_emails(&snapshot, HarnessId::ClaudeCode),
         vec![("bob@example.com".to_string(), true)]
@@ -339,20 +371,42 @@ fn snapshot_wire_shape() {
 async fn claude_login_flow_is_pkce_paste_code() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let (accounts, _) = test_accounts(tmp.path());
-    let start = accounts.start_login(HarnessId::ClaudeCode).await.expect("start");
-    assert!(start.url.starts_with("https://claude.ai/oauth/authorize?code=true"));
+    let start = accounts
+        .start_login(HarnessId::ClaudeCode)
+        .await
+        .expect("start");
+    assert!(
+        start
+            .url
+            .starts_with("https://claude.ai/oauth/authorize?code=true")
+    );
     assert!(start.url.contains("code_challenge_method=S256"));
-    assert!(start.url.contains("redirect_uri=https%3A%2F%2Fconsole.anthropic.com"));
+    assert!(
+        start
+            .url
+            .contains("redirect_uri=https%3A%2F%2Fconsole.anthropic.com")
+    );
     let mode = serde_json::to_value(start.mode).expect("mode");
     assert_eq!(mode, serde_json::json!("paste-code"));
 
     // Claude flows poll as pending (paste-code completes them); cancel drops the
     // flow so the next poll reports it expired.
     let poll = accounts.poll_login(&start.login_id).await.expect("poll");
-    assert_eq!(serde_json::to_value(poll.status).expect("status"), serde_json::json!("pending"));
+    assert_eq!(
+        serde_json::to_value(poll.status).expect("status"),
+        serde_json::json!("pending")
+    );
     accounts.cancel_login(&start.login_id);
-    assert!(accounts.poll_login(&start.login_id).await.is_err(), "cancelled flow is gone");
-    assert!(accounts.complete_login(&start.login_id, "code#state").await.is_err());
+    assert!(
+        accounts.poll_login(&start.login_id).await.is_err(),
+        "cancelled flow is gone"
+    );
+    assert!(
+        accounts
+            .complete_login(&start.login_id, "code#state")
+            .await
+            .is_err()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -367,13 +421,23 @@ async fn uploads_chunk_commit_readback_and_jail() {
     // 100KB of pseudo-random bytes, staged as three positional base64 chunks
     // (out of order, with one retried) — chunk boundaries are multiples of 3
     // bytes so independent base64 strings concatenate losslessly.
-    let payload: Vec<u8> = (0..100_002u32).map(|i| (i.wrapping_mul(31) % 251) as u8).collect();
+    let payload: Vec<u8> = (0..100_002u32)
+        .map(|i| (i.wrapping_mul(31) % 251) as u8)
+        .collect();
     let chunks: Vec<String> = payload.chunks(45_000).map(|c| BASE64.encode(c)).collect();
     assert_eq!(chunks.len(), 3);
-    uploads.append("up-1", &chunks[2], Some(2)).expect("chunk 2");
-    uploads.append("up-1", &chunks[0], Some(0)).expect("chunk 0");
-    uploads.append("up-1", &chunks[0], Some(0)).expect("chunk 0 retry is idempotent");
-    uploads.append("up-1", &chunks[1], Some(1)).expect("chunk 1");
+    uploads
+        .append("up-1", &chunks[2], Some(2))
+        .expect("chunk 2");
+    uploads
+        .append("up-1", &chunks[0], Some(0))
+        .expect("chunk 0");
+    uploads
+        .append("up-1", &chunks[0], Some(0))
+        .expect("chunk 0 retry is idempotent");
+    uploads
+        .append("up-1", &chunks[1], Some(1))
+        .expect("chunk 1");
     let path = uploads.commit("up-1", "photo.png").expect("commit");
     assert!(path.ends_with("up-1-photo.png"), "path: {path}");
     assert_eq!(std::fs::read(&path).expect("committed file"), payload);
@@ -394,18 +458,32 @@ async fn uploads_chunk_commit_readback_and_jail() {
     assert_eq!(assembled, payload);
 
     // Missing chunk → commit fails.
-    uploads.append("up-2", &chunks[0], Some(0)).expect("chunk 0");
-    uploads.append("up-2", &chunks[2], Some(2)).expect("chunk 2 (hole at 1)");
-    assert!(uploads.commit("up-2", "holey.png").is_err(), "hole detected");
+    uploads
+        .append("up-2", &chunks[0], Some(0))
+        .expect("chunk 0");
+    uploads
+        .append("up-2", &chunks[2], Some(2))
+        .expect("chunk 2 (hole at 1)");
+    assert!(
+        uploads.commit("up-2", "holey.png").is_err(),
+        "hole detected"
+    );
 
     // Path jail: files outside the uploads dir (and outside any allowed cwd
     // root) are rejected, including traversal attempts and the dir itself.
     let outside = tmp.path().join("outside.png");
     std::fs::write(&outside, b"nope").expect("outside file");
-    assert!(uploads.read_chunk(&outside.to_string_lossy(), 0, &[]).is_err());
+    assert!(
+        uploads
+            .read_chunk(&outside.to_string_lossy(), 0, &[])
+            .is_err()
+    );
     assert!(uploads.read_chunk("/etc/passwd", 0, &[]).is_err());
     let sneaky = format!("{}/../outside.png", uploads.dir().display());
-    assert!(uploads.read_chunk(&sneaky, 0, &[]).is_err(), "traversal rejected");
+    assert!(
+        uploads.read_chunk(&sneaky, 0, &[]).is_err(),
+        "traversal rejected"
+    );
     // …but a workspace-known cwd root admits its files.
     let ok = uploads
         .read_chunk(&outside.to_string_lossy(), 0, &[tmp.path().to_path_buf()])
@@ -438,12 +516,17 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         "device-test",
         tmp.path().join("worktrees"),
     );
-    let worktree = repos.create_worktree(&repo_dir, "main").await.expect("worktree");
+    let worktree = repos
+        .create_worktree(&repo_dir, "main")
+        .await
+        .expect("worktree");
 
     let core = assemble_with_mock(
         &tmp.path().join("data"),
         vec![
-            AgentEvent::TextDelta { text: "Fix Login Flow".into() },
+            AgentEvent::TextDelta {
+                text: "Fix Login Flow".into(),
+            },
             AgentEvent::Done {
                 status: DoneStatus::Completed,
                 result: None,
@@ -456,7 +539,9 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
     core.workspace
         .create_chat(chat_id, &core.device_id, None, Some(worktree.path.clone()))
         .expect("create chat");
-    core.workspace.set_chat_branch(chat_id, &worktree.branch).expect("set branch");
+    core.workspace
+        .set_chat_branch(chat_id, &worktree.branch)
+        .expect("set branch");
 
     let request = comet_proto::RunRequest {
         prompt: "please fix the login flow".into(),
@@ -492,10 +577,15 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         .output()
         .await
         .expect("git");
-    assert_eq!(String::from_utf8_lossy(&head.stdout).trim(), "comet/fix-login-flow");
+    assert_eq!(
+        String::from_utf8_lossy(&head.stdout).trim(),
+        "comet/fix-login-flow"
+    );
 
     // A titled chat is never re-titled: rename, run again, title sticks.
-    core.workspace.rename_chat(chat_id, "My Custom Name").expect("rename");
+    core.workspace
+        .rename_chat(chat_id, "My Custom Name")
+        .expect("rename");
     let request = comet_proto::RunRequest {
         prompt: "another request".into(),
         model: None,
@@ -511,7 +601,12 @@ async fn titling_e2e_names_chat_and_renames_worktree_branch() {
         .await
         .expect("second dispatch");
     tokio::time::sleep(Duration::from_millis(400)).await;
-    let chat = core.workspace.doc().chat(chat_id).expect("chat").expect("row");
+    let chat = core
+        .workspace
+        .doc()
+        .chat(chat_id)
+        .expect("chat")
+        .expect("row");
     assert_eq!(chat.title.as_deref(), Some("My Custom Name"));
     core.shutdown().await;
 }
@@ -526,7 +621,10 @@ async fn rename_worktree_branch_guards_and_collisions() {
         "device-test",
         tmp.path().join("worktrees"),
     );
-    let wt = repos.create_worktree(&repo_dir, "main").await.expect("worktree");
+    let wt = repos
+        .create_worktree(&repo_dir, "main")
+        .await
+        .expect("worktree");
     let wt_path = Path::new(&wt.path);
 
     // Guard: expected branch mismatch → no-op, returns the actual branch.
@@ -553,20 +651,30 @@ async fn rename_worktree_branch_guards_and_collisions() {
 
     // Collision: a second worktree whose title slug already exists gets the
     // stable hash suffix.
-    let wt2 = repos.create_worktree(&repo_dir, "main").await.expect("worktree 2");
+    let wt2 = repos
+        .create_worktree(&repo_dir, "main")
+        .await
+        .expect("worktree 2");
     let renamed2 = repos
         .rename_worktree_branch(Path::new(&wt2.path), &wt2.branch, "Add Dark Mode!")
         .await
         .expect("suffixed rename");
     assert!(
-        renamed2.starts_with("comet/add-dark-mode-") && renamed2.len() == "comet/add-dark-mode-".len() + 6,
+        renamed2.starts_with("comet/add-dark-mode-")
+            && renamed2.len() == "comet/add-dark-mode-".len() + 6,
         "suffixed: {renamed2}"
     );
 
     // Slug edge cases.
-    assert_eq!(worktree_branch_from_title("  Fix `Login` Flow!  "), "comet/fix-login-flow");
+    assert_eq!(
+        worktree_branch_from_title("  Fix `Login` Flow!  "),
+        "comet/fix-login-flow"
+    );
     assert_eq!(worktree_branch_from_title("***"), "comet/update");
-    assert_eq!(worktree_branch_from_title("Cafe's Dark Mode"), "comet/cafes-dark-mode");
+    assert_eq!(
+        worktree_branch_from_title("Cafe's Dark Mode"),
+        "comet/cafes-dark-mode"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -608,7 +716,9 @@ async fn rpc_dispatch_for_m5c_methods() {
     assert_eq!(chunk["mimeType"], "image/png");
     assert_eq!(chunk["done"], true);
     assert_eq!(
-        BASE64.decode(chunk["data"].as_str().expect("data")).expect("base64"),
+        BASE64
+            .decode(chunk["data"].as_str().expect("data"))
+            .expect("base64"),
         payload
     );
     // Jail holds over RPC too.
@@ -633,25 +743,42 @@ async fn rpc_dispatch_for_m5c_methods() {
 
     // Login lifecycle: start (paste-code) → poll pending → cancel → gone.
     let start = client
-        .call(methods::START_AGENT_LOGIN, serde_json::json!({ "harness": "claude-code" }))
+        .call(
+            methods::START_AGENT_LOGIN,
+            serde_json::json!({ "harness": "claude-code" }),
+        )
         .await
         .expect("StartAgentLogin");
     assert_eq!(start["mode"], "paste-code");
-    assert!(start["url"].as_str().expect("url").contains("claude.ai/oauth/authorize"));
+    assert!(
+        start["url"]
+            .as_str()
+            .expect("url")
+            .contains("claude.ai/oauth/authorize")
+    );
     let login_id = start["loginId"].as_str().expect("loginId").to_string();
     let poll = client
-        .call(methods::POLL_AGENT_LOGIN, serde_json::json!({ "loginId": login_id }))
+        .call(
+            methods::POLL_AGENT_LOGIN,
+            serde_json::json!({ "loginId": login_id }),
+        )
         .await
         .expect("PollAgentLogin");
     assert_eq!(poll["status"], "pending");
     let cancelled = client
-        .call(methods::CANCEL_AGENT_LOGIN, serde_json::json!({ "loginId": login_id }))
+        .call(
+            methods::CANCEL_AGENT_LOGIN,
+            serde_json::json!({ "loginId": login_id }),
+        )
         .await
         .expect("CancelAgentLogin");
     assert_eq!(cancelled["ok"], true);
     assert!(
         client
-            .call(methods::POLL_AGENT_LOGIN, serde_json::json!({ "loginId": login_id }))
+            .call(
+                methods::POLL_AGENT_LOGIN,
+                serde_json::json!({ "loginId": login_id })
+            )
             .await
             .is_err(),
         "cancelled login is expired"

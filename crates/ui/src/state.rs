@@ -102,7 +102,9 @@ impl EngineBackend for RemoteEngine {
         &self.client
     }
     fn mode(&self) -> EngineMode {
-        EngineMode::Remote { url: self.url.clone() }
+        EngineMode::Remote {
+            url: self.url.clone(),
+        }
     }
     async fn shutdown(&self) {
         // The daemon outlives this viewport; nothing to tear down.
@@ -129,14 +131,16 @@ impl EngineHandle {
         if matches!(probe, Ok(Ok(_))) {
             tracing::info!(%url, "engine daemon detected; connecting");
             let client = connect_ws(&url).await?;
-            return Ok(EngineHandle { inner: Arc::new(RemoteEngine { client, url }) });
+            return Ok(EngineHandle {
+                inner: Arc::new(RemoteEngine { client, url }),
+            });
         }
 
         tracing::info!(data_dir = %config.data_dir.display(), "no daemon on port; embedding engine");
-        let edge = config
-            .edge_token
-            .clone()
-            .map(|token| EdgeConfig { url: config.edge_url.clone(), token });
+        let edge = config.edge_token.clone().map(|token| EdgeConfig {
+            url: config.edge_url.clone(),
+            token,
+        });
         let core = tokio::task::spawn_blocking(move || {
             EngineCore::assemble(
                 &config.data_dir,
@@ -147,7 +151,9 @@ impl EngineHandle {
         })
         .await??;
         let client = memory_client(core.rpc_service());
-        Ok(EngineHandle { inner: Arc::new(InProcessEngine { core, client }) })
+        Ok(EngineHandle {
+            inner: Arc::new(InProcessEngine { core, client }),
+        })
     }
 
     pub fn client(&self) -> &RpcClient {
@@ -191,12 +197,16 @@ pub const SESSION_STALE_MS: i64 = 45_000;
 
 /// Staleness-checked indicator for a session row. Pure.
 pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Indicator {
-    let Some(session) = session else { return Indicator::None };
+    let Some(session) = session else {
+        return Indicator::None;
+    };
     match session.status {
         SessionStatus::Idle => Indicator::None,
         SessionStatus::Errored => Indicator::Errored,
         SessionStatus::Working | SessionStatus::AwaitingInput => {
-            let age_ms = now.signed_duration_since(session.updated_at).num_milliseconds();
+            let age_ms = now
+                .signed_duration_since(session.updated_at)
+                .num_milliseconds();
             if age_ms > SESSION_STALE_MS {
                 Indicator::None
             } else if session.status == SessionStatus::Working {
@@ -272,7 +282,10 @@ pub fn parse_auth_state(value: &serde_json::Value) -> Option<AuthState> {
         "NeedsOrganization" => Some(AuthState::NeedsOrganization { user: user()? }),
         "SignedIn" => Some(AuthState::SignedIn {
             user: user()?,
-            org_id: value.get("orgId").and_then(|v| v.as_str()).map(str::to_string),
+            org_id: value
+                .get("orgId")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
         }),
         _ => None,
     }
@@ -309,7 +322,10 @@ pub fn group_chats<'a>(chats: impl IntoIterator<Item = &'a Chat>) -> Vec<ChatGro
         let label = project_label(chat.cwd.as_deref());
         match groups.iter_mut().find(|g| g.label == label) {
             Some(group) => group.chats.push(chat),
-            None => groups.push(ChatGroup { label, chats: vec![chat] }),
+            None => groups.push(ChatGroup {
+                label,
+                chats: vec![chat],
+            }),
         }
     }
     groups
@@ -343,7 +359,10 @@ pub fn org_name_valid(name: &str) -> bool {
 /// Memberships sorted by name (case-insensitive), deduped by organization id.
 pub fn sort_memberships(mut orgs: Vec<OrgRow>) -> Vec<OrgRow> {
     orgs.sort_by(|a, b| {
-        a.name.to_lowercase().cmp(&b.name.to_lowercase()).then_with(|| a.name.cmp(&b.name))
+        a.name
+            .to_lowercase()
+            .cmp(&b.name.to_lowercase())
+            .then_with(|| a.name.cmp(&b.name))
     });
     orgs.dedup_by(|a, b| a.organization_id == b.organization_id);
     orgs
@@ -546,11 +565,31 @@ impl AppState {
         self.connection = ConnectionStatus::Ready;
         self.engine = Some(handle.clone());
         self.watch_tasks = vec![
-            spawn_watch(cx, handle.clone(), methods::WATCH_SESSIONS, AppState::apply_sessions),
-            spawn_watch(cx, handle.clone(), methods::WATCH_CHATS, AppState::apply_chats),
-            spawn_watch(cx, handle.clone(), methods::WATCH_DEVICES, AppState::apply_devices),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_SESSIONS,
+                AppState::apply_sessions,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_CHATS,
+                AppState::apply_chats,
+            ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_DEVICES,
+                AppState::apply_devices,
+            ),
             // Auth frames parse tolerantly — engine and proto tags differ today.
-            spawn_watch(cx, handle.clone(), methods::AUTH_STATUS, AppState::apply_auth_value),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::AUTH_STATUS,
+                AppState::apply_auth_value,
+            ),
             spawn_local_device_probe(cx, handle.clone()),
         ];
         // Re-subscribe the transcript if a chat was already selected (reconnect path).
@@ -586,7 +625,11 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
     apply: fn(&mut AppState, T),
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
-        let mut rx = match handle.client().subscribe(method, serde_json::json!({})).await {
+        let mut rx = match handle
+            .client()
+            .subscribe(method, serde_json::json!({}))
+            .await
+        {
             Ok(rx) => rx,
             Err(err) => {
                 tracing::debug!(method, error = %err, "watch unavailable");
@@ -616,7 +659,11 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
 /// device" badge. Engines that don't serve the method leave it `None`.
 fn spawn_local_device_probe(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<()> {
     cx.spawn(async move |this, cx| {
-        let Ok(value) = handle.client().call("LocalDevice", serde_json::json!({})).await else {
+        let Ok(value) = handle
+            .client()
+            .call("LocalDevice", serde_json::json!({}))
+            .await
+        else {
             tracing::debug!("LocalDevice unavailable; skipping this-device badge");
             return;
         };
@@ -642,7 +689,11 @@ fn spawn_transcript_watch(
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
         let params = serde_json::json!({ "chatId": chat_id });
-        let mut rx = match handle.client().subscribe(methods::WATCH_DOC_MESSAGES, params).await {
+        let mut rx = match handle
+            .client()
+            .subscribe(methods::WATCH_DOC_MESSAGES, params)
+            .await
+        {
             Ok(rx) => rx,
             Err(err) => {
                 tracing::warn!(%chat_id, error = %err, "transcript watch failed");
@@ -731,7 +782,12 @@ mod tests {
         })
         .await
         .unwrap();
-        assert_eq!(handle.mode(), EngineMode::Remote { url: format!("ws://127.0.0.1:{port}") });
+        assert_eq!(
+            handle.mode(),
+            EngineMode::Remote {
+                url: format!("ws://127.0.0.1:{port}")
+            }
+        );
         let harnesses = handle
             .client()
             .call(methods::LIST_HARNESSES, serde_json::json!({}))
@@ -741,7 +797,9 @@ mod tests {
     }
 
     fn chat(id: &str, created_min: i64, last_msg_min: Option<i64>) -> Chat {
-        let base = DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z").unwrap().to_utc();
+        let base = DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z")
+            .unwrap()
+            .to_utc();
         Chat {
             id: id.into(),
             device_id: "dev".into(),
@@ -757,7 +815,12 @@ mod tests {
         }
     }
 
-    fn session(chat_id: &str, status: SessionStatus, updated_secs_ago: i64, now: DateTime<Utc>) -> Session {
+    fn session(
+        chat_id: &str,
+        status: SessionStatus,
+        updated_secs_ago: i64,
+        now: DateTime<Utc>,
+    ) -> Session {
         Session {
             chat_id: chat_id.into(),
             device_id: "dev".into(),
@@ -771,9 +834,9 @@ mod tests {
     fn chats_sort_by_last_message_desc_with_created_fallback() {
         let mut chats = vec![
             chat("a", 0, Some(10)),
-            chat("b", 5, None),    // no messages → keys on created_at (+5min)
+            chat("b", 5, None), // no messages → keys on created_at (+5min)
             chat("c", 1, Some(30)),
-            chat("d", 40, None),   // created after every message
+            chat("d", 40, None), // created after every message
         ];
         sort_chats(&mut chats);
         let order: Vec<&str> = chats.iter().map(|c| c.id.as_str()).collect();
@@ -814,9 +877,15 @@ mod tests {
         let errored = session("c", SessionStatus::Errored, 600, now);
         assert_eq!(effective_indicator(Some(&errored), now), Indicator::Errored);
         let awaiting = session("c", SessionStatus::AwaitingInput, 5, now);
-        assert_eq!(effective_indicator(Some(&awaiting), now), Indicator::AwaitingInput);
+        assert_eq!(
+            effective_indicator(Some(&awaiting), now),
+            Indicator::AwaitingInput
+        );
         let awaiting_stale = session("c", SessionStatus::AwaitingInput, 300, now);
-        assert_eq!(effective_indicator(Some(&awaiting_stale), now), Indicator::None);
+        assert_eq!(
+            effective_indicator(Some(&awaiting_stale), now),
+            Indicator::None
+        );
     }
 
     #[test]
@@ -864,21 +933,43 @@ mod tests {
         state.apply_transcript(vec![]);
         assert_eq!(state.pending_echoes().len(), 1);
         // The confirming frame prunes it.
-        state.apply_transcript(vec![SessionMessageEntry { id: "m1".into(), ..echo.clone() }]);
+        state.apply_transcript(vec![SessionMessageEntry {
+            id: "m1".into(),
+            ..echo.clone()
+        }]);
         assert!(state.pending_echoes().is_empty());
         // Failure path: explicit removal.
-        state.push_echo("c1", SessionMessageEntry { id: "m2".into(), ..echo.clone() });
+        state.push_echo(
+            "c1",
+            SessionMessageEntry {
+                id: "m2".into(),
+                ..echo.clone()
+            },
+        );
         state.remove_echo("c1", "m2");
         assert!(state.pending_echoes().is_empty());
         // Echoes are per chat.
-        state.push_echo("other", SessionMessageEntry { id: "m3".into(), ..echo });
+        state.push_echo(
+            "other",
+            SessionMessageEntry {
+                id: "m3".into(),
+                ..echo
+            },
+        );
         assert!(state.pending_echoes().is_empty());
     }
 
     #[test]
     fn gate_phases() {
-        let user = UserProfile { id: "u".into(), email: "w@example.com".into(), name: None };
-        assert_eq!(gate_phase(&ConnectionStatus::Connecting, None), GatePhase::Loading);
+        let user = UserProfile {
+            id: "u".into(),
+            email: "w@example.com".into(),
+            name: None,
+        };
+        assert_eq!(
+            gate_phase(&ConnectionStatus::Connecting, None),
+            GatePhase::Loading
+        );
         assert_eq!(
             gate_phase(&ConnectionStatus::Failed("boom".into()), None),
             GatePhase::Failed("boom".into())
@@ -892,13 +983,19 @@ mod tests {
         assert_eq!(
             gate_phase(
                 &ConnectionStatus::Ready,
-                Some(&AuthState::SignedIn { user: user.clone(), org_id: None })
+                Some(&AuthState::SignedIn {
+                    user: user.clone(),
+                    org_id: None
+                })
             ),
             GatePhase::Ready
         );
         // No org yet → org gate.
         assert_eq!(
-            gate_phase(&ConnectionStatus::Ready, Some(&AuthState::NeedsOrganization { user })),
+            gate_phase(
+                &ConnectionStatus::Ready,
+                Some(&AuthState::NeedsOrganization { user })
+            ),
             GatePhase::OrgGate
         );
     }
@@ -923,9 +1020,15 @@ mod tests {
             "_tag": "NeedsOrganization",
             "user": { "id": "u1", "email": "w@example.com", "name": "W" },
         });
-        assert!(matches!(parse_auth_state(&needs), Some(AuthState::NeedsOrganization { .. })));
+        assert!(matches!(
+            parse_auth_state(&needs),
+            Some(AuthState::NeedsOrganization { .. })
+        ));
         // Garbage → None (frame dropped, not a crash).
-        assert_eq!(parse_auth_state(&serde_json::json!({ "_tag": "Wat" })), None);
+        assert_eq!(
+            parse_auth_state(&serde_json::json!({ "_tag": "Wat" })),
+            None
+        );
         assert_eq!(parse_auth_state(&serde_json::json!(42)), None);
     }
 
@@ -947,7 +1050,7 @@ mod tests {
     #[test]
     fn grouped_sidebar_preserves_recency_order() {
         // Input is sidebar-sorted (most recent first).
-        let chats = vec![
+        let chats = [
             chat_with_cwd("a", 9, Some("/dev/comet")),
             chat_with_cwd("b", 8, Some("/dev/zed")),
             chat_with_cwd("c", 7, Some("/dev/comet")),
@@ -978,7 +1081,11 @@ mod tests {
         assert_eq!(rows.len(), 3);
         let sorted = sort_memberships(rows);
         let names: Vec<&str> = sorted.iter().map(|o| o.name.as_str()).collect();
-        assert_eq!(names, ["Alpha", "beta"], "case-insensitive sort + dedupe by org id");
+        assert_eq!(
+            names,
+            ["Alpha", "beta"],
+            "case-insensitive sort + dedupe by org id"
+        );
         // Bare-array replies parse too; garbage yields empty.
         assert_eq!(
             parse_orgs(&serde_json::json!([{ "id": "m", "organizationId": "o", "name": "n" }]))

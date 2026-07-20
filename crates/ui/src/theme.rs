@@ -81,20 +81,20 @@ impl Theme {
     /// Build the (only) theme.
     pub fn dark() -> Self {
         Self {
-            bg: neutral(0.145),             // #0a0a0a
+            bg: neutral(0.145), // #0a0a0a
             surface: neutral(0.185),
             surface_raised: neutral(0.235),
             element_hover: white_alpha(0.06),
             element_active: white_alpha(0.10),
             border: white_alpha(0.08),
             border_strong: white_alpha(0.14),
-            text: neutral(0.922),           // ~neutral-200
-            text_muted: neutral(0.708),     // ~neutral-400
-            text_faint: neutral(0.556),     // ~neutral-500
-            accent: oklch(0.673, 0.182, 276.935),      // indigo-400
+            text: neutral(0.922),                        // ~neutral-200
+            text_muted: neutral(0.708),                  // ~neutral-400
+            text_faint: neutral(0.556),                  // ~neutral-500
+            accent: oklch(0.673, 0.182, 276.935),        // indigo-400
             accent_strong: oklch(0.585, 0.233, 277.117), // indigo-500
-            danger: oklch(0.704, 0.191, 22.216),       // red-400
-            warning: oklch(0.828, 0.189, 84.429),      // amber-400
+            danger: oklch(0.704, 0.191, 22.216),         // red-400
+            warning: oklch(0.828, 0.189, 84.429),        // amber-400
             font_sans: "Geist".into(),
             font_mono: "Geist Mono".into(),
             font_sans_fallback: system_sans().into(),
@@ -179,7 +179,11 @@ pub(crate) fn oklch_to_srgb(l: f32, c: f32, h_deg: f32) -> [f32; 3] {
 
 fn gamma_encode(x: f32) -> f32 {
     let x = x.clamp(0.0, 1.0);
-    if x <= 0.003_130_8 { 12.92 * x } else { 1.055 * x.powf(1.0 / 2.4) - 0.055 }
+    if x <= 0.003_130_8 {
+        12.92 * x
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 /// sRGB (0..1 components) → HSL, all components 0..1 (gpui's Hsla convention).
@@ -191,7 +195,11 @@ pub(crate) fn rgb_to_hsl(r: f32, g: f32, b: f32) -> (f32, f32, f32) {
     if delta < f32::EPSILON {
         return (0.0, 0.0, l);
     }
-    let s = if l > 0.5 { delta / (2.0 - max - min) } else { delta / (max + min) };
+    let s = if l > 0.5 {
+        delta / (2.0 - max - min)
+    } else {
+        delta / (max + min)
+    };
     let h = if (max - r).abs() < f32::EPSILON {
         ((g - b) / delta).rem_euclid(6.0)
     } else if (max - g).abs() < f32::EPSILON {
@@ -208,7 +216,12 @@ pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
     let lerp = |x: f32, y: f32| x + (y - x) * t;
     // Mix through hue naively — both spinner endpoints sit close enough on the
     // wheel that shortest-arc handling isn't needed for our palette.
-    hsla(lerp(a.h, b.h), lerp(a.s, b.s), lerp(a.l, b.l), lerp(a.a, b.a))
+    hsla(
+        lerp(a.h, b.h),
+        lerp(a.s, b.s),
+        lerp(a.l, b.l),
+        lerp(a.a, b.a),
+    )
 }
 
 #[cfg(test)]
@@ -233,8 +246,14 @@ mod tests {
     #[test]
     fn oklch_accents_match_reference() {
         // Reference values computed independently (CSS Color 4 matrices).
-        assert_eq!(srgb_u8(oklch_to_srgb(0.673, 0.182, 276.935)), [124, 134, 255]); // indigo-400
-        assert_eq!(srgb_u8(oklch_to_srgb(0.704, 0.191, 22.216)), [255, 100, 103]); // red-400
+        assert_eq!(
+            srgb_u8(oklch_to_srgb(0.673, 0.182, 276.935)),
+            [124, 134, 255]
+        ); // indigo-400
+        assert_eq!(
+            srgb_u8(oklch_to_srgb(0.704, 0.191, 22.216)),
+            [255, 100, 103]
+        ); // red-400
         assert_eq!(srgb_u8(oklch_to_srgb(0.828, 0.189, 84.429)), [255, 185, 0]); // amber-400
     }
 
@@ -247,7 +266,14 @@ mod tests {
         assert!(t.text_faint.l < t.text_muted.l);
         assert!(t.text_muted.l < t.text.l);
         // Monochrome: neutrals carry no saturation.
-        for c in [t.bg, t.surface, t.surface_raised, t.text, t.text_muted, t.text_faint] {
+        for c in [
+            t.bg,
+            t.surface,
+            t.surface_raised,
+            t.text,
+            t.text_muted,
+            t.text_faint,
+        ] {
             assert_eq!(c.s, 0.0);
             assert_eq!(c.a, 1.0);
         }
@@ -269,9 +295,21 @@ mod tests {
         let t = Theme::dark();
         // Hsla hue is 0..1 of the wheel. Indigo ≈ 230-250°, red < 15°, amber ≈ 40-55°.
         let deg = |c: Hsla| c.h * 360.0;
-        assert!((215.0..265.0).contains(&deg(t.accent)), "indigo hue {}", deg(t.accent));
-        assert!(deg(t.danger) < 15.0 || deg(t.danger) > 345.0, "red hue {}", deg(t.danger));
-        assert!((35.0..60.0).contains(&deg(t.warning)), "amber hue {}", deg(t.warning));
+        assert!(
+            (215.0..265.0).contains(&deg(t.accent)),
+            "indigo hue {}",
+            deg(t.accent)
+        );
+        assert!(
+            deg(t.danger) < 15.0 || deg(t.danger) > 345.0,
+            "red hue {}",
+            deg(t.danger)
+        );
+        assert!(
+            (35.0..60.0).contains(&deg(t.warning)),
+            "amber hue {}",
+            deg(t.warning)
+        );
     }
 
     #[test]

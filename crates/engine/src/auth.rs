@@ -57,10 +57,10 @@ pub struct OrgMembership {
     pub name: String,
 }
 
-/// AuthStatus stream payload — tagged like the TS `AuthState`
-/// (`SignedOut | NeedsOrganization{user} | SignedIn{user, orgId?}`).
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "_tag")]
+/// AuthStatus stream payload (`SignedOut | NeedsOrganization{user} |
+/// SignedIn{user, orgId?}`). Serializes as the canonical [`comet_proto::AuthState`]
+/// wire shape (`{"state": "signedIn", …}`) so every client parses one form.
+#[derive(Debug, Clone, PartialEq)]
 pub enum AuthState {
     SignedOut,
     NeedsOrganization {
@@ -68,7 +68,6 @@ pub enum AuthState {
     },
     SignedIn {
         user: AuthUser,
-        #[serde(rename = "orgId", skip_serializing_if = "Option::is_none")]
         org_id: Option<String>,
     },
 }
@@ -83,6 +82,31 @@ impl AuthState {
             AuthState::SignedIn { org_id, .. } => org_id.as_deref(),
             _ => None,
         }
+    }
+
+    /// The proto wire twin — the one shape the engine emits over AuthStatus.
+    pub fn to_proto(&self) -> comet_proto::AuthState {
+        let profile = |user: &AuthUser| comet_proto::UserProfile {
+            id: user.id.clone(),
+            email: user.email.clone(),
+            name: user.name.clone(),
+        };
+        match self {
+            AuthState::SignedOut => comet_proto::AuthState::SignedOut,
+            AuthState::NeedsOrganization { user } => comet_proto::AuthState::NeedsOrganization {
+                user: profile(user),
+            },
+            AuthState::SignedIn { user, org_id } => comet_proto::AuthState::SignedIn {
+                user: profile(user),
+                org_id: org_id.clone(),
+            },
+        }
+    }
+}
+
+impl Serialize for AuthState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.to_proto().serialize(serializer)
     }
 }
 
@@ -148,7 +172,11 @@ impl AccessEntry {
                 _ => None,
             })
             .unwrap_or(Duration::from_secs(240));
-        Self { token, ttl, got_at: Instant::now() }
+        Self {
+            token,
+            ttl,
+            got_at: Instant::now(),
+        }
     }
 
     fn remaining(&self) -> Duration {
@@ -182,7 +210,10 @@ pub struct Auth {
 impl Auth {
     /// Build from config: dev mode unless a WorkOS client id is configured.
     pub fn new(config: AuthConfig) -> Self {
-        let workos = config.workos_client_id.clone().filter(|s| !s.trim().is_empty());
+        let workos = config
+            .workos_client_id
+            .clone()
+            .filter(|s| !s.trim().is_empty());
         let session_file = config.data_dir.join("session.json");
         let stored: Option<StoredSession> = if workos.is_some() {
             std::fs::read_to_string(&session_file)
@@ -200,9 +231,7 @@ impl Auth {
                 },
                 org_id: None,
             },
-            (Some(_), Some(session)) => {
-                state_for(session.user.clone(), session.org_id.clone())
-            }
+            (Some(_), Some(session)) => state_for(session.user.clone(), session.org_id.clone()),
             (Some(_), None) => AuthState::SignedOut,
         };
         let (state_tx, _) = watch::channel(initial);
@@ -246,11 +275,11 @@ impl Auth {
                     .await
                     .ok()
             };
-            if let Some(health) = probe.await {
-                if health.auth.as_deref() == Some("dev") {
-                    tracing::info!("auth: edge is in dev mode — using dev bearer");
-                    config.workos_client_id = None;
-                }
+            if let Some(health) = probe.await
+                && health.auth.as_deref() == Some("dev")
+            {
+                tracing::info!("auth: edge is in dev mode — using dev bearer");
+                config.workos_client_id = None;
             }
         }
         Self::new(config)
@@ -276,10 +305,10 @@ impl Auth {
         if self.inner.workos.is_none() {
             return Some(self.inner.config.dev_user_id.clone());
         }
-        if let Some(entry) = &*lock(&self.inner.access) {
-            if entry.remaining() > TOKEN_SLACK {
-                return Some(entry.token.clone());
-            }
+        if let Some(entry) = &*lock(&self.inner.access)
+            && entry.remaining() > TOKEN_SLACK
+        {
+            return Some(entry.token.clone());
         }
         match self.refresh(None).await {
             Ok(token) => token,
@@ -387,7 +416,9 @@ impl Auth {
             #[serde(default)]
             orgs: Vec<OrgMembership>,
         }
-        let body: Orgs = self.authed_json(reqwest::Method::GET, "/auth/orgs", None).await?;
+        let body: Orgs = self
+            .authed_json(reqwest::Method::GET, "/auth/orgs", None)
+            .await?;
         Ok(body.orgs)
     }
 
@@ -420,7 +451,7 @@ impl Auth {
         let token = self.refresh(Some(organization_id)).await?;
         let scoped = token
             .as_deref()
-            .and_then(|t| jwt_claims(t))
+            .and_then(jwt_claims)
             .and_then(|c| c.org_id)
             .is_some_and(|org| org == organization_id);
         if !scoped {
@@ -477,7 +508,10 @@ impl Auth {
             access_token: String,
             refresh_token: String,
         }
-        let url = format!("{}/auth/exchange", self.inner.config.edge_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/auth/exchange",
+            self.inner.config.edge_url.trim_end_matches('/')
+        );
         let res = self
             .inner
             .http
@@ -525,7 +559,9 @@ impl Auth {
         *lock(&self.inner.stored) = Some(session);
         tracing::info!(email = %result.user.email, org = org_id.as_deref().unwrap_or("<none>"),
             "auth: signed in");
-        self.inner.state_tx.send_replace(state_for(result.user, org_id));
+        self.inner
+            .state_tx
+            .send_replace(state_for(result.user, org_id));
     }
 
     /// Refresh the session (single-flight). `organization_id` migrates the WorkOS
@@ -534,15 +570,15 @@ impl Auth {
     async fn refresh(&self, organization_id: Option<&str>) -> Result<Option<String>, EngineError> {
         let _gate = self.inner.refresh_gate.lock().await;
         // Re-check under the gate: the refresh we queued behind may have done the work.
-        if organization_id.is_none() {
-            if let Some(entry) = &*lock(&self.inner.access) {
-                if entry.remaining() > TOKEN_SLACK {
-                    return Ok(Some(entry.token.clone()));
-                }
-            }
+        if organization_id.is_none()
+            && let Some(entry) = &*lock(&self.inner.access)
+            && entry.remaining() > TOKEN_SLACK
+        {
+            return Ok(Some(entry.token.clone()));
         }
-        let Some(refresh_token) =
-            lock(&self.inner.stored).as_ref().map(|s| s.refresh_token.clone())
+        let Some(refresh_token) = lock(&self.inner.stored)
+            .as_ref()
+            .map(|s| s.refresh_token.clone())
         else {
             return Ok(None);
         };
@@ -553,12 +589,18 @@ impl Auth {
             #[serde(skip_serializing_if = "Option::is_none")]
             organization_id: Option<&'a str>,
         }
-        let url = format!("{}/auth/refresh", self.inner.config.edge_url.trim_end_matches('/'));
+        let url = format!(
+            "{}/auth/refresh",
+            self.inner.config.edge_url.trim_end_matches('/')
+        );
         let res = self
             .inner
             .http
             .post(&url)
-            .json(&RefreshBody { refresh_token: &refresh_token, organization_id })
+            .json(&RefreshBody {
+                refresh_token: &refresh_token,
+                organization_id,
+            })
             .send()
             .await;
         let res = match res {
@@ -575,7 +617,10 @@ impl Auth {
             // deleted user) — it can NEVER succeed again. Degrade to SignedOut so every
             // downstream retry loop quiets down. (Org-switch refreshes are exempt: a 4xx
             // there means "not a member", not a dead session.)
-            tracing::warn!(status, "auth: refresh rejected — session revoked; signing out");
+            tracing::warn!(
+                status,
+                "auth: refresh rejected — session revoked; signing out"
+            );
             self.sign_out();
             return Ok(None);
         }
@@ -647,7 +692,11 @@ impl Auth {
             .access_token()
             .await
             .ok_or_else(|| EngineError::Other("not signed in".into()))?;
-        let url = format!("{}{}", self.inner.config.edge_url.trim_end_matches('/'), path);
+        let url = format!(
+            "{}{}",
+            self.inner.config.edge_url.trim_end_matches('/'),
+            path
+        );
         let mut req = self.inner.http.request(method, &url).bearer_auth(token);
         if let Some(body) = body {
             req = req.json(&body);
@@ -701,7 +750,10 @@ fn state_for(user: AuthUser, org_id: Option<String>) -> AuthState {
     // Every user must belong to an organization before the product opens up; an org-less
     // session is `NeedsOrganization`, which the UI gates on.
     match org_id {
-        Some(org_id) => AuthState::SignedIn { user, org_id: Some(org_id) },
+        Some(org_id) => AuthState::SignedIn {
+            user,
+            org_id: Some(org_id),
+        },
         None => AuthState::NeedsOrganization { user },
     }
 }
@@ -724,7 +776,9 @@ impl comet_rpc::TokenSource for Auth {
 
 async fn loopback_loop(listener: tokio::net::TcpListener, inner: Weak<AuthInner>) {
     loop {
-        let Ok((stream, _)) = listener.accept().await else { break };
+        let Ok((stream, _)) = listener.accept().await else {
+            break;
+        };
         let Some(inner) = inner.upgrade() else { break };
         tokio::spawn(async move {
             if let Err(err) = handle_loopback_conn(stream, Auth { inner }).await {
@@ -773,15 +827,24 @@ async fn handle_loopback_conn(
                 match auth.exchange_code(code).await {
                     Ok(result) => {
                         auth.finish_sign_in(result);
-                        ("200 OK", page("Signed in. You can close this tab and return to Comet."))
+                        (
+                            "200 OK",
+                            page("Signed in. You can close this tab and return to Comet."),
+                        )
                     }
                     Err(err) => {
                         tracing::warn!(error = %err, "auth: loopback code exchange failed");
-                        ("502 Bad Gateway", page("Sign-in failed during token exchange — check the Comet logs."))
+                        (
+                            "502 Bad Gateway",
+                            page("Sign-in failed during token exchange — check the Comet logs."),
+                        )
                     }
                 }
             }
-            _ => ("400 Bad Request", page("Invalid or expired sign-in link. Start again from Comet.")),
+            _ => (
+                "400 Bad Request",
+                page("Invalid or expired sign-in link. Start again from Comet."),
+            ),
         }
     };
     let response = format!(
@@ -900,7 +963,7 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
             .mode(0o600)
             .open(path)?;
         // An existing file keeps its old mode through OpenOptions — enforce 0600 anyway.
-        file.set_permissions(std::fs::Permissions::from(std::os::unix::fs::PermissionsExt::from_mode(0o600)))?;
+        file.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
         file.write_all(bytes)
     }
     #[cfg(not(unix))]
@@ -922,7 +985,11 @@ mod tests {
                 b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
             let mut out = String::new();
             for chunk in payload.chunks(3) {
-                let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+                let b = [
+                    chunk[0],
+                    *chunk.get(1).unwrap_or(&0),
+                    *chunk.get(2).unwrap_or(&0),
+                ];
                 let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
                 out.push(ALPHABET[(n >> 18) as usize & 63] as char);
                 out.push(ALPHABET[(n >> 12) as usize & 63] as char);
@@ -935,7 +1002,10 @@ mod tests {
             }
             out
         };
-        assert_eq!(base64url_decode(&encoded).as_deref(), Some(payload.as_slice()));
+        assert_eq!(
+            base64url_decode(&encoded).as_deref(),
+            Some(payload.as_slice())
+        );
         let token = format!("h.{encoded}.sig");
         let claims = jwt_claims(&token).expect("claims decode");
         assert_eq!(claims.exp, Some(100));
@@ -951,20 +1021,38 @@ mod tests {
     }
 
     #[test]
-    fn auth_state_serializes_like_ts() {
-        let user = AuthUser { id: "u1".into(), email: "u@x".into(), name: None };
-        let signed_in = AuthState::SignedIn { user: user.clone(), org_id: Some("org_1".into()) };
+    fn auth_state_serializes_as_proto_shape() {
+        let user = AuthUser {
+            id: "u1".into(),
+            email: "u@x".into(),
+            name: None,
+        };
+        let signed_in = AuthState::SignedIn {
+            user: user.clone(),
+            org_id: Some("org_1".into()),
+        };
+        let value = serde_json::to_value(&signed_in).expect("json");
         assert_eq!(
-            serde_json::to_value(&signed_in).expect("json"),
-            serde_json::json!({"_tag": "SignedIn", "user": {"id": "u1", "email": "u@x"}, "orgId": "org_1"})
+            value,
+            serde_json::json!({
+                "state": "signedIn",
+                "user": {"id": "u1", "email": "u@x", "name": null},
+                "orgId": "org_1",
+            })
         );
+        // The proto type itself round-trips the emitted value.
+        let parsed: comet_proto::AuthState = serde_json::from_value(value).expect("proto parse");
+        assert!(matches!(parsed, comet_proto::AuthState::SignedIn { .. }));
         assert_eq!(
             serde_json::to_value(AuthState::SignedOut).expect("json"),
-            serde_json::json!({"_tag": "SignedOut"})
+            serde_json::json!({"state": "signedOut"})
         );
         assert_eq!(
             serde_json::to_value(AuthState::NeedsOrganization { user }).expect("json"),
-            serde_json::json!({"_tag": "NeedsOrganization", "user": {"id": "u1", "email": "u@x"}})
+            serde_json::json!({
+                "state": "needsOrganization",
+                "user": {"id": "u1", "email": "u@x", "name": null},
+            })
         );
     }
 }
