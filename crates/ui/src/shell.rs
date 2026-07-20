@@ -215,6 +215,11 @@ pub struct Shell {
     splash: SplashPhase,
     splash_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
+    /// Focus fallback (registered on first paint — [`Shell::new`] has no
+    /// window): keyboard shortcuts dispatch through the window focus chain, so
+    /// with nothing focused they go dead. Initial focus lands on the composer
+    /// and focus lost with no successor routes back there.
+    focus_sub: Option<Subscription>,
     /// 1s heartbeat re-rendering the working indicator (elapsed + flavour word).
     _ticker: Task<()>,
     _state_observation: Subscription,
@@ -328,6 +333,7 @@ impl Shell {
             splash: SplashPhase::Visible,
             splash_task: None,
             save_task: None,
+            focus_sub: None,
             _ticker: ticker,
             _state_observation: observation,
             _composer_events: composer_events,
@@ -1144,6 +1150,9 @@ impl Shell {
                 .justify_center()
                 .rounded(px(5.0))
                 .when(active, |el| el.bg(crate::theme::white_alpha(0.10)))
+                .when(!active, |el| {
+                    el.hover(|el| el.bg(crate::theme::white_alpha(0.06)))
+                })
                 .cursor_pointer()
                 .child(
                     icon(icon_path)
@@ -2667,6 +2676,29 @@ impl Render for Shell {
             .debug_gate
             .clone()
             .unwrap_or_else(|| self.state.read(cx).gate());
+
+        // Keyboard shortcuts (mod-s/b/j) dispatch through the window focus
+        // chain — with nothing focused they go dead. Land initial focus on the
+        // composer, and whenever focus is lost with no successor (e.g. the
+        // focused element unmounted), route it back there.
+        if self.focus_sub.is_none() {
+            self.focus_sub = Some(cx.on_focus_lost(window, |this: &mut Shell, window, cx| {
+                match this.route {
+                    Route::Chat => window.focus(&this.composer.focus_handle(cx), cx),
+                    // No composer here — clear the stale handle so `focused()`
+                    // reads None (the render hook below re-lands focus when the
+                    // route returns to Chat; a lingering unmounted handle would
+                    // otherwise dead-end keyboard dispatch for good).
+                    Route::Settings(_) => window.blur(),
+                }
+            }));
+        }
+        if matches!(gate, GatePhase::Ready)
+            && matches!(self.route, Route::Chat)
+            && window.focused(cx).is_none()
+        {
+            window.focus(&self.composer.focus_handle(cx), cx);
+        }
 
         let root = div()
             .id("shell-root")

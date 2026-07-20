@@ -642,6 +642,9 @@ pub struct Transcript {
     veils: HashMap<SharedString, Rc<RefCell<RowVeil>>>,
     highlights: HighlightStore,
     show_jump_button: bool,
+    /// Distance from the bottom at the last scroll event — restick is
+    /// direction-aware (see [`Transcript::should_restick`]).
+    last_scroll_distance: f32,
     scroll_anim: Option<Task<()>>,
     /// MessageRail width gate (set by the shell from the container width).
     rail_enabled: bool,
@@ -674,6 +677,7 @@ impl Transcript {
             veils: HashMap::new(),
             highlights: HighlightStore::default(),
             show_jump_button: false,
+            last_scroll_distance: 0.0,
             scroll_anim: None,
             rail_enabled: true,
             rail_hover: None,
@@ -729,19 +733,43 @@ impl Transcript {
         (max + cur).max(0.0)
     }
 
+    /// Whether a user scroll should re-engage the bottom pin: inside the 70px
+    /// stick band *and* moving toward the bottom. Direction matters — a small
+    /// wheel-up notch near the bottom stays inside the band, and re-sticking
+    /// on it would snap the view straight back, making the pin unbreakable.
+    pub fn should_restick(distance: f32, previous_distance: f32) -> bool {
+        distance <= STICK_THRESHOLD_PX && distance < previous_distance
+    }
+
     fn handle_scroll(&mut self, event: &ListScrollEvent, cx: &mut Context<Self>) {
-        let distance = self.distance_from_bottom();
-        // Re-engage the pin when a user scroll returns within the stick band.
-        // (The pin is broken only by user input — the list stops following on
-        // wheel/drag up in its own input path, never from content growth.)
-        if !event.is_following_tail && distance <= STICK_THRESHOLD_PX {
-            self.list.set_follow_mode(FollowMode::Tail);
-        }
-        let show = distance > SCROLL_BUTTON_THRESHOLD_PX && !self.list.is_following_tail();
-        if show != self.show_jump_button {
-            self.show_jump_button = show;
-            cx.notify();
-        }
+        // The list invokes this handler while holding its internal RefCell
+        // borrow — reading the ListState back synchronously (offsets, follow
+        // mode) panics with "already mutably borrowed". Defer to the end of
+        // the effect cycle, after the list has released its borrow.
+        let is_following_tail = event.is_following_tail;
+        let this = cx.weak_entity();
+        cx.defer(move |cx| {
+            this.update(cx, |this: &mut Transcript, cx| {
+                let distance = this.distance_from_bottom();
+                // Re-engage the pin when a user scroll returns *toward* the
+                // bottom inside the stick band. (The pin is broken only by
+                // user input — the list stops following on wheel/drag up in
+                // its own input path, never from content growth.)
+                let restick =
+                    !is_following_tail && Self::should_restick(distance, this.last_scroll_distance);
+                this.last_scroll_distance = distance;
+                if restick {
+                    this.list.set_follow_mode(FollowMode::Tail);
+                }
+                let show =
+                    distance > SCROLL_BUTTON_THRESHOLD_PX && !this.list.is_following_tail();
+                if show != this.show_jump_button {
+                    this.show_jump_button = show;
+                    cx.notify();
+                }
+            })
+            .ok();
+        });
     }
 
     /// Own-send re-engage: smooth-scroll to the end, then pin.
@@ -1340,6 +1368,21 @@ impl Render for Transcript {
 mod tests {
     use super::*;
     use comet_doc::MessagePart;
+
+    #[test]
+    fn restick_is_direction_aware() {
+        // Scrolling away from the bottom never resticks, even inside the band
+        // (a 20px wheel notch from the pinned bottom must break the pin).
+        assert!(!Transcript::should_restick(20.0, 0.0));
+        assert!(!Transcript::should_restick(69.0, 30.0));
+        // Returning toward the bottom resticks once inside the 70px band…
+        assert!(Transcript::should_restick(69.0, 120.0));
+        assert!(Transcript::should_restick(0.0, 30.0));
+        // …but not while still outside it.
+        assert!(!Transcript::should_restick(200.0, 300.0));
+        // No movement — leave the pin alone.
+        assert!(!Transcript::should_restick(50.0, 50.0));
+    }
 
     fn parse(_: &str, text: &str) -> Arc<BlockTree> {
         Arc::new(parse_full(text))

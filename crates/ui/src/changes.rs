@@ -1171,7 +1171,13 @@ impl Render for Changes {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let resolved = self.resolved(cx);
-        let phase = diff_phase(resolved.as_ref());
+        // With no session selected (new-chat canvas) there is nothing to
+        // prepare — show the quiet empty state, not an endless spinner.
+        let phase = if self.state.read(cx).selected_chat_row().is_none() {
+            DiffPhase::Clean
+        } else {
+            diff_phase(resolved.as_ref())
+        };
         let error = self.error.clone();
 
         let content: AnyElement = match phase {
