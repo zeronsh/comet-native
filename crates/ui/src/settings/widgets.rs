@@ -20,12 +20,13 @@ pub fn page_column() -> gpui::Div {
         .flex_col()
 }
 
-/// Page headline row: `text-base font-semibold` title + tabular count.
+/// Page headline row: `flex items-baseline gap-2.5` — `text-base font-semibold`
+/// title + `text-[13px]` count sharing a baseline (comet settings.devices.tsx).
 pub fn page_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
     div()
         .flex()
         .flex_row()
-        .items_center()
+        .items_baseline()
         .gap(px(10.0))
         .child(
             div()
@@ -53,15 +54,15 @@ pub fn page_subtitle(theme: &Theme, copy: impl Into<SharedString>) -> gpui::Div 
         .child(copy.into())
 }
 
-/// Section card: `mt-6 overflow-hidden rounded-xl border border-border` over a
-/// faint card wash.
+/// Section card: `mt-6 overflow-hidden rounded-xl border border-border bg-card`
+/// — the opaque raised-card tone (comet `--card`), not a translucent wash.
 pub fn section_card(theme: &Theme) -> gpui::Div {
     div()
         .mt(px(24.0))
         .rounded(px(12.0))
         .border_1()
         .border_color(theme.border)
-        .bg(white_alpha(0.02))
+        .bg(theme.surface)
         .overflow_hidden()
         .flex()
         .flex_col()
@@ -122,6 +123,7 @@ pub fn meta_line(theme: &Theme, fragments: Vec<AnyElement>) -> gpui::Div {
         .flex_wrap()
         .items_center()
         .gap_x(px(8.0))
+        .gap_y(px(2.0))
         .text_size(px(11.5))
         .text_color(theme.text_muted.opacity(0.65));
     let mut first = true;
@@ -170,8 +172,9 @@ pub fn badge_active(label: impl Into<SharedString>) -> gpui::Div {
 }
 
 /// A small quiet ghost action (`rounded-lg px-2.5 py-1.5 text-[12px]
-/// text-muted-foreground hover:bg-white/[0.06]`). Caller adds id + click +
-/// leading icon child if wanted.
+/// text-muted-foreground`). Caller adds id + click + leading icon child AND
+/// its own `.hover(..)` — gpui panics on a second hover, and the pages vary
+/// it (reveal opacity, 4% vs 6% washes).
 pub fn ghost_action(theme: &Theme) -> gpui::Div {
     div()
         .flex()
@@ -184,11 +187,17 @@ pub fn ghost_action(theme: &Theme) -> gpui::Div {
         .text_size(px(12.0))
         .text_color(theme.text_muted)
         .cursor_pointer()
-        .hover(|s| s.bg(white_alpha(0.06)).text_color(Theme::dark().text))
 }
 
-/// The dismissible red error strip (`rounded-xl border border-red-400/20
-/// bg-red-400/[0.06] text-red-300/90`).
+/// The default ghost-action hover wash (`hover:bg-white/[0.06]
+/// hover:text-foreground`).
+pub fn ghost_hover(s: gpui::StyleRefinement) -> gpui::StyleRefinement {
+    s.bg(white_alpha(0.06)).text_color(Theme::dark().text)
+}
+
+/// The dismissible red error strip (`flex items-start gap-2 rounded-xl border
+/// border-red-400/20 bg-red-400/[0.06] text-red-300/90` with a leading
+/// `DangerTriangle mt-0.5 size-4`).
 pub fn error_strip(message: impl Into<SharedString>) -> gpui::Div {
     let red = crate::theme::oklch(0.704, 0.191, 22.216); // red-400
     let red_text = crate::theme::oklch(0.81, 0.108, 19.6); // red-300
@@ -202,11 +211,23 @@ pub fn error_strip(message: impl Into<SharedString>) -> gpui::Div {
         .bg(red.opacity(0.06))
         .text_size(px(12.5))
         .text_color(red_text.opacity(0.9))
-        .child(message.into())
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(px(8.0))
+        .child(
+            div().flex_none().mt(px(2.0)).child(
+                crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                    .size(px(16.0))
+                    .text_color(red_text.opacity(0.9)),
+            ),
+        )
+        .child(div().min_w_0().child(message.into()))
 }
 
-/// The amber warning strip (`border-amber-400/20 bg-amber-400/[0.06]
-/// text-amber-200/90`).
+/// The amber warning strip (`flex items-start gap-2 border-amber-400/20
+/// bg-amber-400/[0.06] text-amber-200/90` with a leading `DangerTriangle
+/// mt-0.5 size-3.5`).
 pub fn warning_strip(message: impl Into<SharedString>) -> gpui::Div {
     let amber = crate::theme::oklch(0.828, 0.189, 84.429); // amber-400
     let amber_text = crate::theme::oklch(0.924, 0.12, 95.746); // amber-200
@@ -220,5 +241,16 @@ pub fn warning_strip(message: impl Into<SharedString>) -> gpui::Div {
         .bg(amber.opacity(0.06))
         .text_size(px(12.0))
         .text_color(amber_text.opacity(0.9))
-        .child(message.into())
+        .flex()
+        .flex_row()
+        .items_start()
+        .gap(px(8.0))
+        .child(
+            div().flex_none().mt(px(2.0)).child(
+                crate::icons::icon(crate::icons::DANGER_TRIANGLE)
+                    .size(px(14.0))
+                    .text_color(amber_text.opacity(0.9)),
+            ),
+        )
+        .child(div().min_w_0().child(message.into()))
 }

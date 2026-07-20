@@ -226,10 +226,14 @@ impl Render for DevicesPage {
                 let platform_icon = match device.platform.as_str() {
                     "macos" | "darwin" => crate::icons::LAPTOP,
                     "web" => crate::icons::GLOBAL,
+                    "ios" | "android" => crate::icons::SMARTPHONE,
                     _ => crate::icons::MONITOR,
                 };
                 // Presence lives ON the identity tile: a corner dot (emerald
-                // online, faint offline) — comet settings.devices.tsx.
+                // online with a soft glow, faint offline), ringed by the card
+                // tone so it "cuts" the tile — comet settings.devices.tsx
+                // `border-2 border-[var(--card)]` +
+                // `shadow-[0_0_6px_rgba(52,211,153,0.55)]`.
                 let tile = widgets::row_tile(&theme, platform_icon).relative().child(
                     div()
                         .absolute()
@@ -238,12 +242,17 @@ impl Render for DevicesPage {
                         .size(px(9.0))
                         .rounded_full()
                         .border_2()
-                        .border_color(crate::theme::grey(0x0a))
-                        .bg(if online {
-                            emerald
-                        } else {
-                            crate::theme::white_alpha(0.22)
-                        }),
+                        .border_color(theme.surface)
+                        .when(online, |el| {
+                            el.bg(emerald).shadow(vec![gpui::BoxShadow {
+                                color: emerald.opacity(0.55),
+                                offset: gpui::point(px(0.0), px(0.0)),
+                                blur_radius: px(6.0),
+                                spread_radius: px(0.0),
+                                inset: false,
+                            }])
+                        })
+                        .when(!online, |el| el.bg(crate::theme::white_alpha(0.22))),
                 );
                 // One quiet meta line: platform · (offline: last seen) · id chip.
                 let mut meta: Vec<AnyElement> = vec![
@@ -259,6 +268,17 @@ impl Render for DevicesPage {
                             .child(SharedString::from(format!(
                                 "Last seen {}",
                                 format_last_seen(device.last_seen_at, now)
+                            )))
+                            .into_any_element(),
+                    );
+                }
+                // "Added {time ago}" — always present (comet settings.devices.tsx).
+                if let Some(created) = device.created_at {
+                    meta.push(
+                        div()
+                            .child(SharedString::from(format!(
+                                "Added {}",
+                                format_last_seen(Some(created), now)
                             )))
                             .into_any_element(),
                     );
@@ -301,8 +321,17 @@ impl Render for DevicesPage {
                         el.child(widgets::badge(&theme, "This device"))
                     })
                     .child(
+                        // `opacity-70 hover:opacity-100` (comet: also rises on
+                        // row hover — gpui has no group-hover, so the button's
+                        // own hover carries the reveal).
                         widgets::ghost_action(&theme)
                             .id(("device-rename", ix))
+                            .opacity(0.7)
+                            .hover(|s| {
+                                s.opacity(1.0)
+                                    .bg(crate::theme::white_alpha(0.06))
+                                    .text_color(Theme::dark().text)
+                            })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.open_rename(rename_id.clone(), rename_name.clone(), cx);
                             }))

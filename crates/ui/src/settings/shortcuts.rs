@@ -8,9 +8,7 @@ use gpui::{
     prelude::*, px,
 };
 
-use crate::settings::{
-    KeymapConfig, ShortcutId, combo_from_keystroke, conflicted_shortcuts, display_combo,
-};
+use crate::settings::{KeymapConfig, ShortcutId, combo_from_keystroke, display_combo};
 use crate::state::AppState;
 use crate::theme::Theme;
 
@@ -45,6 +43,9 @@ pub struct ShortcutsPage {
     /// Working copy (kept in sync with the shell via `Changed` events).
     keymap: KeymapConfig,
     recording: Option<ShortcutId>,
+    /// A rejected record attempt ("{Combo} is already assigned to {label}.") —
+    /// conflicts never persist; they're refused at record time, as in comet.
+    conflict_notice: Option<SharedString>,
     focus: FocusHandle,
     // The page never talks RPC; state is kept for parity with sibling pages
     // (and future per-device keymaps).
@@ -58,6 +59,7 @@ impl ShortcutsPage {
         Self {
             keymap,
             recording: None,
+            conflict_notice: None,
             focus: cx.focus_handle(),
             _state: state,
         }
@@ -86,21 +88,45 @@ impl ShortcutsPage {
             }
             RecordOutcome::Ignored => {}
             RecordOutcome::Set(combo) => {
-                self.keymap.set(recording, combo);
-                self.recording = None;
-                self.commit(cx);
+                // A combo already bound elsewhere is REFUSED, naming the owner
+                // (comet settings.shortcuts.tsx: "… is already assigned to …").
+                if let Some(owner) = conflict_owner(&self.keymap, recording, &combo) {
+                    self.conflict_notice = Some(
+                        format!(
+                            "{} is already assigned to {}.",
+                            display_combo(&combo),
+                            owner.label()
+                        )
+                        .into(),
+                    );
+                    self.recording = None;
+                    cx.notify();
+                } else {
+                    self.keymap.set(recording, combo);
+                    self.recording = None;
+                    self.conflict_notice = None;
+                    self.commit(cx);
+                }
             }
         }
         cx.stop_propagation();
     }
 }
 
-/// One-line purpose copy per shortcut (comet settings.shortcuts.tsx rows).
+/// The shortcut (other than `id`) already bound to `combo`, if any. Pure.
+pub fn conflict_owner(keymap: &KeymapConfig, id: ShortcutId, combo: &str) -> Option<ShortcutId> {
+    ShortcutId::ALL
+        .into_iter()
+        .find(|&other| other != id && keymap.get(other) == combo)
+}
+
+/// One-line purpose copy per shortcut (comet lib/shortcuts.ts
+/// `SHORTCUT_DEFINITIONS` descriptions, verbatim).
 fn description(id: ShortcutId) -> &'static str {
     match id {
-        ShortcutId::ToggleSidebar => "Show or hide the session sidebar",
-        ShortcutId::ToggleChanges => "Show or hide the changes pane",
-        ShortcutId::ToggleTerminal => "Show or hide the terminal panel",
+        ShortcutId::ToggleSidebar => "Show or hide sessions and settings navigation.",
+        ShortcutId::ToggleChanges => "Show or hide changes for the current session.",
+        ShortcutId::ToggleTerminal => "Show or hide the terminal for the current session.",
     }
 }
 
@@ -108,14 +134,12 @@ impl Render for ShortcutsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
-        let conflicts = conflicted_shortcuts(&self.keymap);
         let recording = self.recording;
-        let any_conflict = !conflicts.is_empty();
+        let customized = self.keymap != KeymapConfig::default();
 
         let rows = ShortcutId::ALL.into_iter().enumerate().map(|(ix, id)| {
             let combo = self.keymap.get(id).to_string();
             let is_recording = recording == Some(id);
-            let conflicted = conflicts.contains(&id);
             let non_default = combo != id.default_combo();
             let chip_text: SharedString = if is_recording {
                 "Press keys…".into()
@@ -188,22 +212,21 @@ impl Render for ShortcutsPage {
                                 el.border_color(theme.text.opacity(0.3))
                                     .bg(theme.text)
                                     .text_color(crate::theme::grey(0x0e))
-                            } else if conflicted {
-                                el.border_color(theme.danger.opacity(0.5))
-                                    .bg(theme.bg)
-                                    .text_color(theme.text)
                             } else {
                                 el.border_color(theme.border)
                                     .bg(theme.bg)
                                     .text_color(theme.text)
                                     .hover(|s| {
-                                        s.border_color(crate::theme::white_alpha(0.2))
+                                        // `hover:border-foreground/20` — the
+                                        // neutral foreground, not pure white.
+                                        s.border_color(theme.text.opacity(0.2))
                                             .bg(crate::theme::white_alpha(0.03))
                                     })
                             }
                         })
                         .on_click(cx.listener(move |this, _, window, cx| {
                             this.recording = Some(id);
+                            this.conflict_notice = None;
                             window.focus(&this.focus, cx);
                             cx.notify();
                         }))
@@ -211,10 +234,12 @@ impl Render for ShortcutsPage {
                 )
         });
 
+        // Helper line stays in the muted tone even for a rejected conflict —
+        // the message names the specific clash (comet settings.shortcuts.tsx).
         let helper: SharedString = if recording.is_some() {
             "Press Escape to cancel.".into()
-        } else if any_conflict {
-            "Shortcuts conflict — each combo must be unique.".into()
+        } else if let Some(notice) = self.conflict_notice.clone() {
+            notice
         } else {
             "Shortcuts must be unique.".into()
         };
@@ -245,34 +270,53 @@ impl Render for ShortcutsPage {
                                         "Keyboard shortcuts",
                                         None,
                                     ))
-                                    .child(widgets::page_subtitle(
-                                        &theme,
-                                        "Click a binding, then press the new combo.",
-                                    )),
+                                    .child(
+                                        widgets::page_subtitle(
+                                            &theme,
+                                            "Click a binding, then press the key combination you \
+                                             want to use. Changes apply immediately and stay on \
+                                             this device.",
+                                        )
+                                        .max_w(px(512.0))
+                                        .line_height(px(20.0)),
+                                    ),
                             )
-                            .child(
+                            .child({
+                                // `disabled:opacity-35` when nothing is
+                                // customized or while recording.
+                                let disabled = !customized || recording.is_some();
                                 widgets::ghost_action(&theme)
                                     .id("shortcuts-restore-defaults")
                                     .flex_none()
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.keymap = KeymapConfig::default();
-                                        this.recording = None;
-                                        this.commit(cx);
-                                    }))
-                                    .child(SharedString::from("Restore defaults")),
-                            ),
+                                    .when(disabled, |el| el.opacity(0.35))
+                                    .when(!disabled, |el| {
+                                        el.hover(|s| {
+                                            s.bg(crate::theme::white_alpha(0.04))
+                                                .text_color(Theme::dark().text)
+                                        })
+                                        .on_click(cx.listener(|this, _, _, cx| {
+                                            this.keymap = KeymapConfig::default();
+                                            this.recording = None;
+                                            this.conflict_notice = None;
+                                            this.commit(cx);
+                                        }))
+                                    })
+                                    .child(
+                                        crate::icons::icon(crate::icons::RESTART)
+                                            .size(px(14.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Restore defaults"))
+                            }),
                     )
                     .child(widgets::section_card(&theme).mt(px(32.0)).children(rows))
                     .child(
                         div()
                             .mt(px(12.0))
                             .px(px(4.0))
+                            .min_h(px(20.0))
                             .text_size(px(12.0))
-                            .text_color(if any_conflict {
-                                theme.danger.opacity(0.9)
-                            } else {
-                                theme.text_muted
-                            })
+                            .text_color(theme.text_muted)
                             .child(helper),
                     ),
             )
@@ -313,19 +357,23 @@ mod tests {
     }
 
     #[test]
-    fn record_then_conflict_then_reset_flow() {
-        // Simulates the page's reducer path without a window: record mod-b onto
-        // ToggleSidebar → conflict with ToggleChanges → reset clears it.
-        let mut keymap = KeymapConfig::default();
+    fn conflicting_records_are_refused() {
+        // comet parity: a combo bound elsewhere is refused at record time (the
+        // helper names the owner) — conflicts never persist into the keymap.
+        let keymap = KeymapConfig::default();
         let RecordOutcome::Set(combo) = record_key("b", true, false, false, false) else {
             panic!("expected Set");
         };
-        keymap.set(ShortcutId::ToggleSidebar, combo);
-        let conflicts = conflicted_shortcuts(&keymap);
-        assert!(conflicts.contains(&ShortcutId::ToggleSidebar));
-        assert!(conflicts.contains(&ShortcutId::ToggleChanges));
-        keymap.reset(ShortcutId::ToggleSidebar);
-        assert!(conflicted_shortcuts(&keymap).is_empty());
-        assert_eq!(keymap, KeymapConfig::default());
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::ToggleSidebar, &combo),
+            Some(ShortcutId::ToggleChanges)
+        );
+        // Re-recording a shortcut's own combo is not a conflict.
+        assert_eq!(conflict_owner(&keymap, ShortcutId::ToggleChanges, &combo), None);
+        // A free combo conflicts with nothing.
+        assert_eq!(
+            conflict_owner(&keymap, ShortcutId::ToggleSidebar, "mod-shift-x"),
+            None
+        );
     }
 }

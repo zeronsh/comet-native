@@ -15,6 +15,10 @@ pub struct Device {
     pub name: String,
     pub platform: String,
     pub last_seen_at: Option<DateTime<Utc>>,
+    /// First registration time (comet devices.created_at — the Devices page
+    /// "Added …" fragment). Optional so pre-existing docs stay readable.
+    #[serde(default)]
+    pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -21,6 +21,9 @@ pub struct ArchivedPage {
     error: Option<SharedString>,
     /// Chat with an in-flight unarchive (button shows working state).
     busy: Option<String>,
+    /// Row index under the pointer — drives the original's `group-hover`
+    /// Unarchive reveal (`opacity-0 group-hover:opacity-100`).
+    hovered: Option<usize>,
     task: Option<Task<()>>,
     _observe: Subscription,
 }
@@ -32,6 +35,7 @@ impl ArchivedPage {
             state,
             error: None,
             busy: None,
+            hovered: None,
             task: None,
             _observe: observe,
         }
@@ -90,11 +94,10 @@ impl Render for ArchivedPage {
                     .clone()
                     .unwrap_or_else(|| "Untitled session".into())
                     .into();
-                let device: SharedString = device_names
-                    .get(&chat.device_id)
-                    .cloned()
-                    .unwrap_or_else(|| chat.device_id.clone())
-                    .into();
+                // Unknown device → no fragment at all (comet renders the
+                // device span only when the name resolves).
+                let device: Option<SharedString> =
+                    device_names.get(&chat.device_id).cloned().map(Into::into);
                 let time_ago: SharedString = crate::state::format_time_ago(
                     chat.last_message_at.unwrap_or(chat.created_at),
                     now,
@@ -103,10 +106,12 @@ impl Render for ArchivedPage {
                 let location: Option<SharedString> =
                     crate::state::chat_location(&chat).map(Into::into);
                 let is_busy = busy.as_deref() == Some(chat.id.as_str());
+                let row_hovered = self.hovered == Some(ix);
                 let chat_id = chat.id.clone();
                 // comet settings.archived.tsx row: archive tile, medium title
                 // + tabular time, quiet device · location meta, Unarchive.
                 div()
+                    .id(("archived-row", ix))
                     .flex()
                     .flex_row()
                     .items_center()
@@ -115,6 +120,14 @@ impl Render for ArchivedPage {
                     .px(px(12.0))
                     .py(px(8.0))
                     .hover(|s| s.bg(crate::theme::white_alpha(0.03)))
+                    .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                        if *hovered {
+                            this.hovered = Some(ix);
+                        } else if this.hovered == Some(ix) {
+                            this.hovered = None;
+                        }
+                        cx.notify();
+                    }))
                     .child(
                         div()
                             .flex_none()
@@ -160,27 +173,36 @@ impl Render for ArchivedPage {
                                             .child(time_ago),
                                     ),
                             )
-                            .child(
-                                div()
+                            .child({
+                                // device · location, separator at the line's
+                                // own tone (comet: a plain span inheriting
+                                // `text-muted-foreground/55`).
+                                let mut meta = div()
                                     .mt(px(2.0))
                                     .flex()
                                     .flex_row()
                                     .items_center()
                                     .gap(px(6.0))
                                     .text_size(px(11.0))
-                                    .text_color(theme.text_muted.opacity(0.55))
-                                    .child(device)
-                                    .when_some(location, |el, location| {
-                                        el.child(
-                                            div()
-                                                .text_color(theme.text_muted.opacity(0.3))
-                                                .child(SharedString::from("·")),
-                                        )
-                                        .child(div().min_w_0().truncate().child(location))
-                                    }),
-                            ),
+                                    .text_color(theme.text_muted.opacity(0.55));
+                                let both = device.is_some() && location.is_some();
+                                if let Some(device) = device {
+                                    meta = meta.child(device);
+                                }
+                                if both {
+                                    meta = meta.child(SharedString::from("·"));
+                                }
+                                if let Some(location) = location {
+                                    meta =
+                                        meta.child(div().min_w_0().truncate().child(location));
+                                }
+                                meta
+                            }),
                     )
                     .child(
+                        // Hidden until the row is hovered (comet `opacity-0
+                        // group-hover:opacity-100`); hover fill is the solid
+                        // accent tone (`hover:bg-accent`).
                         div()
                             .id(("unarchive", ix))
                             .flex_none()
@@ -195,17 +217,21 @@ impl Render for ArchivedPage {
                             .border_color(theme.border)
                             .text_size(px(12.0))
                             .text_color(theme.text_muted)
-                            .opacity(0.7)
+                            .opacity(if row_hovered || is_busy { 1.0 } else { 0.0 })
                             .when(is_busy, |el| el.opacity(0.4))
                             .cursor_pointer()
                             .hover(|s| {
-                                s.opacity(1.0)
-                                    .bg(crate::theme::white_alpha(0.06))
+                                s.bg(crate::theme::oklch(0.235, 0.0, 0.0))
                                     .text_color(Theme::dark().text)
                             })
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.unarchive(chat_id.clone(), cx);
                             }))
+                            .child(
+                                crate::icons::icon(crate::icons::ARCHIVE_UP_MINIMALISTIC)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            )
                             .child(SharedString::from(if is_busy {
                                 "Unarchiving…"
                             } else {
@@ -226,9 +252,11 @@ impl Render for ArchivedPage {
                 .text_center()
                 .text_color(theme.text_muted.opacity(0.5))
                 .child(
+                    // `opacity-40` on top of the inherited muted/50 — an
+                    // effectively ~20% glyph (comet settings.archived.tsx).
                     crate::icons::icon(crate::icons::ARCHIVE_MINIMALISTIC)
                         .size(px(28.0))
-                        .text_color(theme.text_muted.opacity(0.4)),
+                        .text_color(theme.text_muted.opacity(0.2)),
                 )
                 .child(
                     div()
@@ -242,7 +270,7 @@ impl Render for ArchivedPage {
                         .text_size(px(12.0))
                         .text_color(theme.text_muted.opacity(0.4))
                         .child(SharedString::from(
-                            "Archived sessions stay synced and can be restored anytime.",
+                            "Right-click a session in the sidebar to archive it.",
                         )),
                 )
                 .into_any_element()
@@ -269,7 +297,7 @@ impl Render for ArchivedPage {
                     ))
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Sessions you've archived, across every device.",
+                        "Hidden from the sidebar, never deleted. Unarchiving puts a session back on its device.",
                     ))
                     .when_some(self.error.clone(), |el, message| {
                         el.child(

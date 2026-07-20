@@ -92,11 +92,15 @@ impl WorkspaceHost {
         doc.upsert_device(&Device {
             id: config.device_id.clone(),
             name: existing
-                .map(|d| d.name)
+                .as_ref()
+                .map(|d| d.name.clone())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_else(|| config.device_name.clone()),
             platform: config.platform.clone(),
             last_seen_at: Some(now),
+            // First registration stamps `createdAt`; restarts keep the original
+            // (the Devices page "Added …" fragment).
+            created_at: existing.and_then(|d| d.created_at).or(Some(now)),
         })?;
 
         let (changed_tx, changed_rx) = watch::channel(0u64);

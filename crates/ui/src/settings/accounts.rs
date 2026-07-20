@@ -1,9 +1,9 @@
 //! Settings → Agents / accounts (feature-inventory §1.9): provider cards
 //! (Claude Code, Codex) with account rows — email, plan badge, Active, usage
 //! meters (indigo → amber ≥80% → red ≥95%, reset time), Switch / Forget — plus
-//! the add-account dialogs (paste-code and browser-poll flows), loading
-//! skeletons, and a device switcher that retargets which device's logins are
-//! shown (`targetDeviceId` passthrough).
+//! the add-account dialogs (paste-code and browser-poll flows) and
+//! account-shaped loading skeletons. Comet retargets devices from the settings
+//! sidebar (`targetDeviceId` passthrough kept plumbed, unused single-device).
 //!
 //! The accounts RPC surface is being implemented engine-side in parallel —
 //! every call here surfaces failures as inline UI states rather than assuming
@@ -63,23 +63,25 @@ pub fn usage_color(level: UsageLevel, theme: &Theme) -> Hsla {
     }
 }
 
-/// "resets in 2h 05m" / "resets in 12m" / "resets soon". Pure.
+/// Compact absolute reset moment (comet settings.agents.tsx `formatReset`):
+/// a local clock time ("3:45 PM") when it lands within ~22h, else a short
+/// weekday ("Mon"); the caller prefixes "resets ". Pure given `now`.
 pub fn format_reset(resets_at: Option<DateTime<Utc>>, now: DateTime<Utc>) -> Option<String> {
+    use chrono::Local;
     let at = resets_at?;
-    let mins = at.signed_duration_since(now).num_minutes();
-    Some(if mins <= 0 {
-        "resets soon".to_string()
-    } else if mins < 60 {
-        format!("resets in {mins}m")
+    let local = at.with_timezone(&Local);
+    Some(if at.signed_duration_since(now).num_hours() < 22 {
+        format!("resets {}", local.format("%-I:%M %p"))
     } else {
-        format!("resets in {}h {:02}m", mins / 60, mins % 60)
+        format!("resets {}", local.format("%a"))
     })
 }
 
-/// The provider cards, in display order.
-pub const PROVIDERS: [(HarnessId, &str); 2] = [
-    (HarnessId::ClaudeCode, "Claude Code"),
-    (HarnessId::Codex, "Codex"),
+/// The provider cards, in display order: (harness, name, CLI command — named
+/// in the empty-state copy, comet settings.agents.tsx `PROVIDERS`).
+pub const PROVIDERS: [(HarnessId, &str, &str); 2] = [
+    (HarnessId::ClaudeCode, "Claude Code", "claude"),
+    (HarnessId::Codex, "Codex", "codex"),
 ];
 
 /// Accounts of one provider, active first (stable otherwise). Pure.
@@ -102,26 +104,44 @@ pub fn provider_accounts(
 
 enum LoginFlow {
     /// StartAgentLogin in flight.
-    Starting,
+    Starting { harness: HarnessId },
     /// Claude-style: open the URL, paste the code back.
     PasteCode {
+        harness: HarnessId,
         start: AgentLoginStart,
         submitting: bool,
         error: Option<SharedString>,
     },
     /// Codex-style: open the URL, poll until the browser flow lands.
     Browser {
+        harness: HarnessId,
         start: AgentLoginStart,
         message: Option<SharedString>,
         error: Option<SharedString>,
     },
 }
 
+impl LoginFlow {
+    /// Dialog title (comet: "Add Claude account" / "Add Codex account").
+    fn title(&self) -> &'static str {
+        let harness = match self {
+            LoginFlow::Starting { harness }
+            | LoginFlow::PasteCode { harness, .. }
+            | LoginFlow::Browser { harness, .. } => *harness,
+        };
+        match harness {
+            HarnessId::Codex => "Add Codex account",
+            _ => "Add Claude account",
+        }
+    }
+}
+
 pub struct AccountsPage {
     state: Entity<AppState>,
     /// Which device's logins are shown; `None` = this device (no passthrough).
+    /// Comet retargets this from the settings sidebar's device switcher; the
+    /// native app is single-device, so it stays local.
     target_device: Option<String>,
-    device_menu_open: bool,
     snapshot: Loadable<AgentAccountsSnapshot>,
     /// Account id with an in-flight Switch/Forget.
     busy_account: Option<String>,
@@ -138,7 +158,7 @@ pub struct AccountsPage {
 impl AccountsPage {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let observe = cx.observe(&state, |_, _, cx| cx.notify());
-        let code_input = cx.new(|cx| ComposerInput::new("Paste the code…", cx));
+        let code_input = cx.new(|cx| ComposerInput::new("Paste the authorization code", cx));
         let code_events = cx.subscribe(&code_input, |this: &mut Self, _, event, cx| {
             if matches!(event, ComposerInputEvent::Submitted) {
                 this.submit_code(cx);
@@ -147,7 +167,6 @@ impl AccountsPage {
         let mut page = Self {
             state,
             target_device: None,
-            device_menu_open: false,
             snapshot: Loadable::Idle,
             busy_account: None,
             login: None,
@@ -199,17 +218,6 @@ impl AccountsPage {
         cx.notify();
     }
 
-    fn set_target_device(&mut self, target: Option<String>, cx: &mut Context<Self>) {
-        if self.target_device != target {
-            self.target_device = target;
-            self.login = None;
-            self.poll_task = None;
-            self.load(false, cx);
-        }
-        self.device_menu_open = false;
-        cx.notify();
-    }
-
     /// Switch / Forget an account.
     fn account_action(
         &mut self,
@@ -249,7 +257,7 @@ impl AccountsPage {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        self.login = Some(LoginFlow::Starting);
+        self.login = Some(LoginFlow::Starting { harness });
         self.error = None;
         let params = self.params(serde_json::json!({ "harness": harness }));
         self.action_task = Some(cx.spawn(async move |this, cx| {
@@ -269,6 +277,7 @@ impl AccountsPage {
                                 page.code_input
                                     .update(cx, |input, cx| input.set_text("", cx));
                                 page.login = Some(LoginFlow::PasteCode {
+                                    harness,
                                     start,
                                     submitting: false,
                                     error: None,
@@ -276,6 +285,7 @@ impl AccountsPage {
                             }
                             AgentLoginMode::Browser => {
                                 page.login = Some(LoginFlow::Browser {
+                                    harness,
                                     start,
                                     message: None,
                                     error: None,
@@ -478,13 +488,17 @@ impl AccountsPage {
                     .rounded_full()
                     .overflow_hidden()
                     .bg(crate::theme::white_alpha(0.07))
-                    .child(
-                        div()
-                            .h_full()
-                            .w(gpui::relative(fraction))
-                            .rounded_full()
-                            .bg(fill),
-                    ),
+                    .when(fraction > 0.0, |el| {
+                        el.child(
+                            div()
+                                .h_full()
+                                // A 1.5% floor keeps tiny non-zero usage
+                                // visible (comet `max(used, 1.5)%`).
+                                .w(gpui::relative(fraction.max(0.015)))
+                                .rounded_full()
+                                .bg(fill),
+                        )
+                    }),
             )
             .child(
                 div()
@@ -534,12 +548,6 @@ impl AccountsPage {
             .map(|c| c.to_uppercase().to_string())
             .unwrap_or_else(|| "?".into())
             .into();
-        let auth_kind: Option<SharedString> = account.auth_kind.map(|kind| {
-            SharedString::from(match kind {
-                comet_proto::AgentAuthKind::Oauth => "OAuth login",
-                comet_proto::AgentAuthKind::ApiKey => "API key",
-            })
-        });
         let switch_account = account.clone();
         let forget_account = account.clone();
 
@@ -555,14 +563,47 @@ impl AccountsPage {
                 el.child(widgets::badge(theme, plan))
             });
 
-        let actions = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.0))
-            .when(!account.active && account.switchable, |el| {
-                el.child(
-                    crate::popover::btn_primary(theme, "Switch")
+        // Actions only on INACTIVE accounts (comet `{!account.active && …}`):
+        // an icon-only Forget (trash, hover → foreground) then Switch, which
+        // reads "Switching…" while the activate round-trips.
+        let actions: Option<gpui::Div> = (!account.active).then(|| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .child(
+                    div()
+                        .id(("account-forget", ix))
+                        .rounded(px(6.0))
+                        .px(px(6.0))
+                        .py(px(4.0))
+                        .text_color(theme.text_muted)
+                        .cursor_pointer()
+                        .when(is_busy, |el| el.opacity(0.5))
+                        .hover(|s| {
+                            s.bg(crate::theme::white_alpha(0.06))
+                                .text_color(Theme::dark().text)
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.account_action(
+                                methods::FORGET_AGENT_ACCOUNT,
+                                &forget_account,
+                                cx,
+                            );
+                        }))
+                        .child(
+                            crate::icons::icon(crate::icons::TRASH_BIN_MINIMALISTIC)
+                                .size(px(14.0))
+                                .text_color(theme.text_muted),
+                        ),
+                )
+                .when(account.switchable, |el| {
+                    el.child(
+                        crate::popover::btn_primary(
+                            theme,
+                            if is_busy { "Switching…" } else { "Switch" },
+                        )
                         .id(("account-switch", ix))
                         .px(px(8.0))
                         .py(px(4.0))
@@ -576,27 +617,9 @@ impl AccountsPage {
                                 cx,
                             );
                         })),
-                )
-            })
-            .child(
-                div()
-                    .id(("account-forget", ix))
-                    .rounded(px(6.0))
-                    .px(px(6.0))
-                    .py(px(4.0))
-                    .text_size(px(11.5))
-                    .text_color(theme.text_muted)
-                    .cursor_pointer()
-                    .when(is_busy, |el| el.opacity(0.5))
-                    .hover(|s| {
-                        s.bg(crate::theme::white_alpha(0.06))
-                            .text_color(Theme::dark().danger)
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| {
-                        this.account_action(methods::FORGET_AGENT_ACCOUNT, &forget_account, cx);
-                    }))
-                    .child(SharedString::from("Forget")),
-            );
+                    )
+                })
+        });
 
         div()
             .px(px(20.0))
@@ -631,25 +654,32 @@ impl AccountsPage {
                     .flex()
                     .flex_col()
                     .child(widgets::row_title(theme, email))
-                    .when(!account.usage_windows.is_empty(), |el| {
-                        el.child(
-                            div().mt(px(6.0)).flex().flex_col().gap(px(4.0)).children(
-                                account
-                                    .usage_windows
-                                    .iter()
-                                    .map(|w| self.render_usage_meter(w, theme, now)),
-                            ),
-                        )
-                    })
-                    .when_some(auth_kind, |el, kind| {
-                        el.child(
-                            div()
-                                .mt(px(2.0))
-                                .truncate()
-                                .text_size(px(11.5))
-                                .text_color(theme.text_muted.opacity(0.6))
-                                .child(kind),
-                        )
+                    .map(|el| {
+                        // Meters XOR the quiet fallback line — never both
+                        // (comet: `usage ? meters : "Usage unavailable"…`).
+                        if account.usage_windows.is_empty() {
+                            el.child(
+                                div()
+                                    .mt(px(6.0))
+                                    .truncate()
+                                    .text_size(px(11.5))
+                                    .text_color(theme.text_muted.opacity(0.6))
+                                    .child(SharedString::from(if account.switchable {
+                                        "Usage unavailable"
+                                    } else {
+                                        "Credentials unavailable"
+                                    })),
+                            )
+                        } else {
+                            el.child(
+                                div().mt(px(6.0)).flex().flex_col().gap(px(4.0)).children(
+                                    account
+                                        .usage_windows
+                                        .iter()
+                                        .map(|w| self.render_usage_meter(w, theme, now)),
+                                ),
+                            )
+                        }
                     }),
             )
             .child(
@@ -661,7 +691,7 @@ impl AccountsPage {
                     .justify_between()
                     .gap(px(8.0))
                     .child(badges)
-                    .child(actions),
+                    .children(actions),
             )
             .into_any_element()
     }
@@ -674,8 +704,11 @@ impl AccountsPage {
         let theme = Theme::of(cx).clone();
         let red_text = crate::theme::oklch(0.81, 0.108, 19.6).opacity(0.9); // red-300
         let login = self.login.as_ref()?;
-        let url_link = |id: &'static str, url: &str, cx: &mut Context<Self>| {
+        let title = login.title();
+        let url_link = |id: &'static str, label: &'static str, url: &str, cx: &mut Context<Self>| {
             let open_url = url.to_string();
+            // "Reopen the …" text link (comet: `text-[12px]
+            // text-muted-foreground/60 hover:underline`).
             div()
                 .id(id)
                 .mt(px(6.0))
@@ -687,10 +720,10 @@ impl AccountsPage {
                 .on_click(cx.listener(move |_, _, _, cx| {
                     cx.open_url(&open_url);
                 }))
-                .child(SharedString::from(format!("Open {url} ↗")))
+                .child(SharedString::from(label))
         };
         let body: AnyElement = match login {
-            LoginFlow::Starting => div()
+            LoginFlow::Starting { .. } => div()
                 .mt(px(8.0))
                 .child(popover::skeleton_rows("login-starting", &theme, 2))
                 .into_any_element(),
@@ -698,6 +731,7 @@ impl AccountsPage {
                 start,
                 submitting,
                 error,
+                ..
             } => {
                 let submitting = *submitting;
                 div()
@@ -705,9 +739,16 @@ impl AccountsPage {
                     .flex_col()
                     .child(div().mt(px(8.0)).child(popover::dialog_body(
                         &theme,
-                        "Sign in in your browser, then paste the code below.",
+                        "A browser window opened. Sign in to the account you want to add, \
+                         approve access, then paste the code Anthropic shows you below. Your \
+                         current login is untouched until you switch.",
                     )))
-                    .child(url_link("login-open-url", &start.url, cx))
+                    .child(url_link(
+                        "login-open-url",
+                        "Reopen the authorization page",
+                        &start.url,
+                        cx,
+                    ))
                     .child(
                         div().mt(px(12.0)).child(
                             popover::dialog_field(self.code_input.clone().into_any_element())
@@ -741,7 +782,7 @@ impl AccountsPage {
                             .child(
                                 popover::btn_primary(
                                     &theme,
-                                    if submitting { "Verifying…" } else { "Continue" },
+                                    if submitting { "Verifying…" } else { "Add account" },
                                 )
                                 .id("login-submit-code")
                                 .when(submitting, |el| el.opacity(0.5))
@@ -754,133 +795,161 @@ impl AccountsPage {
                 start,
                 message,
                 error,
-            } => div()
-                .flex()
-                .flex_col()
-                .child(div().mt(px(8.0)).child(popover::dialog_body(
-                    &theme,
-                    "Finish signing in in your browser — waiting for it to land…",
-                )))
-                .child(url_link("login-open-url-browser", &start.url, cx))
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(10.0))
-                        .child(crate::loaders::gradient_spinner("login-poll", &theme, 3.0))
-                        .child(
+                ..
+            } => {
+                let has_error = error.is_some();
+                div()
+                    .flex()
+                    .flex_col()
+                    .child(div().mt(px(8.0)).child(popover::dialog_body(
+                        &theme,
+                        "Finish signing in to OpenAI in your browser. The new login is \
+                         captured in an isolated profile — your current session is untouched \
+                         until you switch.",
+                    )))
+                    .child(url_link(
+                        "login-open-url-browser",
+                        "Reopen the sign-in page",
+                        &start.url,
+                        cx,
+                    ))
+                    .when(!has_error, |el| {
+                        el.child(
                             div()
-                                .text_size(px(12.0))
-                                .text_color(theme.text_muted.opacity(0.6))
+                                .mt(px(16.0))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(8.0))
+                                .child(crate::loaders::gradient_spinner("login-poll", &theme, 3.0))
                                 .child(
-                                    message
-                                        .clone()
-                                        .unwrap_or_else(|| SharedString::from("Waiting…")),
+                                    div()
+                                        .text_size(px(12.5))
+                                        .text_color(theme.text_muted.opacity(0.7))
+                                        .child(message.clone().unwrap_or_else(|| {
+                                            SharedString::from("Waiting for the browser…")
+                                        })),
                                 ),
-                        ),
-                )
-                .when_some(error.clone(), |el, message| {
-                    el.child(
+                        )
+                    })
+                    .when_some(error.clone(), |el, message| {
+                        el.child(
+                            div()
+                                .mt(px(12.0))
+                                .text_size(px(12.0))
+                                .text_color(red_text)
+                                .child(message),
+                        )
+                    })
+                    .child(
                         div()
-                            .mt(px(8.0))
-                            .text_size(px(12.0))
-                            .text_color(red_text)
-                            .child(message),
-                    )
-                })
-                .child(
-                    div()
-                        .mt(px(16.0))
-                        .flex()
-                        .flex_row()
-                        .justify_end()
-                        .child(
-                            popover::btn_ghost(&theme, "Cancel")
+                            .mt(px(16.0))
+                            .flex()
+                            .flex_row()
+                            .justify_end()
+                            .child(
+                                popover::btn_ghost(
+                                    &theme,
+                                    if has_error { "Close" } else { "Cancel" },
+                                )
                                 .id("login-cancel")
                                 .on_click(cx.listener(|this, _, _, cx| this.cancel_login(cx))),
-                        ),
-                )
-                .into_any_element(),
+                            ),
+                    )
+                    .into_any_element()
+            }
         };
         let card = popover::dialog_card(&theme)
-            .child(popover::dialog_title(&theme, "Add account"))
+            .child(popover::dialog_title(&theme, title))
             .child(body)
             .into_any_element();
         Some(popover::modal("add-account-dialog", viewport, card))
     }
 
-    /// Device switcher: retargets which device's CLI logins are listed.
-    fn render_device_switcher(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = Theme::of(cx).clone();
-        let devices = self.state.read(cx).devices.clone();
-        let current: SharedString = match &self.target_device {
-            None => "This device".into(),
-            Some(id) => devices
-                .iter()
-                .find(|d| &d.id == id)
-                .map(|d| d.name.clone())
-                .unwrap_or_else(|| id.clone())
-                .into(),
+    /// A ghost account row (comet settings.agents.tsx `SkeletonRow`): avatar,
+    /// email line, two usage-meter ghosts, a badge — same geometry as the real
+    /// row so loaded data lands without a layout jump. `dim` fades row two.
+    fn render_skeleton_row(
+        &self,
+        id: (&'static str, usize),
+        dim: bool,
+        first: bool,
+        theme: &Theme,
+    ) -> AnyElement {
+        use crate::motion::{self, AnimationExt as _};
+        let ghost = |w: gpui::Length, h: f32, round_full: bool| {
+            div()
+                .w(w)
+                .h(px(h))
+                .flex_none()
+                .map(|el| {
+                    if round_full {
+                        el.rounded_full()
+                    } else {
+                        el.rounded(px(4.0))
+                    }
+                })
+                .bg(crate::theme::white_alpha(0.05))
         };
-        let open = self.device_menu_open;
-        let mut chip = div()
-            .id("accounts-device-switcher")
+        let meters = div().mt(px(8.0)).flex().flex_col().gap(px(7.0)).children(
+            (0..2).map(|_| {
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(8.0))
+                    .child(ghost(px(48.0).into(), 9.0, false))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w(px(56.0))
+                            .max_w(px(230.0))
+                            .h(px(5.0))
+                            .rounded_full()
+                            .bg(crate::theme::white_alpha(0.04)),
+                    )
+                    .child(ghost(px(64.0).into(), 9.0, false))
+            }),
+        );
+        let inner = div()
             .flex()
             .flex_row()
-            .items_center()
-            .gap(px(4.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(3.0))
-            .rounded(px(Theme::CONTROL_RADIUS))
-            .border_1()
-            .border_color(theme.border)
-            .text_size(px(11.0))
-            .text_color(theme.text_muted)
-            .cursor_pointer()
-            .hover(|s| s.bg(theme.element_hover))
-            .on_click(cx.listener(|this, _, _, cx| {
-                this.device_menu_open = !this.device_menu_open;
-                cx.notify();
-            }))
-            .child(current)
+            .items_stretch()
+            .gap(px(12.0))
             .child(
                 div()
-                    .text_color(theme.text_faint)
-                    .child(SharedString::from("▾")),
+                    .flex_none()
+                    .self_center()
+                    .size(px(32.0))
+                    .rounded_full()
+                    .bg(crate::theme::white_alpha(0.05)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(ghost(px(176.0).into(), 13.0, false).max_w(gpui::relative(0.6)))
+                    .child(meters),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_col()
+                    .items_end()
+                    .child(ghost(px(64.0).into(), 21.0, true)),
             );
-        if open {
-            let menu = popover::popover_card(&theme)
-                .w(px(220.0))
-                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-                    this.device_menu_open = false;
-                    cx.notify();
-                }))
-                .flex()
-                .flex_col()
-                .child(
-                    popover::menu_row(&theme, self.target_device.is_none())
-                        .id("device-target-local")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.set_target_device(None, cx);
-                        }))
-                        .child(SharedString::from("This device")),
-                )
-                .children(devices.into_iter().enumerate().map(|(ix, device)| {
-                    let selected = self.target_device.as_deref() == Some(device.id.as_str());
-                    let id = device.id.clone();
-                    popover::menu_row(&theme, selected)
-                        .id(("device-target", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.set_target_device(Some(id.clone()), cx);
-                        }))
-                        .child(SharedString::from(device.name.clone()))
-                }))
-                .into_any_element();
-            chip = chip.child(popover::anchored_menu("device-switcher-menu", menu));
-        }
-        chip.into_any_element()
+        div()
+            .px(px(20.0))
+            .py(px(14.0))
+            .when(!first, |el| el.border_t_1().border_color(theme.border))
+            .when(dim, |el| el.opacity(0.6))
+            .child(
+                inner.with_animation(id, motion::COMET_PULSE.repeating(), move |el, delta| {
+                    el.opacity(0.55 + 0.35 * motion::pulse_wave(delta))
+                }),
+            )
+            .into_any_element()
     }
 }
 
@@ -889,8 +958,8 @@ impl Render for AccountsPage {
         use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
         let now = Utc::now();
-        let switcher = self.render_device_switcher(cx);
         let dialog = self.render_login_dialog(window.viewport_size(), cx);
+        let refreshing = matches!(self.snapshot, Loadable::Loading);
         let account_count = self
             .snapshot
             .ready()
@@ -902,14 +971,33 @@ impl Render for AccountsPage {
             HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
             _ => (crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand())),
         };
+        // Brand mark inside a 24px centered box (comet: `grid size-6
+        // place-items-center [&_svg]:size-4`).
+        let provider_mark = |harness: HarnessId, theme: &Theme| {
+            let (mark, tint) = provider_icon(harness);
+            div()
+                .flex_none()
+                .size(px(24.0))
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(
+                    crate::icons::icon(mark)
+                        .size(px(16.0))
+                        .text_color(tint.unwrap_or(theme.text_muted)),
+                )
+        };
 
         // One section per provider (comet settings.agents.tsx `ProviderSection`):
         // brand header + Add account, then the account rows card.
         let sections: Vec<AnyElement> = match &self.snapshot {
             Loadable::Idle | Loadable::Loading => PROVIDERS
                 .into_iter()
-                .map(|(harness, name)| {
-                    let (mark, tint) = provider_icon(harness);
+                .map(|(harness, name, _cli)| {
+                    let skeleton_id = match harness {
+                        HarnessId::Codex => "accounts-skeleton-codex",
+                        _ => "accounts-skeleton-claude",
+                    };
                     div()
                         .mt(px(24.0))
                         .flex()
@@ -920,11 +1008,7 @@ impl Render for AccountsPage {
                                 .flex_row()
                                 .items_center()
                                 .gap(px(8.0))
-                                .child(
-                                    crate::icons::icon(mark)
-                                        .size(px(16.0))
-                                        .text_color(tint.unwrap_or(theme.text_muted)),
-                                )
+                                .child(provider_mark(harness, &theme))
                                 .child(
                                     div()
                                         .text_size(px(14.0))
@@ -934,18 +1018,22 @@ impl Render for AccountsPage {
                                 ),
                         )
                         .child(
-                            widgets::section_card(&theme).mt(px(8.0)).child(
-                                div().px(px(20.0)).py(px(14.0)).child(
-                                    popover::skeleton_rows(
-                                        match harness {
-                                            HarnessId::Codex => "accounts-skeleton-codex",
-                                            _ => "accounts-skeleton-claude",
-                                        },
-                                        &theme,
-                                        2,
-                                    ),
-                                ),
-                            ),
+                            // Ghost rows shaped like real ones (row two dimmed)
+                            // so the card keeps its size while data develops.
+                            widgets::section_card(&theme)
+                                .mt(px(8.0))
+                                .child(self.render_skeleton_row(
+                                    (skeleton_id, 0),
+                                    false,
+                                    true,
+                                    &theme,
+                                ))
+                                .child(self.render_skeleton_row(
+                                    (skeleton_id, 1),
+                                    true,
+                                    false,
+                                    &theme,
+                                )),
                         )
                         .into_any_element()
                 })
@@ -971,13 +1059,15 @@ impl Render for AccountsPage {
                 let snapshot = snapshot.clone();
                 PROVIDERS
                     .into_iter()
-                    .map(|(harness, name)| {
+                    .map(|(harness, name, cli)| {
                         let accounts = provider_accounts(&snapshot, harness);
-                        let warning = snapshot
+                        // EVERY warning renders its own strip (comet maps them).
+                        let warnings: Vec<String> = snapshot
                             .warnings
                             .iter()
-                            .find(|w| w.harness == harness)
-                            .map(|w| w.message.clone());
+                            .filter(|w| w.harness == harness)
+                            .map(|w| w.message.clone())
+                            .collect();
                         let rows: Vec<AnyElement> = accounts
                             .iter()
                             .enumerate()
@@ -986,7 +1076,6 @@ impl Render for AccountsPage {
                             })
                             .collect();
                         let add_id: SharedString = format!("add-account-{name}").into();
-                        let (mark, tint) = provider_icon(harness);
                         let card = widgets::section_card(&theme).mt(px(8.0));
                         let card = if rows.is_empty() {
                             card.child(
@@ -996,7 +1085,10 @@ impl Render for AccountsPage {
                                     .text_center()
                                     .text_size(px(14.0))
                                     .text_color(theme.text_muted.opacity(0.6))
-                                    .child(SharedString::from("No accounts detected")),
+                                    .child(SharedString::from(format!(
+                                        "No {name} login detected on this device — sign in \
+                                         with \u{201C}{cli}\u{201D} or add an account."
+                                    ))),
                             )
                         } else {
                             card.children(rows)
@@ -1011,11 +1103,7 @@ impl Render for AccountsPage {
                                     .flex_row()
                                     .items_center()
                                     .gap(px(8.0))
-                                    .child(
-                                        crate::icons::icon(mark)
-                                            .size(px(16.0))
-                                            .text_color(tint.unwrap_or(theme.text_muted)),
-                                    )
+                                    .child(provider_mark(harness, &theme))
                                     .child(
                                         div()
                                             .text_size(px(14.0))
@@ -1027,20 +1115,23 @@ impl Render for AccountsPage {
                                     .child(
                                         widgets::ghost_action(&theme)
                                             .id(add_id)
+                                            .hover(widgets::ghost_hover)
                                             .on_click(cx.listener(move |this, _, _, cx| {
                                                 this.start_login(harness, cx);
                                             }))
                                             .child(
-                                                crate::icons::icon(crate::icons::PLUS)
-                                                    .size(px(14.0))
+                                                crate::icons::icon(crate::icons::ADD_CIRCLE)
+                                                    .size(px(16.0))
                                                     .text_color(theme.text_muted),
                                             )
                                             .child(SharedString::from("Add account")),
                                     ),
                             )
-                            .when_some(warning, |el, warning| {
-                                el.child(widgets::warning_strip(warning))
-                            })
+                            .children(
+                                warnings
+                                    .into_iter()
+                                    .map(|warning| widgets::warning_strip(warning)),
+                            )
                             .child(card)
                             .into_any_element()
                     })
@@ -1062,18 +1153,30 @@ impl Render for AccountsPage {
                             .gap(px(10.0))
                             .child(widgets::page_header(&theme, "Accounts", account_count))
                             .child(div().flex_1())
-                            .child(switcher)
                             .child(
+                                // `text-[12.5px]` + leading 16px Refresh icon,
+                                // dimmed while a refresh is in flight (comet
+                                // `disabled:opacity-50`).
                                 widgets::ghost_action(&theme)
                                     .id("accounts-refresh")
                                     .flex_none()
+                                    .text_size(px(12.5))
+                                    .hover(widgets::ghost_hover)
+                                    .when(refreshing, |el| el.opacity(0.5))
                                     .on_click(cx.listener(|this, _, _, cx| this.load(true, cx)))
-                                    .child(SharedString::from("Refresh usage")),
+                                    .child(
+                                        crate::icons::icon(crate::icons::REFRESH)
+                                            .size(px(16.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Refresh")),
                             ),
                     )
                     .child(widgets::page_subtitle(
                         &theme,
-                        "Agent CLI logins and usage limits for this device.",
+                        "The Claude Code and Codex logins on this device. Comet detects the \
+                         live session, keeps each account backed up, and can swap between \
+                         them.",
                     ))
                     .when_some(self.error.clone(), |el, message| {
                         el.child(
@@ -1086,7 +1189,22 @@ impl Render for AccountsPage {
                                 })),
                         )
                     })
-                    .children(sections),
+                    .children(sections)
+                    // Footer note (comet: `mt-6 text-[12px] leading-relaxed
+                    // text-muted-foreground/60`).
+                    .child(
+                        div()
+                            .mt(px(24.0))
+                            .text_size(px(12.0))
+                            .line_height(px(19.0))
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from(
+                                "Switching rewrites the CLI\u{2019}s stored login, so new \
+                                 agent sessions use the selected account immediately. On \
+                                 macOS, an already-running Claude Code can hold the previous \
+                                 login for up to ~30 seconds (Keychain cache).",
+                            )),
+                    ),
             )
             .when_some(dialog, |el, dialog| el.child(dialog))
     }
@@ -1116,20 +1234,27 @@ mod tests {
     }
 
     #[test]
-    fn reset_formatting() {
+    fn reset_formatting_is_absolute() {
+        use chrono::Local;
         let now = Utc::now();
         assert_eq!(format_reset(None, now), None);
+        // Within ~22h: a local clock time ("resets 3:45 PM").
+        let soon = now + TimeDelta::minutes(125);
         assert_eq!(
-            format_reset(Some(now + TimeDelta::minutes(12)), now),
-            Some("resets in 12m".into())
+            format_reset(Some(soon), now),
+            Some(format!(
+                "resets {}",
+                soon.with_timezone(&Local).format("%-I:%M %p")
+            ))
         );
+        // Beyond: a short weekday ("resets Mon").
+        let later = now + TimeDelta::days(3);
         assert_eq!(
-            format_reset(Some(now + TimeDelta::minutes(125)), now),
-            Some("resets in 2h 05m".into())
-        );
-        assert_eq!(
-            format_reset(Some(now - TimeDelta::minutes(1)), now),
-            Some("resets soon".into())
+            format_reset(Some(later), now),
+            Some(format!(
+                "resets {}",
+                later.with_timezone(&Local).format("%a")
+            ))
         );
     }
 

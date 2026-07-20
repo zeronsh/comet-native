@@ -92,10 +92,11 @@ impl ShortcutId {
         ShortcutId::ToggleTerminal,
     ];
 
+    /// Row label (comet lib/shortcuts.ts `SHORTCUT_DEFINITIONS`, verbatim).
     pub fn label(self) -> &'static str {
         match self {
-            ShortcutId::ToggleSidebar => "Toggle sidebar",
-            ShortcutId::ToggleChanges => "Toggle changes",
+            ShortcutId::ToggleSidebar => "Toggle left sidebar",
+            ShortcutId::ToggleChanges => "Toggle right sidebar",
             ShortcutId::ToggleTerminal => "Toggle terminal",
         }
     }

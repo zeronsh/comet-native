@@ -141,12 +141,14 @@ impl SettingsSection {
         SettingsSection::Archived,
     ];
 
+    /// Sidebar + header label (comet settings-sidebar.tsx SECTIONS / __root.tsx
+    /// `settingsTitle` — the same strings in both places).
     pub fn label(self) -> &'static str {
         match self {
             SettingsSection::Devices => "Devices",
-            SettingsSection::Agents => "Agents",
+            SettingsSection::Agents => "Accounts",
             SettingsSection::Shortcuts => "Shortcuts",
-            SettingsSection::Archived => "Archived",
+            SettingsSection::Archived => "Archived sessions",
         }
     }
 }
@@ -191,6 +193,87 @@ impl SessionPanels {
         let entry = self.map.entry(key.to_string()).or_default();
         entry.changes_open = !entry.changes_open;
         entry.changes_open
+    }
+}
+
+/// One route-history entry (comet parity: the renderer's TanStack memory
+/// history — every route the user visited, browser-style).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavEntry {
+    /// A chat route; the id of the selected chat ("" = the new-chat canvas).
+    Chat(String),
+    Settings(SettingsSection),
+}
+
+/// Browser-style navigation history for the titlebar back/forward buttons
+/// (comet window-controls.tsx semantics): every route change pushes an entry;
+/// Back/Forward walk the stack without changing it; pushing while behind the
+/// tip truncates the entries ahead (a new branch, exactly like a browser).
+#[derive(Debug)]
+pub struct NavHistory {
+    entries: Vec<NavEntry>,
+    index: usize,
+}
+
+impl NavHistory {
+    pub fn new(initial: NavEntry) -> Self {
+        Self {
+            entries: vec![initial],
+            index: 0,
+        }
+    }
+
+    pub fn current(&self) -> &NavEntry {
+        &self.entries[self.index]
+    }
+
+    /// Record a route change. Re-navigating to the current route is a no-op
+    /// (selecting the already-selected chat never happened as a navigation);
+    /// otherwise any forward branch is truncated and the entry appended.
+    pub fn push(&mut self, entry: NavEntry) {
+        if *self.current() == entry {
+            return;
+        }
+        self.entries.truncate(self.index + 1);
+        self.entries.push(entry);
+        self.index += 1;
+    }
+
+    /// Swap the current entry in place without growing the stack — the native
+    /// equivalent of a `replace: true` navigation (comet's boot redirect from
+    /// `/` into the last-used chat leaves no dead Back target behind).
+    pub fn replace(&mut self, entry: NavEntry) {
+        self.entries[self.index] = entry;
+    }
+
+    pub fn can_back(&self) -> bool {
+        self.index > 0
+    }
+
+    /// Memory history keeps every entry, so "behind the last entry" is exactly
+    /// "can go forward" (comet window-controls.tsx).
+    pub fn can_forward(&self) -> bool {
+        self.index + 1 < self.entries.len()
+    }
+
+    pub fn back(&mut self) -> Option<NavEntry> {
+        if !self.can_back() {
+            return None;
+        }
+        self.index -= 1;
+        Some(self.current().clone())
+    }
+
+    pub fn forward(&mut self) -> Option<NavEntry> {
+        if !self.can_forward() {
+            return None;
+        }
+        self.index += 1;
+        Some(self.current().clone())
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -297,6 +380,8 @@ pub struct Shell {
     changes: Option<Entity<Changes>>,
     /// Chat outlet vs settings pages.
     route: Route,
+    /// Route history behind the titlebar back/forward buttons (§ nav history).
+    nav: NavHistory,
     devices_page: Option<Entity<DevicesPage>>,
     archived_page: Option<Entity<ArchivedPage>>,
     shortcuts_page: Option<Entity<ShortcutsPage>>,
@@ -445,6 +530,10 @@ impl Shell {
             )),
             _ => None,
         };
+        let nav = NavHistory::new(match route {
+            Route::Chat => NavEntry::Chat(String::new()),
+            Route::Settings(section) => NavEntry::Settings(section),
+        });
         Self {
             state,
             transcript,
@@ -452,6 +541,7 @@ impl Shell {
             terminal: None,
             changes: None,
             route,
+            nav,
             devices_page: None,
             archived_page: None,
             shortcuts_page: None,
@@ -518,6 +608,19 @@ impl Shell {
         let selected = state.read(cx).selected_chat.clone().unwrap_or_default();
         if selected != self.active_chat {
             self.active_chat = selected;
+            // Route history: a chat switch is a navigation. The very first
+            // selection off the untouched boot canvas REPLACES that entry —
+            // comet's `/` route redirected into the last-used chat, leaving no
+            // dead Back target. Walking history lands here too, but the
+            // destination already equals `current()`, so the push dedups.
+            if matches!(self.route, Route::Chat) {
+                let entry = NavEntry::Chat(self.active_chat.clone());
+                if self.nav.len() == 1 && *self.nav.current() == NavEntry::Chat(String::new()) {
+                    self.nav.replace(entry);
+                } else {
+                    self.nav.push(entry);
+                }
+            }
             self.right_tween = None;
             self.terminal_tween = None;
             let panels = self.panels.get(&self.active_chat);
@@ -775,6 +878,7 @@ impl Shell {
 
     fn open_settings(&mut self, section: SettingsSection, cx: &mut Context<Self>) {
         self.route = Route::Settings(section);
+        self.nav.push(NavEntry::Settings(section));
         self.user_menu_open = false;
         self.chat_menu = None;
         cx.notify();
@@ -782,6 +886,42 @@ impl Shell {
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.route = Route::Chat;
+        self.nav.push(NavEntry::Chat(self.active_chat.clone()));
+        cx.notify();
+    }
+
+    // ---- back/forward (route history) ----
+
+    fn navigate_back(&mut self, cx: &mut Context<Self>) {
+        if let Some(entry) = self.nav.back() {
+            self.apply_nav(entry, cx);
+        }
+    }
+
+    fn navigate_forward(&mut self, cx: &mut Context<Self>) {
+        if let Some(entry) = self.nav.forward() {
+            self.apply_nav(entry, cx);
+        }
+    }
+
+    /// Land on a history entry WITHOUT recording a new one: the stack already
+    /// points at `entry` (back/forward moved the index); the selection change
+    /// this triggers dedups against `current()` in [`Self::on_state_changed`].
+    fn apply_nav(&mut self, entry: NavEntry, cx: &mut Context<Self>) {
+        match entry {
+            NavEntry::Chat(chat_id) => {
+                self.route = Route::Chat;
+                let target = (!chat_id.is_empty()).then_some(chat_id);
+                if self.state.read(cx).selected_chat != target {
+                    self.state.update(cx, |s, cx| s.select_chat(target, cx));
+                }
+            }
+            NavEntry::Settings(section) => {
+                self.route = Route::Settings(section);
+            }
+        }
+        self.user_menu_open = false;
+        self.chat_menu = None;
         cx.notify();
     }
 
@@ -1201,6 +1341,8 @@ impl Shell {
     /// through to the titlebar drag strips below.
     fn render_titlebar_cluster(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
+        let can_back = self.nav.can_back();
+        let can_forward = self.nav.can_forward();
         div()
             .absolute()
             .top_0()
@@ -1218,30 +1360,20 @@ impl Shell {
                 &theme,
                 cx.listener(|this, _, _, cx| this.toggle_sidebar(cx)),
             ))
-            .child(
-                div()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        icon(icons::ARROW_LEFT)
-                            .size(px(16.0))
-                            .text_color(theme.text_muted.opacity(0.35)),
-                    ),
-            )
-            .child(
-                div()
-                    .size(px(24.0))
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        icon(icons::ARROW_RIGHT)
-                            .size(px(16.0))
-                            .text_color(theme.text_muted.opacity(0.35)),
-                    ),
-            )
+            .child(nav_history_button(
+                "nav-back",
+                icons::ARROW_LEFT,
+                can_back,
+                &theme,
+                cx.listener(|this, _, _, cx| this.navigate_back(cx)),
+            ))
+            .child(nav_history_button(
+                "nav-forward",
+                icons::ARROW_RIGHT,
+                can_forward,
+                &theme,
+                cx.listener(|this, _, _, cx| this.navigate_forward(cx)),
+            ))
             .into_any_element()
     }
 
@@ -1277,8 +1409,19 @@ impl Shell {
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
         };
+        let device = {
+            let state = self.state.read(cx);
+            state
+                .local_device_id
+                .as_deref()
+                .and_then(|id| state.devices.iter().find(|d| d.id == id))
+                .cloned()
+        };
+        // The settings sidebar renders at the DEFAULT width regardless of the
+        // user's chat-sidebar drag width (comet __root.tsx:
+        // `width: collapsed ? 0 : isSettings ? SIDEBAR_DEFAULT : width`).
         div()
-            .w(px(self.settings.sidebar_width))
+            .w(px(SIDEBAR_DEFAULT))
             .h_full()
             .flex()
             .flex_col()
@@ -1291,6 +1434,14 @@ impl Shell {
                     .items_center();
                 self.titlebar_drag_region("settings-titlebar", strip, cx)
             })
+            // Device switcher in the same slot as the main sidebar (comet
+            // settings-sidebar.tsx `px-2 pb-1` DeviceSwitcher block).
+            .child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .pb(px(4.0))
+                    .child(self.render_device_row(&device, theme)),
+            )
             .child(
                 div()
                     .flex_1()
@@ -1372,11 +1523,67 @@ impl Shell {
                         })
                         .on_click(cx.listener(|this, _, _, cx| this.close_settings(cx)))
                         .child(
-                            icon(icons::ARROW_LEFT)
+                            // AltArrowLeft chevron (comet settings-sidebar.tsx),
+                            // not the straight history arrow.
+                            icon(icons::ALT_ARROW_LEFT)
                                 .size(px(16.0))
                                 .text_color(theme.text_muted),
                         )
                         .child(SharedString::from("Back")),
+                ),
+            )
+            .into_any_element()
+    }
+
+    /// Device identity row (comet device-switcher.tsx): platform glyph · name ·
+    /// presence dot · sort glyph. The native app is single-device, so the row
+    /// is identity, not a menu. It tops BOTH sidebars — the settings sidebar
+    /// keeps the switcher in the same slot (comet settings-sidebar.tsx).
+    fn render_device_row(
+        &self,
+        device: &Option<comet_proto::Device>,
+        theme: &Theme,
+    ) -> AnyElement {
+        let device_name: SharedString = device
+            .as_ref()
+            .map(|d| d.name.clone().into())
+            .unwrap_or_else(|| SharedString::from("This device"));
+        let device_icon = match device.as_ref().map(|d| d.platform.as_str()) {
+            Some("macos") | Some("darwin") => icons::LAPTOP,
+            _ => icons::MONITOR,
+        };
+        let emerald = crate::theme::oklch(0.765, 0.177, 163.223); // emerald-400
+        div()
+            .id("device-switcher")
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
+            .rounded(px(8.0))
+            .px(px(Theme::SPACE_SM))
+            .py(px(6.0))
+            .cursor_default()
+            .hover(|s| s.bg(Theme::dark().element_hover))
+            .child(
+                icon(device_icon)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted),
+            )
+            .child(
+                div()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(13.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .text_color(theme.text)
+                    .child(device_name),
+            )
+            .child(div().size(px(6.0)).rounded_full().flex_none().bg(emerald))
+            .child(
+                div().ml_auto().flex_none().child(
+                    icon(icons::SORT_VERTICAL)
+                        .size(px(14.0))
+                        .text_color(theme.text_muted.opacity(0.4)),
                 ),
             )
             .into_any_element()
@@ -1681,51 +1888,7 @@ impl Shell {
         let user_email: Option<SharedString> = user.as_ref().map(|u| u.email.clone().into());
         let user_menu = self.render_user_menu(user_line.clone(), user_email.clone(), theme, cx);
 
-        // Device row: platform glyph · name · presence dot · sort glyph
-        // (comet device-switcher.tsx). The native app is single-device, so the
-        // row is identity, not a menu.
-        let device_name: SharedString = device
-            .as_ref()
-            .map(|d| d.name.clone().into())
-            .unwrap_or_else(|| SharedString::from("This device"));
-        let device_icon = match device.as_ref().map(|d| d.platform.as_str()) {
-            Some("macos") | Some("darwin") => icons::LAPTOP,
-            _ => icons::MONITOR,
-        };
-        let emerald = crate::theme::oklch(0.765, 0.177, 163.223); // emerald-400
-        let device_row = div()
-            .id("device-switcher")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(Theme::SPACE_SM))
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
-            .cursor_default()
-            .hover(|s| s.bg(Theme::dark().element_hover))
-            .child(
-                icon(device_icon)
-                    .size(px(16.0))
-                    .text_color(theme.text_muted),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(13.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(device_name),
-            )
-            .child(div().size(px(6.0)).rounded_full().flex_none().bg(emerald))
-            .child(
-                div().ml_auto().flex_none().child(
-                    icon(icons::SORT_VERTICAL)
-                        .size(px(14.0))
-                        .text_color(theme.text_muted.opacity(0.4)),
-                ),
-            );
+        let device_row = self.render_device_row(&device, theme);
 
         div()
             .w(px(self.settings.sidebar_width))
@@ -3024,6 +3187,33 @@ fn window_control_button(
         .child(icon(icon_path).size(px(16.0)).text_color(muted))
 }
 
+/// A titlebar history button (comet window-controls.tsx): enabled it is a
+/// normal window-control button; disabled it dims to 35% opacity and ignores
+/// the pointer (`disabled:pointer-events-none disabled:opacity-35`).
+fn nav_history_button(
+    id: &'static str,
+    icon_path: &'static str,
+    enabled: bool,
+    theme: &Theme,
+    on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    if !enabled {
+        return div()
+            .size(px(24.0))
+            .flex_none()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                icon(icon_path)
+                    .size(px(16.0))
+                    .text_color(theme.text_muted.opacity(0.35)),
+            )
+            .into_any_element();
+    }
+    window_control_button(id, icon_path, theme, on_click).into_any_element()
+}
+
 /// A size-7 icon button for the main-panel header (comet __root.tsx:
 /// `grid size-7 place-items-center rounded-md text-muted-foreground`).
 fn header_icon_button(
@@ -3119,11 +3309,21 @@ impl Render for Shell {
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
             .on_drag_move(cx.listener(Self::on_right_pane_drag))
             .on_drag_move(cx.listener(Self::on_terminal_drag))
+            // The panel shortcuts are chat-scoped chrome: in Settings they are
+            // no-ops (comet __root.tsx gates the hotkey on `!isSettings`, and
+            // the terminal panel is only mounted on session routes). The
+            // sidebar toggle stays live everywhere, as in the original.
             .on_action(cx.listener(|this, _: &ToggleTerminal, window, cx| {
-                this.toggle_terminal(window, cx)
+                if matches!(this.route, Route::Chat) {
+                    this.toggle_terminal(window, cx)
+                }
             }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
-            .on_action(cx.listener(|this, _: &ToggleChanges, _, cx| this.toggle_right_pane(cx)));
+            .on_action(cx.listener(|this, _: &ToggleChanges, _, cx| {
+                if matches!(this.route, Route::Chat) {
+                    this.toggle_right_pane(cx)
+                }
+            }));
 
         let root = match &gate {
             GatePhase::Ready => {
@@ -3142,7 +3342,12 @@ impl Render for Shell {
                     cx,
                 );
                 let main = self.render_main(cx);
-                let right_open = self.right_pane_open();
+                // The Changes pane is chat-scoped chrome: the Settings route
+                // never renders it (comet __root.tsx `!isSettings && activeChat`
+                // around the diff column) — the per-session open flags stay
+                // intact for the return trip.
+                let on_chat = matches!(self.route, Route::Chat);
+                let right_open = on_chat && self.right_pane_open();
                 // The conversation/pane divider: a single full-height hairline
                 // inside the card (the reference chrome), with the 5px resize
                 // grabber floating OVER it (absolute) so the hit area consumes
@@ -3169,7 +3374,11 @@ impl Render for Shell {
                         .child(handle)
                         .into_any_element()
                 });
-                let right = self.render_right_pane(cx);
+                let right: AnyElement = if on_chat {
+                    self.render_right_pane(cx)
+                } else {
+                    Empty.into_any_element()
+                };
                 let overlays = self.render_overlays(window.viewport_size(), window, cx);
                 // The signature frame: the content pane (main column + changes
                 // pane) is an inset rounded hairline-bordered card floating on
@@ -3401,5 +3610,101 @@ mod tests {
         // §1.6: 260ms cubic-bezier(0.22, 1, 0.36, 1).
         assert_eq!(RESORT.duration_ms, 260);
         assert_eq!(RESORT.curve, motion::EASE_RESORT);
+    }
+
+    // ---- navigation history (titlebar back/forward) ----
+
+    fn chat(id: &str) -> NavEntry {
+        NavEntry::Chat(id.to_string())
+    }
+
+    #[test]
+    fn nav_history_starts_with_nothing_to_walk() {
+        let nav = NavHistory::new(chat(""));
+        assert!(!nav.can_back());
+        assert!(!nav.can_forward());
+        assert_eq!(*nav.current(), chat(""));
+    }
+
+    #[test]
+    fn nav_push_then_back_and_forward() {
+        let mut nav = NavHistory::new(chat("a"));
+        nav.push(chat("b"));
+        nav.push(NavEntry::Settings(SettingsSection::Devices));
+        assert!(nav.can_back());
+        assert!(!nav.can_forward());
+
+        // Back walks toward the oldest entry without dropping anything.
+        assert_eq!(
+            nav.back(),
+            Some(chat("b")),
+            "back lands on the previous route"
+        );
+        assert_eq!(nav.back(), Some(chat("a")));
+        assert!(!nav.can_back());
+        assert!(nav.can_forward());
+        assert_eq!(nav.back(), None, "past the oldest entry is a no-op");
+
+        // Forward retraces the same path.
+        assert_eq!(nav.forward(), Some(chat("b")));
+        assert_eq!(
+            nav.forward(),
+            Some(NavEntry::Settings(SettingsSection::Devices))
+        );
+        assert!(!nav.can_forward());
+        assert_eq!(nav.forward(), None);
+    }
+
+    #[test]
+    fn nav_push_dedups_the_current_route() {
+        let mut nav = NavHistory::new(chat("a"));
+        nav.push(chat("a"));
+        nav.push(chat("a"));
+        assert_eq!(nav.len(), 1, "re-selecting the current route never stacks");
+        nav.push(NavEntry::Settings(SettingsSection::Agents));
+        nav.push(NavEntry::Settings(SettingsSection::Agents));
+        assert_eq!(nav.len(), 2);
+    }
+
+    #[test]
+    fn nav_push_truncates_the_forward_branch() {
+        // a → b → c, back to a, then push d: the b/c branch is gone (browser
+        // semantics — comet's memory history PUSH truncates entries ahead).
+        let mut nav = NavHistory::new(chat("a"));
+        nav.push(chat("b"));
+        nav.push(chat("c"));
+        nav.back();
+        nav.back();
+        assert_eq!(*nav.current(), chat("a"));
+        assert!(nav.can_forward());
+        nav.push(chat("d"));
+        assert!(!nav.can_forward(), "the old branch is unreachable");
+        assert_eq!(nav.len(), 2);
+        assert_eq!(nav.back(), Some(chat("a")));
+        assert_eq!(nav.forward(), Some(chat("d")));
+    }
+
+    #[test]
+    fn nav_replace_swaps_in_place() {
+        // The boot auto-select replaces the untouched canvas entry, so Back
+        // stays disabled after landing in the last-used chat.
+        let mut nav = NavHistory::new(chat(""));
+        nav.replace(chat("boot"));
+        assert_eq!(nav.len(), 1);
+        assert_eq!(*nav.current(), chat("boot"));
+        assert!(!nav.can_back());
+    }
+
+    #[test]
+    fn nav_settings_sections_are_distinct_entries() {
+        let mut nav = NavHistory::new(chat("a"));
+        nav.push(NavEntry::Settings(SettingsSection::Devices));
+        nav.push(NavEntry::Settings(SettingsSection::Shortcuts));
+        assert_eq!(nav.len(), 3, "section changes are navigations");
+        assert_eq!(
+            nav.back(),
+            Some(NavEntry::Settings(SettingsSection::Devices))
+        );
+        assert_eq!(nav.back(), Some(chat("a")));
     }
 }
