@@ -12,6 +12,7 @@
 //! - [`shell`] — sidebar + main panel + right-pane scaffold + gate;
 //! - [`loaders`] — comet pulse loader, gradient spinner, boot splash.
 
+pub mod app_menus;
 pub mod changes;
 pub mod composer;
 pub mod icons;
@@ -94,19 +95,39 @@ impl UiConfig {
     }
 }
 
+/// What a dock-icon reopen needs to rebuild the main window after ⌘W closed it
+/// (macOS keeps the process alive with just the menu bar, like zed).
+struct ReopenState {
+    state: gpui::Entity<state::AppState>,
+    boot: EngineBootConfig,
+}
+
+impl gpui::Global for ReopenState {}
+
 /// Run the headed app: tokio bridge up, engine bootstrap kicked off (probe →
 /// connect-or-embed), 1320×880 window (min 900×600) with [`shell::Shell`] as the
 /// root view, boot splash overlaid until the engine reports ready.
 pub fn run_app(config: UiConfig) {
-    gpui_platform::application()
-        .with_assets(icons::Assets)
-        .run(move |cx: &mut App| {
+    let app = gpui_platform::application().with_assets(icons::Assets);
+    // Dock-icon click with no window (⌘W closed it): rebuild the main window
+    // around the still-running engine — zed does the same via `on_reopen`
+    // (crates/zed/src/main.rs `app.on_reopen`).
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty()
+            && let Some(reopen) = cx.try_global::<ReopenState>()
+        {
+            let (state, boot) = (reopen.state.clone(), reopen.boot.clone());
+            open_main_window(state, boot, cx);
+        }
+    });
+    app.run(move |cx: &mut App| {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
         register_fonts(cx);
         cx.set_global(theme::Theme::dark());
         composer::init(cx);
         terminal::panel::init(cx);
+        app_menus::init(cx);
 
         let state = cx.new(|_| state::AppState::new());
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
@@ -127,38 +148,62 @@ pub fn run_app(config: UiConfig) {
         })
         .detach();
 
-        // comet window geometry: 1320×880, min 900×600 (feature-inventory §1.1).
-        let bounds = Bounds::centered(None, size(px(1320.), px(880.)), cx);
-        cx.open_window(
-            WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(bounds)),
-                window_min_size: Some(size(px(900.), px(600.))),
-                // macOS: frameless-inset chrome like the original Electron app
-                // (`titleBarStyle: "hiddenInset"`, traffic lights at 14,15 —
-                // feature-inventory §1.1). No title text — the strip is
-                // custom-drawn (zed sets `title: None` the same way). The
-                // original is deliberately OPAQUE (no vibrancy), so
-                // window_background stays default. On Linux/Windows
-                // `appears_transparent` hides the system titlebar for our
-                // custom-drawn chrome; harmless where unsupported.
-                titlebar: Some(TitlebarOptions {
-                    title: None,
-                    appears_transparent: true,
-                    traffic_light_position: Some(gpui::point(px(14.), px(15.))),
-                }),
-                // Our own titlebar strip drags the window (WindowControlArea::
-                // Drag + start_window_move) — mark the content view app-owned
-                // so AppKit neither dead-zones the strip nor delays clicks.
-                app_owns_titlebar_drag: true,
-                app_id: Some("comet".into()),
-                ..Default::default()
-            },
-            {
-                let boot = config.boot();
-                move |_, cx| cx.new(|cx| shell::Shell::new(state, boot, cx))
-            },
-        )
-        .expect("failed to open window");
+        cx.set_global(ReopenState {
+            state: state.clone(),
+            boot: config.boot(),
+        });
+        open_main_window(state, config.boot(), cx);
+        // Native menu bar — macOS gets the standard app menu (About/Services/
+        // Hide/Quit ⌘Q), Edit clipboard verbs routed to the focused input, and
+        // a Window menu (⌘M/⌘W). Without this, `NSApp.mainMenu` stays nil: no
+        // Cmd+Q, and nothing for the system menu bar to show. Set after
+        // `open_main_window` because `Shell::new` ran `apply_keymap`
+        // synchronously, so `set_menus` reads the final bindings for the ⌘-key
+        // equivalents (gpui snapshots the keymap at set time).
+        cx.set_menus(app_menus::app_menus());
         cx.activate(true);
     });
+}
+
+/// Open the 1320×880 main window (min 900×600) with [`shell::Shell`] as the
+/// root view. Called at boot and again from `on_reopen` if the dock icon is
+/// clicked after ⌘W closed the window.
+fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig, cx: &mut App) {
+    // comet window geometry: 1320×880, min 900×600 (feature-inventory §1.1).
+    let bounds = Bounds::centered(None, size(px(1320.), px(880.)), cx);
+    cx.open_window(
+        WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(bounds)),
+            window_min_size: Some(size(px(900.), px(600.))),
+            // `kind` is deliberately left at its default `WindowKind::Normal`
+            // (gpui platform.rs WindowOptions::default), which on macOS maps
+            // to `NSNormalWindowLevel` (gpui_macos window.rs) — same as zed's
+            // main window. Nothing here raises the window level or touches
+            // presentation options; the "menu bar never appears" symptom came
+            // from the missing `set_menus` call (nil `NSApp.mainMenu`), not
+            // from window kind/level, and `appears_transparent` only affects
+            // the titlebar, not the menu bar.
+            // macOS: frameless-inset chrome like the original Electron app
+            // (`titleBarStyle: "hiddenInset"`, traffic lights at 14,15 —
+            // feature-inventory §1.1). No title text — the strip is
+            // custom-drawn (zed sets `title: None` the same way). The
+            // original is deliberately OPAQUE (no vibrancy), so
+            // window_background stays default. On Linux/Windows
+            // `appears_transparent` hides the system titlebar for our
+            // custom-drawn chrome; harmless where unsupported.
+            titlebar: Some(TitlebarOptions {
+                title: None,
+                appears_transparent: true,
+                traffic_light_position: Some(gpui::point(px(14.), px(15.))),
+            }),
+            // Our own titlebar strip drags the window (WindowControlArea::
+            // Drag + start_window_move) — mark the content view app-owned
+            // so AppKit neither dead-zones the strip nor delays clicks.
+            app_owns_titlebar_drag: true,
+            app_id: Some("comet".into()),
+            ..Default::default()
+        },
+        move |_, cx| cx.new(|cx| shell::Shell::new(state, boot, cx)),
+    )
+    .expect("failed to open window");
 }

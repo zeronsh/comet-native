@@ -105,6 +105,10 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     }
     cx.clear_key_bindings();
     crate::composer::init(cx);
+    // Fixed app-level shortcuts (⌘Q quit, ⌘W close, ⌘M minimize, ⌘H hide) —
+    // these back the native menu key equivalents and must survive keymap
+    // re-application.
+    crate::app_menus::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(
             &valid_or_default(&keymap.toggle_sidebar, "mod-s"),
