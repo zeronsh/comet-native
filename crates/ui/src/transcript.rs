@@ -1488,13 +1488,28 @@ impl Transcript {
             .hovered_entry
             .as_ref()
             .is_some_and(|(_, entry)| entry == &row.entry_id);
+        // Vertical breathing room from the source: assistant text blocks sit
+        // in a `VStack padding={4}` (chat-view.tsx:183), so the strip starts
+        // 4px below the message text — the native markdown column has no such
+        // bottom padding, so the strip carries it as top inset (grown into the
+        // reserved height: reveal still never shifts layout). User rows are
+        // flush: the Timestamp follows the bubble HStack directly (VStack gap
+        // defaults to 0 in mugen), the label's centering inside the 16px lane
+        // is all the gap the original has.
         let strip = row.timestamp.map(|ms| {
             div()
-                .h(px(16.0))
+                .h(px(if is_user_row { 16.0 } else { 20.0 }))
+                .when(!is_user_row, |el| el.pt(px(4.0)))
                 .w_full()
                 .flex()
                 .items_center()
-                .px(px(4.0))
+                // No horizontal inset: the original's `px-1` netted out flush
+                // because its message text was inset by the same amount (group
+                // padding 4 + inner VStack 4 = 8 = group 4 + px-1 4). Here the
+                // markdown text / user bubble sit AT the content column edges,
+                // so the label must too — assistant label's left edge on the
+                // text's first-character x, user label's right edge on the
+                // bubble's right edge (user-reported 4px drift).
                 .when(is_user_row, |el| el.justify_end())
                 .when(hovered, |el| {
                     el.child(motion::fade_quick(
