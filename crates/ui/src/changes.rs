@@ -972,16 +972,10 @@ fn del_color() -> gpui::Hsla {
     oklch(0.704, 0.191, 22.216) // red-400
 }
 
-/// Diff syntax palette (the transcript's code blocks stay monochrome; the diff
-/// pane paints hues like the original checkout-diff sidebar).
+/// Diff syntax palette — since round 9 the transcript's code blocks share the
+/// same soft hues, so this simply delegates to [`render::token_color`].
 fn diff_token_color(class: crate::markdown::highlight::TokenClass, theme: &Theme) -> gpui::Hsla {
-    use crate::markdown::highlight::TokenClass;
-    match class {
-        TokenClass::Keyword => oklch(0.709, 0.129, 20.0),   // soft rose
-        TokenClass::StringLit => oklch(0.77, 0.11, 168.0),  // soft green
-        TokenClass::Number => oklch(0.78, 0.12, 80.0),      // soft amber
-        TokenClass::Comment => theme.text_faint,
-    }
+    render::token_color(class, theme)
 }
 
 /// The expanded body of one file section: notices, hunk headers, +/-/context

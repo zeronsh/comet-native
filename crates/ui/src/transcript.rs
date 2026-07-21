@@ -1055,6 +1055,17 @@ impl Transcript {
         self.pinned
     }
 
+    /// Whether the shell should float the "Scroll to bottom" pill (scrolled
+    /// more than [`SCROLL_BUTTON_THRESHOLD_PX`] off the end, unpinned).
+    pub fn jump_button_shown(&self) -> bool {
+        self.show_jump_button
+    }
+
+    /// The scroll-to-bottom pill's click: glide back to the end and re-pin.
+    pub fn jump_to_bottom(&mut self, cx: &mut Context<Self>) {
+        self.engage_pin(cx);
+    }
+
     /// Re-engage the bottom pin with a glide. Long jumps teleport to within
     /// [`GLIDE_MAX_VIEWPORTS`] of the end first (mugen `springToBottom`);
     /// reduced motion snaps.
@@ -1803,10 +1814,11 @@ impl Render for Transcript {
                     .ok();
             });
         }
-        let theme = Theme::of(cx);
-        let (raised, border, text) = (theme.surface_raised, theme.border, theme.text);
-        let jump = self.show_jump_button;
         let rail = self.render_rail(cx);
+        // The scroll-to-bottom pill is rendered by the SHELL (conversation
+        // region overlay): it must float just above the composer and paint
+        // OVER the bottom fade gradient, which is a later sibling of this
+        // outlet — an overlay here would be tinted by the fade.
         div()
             .relative()
             .size_full()
@@ -1817,37 +1829,6 @@ impl Render for Transcript {
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
             )
             .child(rail)
-            .when(jump, |el| {
-                el.child(
-                    div()
-                        .absolute()
-                        .bottom(px(16.0))
-                        .left_0()
-                        .right_0()
-                        .flex()
-                        .justify_center()
-                        .child(motion::fade_quick(
-                            "jump-to-bottom",
-                            div()
-                                .id("jump-to-bottom-btn")
-                                .size(px(32.0))
-                                .rounded_full()
-                                .bg(raised)
-                                .border_1()
-                                .border_color(border)
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .text_size(px(14.0))
-                                .text_color(text)
-                                .cursor_pointer()
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.engage_pin(cx);
-                                }))
-                                .child(SharedString::from("↓")),
-                        )),
-                )
-            })
     }
 }
 

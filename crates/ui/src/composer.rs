@@ -139,13 +139,13 @@ pub fn composer_total_height(content_height: f32) -> f32 {
 ///
 /// The morph animates the pill's COMMITTED height: the flip commits its final
 /// layout immediately (the input entity never remounts — the caret survives,
-/// exactly as before), the pill clips a full-size inner while its height
-/// eases toward the live target, the text's top padding eases 12↔16 so the
-/// first line glides instead of jumping, and the (re)appearing actions fade
-/// in with the reveal. [`composer_flip`]'s hysteresis already guarantees no
-/// oscillation at the boundary, and [`flip_morph_step`] never restarts a
-/// morph while the committed mode holds. Reduced motion snaps: no morph is
-/// ever created.
+/// exactly as before) while the pill clips toward the live target. The pill's
+/// bottom edge is stationary on screen, so the controls stay pinned to it
+/// (constant screen-y; see the anchoring helpers below) and only the text
+/// glides with the sweeping top edge. [`composer_flip`]'s hysteresis already
+/// guarantees no oscillation at the boundary, and [`flip_morph_step`] never
+/// restarts a morph while the committed mode holds. Reduced motion snaps: no
+/// morph is ever created.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct FlipMorph {
     /// Rendered height when the flip committed — the animation's start point.
@@ -178,19 +178,79 @@ impl FlipMorph {
     }
 }
 
+// -- morph anchoring (round-9 follow-up) ------------------------------------
+// The pill sits at the BOTTOM of the shell column: growing it moves its TOP
+// edge; the bottom edge is stationary on screen. The first morph cut anchored
+// the pill's inner content to the top, so the actions/cluster (laid out at
+// the inner bottom) rode the animating height up and down. The controls are
+// therefore pinned to the stationary bottom edge (absolute bottom row when
+// expanded, a bottom-justified row when compact) and only the TEXT glides
+// with the sweeping top edge. The helpers below are the pure math.
+
+/// Send/attach center sits 27px above the pill's outer bottom in expanded
+/// mode (`pb-2.5` 10 + half the 32px content zone + 1px hairline) but 24.5px
+/// in compact (centered in the 47px row) — an inherent 2.5px delta between
+/// the two SOURCE geometries. The morph glides it instead of snapping.
+pub const CLUSTER_Y_DELTA: f32 = 2.5;
+
+/// Expanded text top padding across the morph: starts at the compact resting
+/// inset (12 ≈ `py-3`) and eases to `pt-4` (16) — the first line glides with
+/// the rising top edge instead of jumping at the commit.
+pub fn morph_text_pad(progress: f32) -> f32 {
+    motion::lerp(12.0, 16.0, progress)
+}
+
+/// Collapse-morph text glide: the committed compact row is bottom-anchored
+/// (text resting top = 36px above the pill's outer bottom: 49 − 1 hairline −
+/// 12 centering inset), while at the commit instant the text sat 17px below
+/// the expanded pill's top (1 hairline + 16 `pt-4`) — i.e. `from − 17` above
+/// the bottom. The decaying relative offset walks it down smoothly.
+pub fn collapse_text_glide(from: f32, progress: f32) -> f32 {
+    (from - 53.0).max(0.0) * (1.0 - progress)
+}
+
+/// Picker-chip fade for the morph: the chips change SIDES between modes and
+/// would ghost across the text early in the reveal, so they stay invisible
+/// through the first ~third and fade in once the geometry has separated.
+/// The attach/send pair never fades — it is (near-)stationary across modes.
+pub fn morph_chips_alpha(progress: f32) -> f32 {
+    ((progress - 0.35) / 0.65).clamp(0.0, 1.0)
+}
+
+/// The decaying [`CLUSTER_Y_DELTA`] offset for the in-flight morph.
+pub fn morph_cluster_dy(progress: f32) -> f32 {
+    CLUSTER_Y_DELTA * (1.0 - progress)
+}
+
+/// Session/route changes SNAP the composer (same rule as the header inset
+/// tween, round 6: route swaps remount in the original — zero motion). The
+/// nav-driven flip doesn't commit on the first render after a switch (the
+/// draft swap has to be laid out and re-measured first), so a plain reset at
+/// the nav instant leaks: `last_rendered_height` is repopulated before the
+/// flip lands and the session change morphs 49↔124. Instead, every flip
+/// committed within this wall-clock window of a navigation snaps. User-driven
+/// flips need typing and can't land this fast after a switch.
+pub const ROUTE_SNAP_MS: u64 = 250;
+
 /// Advance the flip morph across one render pass. While the committed mode
 /// holds, the morph is kept (a finished one clears) — same-mode renders can
 /// NEVER restart the animation. A committed mode change starts one morph from
 /// the last rendered height, which mid-flight is the CURRENT animated height,
 /// so a reverse flip hands off seamlessly instead of popping to an endpoint.
-/// Reduced motion (or a first paint with no measured height yet) snaps.
+/// Reduced motion (or a first paint with no measured height yet) snaps, and
+/// `route_snap` (a session/route change within [`ROUTE_SNAP_MS`]) both blocks
+/// arming AND kills anything in flight — navigation never animates the pill.
 pub fn flip_morph_step(
     morph: Option<FlipMorph>,
     mode_changed: bool,
     last_height: f32,
     now_ms: f32,
     reduced_motion: bool,
+    route_snap: bool,
 ) -> Option<FlipMorph> {
+    if route_snap {
+        return None;
+    }
     if !mode_changed {
         return morph.filter(|m| !m.done(now_ms));
     }
@@ -1441,6 +1501,9 @@ pub struct Composer {
     last_rendered_height: f32,
     /// Monotonic clock anchor for the morph timeline.
     morph_clock: Instant,
+    /// Set on every session/route change: flips committed before this instant
+    /// SNAP instead of morphing (see [`ROUTE_SNAP_MS`]).
+    route_snap_until: Option<Instant>,
     _observe: Subscription,
     _input_events: Subscription,
 }
@@ -1480,6 +1543,7 @@ impl Composer {
             flip_morph: None,
             last_rendered_height: 0.0,
             morph_clock: Instant::now(),
+            route_snap_until: None,
             _observe: observe,
             _input_events: input_events,
         }
@@ -1510,10 +1574,16 @@ impl Composer {
             self.current_key = key;
             self.failure = None;
             self.wizard = None;
-            // Route changes snap (round 5): a mode difference between the old
-            // and new chat's composer must not glide across navigation.
+            // Route changes snap (round 5/6): a mode difference between the
+            // old and new session's composer must not glide across
+            // navigation. Killing the in-flight morph here isn't enough —
+            // the nav-driven flip only commits AFTER the swapped draft has
+            // been re-measured, one or two renders later, so the whole
+            // window snaps (see ROUTE_SNAP_MS).
             self.flip_morph = None;
             self.last_rendered_height = 0.0;
+            self.route_snap_until =
+                Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
         }
 
@@ -2268,12 +2338,16 @@ impl Render for Composer {
         // Morph clock in ms; dividing by the measurement knob stretches the
         // timeline exactly like shell.rs eval_tween's scaled duration.
         let now_ms = self.morph_clock.elapsed().as_secs_f32() * 1000.0 / motion::speed_scale();
+        let route_snap = self
+            .route_snap_until
+            .is_some_and(|until| Instant::now() < until);
         self.flip_morph = flip_morph_step(
             self.flip_morph,
             committed_flip && !new_chat,
             self.last_rendered_height,
             now_ms,
             motion::reduced_motion(cx),
+            route_snap,
         );
         let expanded = self.expanded_mode;
 
@@ -2406,88 +2480,117 @@ impl Render for Composer {
             .border_1()
             .border_color(theme.border)
             .shadow_lg();
+        // The pill's bottom edge is stationary on screen (the composer sits at
+        // the bottom of the shell column; growth moves the TOP edge), so the
+        // controls pin to the bottom and only the text glides with the reveal
+        // (round-9 follow-up: the send/attach/chips must not ride the height).
+        let chips_alpha = morph_chips_alpha(morph_t);
+        let cluster_dy = morph_cluster_dy(morph_t);
         let body = if expanded {
-            // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row below
-            // (`px-3 pb-2.5 pt-1`, h-8 chips → 46px), the textarea box
-            // auto-growing 76–260 inside. During the expand morph the pill
-            // CLIPS a full-target-size inner (the committed layout never
-            // reflows mid-tween — the caret can't jump), the text's top pad
+            // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row
+            // (`px-3 pb-2.5 pt-1`, h-8 chips → 46px) ABSOLUTE at the pill's
+            // stationary bottom — constant screen-y through the morph, with
+            // the 2.5px compact↔expanded centering delta gliding out. The
+            // text container is laid out at TARGET size (committed layout
+            // never reflows mid-tween — the caret can't jump); its top pad
             // eases 12→16 so the first line glides from its compact resting
-            // place, and the actions row fades in with the reveal.
-            let text_pt = motion::lerp(12.0, 16.0, morph_t);
+            // place. Chips fade in late (they change sides); attach/send
+            // never fade — they're already in place.
+            let text_pt = morph_text_pad(morph_t);
             pill.h(px(pill_height))
                 .overflow_hidden()
+                .relative()
+                .flex()
+                .flex_col()
                 .child(
                     div()
-                        .h(px(target_height - PILL_BORDER_V))
+                        .h(px(
+                            (target_height - PILL_BORDER_V - ACTIONS_ROW_HEIGHT).max(0.0)
+                        ))
+                        .px(px(16.0))
+                        .pt(px(text_pt))
+                        .pb(px(4.0))
+                        .child(self.input.clone()),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(-cluster_dy))
+                        .h(px(ACTIONS_ROW_HEIGHT))
                         .flex()
-                        .flex_col()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(4.0))
+                        .pl(px(12.0))
+                        .pr(px(10.0))
+                        .pt(px(4.0))
+                        .pb(px(10.0))
                         .child(
                             div()
                                 .flex_1()
-                                .min_h_0()
-                                .px(px(16.0))
-                                .pt(px(text_pt))
-                                .pb(px(4.0))
-                                .child(self.input.clone()),
+                                .min_w_0()
+                                .opacity(chips_alpha)
+                                .child(self.pickers.clone()),
                         )
-                        .child(
-                            div()
-                                .flex_none()
-                                .opacity(morph_t)
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(4.0))
-                                .pl(px(12.0))
-                                .pr(px(10.0))
-                                .pt(px(4.0))
-                                .pb(px(10.0))
-                                .child(div().flex_1().min_w_0().child(self.pickers.clone()))
-                                .child(attach)
-                                .child(send_button),
-                        ),
+                        .child(attach)
+                        .child(send_button),
                 )
         } else {
             // Compact pill: input and the actions cluster on one 47px line
             // (`py-3 pl-4 pr-2` textarea, `gap-2 py-1.5 pl-1 pr-2` cluster;
             // the 22.75px line centers to the same 12px inset as `py-3`).
-            // During the collapse morph the pill shrinks onto this
-            // top-anchored row — a decaying 4px offset starts the text at its
-            // expanded resting place, and the inline cluster fades in.
-            let text_pt = motion::lerp(4.0, 0.0, morph_t);
+            // The row is BOTTOM-justified: during the collapse morph the pill
+            // top sweeps down over a stationary row, the text walks down from
+            // its expanded resting place via a decaying relative offset, the
+            // inline chips fade in late, and the attach/send pair holds its
+            // spot (2.5px centering delta gliding in).
+            let text_glide = match self.flip_morph {
+                Some(m) if morphing => collapse_text_glide(m.from, morph_t),
+                _ => 0.0,
+            };
             pill.h(px(pill_height))
                 .overflow_hidden()
+                .flex()
+                .flex_col()
+                .justify_end()
                 .child(
-                    div().pt(px(text_pt)).child(
-                        div()
-                            .h(px(COMPACT_TOTAL_HEIGHT - PILL_BORDER_V))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .pl(px(16.0))
-                                    .pr(px(8.0))
-                                    .child(self.input.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .opacity(morph_t)
-                                    .flex()
-                                    .flex_row()
-                                    .items_center()
-                                    .gap(px(6.0))
-                                    .pl(px(4.0))
-                                    .pr(px(8.0))
-                                    .child(div().flex_none().child(self.pickers.clone()))
-                                    .child(attach)
-                                    .child(send_button),
-                            ),
-                    ),
+                    div()
+                        .h(px(COMPACT_TOTAL_HEIGHT - PILL_BORDER_V))
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .pl(px(16.0))
+                                .pr(px(8.0))
+                                .relative()
+                                .top(px(-text_glide))
+                                .child(self.input.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(6.0))
+                                .pl(px(4.0))
+                                .pr(px(8.0))
+                                .relative()
+                                .top(px(-cluster_dy))
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .opacity(chips_alpha)
+                                        .child(self.pickers.clone()),
+                                )
+                                .child(attach)
+                                .child(send_button),
+                        ),
                 )
         };
         container.child(motion::fade_quick("composer-input", body))
@@ -2603,20 +2706,20 @@ mod tests {
     #[test]
     fn flip_morph_starts_once_per_committed_flip() {
         // No committed flip → no morph.
-        assert_eq!(flip_morph_step(None, false, 49.0, 0.0, false), None);
+        assert_eq!(flip_morph_step(None, false, 49.0, 0.0, false, false), None);
         // A committed flip starts one, from the last rendered height…
-        let m = flip_morph_step(None, true, 49.0, 100.0, false).unwrap();
+        let m = flip_morph_step(None, true, 49.0, 100.0, false, false).unwrap();
         assert_eq!(m.from, 49.0);
         assert_eq!(m.start_ms, 100.0);
         // …and same-mode renders keep it UNCHANGED (no restart at the
         // boundary, whatever the heights are doing).
-        assert_eq!(flip_morph_step(Some(m), false, 80.0, 150.0, false), Some(m));
+        assert_eq!(flip_morph_step(Some(m), false, 80.0, 150.0, false, false), Some(m));
         // A finished morph clears on the next same-mode render.
         assert_eq!(
-            flip_morph_step(Some(m), false, 124.0, 100.0 + ALMOST, false),
+            flip_morph_step(Some(m), false, 124.0, 100.0 + ALMOST, false, false),
             Some(m)
         );
-        assert_eq!(flip_morph_step(Some(m), false, 124.0, 300.0, false), None);
+        assert_eq!(flip_morph_step(Some(m), false, 124.0, 300.0, false, false), None);
     }
 
     #[test]
@@ -2658,7 +2761,7 @@ mod tests {
         assert!(mid > 49.0 && mid < 124.0);
         // A reverse flip mid-flight commits a new morph FROM the animated
         // height — continuous at the handoff, no pop to an endpoint.
-        let rev = flip_morph_step(Some(m), true, mid, 90.0, false).unwrap();
+        let rev = flip_morph_step(Some(m), true, mid, 90.0, false, false).unwrap();
         assert_eq!(rev.from, mid);
         assert_eq!(rev.height(49.0, 90.0), mid);
     }
@@ -2666,9 +2769,57 @@ mod tests {
     #[test]
     fn flip_morph_snaps_for_reduced_motion_and_first_paint() {
         // Reduced motion never creates a morph (the flip just snaps)…
-        assert_eq!(flip_morph_step(None, true, 49.0, 0.0, true), None);
+        assert_eq!(flip_morph_step(None, true, 49.0, 0.0, true, false), None);
         // …and neither does a flip before anything was ever rendered.
-        assert_eq!(flip_morph_step(None, true, 0.0, 0.0, false), None);
+        assert_eq!(flip_morph_step(None, true, 0.0, 0.0, false, false), None);
+    }
+
+    #[test]
+    fn route_change_never_arms_the_morph() {
+        // A flip committed inside the route-snap window must NOT animate —
+        // switching sessions (chat↔chat or chat↔new-session) snaps the
+        // composer straight to the target mode, like the header (round 6).
+        assert_eq!(flip_morph_step(None, true, 49.0, 0.0, false, true), None);
+        // The route change also kills anything already in flight…
+        let m = FlipMorph {
+            from: 49.0,
+            start_ms: 0.0,
+        };
+        assert_eq!(flip_morph_step(Some(m), false, 80.0, 50.0, false, true), None);
+        assert_eq!(flip_morph_step(Some(m), true, 80.0, 50.0, false, true), None);
+        // …while outside the window the same flip animates as usual.
+        let armed = flip_morph_step(None, true, 49.0, 300.0, false, false).unwrap();
+        assert_eq!(armed.from, 49.0);
+    }
+
+    #[test]
+    fn morph_anchoring_holds_controls_and_glides_text() {
+        // Steady state (progress 1): no offsets, everything at rest.
+        assert_eq!(morph_cluster_dy(1.0), 0.0);
+        assert_eq!(morph_chips_alpha(1.0), 1.0);
+        assert_eq!(morph_text_pad(1.0), 16.0);
+        assert_eq!(collapse_text_glide(124.0, 1.0), 0.0);
+        // At the commit instant the pieces start from the OLD mode's resting
+        // geometry: text pad at the compact 12px inset, cluster displaced by
+        // exactly the 2.5px centering delta, chips invisible.
+        assert_eq!(morph_text_pad(0.0), 12.0);
+        assert_eq!(morph_cluster_dy(0.0), CLUSTER_Y_DELTA);
+        assert_eq!(morph_chips_alpha(0.0), 0.0);
+        // Collapse glide: starts where the expanded text sat (17px below the
+        // committed pill top → `from − 53` above the compact resting spot)…
+        assert_eq!(collapse_text_glide(124.0, 0.0), 71.0);
+        // …decays monotonically to zero…
+        let mut prev = collapse_text_glide(124.0, 0.0);
+        for step in 1..=10 {
+            let g = collapse_text_glide(124.0, step as f32 / 10.0);
+            assert!(g <= prev, "glide regressed at {step}");
+            prev = g;
+        }
+        // …and can't go negative on shallow mid-flight reversals.
+        assert_eq!(collapse_text_glide(50.0, 0.0), 0.0);
+        // Chips stay hidden while geometry separates, then ramp to full.
+        assert_eq!(morph_chips_alpha(0.3), 0.0);
+        assert!(morph_chips_alpha(0.6) > 0.0 && morph_chips_alpha(0.6) < 1.0);
     }
 
     #[test]

@@ -184,6 +184,36 @@ impl Harness for MockHarness {
         let error_event = mock_error.then(|| AgentEvent::Error {
             message: "Claude usage limit reached — try again after the limit resets.".into(),
         });
+        // Dev/testing knob: `COMET_MOCK_CODE=1` appends rust + ts code blocks
+        // (keywords, strings, numbers, comments) plus inline code — for
+        // syntax-palette and inline-code styling checks against the reference.
+        let mock_code = std::env::var("COMET_MOCK_CODE")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0");
+        let code_event = mock_code.then(|| AgentEvent::TextDelta {
+            text: concat!(
+                "\n### Code check\n\n",
+                "The `fold_event_into_parts` helper feeds `writer.sync` on a `120ms` cadence:\n\n",
+                "```rust\n",
+                "// Fold one event into the accumulated parts.\n",
+                "pub fn fold(mut acc: Vec<Part>, event: &AgentEvent) -> Vec<Part> {\n",
+                "    let label = \"delta\";\n",
+                "    if acc.len() > 128 {\n",
+                "        acc.truncate(64); // keep the tail hot\n",
+                "    }\n",
+                "    acc\n",
+                "}\n",
+                "```\n\n",
+                "```ts\n",
+                "// Subscribe and fold on the client.\n",
+                "const room = await connect(\"wss://mesh.local\", { retries: 3 });\n",
+                "export function fold(parts: Part[], event: AgentEvent): Part[] {\n",
+                "    return event.kind === \"delta\" ? [...parts, event] : parts;\n",
+                "}\n",
+                "```\n\n",
+            )
+            .into(),
+        });
         let table_event = mock_table.then(|| AgentEvent::TextDelta {
             text: "\n### Table check\n\n\
                 | Column A | Column B | Column C |\n\
@@ -202,6 +232,7 @@ impl Harness for MockHarness {
             .cycle()
             .take(body.len() * repeat)
             .cloned()
+            .chain(code_event)
             .chain(table_event)
             .chain(error_event)
             .chain(tail.iter().cloned())

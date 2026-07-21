@@ -15,8 +15,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, FontStyle, FontWeight, Hsla, InteractiveText, SharedString, StyledText, TextRun,
-    UnderlineStyle, Window, div, font, prelude::*, px,
+    AnyElement, BorderStyle, Bounds, FontStyle, FontWeight, Hsla, InteractiveText, SharedString,
+    StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, quad,
+    size,
 };
 
 use crate::theme::Theme;
@@ -426,13 +427,31 @@ fn render_table(
         .into_any_element()
 }
 
-/// Flattened inline runs: one string + gpui `TextRun`s + clickable link ranges.
+/// Flattened inline runs: one string + gpui `TextRun`s + clickable link ranges
+/// + inline-code ranges (their rounded washes are painted by a canvas UNDER
+/// the text — `TextRun::background_color` can only paint square boxes).
 /// `text` is a `SharedString` so cached reuse across frames is an Arc clone.
 pub struct FlatText {
     pub text: SharedString,
     pub runs: Vec<TextRun>,
     pub links: Vec<(Range<usize>, String)>,
+    pub code_ranges: Vec<Range<usize>>,
 }
+
+/// Inline-code tint (round 9): the original is neutral (chat-view.tsx mdTheme
+/// `inlineCode: #f0f0f0 on white/8%`), but the user asked for "a nice purple"
+/// — violet-300 text over a violet-400 wash, readable on the #060606 panel.
+pub fn inline_code_text() -> Hsla {
+    crate::theme::oklch(0.811, 0.111, 293.571) // violet-300
+}
+pub fn inline_code_wash() -> Hsla {
+    crate::theme::oklch(0.702, 0.183, 293.541).opacity(0.12) // violet-400/12
+}
+/// Rounded-wash geometry: small radius on a slightly inset box (paint-only —
+/// x extends 2px past the glyphs, y insets 2px from the 22px line box).
+pub const INLINE_CODE_RADIUS: f32 = 4.5;
+pub const INLINE_CODE_PAD_X: f32 = 2.0;
+pub const INLINE_CODE_INSET_Y: f32 = 2.0;
 
 /// Flatten inline runs into shaped-text inputs. Pure given a theme.
 pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> FlatText {
@@ -453,6 +472,7 @@ fn flatten_runs_weighted(runs: &[InlineRun], theme: &Theme, base_weight: FontWei
     let mut text = String::new();
     let mut out: Vec<TextRun> = Vec::with_capacity(runs.len());
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
+    let mut code_ranges: Vec<Range<usize>> = Vec::new();
     for run in runs {
         if run.text.is_empty() {
             continue;
@@ -478,7 +498,20 @@ fn flatten_runs_weighted(runs: &[InlineRun], theme: &Theme, base_weight: FontWei
         // theme underlines in the text color; indigo is reserved for primary
         // actions).
         let is_link = run.style.link.is_some();
-        let color = theme.text;
+        // Inline code reads violet (see `inline_code_text`); everything else
+        // stays the monochrome foreground.
+        let color = if run.style.code {
+            inline_code_text()
+        } else {
+            theme.text
+        };
+        if run.style.code {
+            // Merge adjacent code runs into one wash box (like links below).
+            match code_ranges.last_mut() {
+                Some(range) if range.end == start => range.end = text.len(),
+                _ => code_ranges.push(start..text.len()),
+            }
+        }
         if let Some(url) = &run.style.link {
             // Merge adjacent runs of the same link into one clickable range.
             match links.last_mut() {
@@ -492,8 +525,10 @@ fn flatten_runs_weighted(runs: &[InlineRun], theme: &Theme, base_weight: FontWei
             len: run.text.len(),
             font: f,
             color,
-            // Inline code: mono over a faint white wash (comet: white at 8%).
-            background_color: run.style.code.then_some(crate::theme::white_alpha(0.08)),
+            // Inline code's wash is painted as ROUNDED quads by the canvas
+            // underlay (`code_wash_underlay`) — a run background here could
+            // only be a square box.
+            background_color: None,
             underline: is_link.then_some(UnderlineStyle {
                 color: Some(theme.text_muted),
                 thickness: px(1.0),
@@ -509,6 +544,7 @@ fn flatten_runs_weighted(runs: &[InlineRun], theme: &Theme, base_weight: FontWei
         text: text.into(),
         runs: out,
         links,
+        code_ranges,
     }
 }
 
@@ -547,7 +583,8 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
         None => flat.runs.clone(),
     };
     let styled = StyledText::new(flat.text.clone()).with_runs(text_runs);
-    if flat.links.is_empty() {
+    let layout = styled.layout().clone();
+    let text_el: AnyElement = if flat.links.is_empty() {
         styled.into_any_element()
     } else {
         let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.iter().cloned().unzip();
@@ -559,7 +596,95 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
                 }
             })
             .into_any_element()
+    };
+    if flat.code_ranges.is_empty() {
+        return text_el;
     }
+    // Rounded inline-code washes: a canvas sibling painted BEFORE the text
+    // (earlier sibling ⇒ underneath), reading glyph geometry from the text's
+    // own layout handle. Pure paint — the wash never participates in layout.
+    let ranges = flat.code_ranges.clone();
+    let underlay = canvas(
+        |_, _, _| (),
+        move |_, _, window, _| {
+            let wash = inline_code_wash();
+            for range in &ranges {
+                for rect in code_wash_rects(&layout, range) {
+                    window.paint_quad(quad(
+                        rect,
+                        px(INLINE_CODE_RADIUS),
+                        wash,
+                        px(0.0),
+                        gpui::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+            }
+        },
+    )
+    .absolute()
+    .size_full();
+    div()
+        .relative()
+        .child(underlay)
+        .child(text_el)
+        .into_any_element()
+}
+
+/// The rounded-wash boxes for one inline-code byte range: one slightly inset,
+/// 2px-overhanging box per visual line the range covers (soft wraps split it).
+/// Window coordinates, from the laid-out text's own geometry.
+fn code_wash_rects(layout: &gpui::TextLayout, range: &Range<usize>) -> Vec<Bounds<gpui::Pixels>> {
+    let mut rects = Vec::new();
+    let line_height = layout.line_height();
+    let mut cur = range.start;
+    // Walk the range one visual row at a time: find the furthest index that
+    // still sits on the current row (binary search over glyph positions).
+    let mut guard = 0;
+    while cur < range.end && guard < 64 {
+        guard += 1;
+        let Some(p1) = layout.position_for_index(cur) else {
+            break;
+        };
+        // `seg_end` closes the wash on this row; `next` is the first index on
+        // the following row (strict progress even though a row-end index's
+        // position still reports the earlier row).
+        let (seg_end, next) = match layout.position_for_index(range.end) {
+            Some(pe) if pe.y == p1.y => (range.end, range.end),
+            _ => {
+                // Largest ix on this row (probes stay on char boundaries only
+                // at the ends; intermediate probes just need a y).
+                let (mut lo, mut hi) = (cur, range.end);
+                while hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    match layout.position_for_index(mid) {
+                        Some(pm) if pm.y == p1.y => lo = mid,
+                        _ => hi = mid,
+                    }
+                }
+                (lo, hi)
+            }
+        };
+        if let Some(p2) = layout.position_for_index(seg_end)
+            && p2.x > p1.x
+        {
+            rects.push(Bounds::new(
+                point(
+                    p1.x - px(INLINE_CODE_PAD_X),
+                    p1.y + px(INLINE_CODE_INSET_Y),
+                ),
+                size(
+                    p2.x - p1.x + px(2.0 * INLINE_CODE_PAD_X),
+                    line_height - px(2.0 * INLINE_CODE_INSET_Y),
+                ),
+            ));
+        }
+        if next <= cur {
+            break;
+        }
+        cur = next;
+    }
+    rects
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -692,14 +817,15 @@ fn render_code_block(
         .into_any_element()
 }
 
-/// Paint color for a token class — a monochrome hierarchy (comet's code blocks
-/// carry no hue): keywords full-bright, strings a step down, comments faint.
+/// Paint color for a token class — the soft syntax palette (round 9: the
+/// original's mdTheme code blocks are monochrome `#e7e7e7`, but the user
+/// asked for color; these are the diff pane's hues, now shared by both).
 pub fn token_color(class: TokenClass, theme: &Theme) -> Hsla {
     match class {
-        TokenClass::Keyword => theme.text,
-        TokenClass::StringLit => theme.text_muted,
+        TokenClass::Keyword => crate::theme::oklch(0.709, 0.129, 20.0), // soft rose
+        TokenClass::StringLit => crate::theme::oklch(0.77, 0.11, 168.0), // soft green
+        TokenClass::Number => crate::theme::oklch(0.78, 0.12, 80.0),    // soft amber
         TokenClass::Comment => theme.text_faint,
-        TokenClass::Number => theme.text_muted,
     }
 }
 
@@ -716,8 +842,8 @@ pub fn runs_for_code_line(
     })
 }
 
-/// [`runs_for_code_line`] with a caller-supplied palette — the diff pane paints
-/// the same tokens in colour while transcript code blocks stay monochrome.
+/// [`runs_for_code_line`] with a caller-supplied palette (the diff pane keys
+/// its plain color differently; the hues are shared via [`token_color`]).
 pub fn runs_with_palette(
     line: &str,
     tokens: &[Token],
@@ -781,6 +907,47 @@ mod tests {
         let runs = runs_for_code_line("plain text", &[], &mono, &theme);
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].len, 10);
+    }
+
+    #[test]
+    fn flatten_collects_and_merges_inline_code_ranges() {
+        let theme = Theme::dark();
+        let code = |text: &str| InlineRun {
+            text: text.into(),
+            style: InlineStyle {
+                code: true,
+                ..Default::default()
+            },
+        };
+        let plain = |text: &str| InlineRun {
+            text: text.into(),
+            style: InlineStyle::default(),
+        };
+        let flat = flatten_runs(
+            &[plain("use "), code("foo"), code("()"), plain(" and "), code("bar")],
+            &theme,
+            false,
+        );
+        // Adjacent code runs merge into ONE wash box; separated ones don't.
+        assert_eq!(flat.code_ranges, vec![4..9, 14..17]);
+        // Code text is the violet tint; the square run background is gone
+        // (the rounded wash is painted by the canvas underlay instead).
+        assert_eq!(flat.runs[1].color, inline_code_text());
+        assert_eq!(flat.runs[1].background_color, None);
+        assert_eq!(flat.runs[0].color, theme.text);
+    }
+
+    #[test]
+    fn code_palette_is_colored_and_shared() {
+        // Round 9: transcript code blocks paint the soft hues (rose keyword,
+        // green string, amber number); comments stay faint neutral.
+        let theme = Theme::dark();
+        assert_ne!(token_color(TokenClass::Keyword, &theme), theme.text);
+        assert_ne!(
+            token_color(TokenClass::StringLit, &theme),
+            token_color(TokenClass::Keyword, &theme)
+        );
+        assert_eq!(token_color(TokenClass::Comment, &theme), theme.text_faint);
     }
 
     #[test]

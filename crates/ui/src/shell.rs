@@ -2562,7 +2562,8 @@ impl Shell {
                                 gpui::linear_color_stop(theme_bg, 0.0),
                                 gpui::linear_color_stop(theme_bg.opacity(0.0), 1.0),
                             )),
-                    ),
+                    )
+                    .children(self.render_jump_to_bottom(cx)),
             )
             // Reserved status strip (h-6) — the WorkingIndicator lives here so
             // the composer below never shifts. Both live INSIDE the
@@ -2572,6 +2573,64 @@ impl Shell {
             .child(self.composer.clone())
             .child(self.render_terminal_container(cx))
             .into_any_element()
+    }
+
+    /// The "↓ Scroll to bottom" pill (round-9 §3): a LABELED rounded-full
+    /// chip — down-arrow glyph + 13px label on a near-opaque raised surface
+    /// with a hairline — horizontally centered over the transcript column and
+    /// floating a small gap above the composer. It hangs 14px below the
+    /// conversation region (through the reserved h-6 status strip, whose
+    /// content is left-aligned) so its bottom edge sits ~10px above the pill.
+    /// Shown past the transcript's 320px threshold; 180ms fade + 2px rise in.
+    fn render_jump_to_bottom(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        if !self.transcript.read(cx).jump_button_shown() {
+            return None;
+        }
+        let theme = Theme::of(cx);
+        Some(
+            div()
+                .absolute()
+                .bottom(px(-14.0))
+                .left_0()
+                .right(px(10.0))
+                .flex()
+                .justify_center()
+                .child(motion::dialog_in(
+                    "jump-to-bottom",
+                    div()
+                        .id("jump-to-bottom-btn")
+                        .h(px(30.0))
+                        .rounded_full()
+                        .bg(theme.surface_raised)
+                        .border_1()
+                        .border_color(theme.border)
+                        .shadow_md()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.0))
+                        .pl(px(11.0))
+                        .pr(px(13.0))
+                        .cursor_pointer()
+                        .hover(|s| s.bg(crate::theme::white_alpha(0.10)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.transcript
+                                .update(cx, |transcript, cx| transcript.jump_to_bottom(cx));
+                        }))
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(theme.text_muted)
+                                .child(SharedString::from("↓")),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(13.0))
+                                .text_color(theme.text)
+                                .child(SharedString::from("Scroll to bottom")),
+                        ),
+                ))
+                .into_any_element(),
+        )
     }
 
     /// Terminal panel dock at the main-column bottom: a 5px height-drag handle
