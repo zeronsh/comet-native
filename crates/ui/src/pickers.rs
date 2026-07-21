@@ -90,11 +90,13 @@ pub fn default_model(models: &[Model]) -> Option<&Model> {
 /// `DEFAULT_REASONING = "xhigh"`), else High, else the ladder's first entry.
 /// `None` only for ladder-less models (e.g. Haiku's thinking toggle instead).
 pub fn default_reasoning(ladder: &[ReasoningLevel]) -> Option<ReasoningLevel> {
-    if ladder.contains(&ReasoningLevel::XHigh) {
-        return Some(ReasoningLevel::XHigh);
-    }
+    // The recommended default is High (user-corrected — not X-High globally);
+    // fall to Medium then the ladder's first entry for shorter ladders.
     if ladder.contains(&ReasoningLevel::High) {
         return Some(ReasoningLevel::High);
+    }
+    if ladder.contains(&ReasoningLevel::Medium) {
+        return Some(ReasoningLevel::Medium);
     }
     ladder.first().copied()
 }
@@ -2673,15 +2675,16 @@ mod tests {
     }
 
     #[test]
-    fn default_reasoning_prefers_xhigh_then_high() {
+    fn default_reasoning_prefers_high_then_medium() {
         use ReasoningLevel::*;
-        // Full ladder (Fable 5): X-High wins (comet DEFAULT_REASONING).
+        // Recommended default is High (user-corrected), even on full ladders.
         assert_eq!(
             default_reasoning(&[Low, Medium, High, XHigh, Max, Ultracode, Ultrathink]),
-            Some(XHigh)
+            Some(High)
         );
-        // Ladder without xhigh (Opus 4.5): High.
         assert_eq!(default_reasoning(&[Low, Medium, High, Max]), Some(High));
+        // No High: Medium.
+        assert_eq!(default_reasoning(&[Minimal, Low, Medium]), Some(Medium));
         // Neither offered: first entry.
         assert_eq!(default_reasoning(&[Minimal, Low]), Some(Minimal));
         // Ladder-less model (Haiku): no reasoning at all.
