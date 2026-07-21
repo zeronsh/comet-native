@@ -12,6 +12,7 @@
 //! rendered as skeletons / inline errors with Retry.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
@@ -28,6 +29,7 @@ use comet_rpc::methods;
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::motion;
 use crate::popover::{self, Loadable, MenuKey};
+use crate::settings::composer::ComposerDefaults;
 use crate::state::{AppState, EngineHandle};
 use crate::theme::Theme;
 
@@ -49,7 +51,18 @@ pub struct DraftConfig {
     pub isolated_worktree: bool,
 }
 
-impl DraftConfig {
+/// The fully-resolved run configuration the composer sends: concrete harness,
+/// model and reasoning (never a "default" passthrough once the catalog is
+/// loaded), plus the explicit non-default option picks.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ResolvedRunConfig {
+    pub harness: Option<HarnessId>,
+    pub model: Option<String>,
+    pub reasoning: Option<ReasoningLevel>,
+    pub model_options: serde_json::Map<String, serde_json::Value>,
+}
+
+impl ResolvedRunConfig {
     /// The `ChatConfig` recorded on `Mutate createChat` (needs a known harness).
     pub fn chat_config(&self) -> Option<ChatConfig> {
         Some(ChatConfig {
@@ -59,6 +72,43 @@ impl DraftConfig {
             model_options: self.model_options.clone(),
             sandbox: SandboxLevel::WorkspaceWrite,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pure: default resolution (no "Default" placeholders — a concrete pick always)
+// ---------------------------------------------------------------------------
+
+/// The harness's default model: the first catalog row (both curated catalogs
+/// lead with the flagship — comet's `pickDefaultModel` Opus preference maps to
+/// the same row here).
+pub fn default_model(models: &[Model]) -> Option<&Model> {
+    models.first()
+}
+
+/// A model's default reasoning: X-High when the ladder offers it (comet
+/// `DEFAULT_REASONING = "xhigh"`), else High, else the ladder's first entry.
+/// `None` only for ladder-less models (e.g. Haiku's thinking toggle instead).
+pub fn default_reasoning(ladder: &[ReasoningLevel]) -> Option<ReasoningLevel> {
+    if ladder.contains(&ReasoningLevel::XHigh) {
+        return Some(ReasoningLevel::XHigh);
+    }
+    if ladder.contains(&ReasoningLevel::High) {
+        return Some(ReasoningLevel::High);
+    }
+    ladder.first().copied()
+}
+
+/// Clamp a picked/remembered level to what the model actually offers: keep it
+/// when the ladder lists it, else fall to the model's default (never a stale
+/// or foreign level — comet use-run-config.ts's derived-model discipline).
+pub fn clamp_reasoning(
+    level: Option<ReasoningLevel>,
+    ladder: &[ReasoningLevel],
+) -> Option<ReasoningLevel> {
+    match level {
+        Some(level) if ladder.contains(&level) => Some(level),
+        _ => default_reasoning(ladder),
     }
 }
 
@@ -238,6 +288,15 @@ enum RepoPane {
 pub struct Pickers {
     state: Entity<AppState>,
     config: DraftConfig,
+    /// Sticky last-used picks (comet `comet.composer.defaults:v1`): seeds the
+    /// new-chat chips and is rewritten on every new-chat pick.
+    defaults: ComposerDefaults,
+    /// Where [`Self::defaults`] persists (`{data_dir}/composer-defaults.json`);
+    /// `None` before bootstrap stamps the state (writes are skipped).
+    data_dir: Option<PathBuf>,
+    /// Selection the draft picks belong to — switching chats drops them so a
+    /// pick made in one chat never leaks into another.
+    draft_owner: Option<String>,
     open: Option<PickerKind>,
     repo_pane: RepoPane,
     harnesses: Loadable<Vec<HarnessDescriptor>>,
@@ -259,8 +318,13 @@ pub struct Pickers {
     /// Re-open suppression after outside-click dismissal (the dismiss and the
     /// trigger click would otherwise toggle twice).
     suppressed: Option<(PickerKind, Instant)>,
+    /// `COMET_OPEN_PICKER` boot: keep claiming focus until it sticks, so
+    /// keyboard nav drives the data-side-opened popover (headless rigs have
+    /// no synthetic pointer, but synthetic keys do arrive).
+    boot_focus_pending: bool,
     load_task: Option<Task<()>>,
     form_task: Option<Task<()>>,
+    mutate_task: Option<Task<()>>,
     _search_events: Subscription,
     _state_observe: Subscription,
 }
@@ -276,8 +340,19 @@ impl Pickers {
             ComposerInputEvent::Submitted => this.on_search_submit(cx),
         });
         // Chat selection / config changes must re-render the chips (child views
-        // only re-render on their own notify).
-        let state_observe = cx.observe(&state, |_, _, cx| cx.notify());
+        // only re-render on their own notify). A selection change also drops
+        // the draft picks — they belonged to the previous chat/new-chat canvas.
+        let state_observe = cx.observe(&state, |this: &mut Self, state, cx| {
+            let selected = state.read(cx).selected_chat.clone();
+            if selected != this.draft_owner {
+                this.draft_owner = selected;
+                this.config.harness = None;
+                this.config.model = None;
+                this.config.reasoning = None;
+                this.config.model_options.clear();
+            }
+            cx.notify();
+        });
         // Dev/testing knob: `COMET_OPEN_PICKER=model|traits|repo|branch` boots
         // with that popover open — synthetic input can't reach the app on
         // headless compositors, so captures need a data-side path.
@@ -288,9 +363,20 @@ impl Pickers {
             Some("branch") => Some(PickerKind::Branch),
             _ => None,
         };
+        // Sticky last-used picks: loaded synchronously so the very first frame
+        // shows the remembered harness/model/reasoning, never a placeholder.
+        let data_dir = state.read(cx).data_dir.clone();
+        let defaults = data_dir
+            .as_deref()
+            .map(ComposerDefaults::load)
+            .unwrap_or_default();
+        let draft_owner = state.read(cx).selected_chat.clone();
         Self {
             state,
             config: DraftConfig::default(),
+            defaults,
+            data_dir,
+            draft_owner,
             open,
             repo_pane: RepoPane::List,
             harnesses: Loadable::Idle,
@@ -306,10 +392,21 @@ impl Pickers {
             form_error: None,
             focus: cx.focus_handle(),
             suppressed: None,
+            boot_focus_pending: open.is_some(),
             load_task: None,
             form_task: None,
+            mutate_task: None,
             _search_events: search_events,
             _state_observe: state_observe,
+        }
+    }
+
+    /// Persist the sticky defaults (best-effort; picks are rare and tiny).
+    fn save_defaults(&self) {
+        if let Some(dir) = self.data_dir.as_deref()
+            && let Err(err) = self.defaults.save(dir)
+        {
+            tracing::warn!(error = %err, "composer-defaults save failed");
         }
     }
 
@@ -339,6 +436,17 @@ impl Pickers {
         {
             return Some(config.harness);
         }
+        // New-chat canvas: the remembered last-used harness (sticky defaults),
+        // when the loaded catalog still offers it.
+        if let Some(harness) = self.defaults.harness {
+            let offered = match self.harnesses.ready() {
+                Some(list) => visible_harnesses(list).iter().any(|d| d.id == harness),
+                None => true, // catalog not loaded yet — trust the memory
+            };
+            if offered {
+                return Some(harness);
+            }
+        }
         // Fall back to the first VISIBLE harness: the registry lists the mock
         // harness first, and resolving chips against it would boot the
         // new-chat canvas onto "Mock" instead of Claude Code + its default
@@ -348,35 +456,80 @@ impl Pickers {
             .and_then(|list| visible_harnesses(list).first().map(|d| d.id))
     }
 
-    /// Effective model id: the draft pick, or the selected chat's config.
+    /// Effective model id: the draft pick, the selected chat's config, or (on
+    /// the new-chat canvas) the remembered last-used model for the harness.
     fn effective_model_id<'a>(&'a self, cx: &'a App) -> Option<&'a str> {
         if let Some(id) = self.config.model.as_deref() {
             return Some(id);
         }
-        self.state
-            .read(cx)
-            .selected_chat_row()
-            .and_then(|c| c.config.as_ref())
-            .and_then(|c| c.model.as_deref())
+        if let Some(chat) = self.state.read(cx).selected_chat_row() {
+            return chat.config.as_ref().and_then(|c| c.model.as_deref());
+        }
+        let harness = self.effective_harness(cx)?;
+        self.defaults.model_for(harness).map(|m| m.id.as_str())
     }
 
-    /// Effective reasoning: the draft pick, or the selected chat's config.
+    /// Effective reasoning — always concrete once the model is known: the
+    /// draft pick / chat config / remembered default, clamped to the selected
+    /// model's ladder, falling back to the model's default level.
     fn effective_reasoning(&self, cx: &App) -> Option<ReasoningLevel> {
-        self.config.reasoning.or_else(|| {
-            self.state
-                .read(cx)
-                .selected_chat_row()
-                .and_then(|c| c.config.as_ref())
-                .and_then(|c| c.reasoning)
-        })
+        let explicit = self.config.reasoning.or_else(|| {
+            match self.state.read(cx).selected_chat_row() {
+                Some(chat) => chat.config.as_ref().and_then(|c| c.reasoning),
+                // New chat: the remembered last-used level.
+                None => self.defaults.reasoning,
+            }
+        });
+        if self.selected_model(cx).is_none() {
+            // Catalog not loaded yet: show the explicit value as-is (nothing
+            // to clamp against); it resolves to a concrete level on load.
+            return explicit;
+        }
+        clamp_reasoning(explicit, &self.trait_ladder(cx))
     }
 
+    /// The selected model — concrete from the moment the list loads: the
+    /// effective id when the list still offers it, else the harness default
+    /// (first row). Never `None` with a non-empty catalog.
     fn selected_model<'a>(&'a self, cx: &'a App) -> Option<&'a Model> {
         let harness = self.effective_harness(cx)?;
         let models = self.models.get(&harness)?.ready()?;
         match self.effective_model_id(cx) {
-            Some(id) => models.iter().find(|m| m.id == id),
-            None => models.first(),
+            Some(id) => models
+                .iter()
+                .find(|m| m.id == id)
+                .or_else(|| default_model(models)),
+            None => default_model(models),
+        }
+    }
+
+    /// The explicit (non-default) option picks: the chat's persisted
+    /// selections for existing chats, the draft's for the new-chat canvas.
+    fn explicit_options(&self, cx: &App) -> serde_json::Map<String, serde_json::Value> {
+        match self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.config.as_ref())
+        {
+            Some(config) => config.model_options.clone(),
+            None => self.config.model_options.clone(),
+        }
+    }
+
+    /// The fully-resolved config the composer threads into the Run request and
+    /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
+    /// loaded (no "engine picks a default" passthrough).
+    pub fn resolved(&self, cx: &App) -> ResolvedRunConfig {
+        ResolvedRunConfig {
+            harness: self.effective_harness(cx),
+            model: self
+                .selected_model(cx)
+                .map(|m| m.id.clone())
+                // Catalog not loaded (offline): still send the id we know.
+                .or_else(|| self.effective_model_id(cx).map(str::to_string)),
+            reasoning: self.effective_reasoning(cx),
+            model_options: self.explicit_options(cx),
         }
     }
 
@@ -682,27 +835,51 @@ impl Pickers {
             return;
         }
         if self.config.harness != Some(harness) {
+            // The remembered model for this harness takes over via the
+            // defaults fallback; a foreign pick must not linger.
             self.config.model = None;
             self.config.reasoning = None;
             self.config.model_options.clear();
         }
         self.config.harness = Some(harness);
+        self.defaults.harness = Some(harness);
+        self.save_defaults();
         self.ensure_models(harness, cx);
         cx.notify();
     }
 
     fn pick_model(&mut self, model_id: String, cx: &mut Context<Self>) {
-        self.config.model = Some(model_id);
         self.open = None;
+        if self.state.read(cx).selected_chat.is_some() {
+            // Existing chat: persist to the chat row (Mutate setChatConfig) —
+            // survives restarts and syncs; next runs in this chat use it.
+            self.update_chat_config(cx, move |config| config.model = Some(model_id));
+        } else {
+            // New chat: draft pick + sticky last-used memory for this harness.
+            self.config.model = Some(model_id.clone());
+            if let Some(harness) = self.effective_harness(cx) {
+                let label = self
+                    .models
+                    .get(&harness)
+                    .and_then(|l| l.ready())
+                    .and_then(|models| models.iter().find(|m| m.id == model_id))
+                    .map(|m| m.label.clone())
+                    .unwrap_or_else(|| model_id.clone());
+                self.defaults.remember_model(harness, model_id, label);
+                self.save_defaults();
+            }
+        }
         cx.notify();
     }
 
     fn pick_reasoning(&mut self, level: ReasoningLevel, cx: &mut Context<Self>) {
-        // Clicking the active level clears back to the model default.
-        if self.config.reasoning == Some(level) {
-            self.config.reasoning = None;
+        // Always a concrete selection (no toggle-back-to-default).
+        if self.state.read(cx).selected_chat.is_some() {
+            self.update_chat_config(cx, move |config| config.reasoning = Some(level));
         } else {
             self.config.reasoning = Some(level);
+            self.defaults.reasoning = Some(level);
+            self.save_defaults();
         }
         cx.notify();
     }
@@ -714,7 +891,17 @@ impl Pickers {
         default: bool,
         cx: &mut Context<Self>,
     ) {
-        if default {
+        if self.state.read(cx).selected_chat.is_some() {
+            self.update_chat_config(cx, move |config| {
+                if default {
+                    config.model_options.remove(&option_id);
+                } else {
+                    config
+                        .model_options
+                        .insert(option_id, serde_json::Value::String(choice_id));
+                }
+            });
+        } else if default {
             self.config.model_options.remove(&option_id);
         } else {
             self.config
@@ -722,6 +909,74 @@ impl Pickers {
                 .insert(option_id, serde_json::Value::String(choice_id));
         }
         cx.notify();
+    }
+
+    /// Apply `change` to the selected chat's effective config and persist it:
+    /// optimistic row stamp (chips update on click) + `Mutate setChatConfig`
+    /// (LWW workspace write — restarts and other devices see it). The written
+    /// row always carries the CONCRETE resolved model/reasoning, with the
+    /// reasoning re-clamped to the (possibly just-changed) model's ladder.
+    fn update_chat_config(
+        &mut self,
+        cx: &mut Context<Self>,
+        change: impl FnOnce(&mut ChatConfig),
+    ) {
+        let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
+            return;
+        };
+        let resolved = self.resolved(cx);
+        let Some(mut config) = resolved.chat_config() else {
+            return; // harness unknown (catalog + chat row both missing) — nothing safe to write
+        };
+        // Preserve fields the pickers don't own.
+        if let Some(existing) = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.config.as_ref())
+        {
+            config.sandbox = existing.sandbox;
+        }
+        change(&mut config);
+        // Reasoning must stay concrete for whatever model the row now names —
+        // same ladder resolution as [`Self::trait_ladder`] (model levels, else
+        // the harness's advertised ladder).
+        if let Some(models) = self.models.get(&config.harness).and_then(|l| l.ready()) {
+            let mut ladder = config
+                .model
+                .as_deref()
+                .and_then(|id| models.iter().find(|m| m.id == id))
+                .map(|m| m.reasoning_levels.clone())
+                .unwrap_or_default();
+            if ladder.is_empty()
+                && let Some(descriptor) = self
+                    .harnesses
+                    .ready()
+                    .and_then(|list| list.iter().find(|d| d.id == config.harness))
+            {
+                ladder = descriptor.reasoning_levels.clone();
+            }
+            if !ladder.is_empty() {
+                config.reasoning = clamp_reasoning(config.reasoning, &ladder);
+            }
+        }
+        self.state.update(cx, |state, cx| {
+            state.apply_chat_config(&chat_id, config.clone());
+            cx.notify();
+        });
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
+        self.mutate_task = Some(cx.spawn(async move |_, _| {
+            let params = serde_json::json!({
+                "op": "setChatConfig",
+                "chatId": chat_id,
+                "config": config,
+            });
+            if let Err(err) = engine.client().call(methods::MUTATE, params).await {
+                tracing::warn!(error = %err, "setChatConfig mutate failed");
+            }
+        }));
     }
 
     // ---- keyboard ----
@@ -755,7 +1010,7 @@ impl Pickers {
         ladder + choices
     }
 
-    /// Enter on the traits popover: ladder rows toggle, choices select.
+    /// Enter on the traits popover: ladder rows and choices select.
     fn activate_trait_row(&mut self, cx: &mut Context<Self>) {
         let ladder = self.trait_ladder(cx);
         if let Some(level) = ladder.get(self.active).copied() {
@@ -1676,9 +1931,9 @@ impl Pickers {
 
         let models: AnyElement = match effective.map(|h| (h, self.models.get(&h))) {
             Some((_, Some(Loadable::Ready(models)))) => {
-                // The check mirrors the chip: the draft pick, else the chat's
-                // configured model, else the harness default (first row).
-                let selected = self.effective_model_id(cx).map(str::to_string);
+                // The check mirrors the chip: the resolved concrete pick (draft
+                // / chat config / remembered, else the harness default row).
+                let selected = self.selected_model(cx).map(|m| m.id.clone());
                 let active = self.active;
                 let models = models.clone();
                 div()
@@ -1818,7 +2073,7 @@ impl Pickers {
                 .into_any_element()
         };
 
-        let selections = self.config.model_options.clone();
+        let selections = self.explicit_options(cx);
         // Per-option flat-index bases for the keyboard highlight.
         let option_bases: Vec<usize> = {
             let mut offset = ladder_len;
@@ -1995,12 +2250,36 @@ fn attach_overlay(
 }
 
 impl Render for Pickers {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let new_chat = self.state.read(cx).selected_chat.is_none();
 
+        // A COMET_OPEN_PICKER popover never went through `toggle`, so claim
+        // its keyboard focus here (re-claim until it sticks — the shell's
+        // first-paint fallback focuses the composer after our first render).
+        if self.boot_focus_pending {
+            match self.open {
+                Some(PickerKind::Repo | PickerKind::Branch) => {
+                    let handle = self.search.read(cx).focus_handle(cx);
+                    if handle.is_focused(window) {
+                        self.boot_focus_pending = false;
+                    } else {
+                        window.focus(&handle, cx);
+                    }
+                }
+                Some(_) => {
+                    if self.focus.is_focused(window) {
+                        self.boot_focus_pending = false;
+                    } else {
+                        window.focus(&self.focus, cx);
+                    }
+                }
+                None => self.boot_focus_pending = false,
+            }
+        }
+
         // Eager-load the harness catalog + effective harness's models so the
-        // chip reads "Fable 5", not "Default model", before any popover opens.
+        // chip reads "Fable 5" (a concrete pick) before any popover opens.
         self.ensure_harnesses(cx);
         if let Some(harness) = self.effective_harness(cx) {
             self.ensure_models(harness, cx);
@@ -2030,19 +2309,36 @@ impl Render for Pickers {
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from("Branch"));
         // Chip shows the model's display name alone (comet `modelText`); the
-        // harness reads from the brand mark beside it.
-        let model_label: SharedString = self
-            .selected_model(cx)
-            .map(|m| SharedString::from(m.label.clone()))
-            .unwrap_or_else(|| SharedString::from("Default model"));
+        // harness reads from the brand mark beside it. Never "Default model":
+        // before the catalog lands the remembered label (or the configured id)
+        // names the pick; the loaded list then resolves it to a concrete row.
+        let model_label: SharedString = {
+            let loaded = self.selected_model(cx).map(|m| m.label.clone());
+            let label = loaded.or_else(|| {
+                let remembered = self
+                    .effective_harness(cx)
+                    .and_then(|h| self.defaults.model_for(h));
+                match self.effective_model_id(cx) {
+                    Some(id) => Some(
+                        remembered
+                            .filter(|m| m.id == id)
+                            .map(|m| m.label.clone())
+                            .unwrap_or_else(|| id.to_string()),
+                    ),
+                    None => remembered.map(|m| m.label.clone()),
+                }
+            });
+            label.map(SharedString::from).unwrap_or_default()
+        };
         let harness_icon: (&'static str, Option<gpui::Hsla>) = self
             .effective_harness(cx)
             .map(harness_brand_icon)
             .unwrap_or((crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand())));
+        let explicit_options = self.explicit_options(cx);
         let traits_set = traits_summary(
             self.selected_model(cx),
             self.effective_reasoning(cx),
-            &self.config.model_options,
+            &explicit_options,
         );
         let traits_label: SharedString = traits_set
             .clone()
@@ -2342,16 +2638,67 @@ mod tests {
     }
 
     #[test]
-    fn draft_chat_config_requires_harness() {
-        let mut draft = DraftConfig::default();
-        assert!(draft.chat_config().is_none());
-        draft.harness = Some(HarnessId::ClaudeCode);
-        draft.model = Some("opus".into());
-        draft.reasoning = Some(ReasoningLevel::High);
-        let config = draft.chat_config().expect("harness set");
+    fn resolved_chat_config_requires_harness() {
+        let mut resolved = ResolvedRunConfig::default();
+        assert!(resolved.chat_config().is_none());
+        resolved.harness = Some(HarnessId::ClaudeCode);
+        resolved.model = Some("opus".into());
+        resolved.reasoning = Some(ReasoningLevel::High);
+        let config = resolved.chat_config().expect("harness set");
         assert_eq!(config.harness, HarnessId::ClaudeCode);
         assert_eq!(config.model.as_deref(), Some("opus"));
         assert_eq!(config.sandbox, SandboxLevel::WorkspaceWrite);
+    }
+
+    #[test]
+    fn default_model_is_first_catalog_row() {
+        let models = vec![
+            Model {
+                id: "flagship".into(),
+                label: "Flagship".into(),
+                description: None,
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+            Model {
+                id: "fast".into(),
+                label: "Fast".into(),
+                description: None,
+                reasoning_levels: vec![],
+                options: vec![],
+            },
+        ];
+        assert_eq!(default_model(&models).map(|m| &*m.id), Some("flagship"));
+        assert!(default_model(&[]).is_none());
+    }
+
+    #[test]
+    fn default_reasoning_prefers_xhigh_then_high() {
+        use ReasoningLevel::*;
+        // Full ladder (Fable 5): X-High wins (comet DEFAULT_REASONING).
+        assert_eq!(
+            default_reasoning(&[Low, Medium, High, XHigh, Max, Ultracode, Ultrathink]),
+            Some(XHigh)
+        );
+        // Ladder without xhigh (Opus 4.5): High.
+        assert_eq!(default_reasoning(&[Low, Medium, High, Max]), Some(High));
+        // Neither offered: first entry.
+        assert_eq!(default_reasoning(&[Minimal, Low]), Some(Minimal));
+        // Ladder-less model (Haiku): no reasoning at all.
+        assert_eq!(default_reasoning(&[]), None);
+    }
+
+    #[test]
+    fn clamp_reasoning_keeps_offered_levels_and_heals_foreign_ones() {
+        use ReasoningLevel::*;
+        let ladder = [Low, Medium, High, Max];
+        // A pick the ladder offers survives.
+        assert_eq!(clamp_reasoning(Some(Max), &ladder), Some(Max));
+        // A remembered level the new model doesn't offer heals to its default.
+        assert_eq!(clamp_reasoning(Some(XHigh), &ladder), Some(High));
+        // No pick at all resolves to the concrete default too.
+        assert_eq!(clamp_reasoning(None, &ladder), Some(High));
+        assert_eq!(clamp_reasoning(Some(High), &[]), None);
     }
 
     #[test]

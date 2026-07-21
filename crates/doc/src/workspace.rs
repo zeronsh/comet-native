@@ -548,6 +548,27 @@ mod tests {
     }
 
     #[test]
+    fn set_chat_config_round_trips_and_ignores_missing_rows() {
+        let ws = WorkspaceDoc::new();
+        ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+        let mut options = serde_json::Map::new();
+        options.insert("contextWindow".into(), serde_json::Value::String("1m".into()));
+        let config = ChatConfig {
+            harness: HarnessId::ClaudeCode,
+            model: Some("claude-fable-5".into()),
+            reasoning: Some(comet_proto::ReasoningLevel::XHigh),
+            model_options: options,
+            sandbox: SandboxLevel::WorkspaceWrite,
+        };
+        assert!(ws.set_chat_config("chat-1", &config).unwrap());
+        let row = ws.chat("chat-1").unwrap().expect("row exists");
+        assert_eq!(row.config, Some(config.clone()));
+        // No such row: false, nothing created.
+        assert!(!ws.set_chat_config("nope", &config).unwrap());
+        assert!(ws.chat("nope").unwrap().is_none());
+    }
+
+    #[test]
     fn rows_round_trip() {
         let ws = WorkspaceDoc::new();
         ws.upsert_device(&device("dev-a", "laptop")).unwrap();

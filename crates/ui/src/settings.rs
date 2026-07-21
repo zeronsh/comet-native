@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod accounts;
 pub mod archived;
+pub mod composer;
 pub mod devices;
 pub mod shortcuts;
 pub mod widgets;

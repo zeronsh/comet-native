@@ -250,6 +250,14 @@ enum MutateParams {
     SetChatHost { chat_id: String, device_id: String },
     #[serde(rename_all = "camelCase")]
     SetChatArchived { chat_id: String, archived: bool },
+    /// Full-config replace on the chat row (comet `SetChatConfig`): the
+    /// composer's mid-session model / reasoning / options changes, LWW-synced
+    /// so they survive restarts and reach every device.
+    #[serde(rename_all = "camelCase")]
+    SetChatConfig {
+        chat_id: String,
+        config: ChatConfig,
+    },
     /// Tombstone: removes the chats-map row; the session doc remains.
     #[serde(rename_all = "camelCase")]
     DeleteChat { chat_id: String },
@@ -399,6 +407,11 @@ impl EngineRpc {
             MutateParams::SetChatArchived { chat_id, archived } => self
                 .workspace
                 .set_chat_archived(&chat_id, archived)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::SetChatConfig { chat_id, config } => self
+                .workspace
+                .set_chat_config(&chat_id, &config)
                 .map_err(failed)
                 .map(drop),
             MutateParams::DeleteChat { chat_id } => self

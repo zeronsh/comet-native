@@ -447,6 +447,9 @@ pub struct AppState {
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
+    /// Data directory (`ui-settings.json`, `composer-defaults.json`); set at
+    /// bootstrap so child views can persist small preference files.
+    pub data_dir: Option<PathBuf>,
     engine: Option<EngineHandle>,
     watch_tasks: Vec<Task<()>>,
     transcript_task: Option<Task<()>>,
@@ -470,6 +473,7 @@ impl AppState {
             transcript: Vec::new(),
             echoes: HashMap::new(),
             local_device_id: None,
+            data_dir: None,
             engine: None,
             watch_tasks: Vec::new(),
             transcript_task: None,
@@ -494,6 +498,15 @@ impl AppState {
 
     pub fn apply_sessions(&mut self, sessions: Vec<Session>) {
         self.sessions = sessions;
+    }
+
+    /// Optimistic local echo of a `setChatConfig` mutate: stamp the row now so
+    /// the chips update on click; the next chats watch frame carries the same
+    /// value once the engine applies the LWW write.
+    pub fn apply_chat_config(&mut self, chat_id: &str, config: comet_proto::ChatConfig) {
+        if let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) {
+            chat.config = Some(config);
+        }
     }
 
     pub fn apply_devices(&mut self, devices: Vec<Device>) {
@@ -588,8 +601,10 @@ impl AppState {
     /// Kick off (or retry) the engine bootstrap: probe → connect-or-embed on
     /// tokio, then attach subscriptions. Safe to call again after `Failed`.
     pub fn bootstrap(state: Entity<AppState>, config: EngineBootConfig, cx: &mut App) {
+        let data_dir = config.data_dir.clone();
         state.update(cx, |s, cx| {
             s.connection = ConnectionStatus::Connecting;
+            s.data_dir = Some(data_dir);
             cx.notify();
         });
         let boot = Tokio::spawn(cx, EngineHandle::bootstrap(config));
@@ -996,6 +1011,33 @@ mod tests {
         state.selected_chat = Some("b".into());
         state.apply_chats(vec![chat("b", 1, None), chat("c", 2, None)]);
         assert_eq!(state.selected_chat.as_deref(), Some("b"));
+    }
+
+    #[test]
+    fn apply_chat_config_stamps_the_row() {
+        let mut state = AppState::new();
+        state.apply_chats(vec![chat("a", 0, None), chat("b", 1, None)]);
+        let config = comet_proto::ChatConfig {
+            harness: HarnessId::ClaudeCode,
+            model: Some("claude-fable-5".into()),
+            reasoning: Some(comet_proto::ReasoningLevel::XHigh),
+            model_options: serde_json::Map::new(),
+            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+        };
+        state.apply_chat_config("a", config.clone());
+        assert_eq!(
+            state.chats.iter().find(|c| c.id == "a").unwrap().config,
+            Some(config)
+        );
+        assert!(state.chats.iter().find(|c| c.id == "b").unwrap().config.is_none());
+        // Unknown chat: no-op, no panic.
+        state.apply_chat_config("missing", comet_proto::ChatConfig {
+            harness: HarnessId::ClaudeCode,
+            model: None,
+            reasoning: None,
+            model_options: serde_json::Map::new(),
+            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+        });
     }
 
     #[test]

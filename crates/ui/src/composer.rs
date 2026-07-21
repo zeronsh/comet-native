@@ -1696,6 +1696,9 @@ impl Composer {
             None => (uuid::Uuid::new_v4().to_string(), true),
         };
         let draft = self.pickers.read(cx).draft().clone();
+        // Fully-resolved model/reasoning/options — concrete values (chat config
+        // or defaults), so the engine never has to guess a "default".
+        let resolved = self.pickers.read(cx).resolved(cx);
         let existing_cwd = self
             .state
             .read(cx)
@@ -1786,7 +1789,7 @@ impl Composer {
                         "cwd": cwd,
                     });
                     if let (Some(config), Some(object)) =
-                        (draft.chat_config(), mutate.as_object_mut())
+                        (resolved.chat_config(), mutate.as_object_mut())
                         && let Ok(config) = serde_json::to_value(&config)
                     {
                         object.insert("config".into(), config);
@@ -1805,9 +1808,9 @@ impl Composer {
                     SessionCommandPayload::Run {
                         request: RunRequest {
                             prompt: text.clone(),
-                            model: draft.model.clone(),
-                            reasoning: draft.reasoning,
-                            model_options: draft.model_options.clone(),
+                            model: resolved.model.clone(),
+                            reasoning: resolved.reasoning,
+                            model_options: resolved.model_options.clone(),
                             cwd,
                             sandbox: SandboxLevel::WorkspaceWrite,
                             auto_approve: false,
