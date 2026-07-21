@@ -13,7 +13,7 @@
 
 use std::ops::Range;
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 
 // ---------------------------------------------------------------------------
 // Tree model
@@ -61,8 +61,19 @@ pub enum Block {
     Table {
         header: Vec<Vec<InlineRun>>,
         rows: Vec<Vec<Vec<InlineRun>>>,
+        /// Per-column GFM alignment (`:--`/`:-:`/`--:`); unspecified is Left.
+        align: Vec<TableAlign>,
     },
     Rule,
+}
+
+/// GFM column alignment for a table (mdast `align`; `None` renders as Left).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TableAlign {
+    #[default]
+    Left,
+    Center,
+    Right,
 }
 
 /// A top-level block plus its byte range in the source. The range start is the
@@ -239,7 +250,17 @@ fn parse_started_block(cur: &mut Cursor) -> Vec<Block> {
                 items,
             }]
         }
-        Tag::Table(_) => vec![parse_table(cur)],
+        Tag::Table(align) => {
+            let align = align
+                .iter()
+                .map(|a| match a {
+                    Alignment::Center => TableAlign::Center,
+                    Alignment::Right => TableAlign::Right,
+                    Alignment::None | Alignment::Left => TableAlign::Left,
+                })
+                .collect();
+            vec![parse_table(cur, align)]
+        }
         Tag::HtmlBlock => {
             // Render raw HTML blocks as plain text (comet's markdown does the same).
             let mut text = String::new();
@@ -302,7 +323,7 @@ fn flush_paragraph(out: &mut Vec<Block>, acc: &mut Vec<InlineRun>) {
     }
 }
 
-fn parse_table(cur: &mut Cursor) -> Block {
+fn parse_table(cur: &mut Cursor, align: Vec<TableAlign>) -> Block {
     let mut header = Vec::new();
     let mut rows = Vec::new();
     loop {
@@ -322,7 +343,11 @@ fn parse_table(cur: &mut Cursor) -> Block {
             Some(_) => cur.bump(),
         }
     }
-    Block::Table { header, rows }
+    Block::Table {
+        header,
+        rows,
+        align,
+    }
 }
 
 fn parse_table_cells(cur: &mut Cursor) -> Vec<Vec<InlineRun>> {
@@ -713,12 +738,30 @@ mod tests {
     #[test]
     fn tables_parse_header_and_rows() {
         let tree = parse_full("| a | b |\n|---|---|\n| 1 | 2 |\n");
-        let Block::Table { header, rows } = &tree.blocks[0].block else {
+        let Block::Table {
+            header,
+            rows,
+            align,
+        } = &tree.blocks[0].block
+        else {
             panic!("expected table");
         };
         assert_eq!(header.len(), 2);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0][1][0].text, "2");
+        assert_eq!(align, &vec![TableAlign::Left, TableAlign::Left]);
+    }
+
+    #[test]
+    fn tables_parse_column_alignment() {
+        let tree = parse_full("| a | b | c |\n|:--|:-:|--:|\n| 1 | 2 | 3 |\n");
+        let Block::Table { align, .. } = &tree.blocks[0].block else {
+            panic!("expected table");
+        };
+        assert_eq!(
+            align,
+            &vec![TableAlign::Left, TableAlign::Center, TableAlign::Right]
+        );
     }
 
     #[test]

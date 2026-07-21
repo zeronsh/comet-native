@@ -16,13 +16,13 @@ use std::time::Instant;
 
 use gpui::{
     AnyElement, FontStyle, FontWeight, Hsla, InteractiveText, SharedString, StyledText, TextRun,
-    UnderlineStyle, div, font, prelude::*, px,
+    UnderlineStyle, Window, div, font, prelude::*, px,
 };
 
 use crate::theme::Theme;
 
 use super::highlight::{Token, TokenClass};
-use super::parser::{Block, BlockTree, InlineRun};
+use super::parser::{Block, BlockTree, InlineRun, TableAlign};
 use super::veil::{RowVeil, apply_veil, slice_spans};
 
 /// Gap between markdown blocks inside one message (comet mdBlockGap).
@@ -35,6 +35,30 @@ pub const CODE_TEXT_SIZE: f32 = 12.5;
 pub const CODE_LINE_HEIGHT: f32 = 18.0;
 pub const CODE_PADDING_X: f32 = 12.0;
 pub const CODE_PADDING_Y: f32 = 10.0;
+
+// Table metrics — a port of mugen-markdown 0.6.2's `TableBlock` under comet's
+// resolved md theme. The design is frameless ("flat hairline"): 1px horizontal
+// rules under the header and between rows are the only chrome — no outer box,
+// no header fill, no corner radius (theme: headerBackground transparent,
+// radius 0). Cells use the body scale (14/22) with a uniform 12px padding;
+// the header row is weight-700 per `table.headerWeight`.
+/// Uniform cell padding in px (comet `table.cellPadding`).
+pub const TABLE_CELL_PADDING: f32 = 12.0;
+/// Hairline between rows in px (comet `table.gap`).
+pub const TABLE_DIVIDER: f32 = 1.0;
+/// Header row font weight (comet `table.headerWeight` = 700).
+pub const TABLE_HEADER_WEIGHT: FontWeight = FontWeight::BOLD;
+/// Floor for a column's max-content share, so a short column ("1k") beside a
+/// prose column keeps a readable width (mugen `MIN_COLUMN_CONTENT`).
+pub const TABLE_MIN_COLUMN_CONTENT: f32 = 48.0;
+/// Minimum rendered column width in px, padding included (comet
+/// `table.minColumnWidth`). Naturally narrower columns keep their content
+/// width; wider ones wrap down to this floor, then the table scrolls.
+pub const TABLE_MIN_COLUMN_WIDTH: f32 = 96.0;
+/// Hairline tone (comet md theme `table.borderColor`: rgba(255,255,255,0.1)).
+pub fn table_hairline() -> Hsla {
+    crate::theme::white_alpha(0.10)
+}
 
 /// Options for one rendered tree (a transcript row or a whole live message).
 pub struct RenderOptions {
@@ -112,6 +136,7 @@ pub fn render_tree(
     tree: &BlockTree,
     opts: &RenderOptions,
     theme: &Theme,
+    window: &Window,
     highlight: &dyn Fn(usize) -> Option<std::sync::Arc<Vec<Vec<Token>>>>,
 ) -> AnyElement {
     div()
@@ -126,6 +151,7 @@ pub fn render_tree(
                 ix,
                 opts,
                 theme,
+                window,
                 lines.as_deref().map(|l| &l[..]),
             )
         }))
@@ -134,12 +160,14 @@ pub fn render_tree(
 
 /// Render one block (top-level or nested). `top_ix` is the enclosing top-level
 /// block index (cache invalidation scope); `ix` the per-element discriminator.
+#[allow(clippy::too_many_arguments)]
 pub fn render_block(
     block: &Block,
     top_ix: usize,
     ix: usize,
     opts: &RenderOptions,
     theme: &Theme,
+    window: &Window,
     highlight: CodeHighlight,
 ) -> AnyElement {
     match block {
@@ -169,7 +197,7 @@ pub fn render_block(
             .gap(px(8.0))
             .text_color(theme.text_muted)
             .children(children.iter().enumerate().map(|(ci, child)| {
-                render_block(child, top_ix, ix * 100 + ci, opts, theme, None)
+                render_block(child, top_ix, ix * 100 + ci, opts, theme, window, None)
             }))
             .into_any_element(),
         Block::List {
@@ -211,59 +239,18 @@ pub fn render_block(
                                     ix * 100 + item_ix * 10 + ci,
                                     opts,
                                     theme,
+                                    window,
                                     None,
                                 )
                             })),
                     )
             }))
             .into_any_element(),
-        Block::Table { header, rows } => {
-            let cell = |runs: &[InlineRun], bold: bool, cell_ix: usize| {
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .px(px(6.0))
-                    .py(px(3.0))
-                    .child(text_element(
-                        runs,
-                        13.0,
-                        19.0,
-                        bold,
-                        top_ix,
-                        ix * 1000 + cell_ix,
-                        opts,
-                        theme,
-                    ))
-            };
-            div()
-                .flex()
-                .flex_col()
-                .rounded(px(6.0))
-                .border_1()
-                .border_color(theme.border)
-                .child(
-                    div()
-                        .flex()
-                        .flex_row()
-                        .border_b_1()
-                        .border_color(theme.border)
-                        .children(header.iter().enumerate().map(|(ci, h)| cell(h, true, ci))),
-                )
-                .children(rows.iter().enumerate().map(|(ri, row)| {
-                    div()
-                        .flex()
-                        .flex_row()
-                        .when(ri + 1 < rows.len(), |el| {
-                            el.border_b_1().border_color(theme.border)
-                        })
-                        .children(
-                            row.iter()
-                                .enumerate()
-                                .map(|(ci, r)| cell(r, false, (ri + 1) * 10 + ci)),
-                        )
-                }))
-                .into_any_element()
-        }
+        Block::Table {
+            header,
+            rows,
+            align,
+        } => render_table(header, rows, align, top_ix, ix, opts, theme, window),
         Block::Rule => div()
             .h(px(1.0))
             .w_full()
@@ -283,6 +270,162 @@ fn heading_metrics(level: u8) -> (f32, f32) {
     }
 }
 
+/// Shared per-column table geometry (port of mugen `tableColumns`).
+pub struct TableColumns {
+    /// Per-column max-content width, padding included.
+    pub naturals: Vec<f32>,
+    /// Per-column minimum width, padding included = `min(natural, minColumnWidth)`.
+    pub minimums: Vec<f32>,
+    /// Σ minimums — the width below which the table stops shrinking and scrolls.
+    pub min_table_width: f32,
+}
+
+/// Resolve column geometry from measured per-column max-content widths
+/// (content only — padding is added here, as the source adds `2 * cellPadding`).
+pub fn table_columns(content_widths: &[f32]) -> TableColumns {
+    let naturals: Vec<f32> = content_widths
+        .iter()
+        .map(|w| w.max(TABLE_MIN_COLUMN_CONTENT) + 2.0 * TABLE_CELL_PADDING)
+        .collect();
+    let minimums: Vec<f32> = naturals
+        .iter()
+        .map(|n| n.min(TABLE_MIN_COLUMN_WIDTH))
+        .collect();
+    let min_table_width = minimums.iter().sum();
+    TableColumns {
+        naturals,
+        minimums,
+        min_table_width,
+    }
+}
+
+/// Element/cache discriminator for a table cell (row-major under the block ix).
+fn table_cell_ix(ix: usize, r: usize, c: usize) -> usize {
+    ix * 100_000 + r * 100 + c
+}
+
+/// A GFM table — a port of mugen-markdown's `TableBlock` under comet's md
+/// theme (see the `TABLE_*` constants).
+///
+/// Column widths resolve exactly the way the source's CSS does: each cell is
+/// `flex: <max-content> <max-content> 0; min-width: min(max-content, 96px)`,
+/// so widths are content-proportional with a readable per-column floor.
+/// Naturals come from shaping each cell's runs unwrapped (gpui's line-layout
+/// cache makes repeat frames cheap); the flex resolution itself is Taffy's —
+/// the same algorithm as the web's. When even the floors no longer fit, the
+/// rows overflow the viewport and the table scrolls horizontally instead of
+/// crushing every column into per-character wrapping.
+#[allow(clippy::too_many_arguments)]
+fn render_table(
+    header: &[Vec<InlineRun>],
+    rows: &[Vec<Vec<InlineRun>>],
+    align: &[TableAlign],
+    top_ix: usize,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+    window: &Window,
+) -> AnyElement {
+    // Header row first, mirroring the source's `rows` shape (rows may be ragged).
+    let all: Vec<&[Vec<InlineRun>]> = std::iter::once(header)
+        .filter(|h| !h.is_empty())
+        .map(|h| h as &[Vec<InlineRun>])
+        .chain(rows.iter().map(|r| r.as_slice()))
+        .collect();
+    let cols = all.iter().map(|r| r.len()).max().unwrap_or(0);
+    if cols == 0 {
+        return gpui::Empty.into_any_element();
+    }
+    let has_header = !header.is_empty();
+
+    // Flatten every cell (cache-aware) and take per-column max-content widths.
+    let text_system = window.text_system();
+    let mut flats: Vec<Vec<Option<Rc<FlatText>>>> = Vec::with_capacity(all.len());
+    let mut content = vec![0.0f32; cols];
+    for (r, row) in all.iter().enumerate() {
+        let weight = if has_header && r == 0 {
+            TABLE_HEADER_WEIGHT
+        } else {
+            FontWeight::NORMAL
+        };
+        let mut out: Vec<Option<Rc<FlatText>>> = Vec::with_capacity(cols);
+        for (c, natural) in content.iter_mut().enumerate() {
+            let Some(runs) = row.get(c) else {
+                out.push(None);
+                continue;
+            };
+            let flat = flatten_cached(runs, weight, top_ix, table_cell_ix(ix, r, c), opts, theme);
+            if !flat.text.is_empty() {
+                // Cell sources are single-line; guard anyway (same byte count,
+                // so the runs still cover the text exactly).
+                let line: SharedString = if flat.text.contains('\n') {
+                    flat.text.replace('\n', " ").into()
+                } else {
+                    flat.text.clone()
+                };
+                let width = f32::from(
+                    text_system
+                        .shape_line(line, px(MD_TEXT_SIZE), &flat.runs, None)
+                        .width(),
+                );
+                if width > *natural {
+                    *natural = width;
+                }
+            }
+            out.push(Some(flat));
+        }
+        flats.push(out);
+    }
+    let geo = table_columns(&content);
+
+    // Frameless flat-hairline chrome: 1px rules under the header and between
+    // rows are the only paint (`table.gap` = 1, borderColor white@10%); the
+    // theme's headerBackground is transparent and its radius 0, so there is no
+    // header fill, outer box, or rounding.
+    let hairline = table_hairline();
+    let mut inner = div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .min_w(px(geo.min_table_width));
+    for (r, row) in flats.iter().enumerate() {
+        if r > 0 {
+            inner = inner.child(div().flex_none().h(px(TABLE_DIVIDER)).w_full().bg(hairline));
+        }
+        let mut row_el = div().flex().flex_row();
+        for (c, cell_flat) in row.iter().enumerate() {
+            let mut cell = div()
+                .flex_grow(geo.naturals[c])
+                .flex_shrink(geo.naturals[c])
+                .flex_basis(px(0.0))
+                .min_w(px(geo.minimums[c]))
+                .p(px(TABLE_CELL_PADDING))
+                .text_size(px(MD_TEXT_SIZE))
+                .line_height(px(MD_LINE_HEIGHT));
+            cell = match align.get(c).copied().unwrap_or_default() {
+                TableAlign::Left => cell,
+                TableAlign::Center => cell.text_center(),
+                TableAlign::Right => cell.text_right(),
+            };
+            if let Some(flat) = cell_flat {
+                cell = cell.child(flat_text_element(flat, table_cell_ix(ix, r, c), opts));
+            }
+            row_el = row_el.child(cell);
+        }
+        inner = inner.child(row_el);
+    }
+
+    // The horizontal scroller — when the floors exceed the viewport the inner
+    // block keeps `min_table_width` and this viewport scrolls it.
+    let scroll_id: SharedString = format!("{}-table{ix}", opts.row_key).into();
+    div()
+        .id(scroll_id)
+        .w_full()
+        .overflow_x_scroll()
+        .child(inner)
+        .into_any_element()
+}
+
 /// Flattened inline runs: one string + gpui `TextRun`s + clickable link ranges.
 /// `text` is a `SharedString` so cached reuse across frames is an Arc clone.
 pub struct FlatText {
@@ -293,6 +436,20 @@ pub struct FlatText {
 
 /// Flatten inline runs into shaped-text inputs. Pure given a theme.
 pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> FlatText {
+    flatten_runs_weighted(
+        runs,
+        theme,
+        if bold_default {
+            FontWeight::SEMIBOLD
+        } else {
+            FontWeight::NORMAL
+        },
+    )
+}
+
+/// [`flatten_runs`] with an explicit base weight (table headers are 700 per
+/// comet's `table.headerWeight`; strong runs never drop below semibold).
+fn flatten_runs_weighted(runs: &[InlineRun], theme: &Theme, base_weight: FontWeight) -> FlatText {
     let mut text = String::new();
     let mut out: Vec<TextRun> = Vec::with_capacity(runs.len());
     let mut links: Vec<(Range<usize>, String)> = Vec::new();
@@ -307,10 +464,10 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> Fl
         } else {
             font(theme.font_sans.clone())
         };
-        f.weight = if run.style.bold || bold_default {
+        f.weight = if run.style.bold && base_weight.0 < FontWeight::SEMIBOLD.0 {
             FontWeight::SEMIBOLD
         } else {
-            FontWeight::NORMAL
+            base_weight
         };
         f.style = if run.style.italic {
             FontStyle::Italic
@@ -355,29 +512,30 @@ pub fn flatten_runs(runs: &[InlineRun], theme: &Theme, bold_default: bool) -> Fl
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn text_element(
+/// Flatten through the cross-frame cache when one is wired: settled blocks
+/// reuse text + runs untouched (O(1) per block per frame); only blocks the
+/// incremental parser invalidated rebuild.
+fn flatten_cached(
     runs: &[InlineRun],
-    size: f32,
-    line_height: f32,
-    bold_default: bool,
+    base_weight: FontWeight,
     top_ix: usize,
     ix: usize,
     opts: &RenderOptions,
     theme: &Theme,
-) -> AnyElement {
-    // Flatten through the cross-frame cache when one is wired: settled blocks
-    // reuse text + runs untouched (O(1) per block per frame); only blocks the
-    // incremental parser invalidated rebuild.
-    let flat: Rc<FlatText> = match &opts.cache {
+) -> Rc<FlatText> {
+    match &opts.cache {
         Some(cache) => cache
             .borrow_mut()
             .flats
             .entry((opts.row_key.clone(), top_ix, ix))
-            .or_insert_with(|| Rc::new(flatten_runs(runs, theme, bold_default)))
+            .or_insert_with(|| Rc::new(flatten_runs_weighted(runs, theme, base_weight)))
             .clone(),
-        None => Rc::new(flatten_runs(runs, theme, bold_default)),
-    };
+        None => Rc::new(flatten_runs_weighted(runs, theme, base_weight)),
+    }
+}
+
+/// Veiled, clickable text for a flattened block (no sizing wrapper).
+fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyElement {
     // Streaming veil: opacity-only recolor of the runs covering newly appended
     // chunks. Same text, same fonts, same lengths — layout is untouched.
     // Settled elements return no spans and reuse the cached runs unsplit.
@@ -389,7 +547,7 @@ fn text_element(
         None => flat.runs.clone(),
     };
     let styled = StyledText::new(flat.text.clone()).with_runs(text_runs);
-    let inner: AnyElement = if flat.links.is_empty() {
+    if flat.links.is_empty() {
         styled.into_any_element()
     } else {
         let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.iter().cloned().unzip();
@@ -401,7 +559,27 @@ fn text_element(
                 }
             })
             .into_any_element()
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn text_element(
+    runs: &[InlineRun],
+    size: f32,
+    line_height: f32,
+    bold_default: bool,
+    top_ix: usize,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+) -> AnyElement {
+    let weight = if bold_default {
+        FontWeight::SEMIBOLD
+    } else {
+        FontWeight::NORMAL
     };
+    let flat = flatten_cached(runs, weight, top_ix, ix, opts, theme);
+    let inner = flat_text_element(&flat, ix, opts);
     div()
         .text_size(px(size))
         .line_height(px(line_height))
@@ -637,6 +815,46 @@ mod tests {
         assert_eq!(flat.runs[1].color, theme.text);
         assert!(flat.runs[1].underline.is_some());
         assert_eq!(flat.runs[2].font.weight, FontWeight::SEMIBOLD);
+    }
+
+    #[test]
+    fn table_columns_floor_and_padding() {
+        // A short column keeps its content width (floored at MIN_COLUMN_CONTENT
+        // + padding); a wide one may wrap but no narrower than minColumnWidth.
+        let geo = table_columns(&[10.0, 200.0]);
+        assert_eq!(geo.naturals, vec![72.0, 224.0]); // 48+24, 200+24
+        assert_eq!(geo.minimums, vec![72.0, 96.0]);
+        assert_eq!(geo.min_table_width, 168.0);
+    }
+
+    #[test]
+    fn table_columns_are_content_proportional_not_equal() {
+        let geo = table_columns(&[300.0, 60.0, 60.0]);
+        // Flex grow factors are the naturals — a prose column gets a larger
+        // share than short ones (not equal thirds).
+        assert!(geo.naturals[0] > 3.0 * geo.naturals[1] * 0.9);
+        assert_eq!(geo.naturals[1], geo.naturals[2]);
+    }
+
+    #[test]
+    fn table_header_flattens_at_weight_700() {
+        let theme = Theme::dark();
+        let runs = vec![InlineRun {
+            text: "Header".into(),
+            style: InlineStyle::default(),
+        }];
+        let flat = flatten_runs_weighted(&runs, &theme, TABLE_HEADER_WEIGHT);
+        assert_eq!(flat.runs[0].font.weight, FontWeight::BOLD);
+        // Strong runs inside a 700 header stay 700 (never drop to semibold).
+        let bold_runs = vec![InlineRun {
+            text: "Strong".into(),
+            style: InlineStyle {
+                bold: true,
+                ..Default::default()
+            },
+        }];
+        let flat = flatten_runs_weighted(&bold_runs, &theme, TABLE_HEADER_WEIGHT);
+        assert_eq!(flat.runs[0].font.weight, FontWeight::BOLD);
     }
 
     #[test]

@@ -1335,6 +1335,7 @@ impl Transcript {
                     *block_ix,
                     &opts,
                     &theme,
+                    window,
                     highlight
                         .get(block_ix)
                         .and_then(|o| o.as_deref())
@@ -1363,6 +1364,7 @@ impl Transcript {
                     *block_ix,
                     &opts,
                     &theme,
+                    window,
                     highlight
                         .get(block_ix)
                         .and_then(|o| o.as_deref())

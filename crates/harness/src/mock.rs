@@ -168,6 +168,13 @@ impl Harness for MockHarness {
         let mock_error = std::env::var("COMET_MOCK_ERROR")
             .ok()
             .is_some_and(|v| !v.is_empty() && v != "0");
+        // Dev/testing knob: `COMET_MOCK_TABLE=1` appends scripted GFM tables
+        // before the terminal Done — a plain 3-column grid plus a wide/uneven
+        // one (long prose cell beside short cells, mixed alignment) for
+        // table-styling checks against the reference app.
+        let mock_table = std::env::var("COMET_MOCK_TABLE")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0");
         let done_ix = self
             .script
             .iter()
@@ -177,11 +184,25 @@ impl Harness for MockHarness {
         let error_event = mock_error.then(|| AgentEvent::Error {
             message: "Claude usage limit reached — try again after the limit resets.".into(),
         });
+        let table_event = mock_table.then(|| AgentEvent::TextDelta {
+            text: "\n### Table check\n\n\
+                | Column A | Column B | Column C |\n\
+                |---|---|---|\n\
+                | a1 | b1 | c1 |\n\
+                | a2 | b2 | c2 |\n\n\
+                And a wide, uneven one:\n\n\
+                | Stage | What happens | p95 |\n\
+                |:--|:--|--:|\n\
+                | Fold | Events fold into parts and diff into the Loro doc on a 120ms coalesced commit cadence, keeping the oplog RLE-merged across devices | 4.2ms |\n\
+                | Sync | Session-room fan-out | 18ms |\n\n"
+                .into(),
+        });
         let events: Vec<Result<AgentEvent, HarnessError>> = body
             .iter()
             .cycle()
             .take(body.len() * repeat)
             .cloned()
+            .chain(table_event)
             .chain(error_event)
             .chain(tail.iter().cloned())
             .map(Ok)
