@@ -1806,10 +1806,11 @@ impl Shell {
             };
             let element = shell.render_chat_row(
                 chat.id.clone(),
-                chat.title
-                    .clone()
-                    .unwrap_or_else(|| "New session".into())
-                    .into(),
+                // Titles are model-generated (auto-rename): one-line surface.
+                transcript::single_line(
+                    &chat.title.clone().unwrap_or_else(|| "New session".into()),
+                )
+                .into(),
                 time_ago,
                 location,
                 indicator,
@@ -2281,14 +2282,16 @@ impl Shell {
         }
 
         if let Some(chat_id) = self.delete_confirm.clone() {
-            let title = self
-                .state
-                .read(cx)
-                .chats
-                .iter()
-                .find(|c| c.id == chat_id)
-                .and_then(|c| c.title.clone())
-                .unwrap_or_else(|| "New session".into());
+            let title = transcript::single_line(
+                &self
+                    .state
+                    .read(cx)
+                    .chats
+                    .iter()
+                    .find(|c| c.id == chat_id)
+                    .and_then(|c| c.title.clone())
+                    .unwrap_or_else(|| "New session".into()),
+            );
             let card = popover::dialog_card(&theme)
                 .child(popover::dialog_title(&theme, "Delete session?"))
                 .child(div().mt(px(6.0)).child(popover::dialog_body(
@@ -2406,11 +2409,14 @@ impl Shell {
 
         let (title, is_remote): (SharedString, bool) = {
             let state = self.state.read(cx);
-            let title = state
-                .selected_chat_row()
-                .and_then(|c| c.title.clone())
-                .unwrap_or_else(|| "comet".into())
-                .into();
+            // Model-generated title on the one-line header.
+            let title = transcript::single_line(
+                &state
+                    .selected_chat_row()
+                    .and_then(|c| c.title.clone())
+                    .unwrap_or_else(|| "comet".into()),
+            )
+            .into();
             // Working on another machine's session — worth knowing before
             // running anything (comet __root.tsx "Remote" pill).
             let is_remote = match (state.selected_chat_row(), state.local_device_id.as_deref()) {

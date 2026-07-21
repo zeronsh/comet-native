@@ -227,11 +227,32 @@ impl Harness for MockHarness {
                 | Sync | Session-room fan-out | 18ms |\n\n"
                 .into(),
         });
+        // With the code knob, also exercise a MULTILINE Exec command — the
+        // round-9 chip breaker shape ("set -e\nfixture_in_original=0"): the
+        // Run chip must stay one 30px line.
+        let code_tool_events = mock_code
+            .then(|| {
+                [
+                    AgentEvent::ToolCall {
+                        id: "mock-code-tool".into(),
+                        call: comet_proto::ToolCall::Exec {
+                            command: "set -e\nfixture_in_original=0\ngrep -rn \"veil\" crates/ui/src | wc -l".into(),
+                        },
+                    },
+                    AgentEvent::ToolResult {
+                        id: "mock-code-tool".into(),
+                        is_error: false,
+                    },
+                ]
+            })
+            .into_iter()
+            .flatten();
         let events: Vec<Result<AgentEvent, HarnessError>> = body
             .iter()
             .cycle()
             .take(body.len() * repeat)
             .cloned()
+            .chain(code_tool_events)
             .chain(code_event)
             .chain(table_event)
             .chain(error_event)

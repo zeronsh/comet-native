@@ -30,8 +30,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyElement, Context, Entity, ListAlignment, ListScrollEvent, ListState, SharedString,
-    Subscription, Task, Window, div, list, prelude::*, px,
+    AnyElement, ClipboardItem, Context, Entity, ListAlignment, ListScrollEvent, ListState,
+    SharedString, Subscription, Task, Window, div, list, prelude::*, px,
 };
 
 use comet_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
@@ -228,6 +228,27 @@ pub struct Row {
     /// First row of its message entry (gets the turn gap).
     pub turn_start: bool,
     pub kind: RowKind,
+    /// The owning message entry — hover anywhere on the entry's rows reveals
+    /// its timestamp strip (comet chat-view.tsx `group`/`group-hover`).
+    pub entry_id: SharedString,
+    /// Epoch-ms for the 16px hover-timestamp strip UNDER this row: set on the
+    /// LAST row of a completed entry (user rows always; assistant rows only
+    /// once streaming ends — "the turn isn't at a time yet", chat-view.tsx).
+    pub timestamp: Option<i64>,
+}
+
+/// Absolute hover-timestamp label, e.g. "Jul 1, 3:45 PM" — the exact
+/// `formatTimestamp` shape (utils.ts: short month, numeric day, hour,
+/// 2-digit minutes, no leading zero on the hour). Pure over an explicit
+/// timezone so tests don't depend on the host's local time.
+pub fn format_timestamp<Tz: chrono::TimeZone>(ms: i64, tz: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    match chrono::DateTime::from_timestamp_millis(ms) {
+        Some(utc) => utc.with_timezone(tz).format("%b %-d, %-I:%M %p").to_string(),
+        None => String::new(),
+    }
 }
 
 fn fnv1a(bytes: &[u8]) -> u64 {
@@ -263,6 +284,7 @@ pub fn rows_for_entry(
 ) -> Vec<Row> {
     let mut rows: Vec<Row> = Vec::new();
     let streaming = entry.status == Some(MessageStatus::Streaming);
+    let entry_id: SharedString = entry.id.clone().into();
 
     if entry.role == MessageRole::User {
         let text: String = entry
@@ -282,6 +304,10 @@ pub fn rows_for_entry(
                 text: text.into(),
                 pending,
             },
+            entry_id,
+            // User rows always carry the strip (chat-view.tsx: whenever
+            // `createdAt` exists — the optimistic echo included).
+            timestamp: Some(entry.created_at),
         }];
     }
 
@@ -306,6 +332,8 @@ pub fn rows_for_entry(
                     tools: Arc::new(tools),
                     auto_open,
                 },
+                entry_id: entry.id.clone().into(),
+                timestamp: None,
             });
             *group_ix += 1;
         };
@@ -358,6 +386,8 @@ pub fn rows_for_entry(
                                 id: format!("{key}.{block_ix}").into(),
                                 version,
                                 turn_start: false,
+                                entry_id: entry_id.clone(),
+                                timestamp: None,
                                 kind: if streaming {
                                     RowKind::LiveMarkdown {
                                         tree: tree.clone(),
@@ -378,11 +408,14 @@ pub fn rows_for_entry(
                         resolved,
                         ..
                     } => {
-                        let header: SharedString = questions
-                            .first()
-                            .map(|q| q.header.clone())
-                            .unwrap_or_else(|| "Question".to_string())
-                            .into();
+                        // Model-generated header onto the one-line chip.
+                        let header: SharedString = single_line(
+                            &questions
+                                .first()
+                                .map(|q| q.header.clone())
+                                .unwrap_or_else(|| "Question".to_string()),
+                        )
+                        .into();
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
                             version: fnv1a(header.as_bytes()) << 1 | *resolved as u64,
@@ -391,6 +424,8 @@ pub fn rows_for_entry(
                                 header,
                                 resolved: *resolved,
                             },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
                         });
                     }
                     MessagePart::Error {
@@ -402,8 +437,11 @@ pub fn rows_for_entry(
                             version: message.len() as u64,
                             turn_start: false,
                             kind: RowKind::ErrorChip {
-                                message: message.clone().into(),
+                                // Harness-generated; the chip is one line.
+                                message: single_line(message).into(),
                             },
+                            entry_id: entry_id.clone(),
+                            timestamp: None,
                         });
                     }
                     // Tools are grouped by the outer arm; nothing reaches here.
@@ -421,6 +459,14 @@ pub fn rows_for_entry(
 
     if let Some(first) = rows.first_mut() {
         first.turn_start = true;
+    }
+    // Timestamp strip under the entry's LAST row once the turn has settled
+    // (chat-view.tsx: "No timestamp hover mid-stream"). The version bit keeps
+    // the diff key honest for last-row kinds whose own version wouldn't
+    // change when streaming flips off (chips).
+    if !streaming && let Some(last) = rows.last_mut() {
+        last.timestamp = Some(entry.created_at);
+        last.version ^= 1 << 62;
     }
     rows
 }
@@ -668,8 +714,25 @@ pub fn tool_group_summary(tools: &[ToolItem]) -> String {
     summary
 }
 
-/// Per-kind chip label + one-line detail.
+/// Collapse model-generated text onto ONE line for single-line surfaces
+/// (tool-chip details, chip messages, titles, previews): newlines, tabs and
+/// runs of whitespace become single spaces, trimmed. This is what the
+/// original's CSS `truncate` (`whitespace-nowrap`) does implicitly — gpui's
+/// `.truncate()` still hard-breaks on literal `\n` BEFORE the ellipsis logic,
+/// so a multiline Exec command would wrap and blow the fixed 30px chip row.
+pub fn single_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Per-kind chip label + one-line detail (detail always [`single_line`]d —
+/// Exec commands, MCP inputs and search queries are model-generated and can
+/// contain newlines; the chip is a fixed-height single-line surface).
 pub fn tool_chip_content(call: &ToolCall) -> (&'static str, String) {
+    let (label, detail) = tool_chip_content_raw(call);
+    (label, single_line(&detail))
+}
+
+fn tool_chip_content_raw(call: &ToolCall) -> (&'static str, String) {
     // Labels match comet tool-chip.tsx `describeTool` exactly.
     match call {
         ToolCall::Exec { command } => ("Run", command.clone()),
@@ -908,6 +971,16 @@ pub struct Transcript {
     rail_enabled: bool,
     /// Hovered rail tick (grows + shows the preview card).
     rail_hover: Option<usize>,
+    /// `(row id, entry id)` under the pointer — reveals the entry's timestamp
+    /// strip (comet chat-view.tsx `group-hover`; the rows report hover
+    /// themselves). Keyed by ROW so a row→row move within one entry can't
+    /// clear the reveal when the old row's leave event arrives after the new
+    /// row's enter (enter/leave order across rows is not guaranteed).
+    hovered_entry: Option<(SharedString, SharedString)>,
+    /// Code block showing "Copied" feedback: `(row id, block ix)`, cleared by
+    /// the companion task after ~1.2s.
+    copied_code: Option<(SharedString, usize)>,
+    copied_clear: Option<Task<()>>,
     _observe: Subscription,
 }
 
@@ -947,6 +1020,9 @@ impl Transcript {
             scroll_anim: None,
             rail_enabled: true,
             rail_hover: None,
+            hovered_entry: None,
+            copied_code: None,
+            copied_clear: None,
             _observe: observe,
         };
         this.sync(cx);
@@ -1335,6 +1411,7 @@ impl Transcript {
                     veil: None,
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
+                    copy: Some(self.copy_ui_for(&row.id, cx)),
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
@@ -1363,6 +1440,7 @@ impl Transcript {
                     veil: veil.clone(),
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
+                    copy: Some(self.copy_ui_for(&row.id, cx)),
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
                 let Some(top) = tree.blocks.get(*block_ix) else {
@@ -1401,7 +1479,65 @@ impl Transcript {
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
         };
 
+        // Hover-revealed timestamp strip (comet chat-view.tsx `Timestamp`):
+        // a RESERVED 16px lane under the entry's last row — the label only
+        // flips opacity, so revealing it never shifts the virtualizer's
+        // layout. User entries align end (under the bubble), assistant start.
+        let is_user_row = matches!(row.kind, RowKind::User { .. });
+        let hovered = self
+            .hovered_entry
+            .as_ref()
+            .is_some_and(|(_, entry)| entry == &row.entry_id);
+        let strip = row.timestamp.map(|ms| {
+            div()
+                .h(px(16.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .px(px(4.0))
+                .when(is_user_row, |el| el.justify_end())
+                .when(hovered, |el| {
+                    el.child(motion::fade_quick(
+                        SharedString::from(format!("ts-{}", row.id)),
+                        div()
+                            .text_size(px(11.0))
+                            .text_color(theme.text_muted.opacity(0.55))
+                            .child(SharedString::from(format_timestamp(
+                                ms,
+                                &chrono::Local,
+                            ))),
+                    ))
+                })
+        });
+        let entry_id = row.entry_id.clone();
+        let row_id = row.id.clone();
         div()
+            .id(row.id.clone())
+            .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {
+                if *hovered {
+                    let next = Some((row_id.clone(), entry_id.clone()));
+                    if this.hovered_entry != next {
+                        let entry_changed = this
+                            .hovered_entry
+                            .as_ref()
+                            .is_none_or(|(_, entry)| entry != &entry_id);
+                        this.hovered_entry = next;
+                        if entry_changed {
+                            cx.notify();
+                        }
+                    }
+                } else if this
+                    .hovered_entry
+                    .as_ref()
+                    .is_some_and(|(row, _)| row == &row_id)
+                {
+                    // Only the row that OWNS the current reveal may clear it —
+                    // a stale leave from an earlier row must not blank the
+                    // strip the newly entered row just lit.
+                    this.hovered_entry = None;
+                    cx.notify();
+                }
+            }))
             .w_full()
             .flex()
             .justify_center()
@@ -1414,9 +1550,49 @@ impl Transcript {
                     .w_full()
                     .max_w(px(MAX_CONTENT_WIDTH))
                     .min_w_0()
-                    .child(inner),
+                    .child(inner)
+                    .children(strip),
             )
             .into_any_element()
+    }
+
+    /// Copy-button wiring for one row's code blocks ([`render::CopyUi`]):
+    /// click writes the block's code to the clipboard and shows a transient
+    /// "Copied" check on that block for ~1.2s (overlay — no layout shift).
+    fn copy_ui_for(&self, row_id: &SharedString, cx: &mut Context<Self>) -> render::CopyUi {
+        let copied_ix = self
+            .copied_code
+            .as_ref()
+            .filter(|(id, _)| id == row_id)
+            .map(|(_, ix)| *ix);
+        let row_key = row_id.clone();
+        let entity = cx.weak_entity();
+        let handler: Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)> =
+            Rc::new(move |ix, code, _window, cx| {
+                cx.write_to_clipboard(ClipboardItem::new_string(code.to_string()));
+                let row_key = row_key.clone();
+                entity
+                    .update(cx, |this, cx| {
+                        this.copied_code = Some((row_key, ix));
+                        this.copied_clear = Some(cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(Duration::from_millis(1200))
+                                .await;
+                            this.update(cx, |this, cx| {
+                                this.copied_code = None;
+                                this.copied_clear = None;
+                                cx.notify();
+                            })
+                            .ok();
+                        }));
+                        cx.notify();
+                    })
+                    .ok();
+            });
+        render::CopyUi {
+            handler,
+            copied_ix,
+        }
     }
 
     /// Request highlights for the code blocks of a tree. `only` limits to one
@@ -2346,6 +2522,79 @@ mod tests {
             ],
         };
         assert_eq!(tool_chip_content(&todo), ("Todo", "1/2 done".to_string()));
+    }
+
+    #[test]
+    fn multiline_command_flattens_to_one_chip_line() {
+        // The user's breaker: a multi-line script in a Run chip. The detail
+        // must come out as ONE sanitized line — the chip's fixed 30px card
+        // then truncates it with an ellipsis like the original's CSS.
+        let (label, detail) = tool_chip_content(&ToolCall::Exec {
+            command: "set -e\nfixture_in_original=0\n\tgrep -c  \"x\"".into(),
+        });
+        assert_eq!(label, "Run");
+        assert_eq!(detail, "set -e fixture_in_original=0 grep -c \"x\"");
+        assert!(!detail.contains('\n'));
+        // The chip row height is a constant, independent of content shape.
+        assert_eq!(chips_height(1), CHIPS_TOP_PAD + CHIP_HEIGHT);
+        // Every detail kind is sanitized (MCP inputs / queries are model text).
+        let (_, q) = tool_chip_content(&ToolCall::WebSearch {
+            query: "line one\nline two".into(),
+        });
+        assert_eq!(q, "line one line two");
+    }
+
+    #[test]
+    fn timestamp_strip_lands_on_the_last_settled_row() {
+        use chrono::FixedOffset;
+        // Fixed zone (UTC−4): "Jul 1, 3:45 PM" — the exact formatTimestamp
+        // shape (short month, numeric day, no leading zero, 2-digit minutes).
+        let tz = FixedOffset::west_opt(4 * 3600).unwrap();
+        let ms = chrono::DateTime::parse_from_rfc3339("2026-07-01T19:45:00Z")
+            .unwrap()
+            .timestamp_millis();
+        assert_eq!(format_timestamp(ms, &tz), "Jul 1, 3:45 PM");
+
+        // User entries carry the strip on their single row (pending too).
+        let user = SessionMessageEntry {
+            id: "u1".into(),
+            role: MessageRole::User,
+            parts: vec![text_part("p1", "hi")],
+            created_at: ms,
+            device_id: "dev".into(),
+            status: None,
+            continuation_of: None,
+        };
+        let rows = rows_for_entry(&user, true, &mut parse);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].timestamp, Some(ms));
+
+        // Assistant entries: strip on the LAST row once settled…
+        let done = assistant("a1", MessageStatus::Complete, vec![text_part("p1", "one\n\ntwo")]);
+        let rows = rows_for_entry(&done, false, &mut parse);
+        assert!(rows.len() >= 2);
+        assert_eq!(rows.last().unwrap().timestamp, Some(done.created_at));
+        assert!(rows[..rows.len() - 1].iter().all(|r| r.timestamp.is_none()));
+
+        // …but never mid-stream (chat-view.tsx: no hover under a moving reply).
+        let live = assistant(
+            "a2",
+            MessageStatus::Streaming,
+            vec![text_part("p1", "streaming…")],
+        );
+        let rows = rows_for_entry(&live, false, &mut parse);
+        assert!(rows.iter().all(|r| r.timestamp.is_none()));
+        // Every row knows its entry (the hover group).
+        assert!(rows.iter().all(|r| r.entry_id.as_ref() == live.id));
+    }
+
+    #[test]
+    fn single_line_collapses_all_whitespace_runs() {
+        assert_eq!(single_line("a\nb"), "a b");
+        assert_eq!(single_line("  a\t\t b \r\n c  "), "a b c");
+        assert_eq!(single_line("plain"), "plain");
+        assert_eq!(single_line(""), "");
+        assert_eq!(single_line("\n\n"), "");
     }
 
     #[test]

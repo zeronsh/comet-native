@@ -107,13 +107,15 @@ pub fn active_tick(tick_rows: &[usize], top_row: usize) -> Option<usize> {
     }
 }
 
-/// Char-cap a preview with an ellipsis.
+/// Char-cap a preview with an ellipsis. Whitespace runs (including newlines —
+/// prompts and replies are free text) collapse to single spaces first: the
+/// preview card's title is a one-line surface (message-rail.tsx line-clamp-1).
 pub fn truncate_preview(text: &str, max_chars: usize) -> String {
-    let trimmed = text.trim();
-    if trimmed.chars().count() <= max_chars {
-        return trimmed.to_string();
+    let flat = crate::transcript::single_line(text);
+    if flat.chars().count() <= max_chars {
+        return flat;
     }
-    let cut: String = trimmed.chars().take(max_chars.saturating_sub(1)).collect();
+    let cut: String = flat.chars().take(max_chars.saturating_sub(1)).collect();
     format!("{}…", cut.trim_end())
 }
 

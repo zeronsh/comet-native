@@ -76,6 +76,18 @@ pub struct RenderOptions {
     pub cache: Option<Rc<RefCell<RenderCache>>>,
     /// Frame timestamp driving veil opacities (one clock per render pass).
     pub now: Instant,
+    /// Code-block copy-button plumbing (round 9): `None` renders no button
+    /// (previews outside the transcript).
+    pub copy: Option<CopyUi>,
+}
+
+/// Copy-button wiring for one row's code blocks: the handler writes the code
+/// to the clipboard and flips a transient per-row "Copied" state owned by the
+/// transcript entity; `copied_ix` is the block currently showing feedback.
+#[derive(Clone)]
+pub struct CopyUi {
+    pub handler: Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)>,
+    pub copied_ix: Option<usize>,
 }
 
 impl RenderOptions {
@@ -86,6 +98,7 @@ impl RenderOptions {
             veil: None,
             cache: None,
             now: Instant::now(),
+            copy: None,
         }
     }
 }
@@ -768,6 +781,43 @@ fn render_code_block(
         None => Vec::new(),
     };
     let scroll_id: SharedString = format!("{}-code{ix}", opts.row_key).into();
+    // Copy affordance (round 9; no source counterpart — the original block is
+    // header + body only): a small ghost button in the block's top-right,
+    // absolutely overlaid so clicking / the "Copied" flash never shifts
+    // layout. Sits centered in the header when there is one, floats over the
+    // first code line otherwise.
+    let copy_button = opts.copy.clone().map(|copy| {
+        let copied = copy.copied_ix == Some(ix);
+        let code_text: SharedString = code.to_string().into();
+        let handler = copy.handler.clone();
+        div()
+            .id(SharedString::from(format!("{}-copy{ix}", opts.row_key)))
+            .absolute()
+            .top(px(3.0))
+            .right(px(5.0))
+            .h(px(20.0))
+            .px(px(6.0))
+            .rounded(px(5.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .cursor_pointer()
+            .hover(|s| s.bg(crate::theme::white_alpha(0.08)))
+            .text_size(px(10.5))
+            .text_color(theme.text_muted)
+            .on_click(move |_, window, cx| handler(ix, code_text.clone(), window, cx))
+            .child(
+                crate::icons::icon(if copied {
+                    crate::icons::CHECK
+                } else {
+                    crate::icons::COPY
+                })
+                .size(px(12.0))
+                .text_color(theme.text_muted),
+            )
+            .when(copied, |el| el.child(SharedString::from("Copied")))
+    });
     div()
         .rounded(px(10.0))
         // Faint white wash over the near-black panel ≈ #101010 (comet's code
@@ -776,6 +826,7 @@ fn render_code_block(
         .border_1()
         .border_color(theme.border)
         .overflow_hidden()
+        .relative()
         .when_some(language, |el, lang| {
             el.child(
                 div()
@@ -783,6 +834,8 @@ fn render_code_block(
                     .py(px(5.0))
                     .border_b_1()
                     .border_color(theme.border)
+                    // A whisper of tone separation between header and body.
+                    .bg(crate::theme::white_alpha(0.02))
                     .text_size(px(11.0))
                     .text_color(theme.text_muted)
                     .child(SharedString::from(lang.to_string())),
@@ -814,6 +867,8 @@ fn render_code_block(
                     )
                 })),
         )
+        // Overlay LAST so it paints above the header/body.
+        .children(copy_button)
         .into_any_element()
 }
 

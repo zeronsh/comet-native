@@ -209,15 +209,11 @@ pub fn collapse_text_glide(from: f32, progress: f32) -> f32 {
     (from - 53.0).max(0.0) * (1.0 - progress)
 }
 
-/// Picker-chip fade for the morph: the chips change SIDES between modes and
-/// would ghost across the text early in the reveal, so they stay invisible
-/// through the first ~third and fade in once the geometry has separated.
-/// The attach/send pair never fades — it is (near-)stationary across modes.
-pub fn morph_chips_alpha(progress: f32) -> f32 {
-    ((progress - 0.35) / 0.65).clamp(0.0, 1.0)
-}
-
 /// The decaying [`CLUSTER_Y_DELTA`] offset for the in-flight morph.
+/// The whole control cluster — chips AND attach/send — rides the stationary
+/// bottom anchor at FULL alpha throughout (round-9 follow-up: any fade on the
+/// picker chips read as flicker; their screen position is near-stationary
+/// across the flip, so nothing needs to be hidden).
 pub fn morph_cluster_dy(progress: f32) -> f32 {
     CLUSTER_Y_DELTA * (1.0 - progress)
 }
@@ -2483,8 +2479,8 @@ impl Render for Composer {
         // The pill's bottom edge is stationary on screen (the composer sits at
         // the bottom of the shell column; growth moves the TOP edge), so the
         // controls pin to the bottom and only the text glides with the reveal
-        // (round-9 follow-up: the send/attach/chips must not ride the height).
-        let chips_alpha = morph_chips_alpha(morph_t);
+        // (round-9 follow-up: the send/attach/chips must not ride the height,
+        // and none of them fade — the full cluster stays visible throughout).
         let cluster_dy = morph_cluster_dy(morph_t);
         let body = if expanded {
             // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row
@@ -2494,8 +2490,8 @@ impl Render for Composer {
             // text container is laid out at TARGET size (committed layout
             // never reflows mid-tween — the caret can't jump); its top pad
             // eases 12→16 so the first line glides from its compact resting
-            // place. Chips fade in late (they change sides); attach/send
-            // never fade — they're already in place.
+            // place. The whole control cluster stays at full alpha — chips,
+            // attach and send are all (near-)stationary on the bottom anchor.
             let text_pt = morph_text_pad(morph_t);
             pill.h(px(pill_height))
                 .overflow_hidden()
@@ -2527,13 +2523,7 @@ impl Render for Composer {
                         .pr(px(10.0))
                         .pt(px(4.0))
                         .pb(px(10.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .opacity(chips_alpha)
-                                .child(self.pickers.clone()),
-                        )
+                        .child(div().flex_1().min_w_0().child(self.pickers.clone()))
                         .child(attach)
                         .child(send_button),
                 )
@@ -2543,9 +2533,9 @@ impl Render for Composer {
             // the 22.75px line centers to the same 12px inset as `py-3`).
             // The row is BOTTOM-justified: during the collapse morph the pill
             // top sweeps down over a stationary row, the text walks down from
-            // its expanded resting place via a decaying relative offset, the
-            // inline chips fade in late, and the attach/send pair holds its
-            // spot (2.5px centering delta gliding in).
+            // its expanded resting place via a decaying relative offset, and
+            // the whole inline cluster (chips + attach/send) holds its spot at
+            // full alpha (2.5px centering delta gliding in).
             let text_glide = match self.flip_morph {
                 Some(m) if morphing => collapse_text_glide(m.from, morph_t),
                 _ => 0.0,
@@ -2582,12 +2572,7 @@ impl Render for Composer {
                                 .pr(px(8.0))
                                 .relative()
                                 .top(px(-cluster_dy))
-                                .child(
-                                    div()
-                                        .flex_none()
-                                        .opacity(chips_alpha)
-                                        .child(self.pickers.clone()),
-                                )
+                                .child(div().flex_none().child(self.pickers.clone()))
                                 .child(attach)
                                 .child(send_button),
                         ),
@@ -2796,15 +2781,13 @@ mod tests {
     fn morph_anchoring_holds_controls_and_glides_text() {
         // Steady state (progress 1): no offsets, everything at rest.
         assert_eq!(morph_cluster_dy(1.0), 0.0);
-        assert_eq!(morph_chips_alpha(1.0), 1.0);
         assert_eq!(morph_text_pad(1.0), 16.0);
         assert_eq!(collapse_text_glide(124.0, 1.0), 0.0);
         // At the commit instant the pieces start from the OLD mode's resting
         // geometry: text pad at the compact 12px inset, cluster displaced by
-        // exactly the 2.5px centering delta, chips invisible.
+        // exactly the 2.5px centering delta.
         assert_eq!(morph_text_pad(0.0), 12.0);
         assert_eq!(morph_cluster_dy(0.0), CLUSTER_Y_DELTA);
-        assert_eq!(morph_chips_alpha(0.0), 0.0);
         // Collapse glide: starts where the expanded text sat (17px below the
         // committed pill top → `from − 53` above the compact resting spot)…
         assert_eq!(collapse_text_glide(124.0, 0.0), 71.0);
@@ -2817,9 +2800,6 @@ mod tests {
         }
         // …and can't go negative on shallow mid-flight reversals.
         assert_eq!(collapse_text_glide(50.0, 0.0), 0.0);
-        // Chips stay hidden while geometry separates, then ramp to full.
-        assert_eq!(morph_chips_alpha(0.3), 0.0);
-        assert!(morph_chips_alpha(0.6) > 0.0 && morph_chips_alpha(0.6) < 1.0);
     }
 
     #[test]
