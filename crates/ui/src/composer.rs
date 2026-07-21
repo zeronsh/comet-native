@@ -33,18 +33,33 @@ use crate::theme::Theme;
 // Constants + pure decision logic
 // ---------------------------------------------------------------------------
 
-/// Expanded composer height bounds: one line at the floor, textarea capped at
-/// 260px of content (comet `max-h-[260px]`) plus the chrome.
-pub const COMPOSER_MIN_HEIGHT: f32 = INPUT_LINE_HEIGHT + INPUT_VERTICAL_CHROME;
-pub const COMPOSER_MAX_HEIGHT: f32 = 260.0 + INPUT_VERTICAL_CHROME;
+/// Expanded-mode textarea vertical padding: `pt-4 pb-1` (comet composer.tsx
+/// line 578) = 16 + 4.
+pub const TEXTAREA_PAD_V: f32 = 20.0;
+/// The expanded textarea BOX (content + padding) is clamped by the original's
+/// auto-grow effect: `ta.style.height = Math.min(Math.max(scrollHeight, 76),
+/// 260)` (comet composer.tsx line 235). The 76px floor applies even when
+/// empty — it's what makes the always-expanded new-chat composer tall.
+pub const TEXTAREA_MIN: f32 = 76.0;
+pub const TEXTAREA_MAX: f32 = 260.0;
+/// Expanded actions row: `pt-1` (4) + h-8 picker chips (32 — the tallest
+/// children; composer/styles.tsx pickerChip) + `pb-2.5` (10) — comet
+/// composer-actions.tsx line 60.
+pub const ACTIONS_ROW_HEIGHT: f32 = 46.0;
+/// The pill's 1px hairline, top + bottom (`rounded-[26px] border`).
+pub const PILL_BORDER_V: f32 = 2.0;
+/// Expanded composer bounds, border-box: 76 + 46 + 2 = 124 when empty (the
+/// new-chat canvas), 260 + 46 + 2 = 308 at the content cap.
+pub const COMPOSER_MIN_HEIGHT: f32 = TEXTAREA_MIN + ACTIONS_ROW_HEIGHT + PILL_BORDER_V;
+pub const COMPOSER_MAX_HEIGHT: f32 = TEXTAREA_MAX + ACTIONS_ROW_HEIGHT + PILL_BORDER_V;
+/// Compact pill, border-box: one-line textarea `py-3` (24) + one 22.75px line
+/// (scrollHeight rounds to 47 in the original) + the 2px hairline = 49. The
+/// compact cluster (`py-1.5` + h-8 = 44) is shorter, so the textarea wins.
+pub const COMPACT_TOTAL_HEIGHT: f32 = 49.0;
 /// Below this pill input width the composer always expands.
 pub const MIN_COMPACT_INPUT_WIDTH: f32 = 200.0;
-/// Vertical chrome around the text content in expanded mode: textarea padding
-/// (`pt-4 pb-1` = 20) + actions row (`pt-1` 4 + h-8 cluster 32 + `pb-2.5` 10)
-/// — comet composer.tsx / composer-actions.tsx.
-pub const INPUT_VERTICAL_CHROME: f32 = 66.0;
-/// Input text metrics.
-pub const INPUT_LINE_HEIGHT: f32 = 21.0;
+/// Input text metrics: `text-[14px] leading-relaxed` = 14 × 1.625 = 22.75.
+pub const INPUT_LINE_HEIGHT: f32 = 22.75;
 pub const INPUT_TEXT_SIZE: f32 = 14.0;
 /// Single-select questions auto-advance after this long.
 pub const AUTO_ADVANCE_MS: u64 = 220;
@@ -105,9 +120,87 @@ pub fn input_content_height(wrapped_lines: usize) -> f32 {
     wrapped_lines.max(1) as f32 * INPUT_LINE_HEIGHT
 }
 
-/// Total expanded composer height for a content height (clamped 76–260).
+/// Total expanded composer height (border-box) for a content height: the
+/// textarea BOX (content + `pt-4 pb-1`) clamps to 76–260 exactly like the
+/// original's auto-grow effect, then the 46px actions row and the hairline
+/// ride on top. Range 124–308.
 pub fn composer_total_height(content_height: f32) -> f32 {
-    (content_height + INPUT_VERTICAL_CHROME).clamp(COMPOSER_MIN_HEIGHT, COMPOSER_MAX_HEIGHT)
+    (content_height + TEXTAREA_PAD_V).clamp(TEXTAREA_MIN, TEXTAREA_MAX)
+        + ACTIONS_ROW_HEIGHT
+        + PILL_BORDER_V
+}
+
+/// Compact↔expanded flip morph (round 9): the flip used to snap between the
+/// two pill layouts. The original has no height transition (its shell carries
+/// only `transition-colors`), so this is a native nicety: ONE committed flip
+/// starts exactly one 180ms ease-out morph ([`motion::COLLAPSE`], the same
+/// manual-drive pattern as shell.rs `WidthTween` — never `with_animation`,
+/// whose element-id keying replays tweens on remount, round-6 §1–3).
+///
+/// The morph animates the pill's COMMITTED height: the flip commits its final
+/// layout immediately (the input entity never remounts — the caret survives,
+/// exactly as before), the pill clips a full-size inner while its height
+/// eases toward the live target, the text's top padding eases 12↔16 so the
+/// first line glides instead of jumping, and the (re)appearing actions fade
+/// in with the reveal. [`composer_flip`]'s hysteresis already guarantees no
+/// oscillation at the boundary, and [`flip_morph_step`] never restarts a
+/// morph while the committed mode holds. Reduced motion snaps: no morph is
+/// ever created.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlipMorph {
+    /// Rendered height when the flip committed — the animation's start point.
+    pub from: f32,
+    /// Commit time in ms on the caller's monotonic clock.
+    pub start_ms: f32,
+}
+
+impl FlipMorph {
+    /// Raw timeline position 0..1 over [`motion::COLLAPSE`]'s 180ms.
+    fn raw(&self, now_ms: f32) -> f32 {
+        let total = motion::COLLAPSE.total().as_secs_f32() * 1000.0;
+        ((now_ms - self.start_ms) / total).clamp(0.0, 1.0)
+    }
+
+    /// Eased progress 0..1 (ease-out) — also drives the actions fade.
+    pub fn progress(&self, now_ms: f32) -> f32 {
+        motion::COLLAPSE.progress(self.raw(now_ms))
+    }
+
+    pub fn done(&self, now_ms: f32) -> bool {
+        self.raw(now_ms) >= 1.0
+    }
+
+    /// Committed-height evaluation: eased lerp from the flip-time height to
+    /// the LIVE target (auto-grow may move the target mid-morph — the morph
+    /// tracks it instead of finishing on a stale height).
+    pub fn height(&self, target: f32, now_ms: f32) -> f32 {
+        motion::lerp(self.from, target, self.progress(now_ms))
+    }
+}
+
+/// Advance the flip morph across one render pass. While the committed mode
+/// holds, the morph is kept (a finished one clears) — same-mode renders can
+/// NEVER restart the animation. A committed mode change starts one morph from
+/// the last rendered height, which mid-flight is the CURRENT animated height,
+/// so a reverse flip hands off seamlessly instead of popping to an endpoint.
+/// Reduced motion (or a first paint with no measured height yet) snaps.
+pub fn flip_morph_step(
+    morph: Option<FlipMorph>,
+    mode_changed: bool,
+    last_height: f32,
+    now_ms: f32,
+    reduced_motion: bool,
+) -> Option<FlipMorph> {
+    if !mode_changed {
+        return morph.filter(|m| !m.done(now_ms));
+    }
+    if reduced_motion || last_height <= 0.0 {
+        return None;
+    }
+    Some(FlipMorph {
+        from: last_height,
+        start_ms: now_ms,
+    })
 }
 
 /// What the send button is right now.
@@ -1287,7 +1380,9 @@ impl Render for ComposerInput {
             .font_family(theme.font_sans.clone())
             .child(ComposerTextElement {
                 input: cx.entity(),
-                max_content_height: COMPOSER_MAX_HEIGHT - INPUT_VERTICAL_CHROME,
+                // Internal scrolling once content exceeds the 260px textarea
+                // box minus its `pt-4 pb-1` padding.
+                max_content_height: TEXTAREA_MAX - TEXTAREA_PAD_V,
             })
     }
 }
@@ -1338,6 +1433,14 @@ pub struct Composer {
     /// widths have settled for [`RESIZE_SETTLE_MS`].
     width_changed_at: Option<Instant>,
     settle_task: Option<Task<()>>,
+    /// In-flight compact↔expanded morph (one per committed flip; manual
+    /// drive — see [`FlipMorph`]).
+    flip_morph: Option<FlipMorph>,
+    /// Pill height actually rendered last frame — a committed flip morphs
+    /// from here, so mid-flight reversals hand off without a jump.
+    last_rendered_height: f32,
+    /// Monotonic clock anchor for the morph timeline.
+    morph_clock: Instant,
     _observe: Subscription,
     _input_events: Subscription,
 }
@@ -1374,6 +1477,9 @@ impl Composer {
             last_seen_width: 0.0,
             width_changed_at: None,
             settle_task: None,
+            flip_morph: None,
+            last_rendered_height: 0.0,
+            morph_clock: Instant::now(),
             _observe: observe,
             _input_events: input_events,
         }
@@ -1404,6 +1510,10 @@ impl Composer {
             self.current_key = key;
             self.failure = None;
             self.wizard = None;
+            // Route changes snap (round 5): a mode difference between the old
+            // and new chat's composer must not glide across navigation.
+            self.flip_morph = None;
+            self.last_rendered_height = 0.0;
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
         }
 
@@ -2073,7 +2183,7 @@ impl Focusable for Composer {
 }
 
 impl Render for Composer {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
         let wizard_active = self.wizard.is_some();
         let mode = self.button_mode(cx);
@@ -2143,7 +2253,8 @@ impl Render for Composer {
             f32::MAX
         };
         let next = composer_flip(self.expanded_mode, text_width, capacity, has_newline, resizing);
-        if next != self.expanded_mode && measured_since_flip {
+        let committed_flip = next != self.expanded_mode && measured_since_flip;
+        if committed_flip {
             self.expanded_mode = next;
             self.flip_epoch = epoch;
             self.expanded_anchor = 0.0;
@@ -2151,8 +2262,20 @@ impl Render for Composer {
             // an interactive resize.
             self.last_seen_width = 0.0;
         }
+        // New chats render expanded regardless of `expanded_mode` (see below),
+        // so a mode flip there changes nothing visible — never morph it.
+        let new_chat = self.state.read(cx).selected_chat.is_none();
+        // Morph clock in ms; dividing by the measurement knob stretches the
+        // timeline exactly like shell.rs eval_tween's scaled duration.
+        let now_ms = self.morph_clock.elapsed().as_secs_f32() * 1000.0 / motion::speed_scale();
+        self.flip_morph = flip_morph_step(
+            self.flip_morph,
+            committed_flip && !new_chat,
+            self.last_rendered_height,
+            now_ms,
+            motion::reduced_motion(cx),
+        );
         let expanded = self.expanded_mode;
-        let total_height = composer_total_height(content_height);
 
         let failure = self.failure.clone();
         // Centered composer column (comet `mx-auto w-full max-w-3xl`).
@@ -2228,9 +2351,31 @@ impl Render for Composer {
         }
 
         // New chats always use the expanded layout: the repo/branch pickers
-        // need the full-width actions row (comet composer-actions.tsx).
-        let new_chat = self.state.read(cx).selected_chat.is_none();
+        // need the full-width actions row (comet composer-actions.tsx
+        // `mustExpand = isNew || …`).
         let expanded = expanded || new_chat;
+
+        // Committed-height morph: the layout below is already the NEW mode's;
+        // only the pill's height (and the entrance fade/text glide driven by
+        // `morph_t`) animates. Steady state renders exactly the target.
+        let target_height = if expanded {
+            composer_total_height(content_height)
+        } else {
+            COMPACT_TOTAL_HEIGHT
+        };
+        let (pill_height, morph_t, morphing) = match self.flip_morph {
+            Some(m) if !m.done(now_ms) => {
+                (m.height(target_height, now_ms), m.progress(now_ms), true)
+            }
+            _ => (target_height, 1.0, false),
+        };
+        if !morphing {
+            self.flip_morph = None;
+        } else {
+            // Manual tween drive: keep frames coming (shell.rs motion_active).
+            window.request_animation_frame();
+        }
+        self.last_rendered_height = pill_height;
 
         let send_button = self.render_send_button(mode, cx);
         // Attach button (visual affordance; uploads arrive via paste/drop).
@@ -2263,60 +2408,86 @@ impl Render for Composer {
             .shadow_lg();
         let body = if expanded {
             // Expanded: textarea on top (`px-4 pb-1 pt-4`), actions row below
-            // (`px-3 pb-2.5 pt-1`), auto-grow between the height bounds.
-            pill.h(px(total_height))
-                .flex()
-                .flex_col()
+            // (`px-3 pb-2.5 pt-1`, h-8 chips → 46px), the textarea box
+            // auto-growing 76–260 inside. During the expand morph the pill
+            // CLIPS a full-target-size inner (the committed layout never
+            // reflows mid-tween — the caret can't jump), the text's top pad
+            // eases 12→16 so the first line glides from its compact resting
+            // place, and the actions row fades in with the reveal.
+            let text_pt = motion::lerp(12.0, 16.0, morph_t);
+            pill.h(px(pill_height))
+                .overflow_hidden()
                 .child(
                     div()
-                        .flex_1()
-                        .min_h_0()
-                        .px(px(16.0))
-                        .pt(px(16.0))
-                        .pb(px(4.0))
-                        .child(self.input.clone()),
-                )
-                .child(
-                    div()
+                        .h(px(target_height - PILL_BORDER_V))
                         .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .pl(px(12.0))
-                        .pr(px(10.0))
-                        .pt(px(4.0))
-                        .pb(px(10.0))
-                        .child(div().flex_1().min_w_0().child(self.pickers.clone()))
-                        .child(attach)
-                        .child(send_button),
+                        .flex_col()
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_h_0()
+                                .px(px(16.0))
+                                .pt(px(text_pt))
+                                .pb(px(4.0))
+                                .child(self.input.clone()),
+                        )
+                        .child(
+                            div()
+                                .flex_none()
+                                .opacity(morph_t)
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.0))
+                                .pl(px(12.0))
+                                .pr(px(10.0))
+                                .pt(px(4.0))
+                                .pb(px(10.0))
+                                .child(div().flex_1().min_w_0().child(self.pickers.clone()))
+                                .child(attach)
+                                .child(send_button),
+                        ),
                 )
         } else {
-            // Compact pill: input and the actions cluster on one line
-            // (`py-3 pl-4 pr-2` textarea, `gap-2 py-1.5 pl-1 pr-2` cluster).
-            pill.h(px(46.0))
-                .flex()
-                .flex_row()
-                .items_center()
+            // Compact pill: input and the actions cluster on one 47px line
+            // (`py-3 pl-4 pr-2` textarea, `gap-2 py-1.5 pl-1 pr-2` cluster;
+            // the 22.75px line centers to the same 12px inset as `py-3`).
+            // During the collapse morph the pill shrinks onto this
+            // top-anchored row — a decaying 4px offset starts the text at its
+            // expanded resting place, and the inline cluster fades in.
+            let text_pt = motion::lerp(4.0, 0.0, morph_t);
+            pill.h(px(pill_height))
+                .overflow_hidden()
                 .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .pl(px(16.0))
-                        .pr(px(8.0))
-                        .child(self.input.clone()),
-                )
-                .child(
-                    div()
-                        .flex_none()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(6.0))
-                        .pl(px(4.0))
-                        .pr(px(8.0))
-                        .child(div().flex_none().child(self.pickers.clone()))
-                        .child(attach)
-                        .child(send_button),
+                    div().pt(px(text_pt)).child(
+                        div()
+                            .h(px(COMPACT_TOTAL_HEIGHT - PILL_BORDER_V))
+                            .flex()
+                            .flex_row()
+                            .items_center()
+                            .child(
+                                div()
+                                    .flex_1()
+                                    .min_w_0()
+                                    .pl(px(16.0))
+                                    .pr(px(8.0))
+                                    .child(self.input.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .opacity(morph_t)
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .gap(px(6.0))
+                                    .pl(px(4.0))
+                                    .pr(px(8.0))
+                                    .child(div().flex_none().child(self.pickers.clone()))
+                                    .child(attach)
+                                    .child(send_button),
+                            ),
+                    ),
                 )
         };
         container.child(motion::fade_quick("composer-input", body))
@@ -2400,21 +2571,120 @@ mod tests {
 
     #[test]
     fn auto_grow_math() {
-        // One line sits at the floor (line + chrome).
+        // The source heights (comet composer.tsx line 235 clamp, composer-
+        // actions.tsx row, 1px hairlines): 76+46+2 empty … 260+46+2 capped.
+        assert_eq!(COMPOSER_MIN_HEIGHT, 124.0);
+        assert_eq!(COMPOSER_MAX_HEIGHT, 308.0);
+        // One line sits at the floor: the textarea BOX (content + `pt-4 pb-1`)
+        // clamps UP to 76 exactly like `Math.max(scrollHeight, 76)` — this is
+        // what makes the always-expanded new-chat composer 124px tall.
         assert_eq!(
             composer_total_height(input_content_height(1)),
             COMPOSER_MIN_HEIGHT
         );
-        // Growth is linear once content exceeds the floor.
+        // Growth is linear once the textarea box exceeds its 76px floor.
         let h4 = composer_total_height(input_content_height(4));
-        assert_eq!(h4, 4.0 * INPUT_LINE_HEIGHT + INPUT_VERTICAL_CHROME);
-        // Caps at 260px of textarea content plus chrome (comet max-h-[260px]).
+        assert_eq!(
+            h4,
+            4.0 * INPUT_LINE_HEIGHT + TEXTAREA_PAD_V + ACTIONS_ROW_HEIGHT + PILL_BORDER_V
+        );
+        // Caps at a 260px textarea box (comet max-h-[260px] / the JS clamp).
         assert_eq!(
             composer_total_height(input_content_height(100)),
             COMPOSER_MAX_HEIGHT
         );
         // Zero lines still measures one.
         assert_eq!(input_content_height(0), INPUT_LINE_HEIGHT);
+    }
+
+    /// One frame short of the full morph timeline (never rounds up to done).
+    const ALMOST: f32 = 179.0;
+
+    #[test]
+    fn flip_morph_starts_once_per_committed_flip() {
+        // No committed flip → no morph.
+        assert_eq!(flip_morph_step(None, false, 49.0, 0.0, false), None);
+        // A committed flip starts one, from the last rendered height…
+        let m = flip_morph_step(None, true, 49.0, 100.0, false).unwrap();
+        assert_eq!(m.from, 49.0);
+        assert_eq!(m.start_ms, 100.0);
+        // …and same-mode renders keep it UNCHANGED (no restart at the
+        // boundary, whatever the heights are doing).
+        assert_eq!(flip_morph_step(Some(m), false, 80.0, 150.0, false), Some(m));
+        // A finished morph clears on the next same-mode render.
+        assert_eq!(
+            flip_morph_step(Some(m), false, 124.0, 100.0 + ALMOST, false),
+            Some(m)
+        );
+        assert_eq!(flip_morph_step(Some(m), false, 124.0, 300.0, false), None);
+    }
+
+    #[test]
+    fn flip_morph_height_ramps_monotonically_to_target() {
+        let m = FlipMorph {
+            from: 49.0,
+            start_ms: 0.0,
+        };
+        // Starts exactly at the committed height…
+        let mut prev = m.height(124.0, 0.0);
+        assert_eq!(prev, 49.0);
+        // …ramps without ever moving backwards…
+        for step in 1..=18 {
+            let h = m.height(124.0, step as f32 * 10.0);
+            assert!(h >= prev, "height regressed at {step}: {h} < {prev}");
+            prev = h;
+        }
+        // …and lands exactly on the target when done (and stays there).
+        assert_eq!(m.height(124.0, 180.0), 124.0);
+        assert!(m.done(180.0));
+        assert_eq!(m.height(124.0, 500.0), 124.0);
+        // Collapse runs the same ramp downward.
+        assert!(m.height(124.0, 90.0) > 49.0);
+        let down = FlipMorph {
+            from: 124.0,
+            start_ms: 0.0,
+        };
+        assert!(down.height(49.0, 90.0) < 124.0);
+        assert!(down.height(49.0, 90.0) > 49.0);
+    }
+
+    #[test]
+    fn flip_morph_reverse_hands_off_from_current_height() {
+        let m = FlipMorph {
+            from: 49.0,
+            start_ms: 0.0,
+        };
+        let mid = m.height(124.0, 90.0);
+        assert!(mid > 49.0 && mid < 124.0);
+        // A reverse flip mid-flight commits a new morph FROM the animated
+        // height — continuous at the handoff, no pop to an endpoint.
+        let rev = flip_morph_step(Some(m), true, mid, 90.0, false).unwrap();
+        assert_eq!(rev.from, mid);
+        assert_eq!(rev.height(49.0, 90.0), mid);
+    }
+
+    #[test]
+    fn flip_morph_snaps_for_reduced_motion_and_first_paint() {
+        // Reduced motion never creates a morph (the flip just snaps)…
+        assert_eq!(flip_morph_step(None, true, 49.0, 0.0, true), None);
+        // …and neither does a flip before anything was ever rendered.
+        assert_eq!(flip_morph_step(None, true, 0.0, 0.0, false), None);
+    }
+
+    #[test]
+    fn flip_morph_tracks_live_target_and_drives_fade() {
+        let m = FlipMorph {
+            from: 49.0,
+            start_ms: 0.0,
+        };
+        // Auto-grow can move the target mid-morph: evaluation tracks the
+        // live value instead of finishing on a stale height.
+        assert!(m.height(159.0, 90.0) > m.height(124.0, 90.0));
+        // The eased progress is the actions-row fade: 0 at commit, 1 at rest.
+        assert_eq!(m.progress(0.0), 0.0);
+        assert_eq!(m.progress(180.0), 1.0);
+        let mid = m.progress(90.0);
+        assert!(mid > 0.0 && mid < 1.0);
     }
 
     #[test]

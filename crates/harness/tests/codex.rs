@@ -582,6 +582,8 @@ async fn models_returns_curated_catalog() {
     // caller's path, so only the default resolution can report NotInstalled —
     // exercise the harness identity surface instead.
     assert_eq!(missing.id(), HarnessId::Codex);
-    assert_eq!(missing.display_name(), "Codex CLI");
+    // "Codex" — comet composer/defaults.ts HARNESS_LABEL (and the registry's
+    // lazy descriptor must stay in lockstep).
+    assert_eq!(missing.display_name(), "Codex");
     assert_eq!(missing.reasoning_levels().len(), 7);
 }

@@ -171,9 +171,41 @@ pub fn default_registry() -> HarnessRegistry {
             name: "Claude Code".into(),
             supports_steering: true,
             steering_mode: SteeringMode::StepBoundary,
-            reasoning_levels: vec![ReasoningLevel::Ultrathink],
+            // Must mirror ClaudeHarness::reasoning_levels() exactly — the
+            // descriptor-stability rule (see the codex test below).
+            reasoning_levels: vec![
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High,
+                ReasoningLevel::XHigh,
+                ReasoningLevel::Max,
+            ],
         },
         Box::new(|| Ok(Arc::new(comet_harness::ClaudeHarness::new()) as Arc<dyn Harness>)),
+    );
+    // Codex, same lazy pattern: the static descriptor mirrors CodexHarness
+    // exactly (`describe()` after the first resolve must not change the
+    // catalog entry) — "Codex" per the original HARNESS_LABEL, StepBoundary
+    // steering via native `turn/steer`, and the unified reasoning ladder from
+    // comet_harness::codex::catalog. CLI discovery only happens when a
+    // run/model call actually resolves the slot.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Codex,
+            name: "Codex".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::StepBoundary,
+            reasoning_levels: vec![
+                ReasoningLevel::Minimal,
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High,
+                ReasoningLevel::XHigh,
+                ReasoningLevel::Max,
+                ReasoningLevel::Ultra,
+            ],
+        },
+        Box::new(|| Ok(Arc::new(comet_harness::CodexHarness::new()) as Arc<dyn Harness>)),
     );
     registry
 }
@@ -214,15 +246,44 @@ mod tests {
     }
 
     #[test]
-    fn default_registry_lists_mock_and_claude_slot() {
+    fn default_registry_lists_mock_claude_and_codex_slots() {
         let registry = default_registry();
         let ids: Vec<HarnessId> = registry.descriptors().iter().map(|d| d.id).collect();
-        assert_eq!(ids, vec![HarnessId::Mock, HarnessId::ClaudeCode]);
+        assert_eq!(
+            ids,
+            vec![HarnessId::Mock, HarnessId::ClaudeCode, HarnessId::Codex]
+        );
         assert!(registry.resolve(HarnessId::Mock).is_ok());
         assert!(registry.resolve(HarnessId::ClaudeCode).is_ok());
-        assert!(matches!(
-            registry.resolve(HarnessId::Codex),
-            Err(HarnessError::NotInstalled(_))
-        ));
+        // A codex-configured chat resolves the right harness (construction is
+        // cheap; CLI discovery is deferred to models()/run()).
+        let codex = registry.resolve(HarnessId::Codex).unwrap();
+        assert_eq!(codex.id(), HarnessId::Codex);
+    }
+
+    /// The Codex lazy descriptor must be indistinguishable from `describe()`
+    /// after the first resolve — otherwise the catalog entry silently changes
+    /// the moment the harness is used (name/ladder flip in the picker rail).
+    /// (KNOWN GAP, predates this slot: the claude-code descriptor advertises
+    /// `[Ultrathink]` while the resolved adapter reports `[Low..Max]` — left
+    /// as-is here; flagged for its own pass.)
+    #[test]
+    fn codex_lazy_descriptor_matches_resolved_harness() {
+        let registry = default_registry();
+        let before = registry
+            .descriptors()
+            .into_iter()
+            .find(|d| d.id == HarnessId::Codex)
+            .unwrap();
+        registry.resolve(HarnessId::Codex).unwrap();
+        let after = registry
+            .descriptors()
+            .into_iter()
+            .find(|d| d.id == HarnessId::Codex)
+            .unwrap();
+        assert_eq!(before.name, after.name);
+        assert_eq!(before.supports_steering, after.supports_steering);
+        assert_eq!(before.steering_mode, after.steering_mode);
+        assert_eq!(before.reasoning_levels, after.reasoning_levels);
     }
 }

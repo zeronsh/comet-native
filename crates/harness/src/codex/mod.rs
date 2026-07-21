@@ -139,7 +139,10 @@ impl Harness for CodexHarness {
         HarnessId::Codex
     }
     fn display_name(&self) -> &str {
-        "Codex CLI"
+        // "Codex" (not "Codex CLI") — comet composer/defaults.ts
+        // HARNESS_LABEL; must also match the registry's lazy descriptor so
+        // the catalog entry doesn't change after the first resolve.
+        "Codex"
     }
     fn supports_steering(&self) -> bool {
         true
