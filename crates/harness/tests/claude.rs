@@ -2,6 +2,7 @@
 //! `tests/fixtures/fake-claude.sh` (no real `claude` binary involved).
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -12,6 +13,7 @@ use comet_harness::{
 };
 use comet_proto::{
     AgentEvent, DoneStatus, HarnessId, RunRequest, SandboxLevel, ToolCall, UserInputAnswer,
+    UserInputQuestion,
 };
 
 fn fixture_path() -> PathBuf {
@@ -181,30 +183,47 @@ async fn happy_path_normalizes_events_and_filters_subagents() {
 
 #[tokio::test]
 async fn ask_user_question_round_trips_through_the_control_channel() {
-    let (controls, _steer, _token) = controls("B");
+    // The questions must reach the ENGINE's input bridge (`request_input`) —
+    // and the harness must NOT emit its own `InputRequested`/`InputResolved`
+    // twins: the bridge owns that lifecycle (it mints the request id the
+    // resolver is parked under; a harness-emitted copy folded an unanswerable
+    // duplicate chip into the doc).
+    let asked: Arc<Mutex<Vec<UserInputQuestion>>> = Arc::new(Mutex::new(Vec::new()));
+    let (steer_tx, steer_rx) = mpsc::channel(8);
+    let _steer = steer_tx;
+    let token = CancellationToken::new();
+    let seen = asked.clone();
+    let controls = RunControls {
+        request_input: Box::new(move |questions| {
+            seen.lock().unwrap().extend(questions.iter().cloned());
+            let (tx, rx) = oneshot::channel();
+            let answers: Vec<UserInputAnswer> = questions
+                .iter()
+                .map(|q| UserInputAnswer {
+                    question_id: q.id.clone(),
+                    labels: vec!["B".into()],
+                })
+                .collect();
+            let _ = tx.send(answers);
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: token.clone(),
+    };
     let events = run_to_end(&harness(), request("scenario:askuser"), controls).await;
 
-    let requested = events
-        .iter()
-        .find_map(|e| match e {
-            AgentEvent::InputRequested {
-                request_id,
-                questions,
-            } => Some((request_id.clone(), questions.clone())),
-            _ => None,
-        })
-        .expect("InputRequested emitted");
-    assert_eq!(requested.0, "cr-1");
-    assert_eq!(requested.1.len(), 1);
-    assert_eq!(requested.1[0].header, "Choice");
-    assert_eq!(requested.1[0].question, "Pick one");
-    assert_eq!(
-        requested.1[0].options,
-        vec!["A".to_string(), "B".to_string()]
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 1);
+    assert_eq!(asked[0].header, "Choice");
+    assert_eq!(asked[0].question, "Pick one");
+    assert_eq!(asked[0].options, vec!["A".to_string(), "B".to_string()]);
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            AgentEvent::InputRequested { .. } | AgentEvent::InputResolved { .. }
+        )),
+        "harness must not emit input lifecycle events itself: {events:?}"
     );
-    assert!(events.contains(&AgentEvent::InputResolved {
-        request_id: "cr-1".into()
-    }));
 
     // "answered" proves both control round-trips: the plain Bash can_use_tool
     // was auto-allowed AND the answers reached the CLI as updatedInput.answers

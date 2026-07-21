@@ -714,7 +714,27 @@ async fn drive_run(
             } => {
                 inner.remember_harness_session(&chat_id, session_id);
             }
-            AgentEvent::InputRequested { .. } => {
+            AgentEvent::InputRequested { request_id, .. } => {
+                // The engine's input bridge is the sole authority on input
+                // requests: it mints the id and parks the resolver BEFORE
+                // emitting the event, so a legitimate id is always pending
+                // here. A harness emitting its own copy (a different id no
+                // resolver knows) would fold an unanswerable twin chip into
+                // the doc — and answering the twin would never resume the
+                // run. Drop such events.
+                let pending = lock(&inner.runs)
+                    .get(&chat_id)
+                    .map(|h| h.pending_inputs.clone());
+                let known = pending.is_some_and(|p| lock(&p).contains_key(request_id));
+                if !known {
+                    tracing::warn!(
+                        chat = %chat_id,
+                        request = %request_id,
+                        "dropping harness-emitted InputRequested (unknown id; \
+                         the engine input bridge owns this lifecycle)"
+                    );
+                    continue;
+                }
                 inner.set_status(&chat_id, SessionStatus::AwaitingInput, false);
             }
             AgentEvent::InputResolved { .. } => {
@@ -737,6 +757,15 @@ async fn drive_run(
                 DoneStatus::Interrupted => MessageStatus::Aborted,
                 DoneStatus::Completed | DoneStatus::Errored => MessageStatus::Complete,
             };
+            // No dangling chips: a run that ends for ANY reason (completed,
+            // errored, interrupted) terminally resolves its input parts — an
+            // unresolved question must not outlive the run that asked it
+            // (its resolver died with the run; an answer could never land).
+            for part in folded.iter_mut() {
+                if let MessagePart::Input { resolved, .. } = part {
+                    *resolved = true;
+                }
+            }
             if let Err(err) = finish_segment(
                 doc_ref,
                 writer.take(),

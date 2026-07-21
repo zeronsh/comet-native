@@ -130,22 +130,46 @@ pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
 }
 
 /// Find the live run's unresolved input request, if any: an unresolved input
-/// part on a still-streaming entry.
+/// part on ANY still-streaming entry — never just the last transcript entry.
+/// (The user's forensics: a steer prompt sent while the agent waits appends a
+/// user entry AFTER the streaming assistant entry; a last-entry-only read
+/// made the QuestionPanel vanish exactly when the user typed, turning every
+/// subsequent keystroke into a steer the blocked run could not execute.
+/// Matches the original composer.tsx, which searches the live run's parts.)
 pub fn pending_input_request(
     transcript: &[SessionMessageEntry],
 ) -> Option<(String, Vec<UserInputQuestion>)> {
-    let entry = transcript.last()?;
-    if entry.status != Some(MessageStatus::Streaming) {
-        return None;
-    }
-    entry.parts.iter().rev().find_map(|part| match part {
-        MessagePart::Input {
-            request_id,
-            questions,
-            resolved: false,
-            ..
-        } => Some((request_id.clone(), questions.clone())),
-        _ => None,
+    transcript
+        .iter()
+        .rev()
+        .filter(|entry| entry.status == Some(MessageStatus::Streaming))
+        .find_map(|entry| {
+            entry.parts.iter().find_map(|part| match part {
+                MessagePart::Input {
+                    request_id,
+                    questions,
+                    resolved: false,
+                    ..
+                } => Some((request_id.clone(), questions.clone())),
+                _ => None,
+            })
+        })
+}
+
+/// Whether the transcript shows `request_id` explicitly resolved (here or on
+/// another device) — the wizard latch's release condition.
+pub fn input_request_resolved(transcript: &[SessionMessageEntry], request_id: &str) -> bool {
+    transcript.iter().any(|entry| {
+        entry.parts.iter().any(|part| {
+            matches!(
+                part,
+                MessagePart::Input {
+                    request_id: rid,
+                    resolved: true,
+                    ..
+                } if rid == request_id
+            )
+        })
     })
 }
 
@@ -1403,11 +1427,21 @@ impl Composer {
                 }
             }
             _ => {
-                if self.wizard.is_some() {
-                    self.wizard = None;
-                    self.advance_task = None;
-                    self.input
-                        .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+                if let Some(wizard) = self.wizard.as_ref() {
+                    // LATCH (original composer.tsx `inputLatch`): a transient
+                    // fold/sync blip — or a steer appended behind the
+                    // streaming entry — must not unmount the panel and lose
+                    // the user's picks. Release only on explicit resolution
+                    // (here or on another device) or when the run is over.
+                    let transcript = self.state.read(cx).transcript.clone();
+                    let released = input_request_resolved(&transcript, &wizard.request_id)
+                        || !self.run_live(cx);
+                    if released {
+                        self.wizard = None;
+                        self.advance_task = None;
+                        self.input
+                            .update(cx, |input, cx| input.set_placeholder("Do anything…", cx));
+                    }
                 }
             }
         }
@@ -1712,8 +1746,9 @@ impl Composer {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
         };
+        let request_id = wizard.request_id.clone();
         let command = SessionCommandPayload::RespondInput {
-            request_id: wizard.request_id.clone(),
+            request_id: request_id.clone(),
             answers,
         };
         let params = match serde_json::to_value(&command) {
@@ -1725,10 +1760,31 @@ impl Composer {
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
                     composer.failure = Some(format!("Answer failed: {err}").into());
+                    // The answer never left this device — put the panel back.
+                    composer.answered_requests.remove(&request_id);
                     cx.notify();
                 })
                 .ok();
+                return;
             }
+            // Safety net against a dead-looking session: the command queued,
+            // but the host may still REJECT it (e.g. the run's resolver is
+            // gone). If the very same request is still the live pending input
+            // once the host has had ample time to execute and the resolved
+            // flag to sync back, the answer demonstrably didn't take —
+            // un-hide the panel instead of leaving the question unanswerable.
+            cx.background_executor()
+                .timer(Duration::from_secs(2))
+                .await;
+            this.update(cx, |composer, cx| {
+                let transcript = composer.state.read(cx).transcript.clone();
+                let still_pending = pending_input_request(&transcript)
+                    .is_some_and(|(pending_id, _)| pending_id == request_id);
+                if still_pending && composer.answered_requests.remove(&request_id) {
+                    cx.notify();
+                }
+            })
+            .ok();
         }));
         cx.notify();
     }
@@ -2485,8 +2541,40 @@ mod tests {
             questions: vec![],
             resolved: true,
         };
-        let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved])];
+        let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved.clone()])];
         assert!(pending_input_request(&t).is_none());
         assert!(pending_input_request(&[]).is_none());
+
+        // Regression (user forensics): a steer prompt appends a USER entry
+        // AFTER the streaming assistant entry — the question must still be
+        // found (a last-entry-only read vanished the panel exactly when the
+        // user typed, bricking the answer flow).
+        let user_echo = SessionMessageEntry {
+            id: "u2".into(),
+            role: MessageRole::User,
+            parts: vec![MessagePart::Text {
+                id: "t".into(),
+                text: "I answered".into(),
+            }],
+            created_at: 1,
+            device_id: "d".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        };
+        let t = vec![
+            entry(Some(MessageStatus::Streaming), vec![input_part.clone()]),
+            user_echo,
+        ];
+        assert_eq!(
+            pending_input_request(&t).map(|(id, _)| id),
+            Some("r1".into()),
+            "question survives entries appended behind the streaming entry"
+        );
+
+        // Latch release: only an explicitly resolved matching part releases.
+        assert!(!input_request_resolved(&t, "r1"));
+        let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved])];
+        assert!(input_request_resolved(&t, "r1"));
+        assert!(!input_request_resolved(&t, "other"));
     }
 }

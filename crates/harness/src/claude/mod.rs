@@ -378,7 +378,7 @@ async fn run_session(session: Session) {
                         }
                     };
                     if let Frame::ControlRequest(req) = frame {
-                        handle_control_request(req, &request_input, &stdin_tx, &event_tx);
+                        handle_control_request(req, &request_input, &stdin_tx);
                         continue;
                     }
                     for ev in norm.normalize(frame, interrupted) {
@@ -523,14 +523,15 @@ type RequestInputFn = Box<
 >;
 
 /// Serve one `can_use_tool` control request. Every tool is auto-approved;
-/// `AskUserQuestion` is intercepted — surface the questions, wait for the
-/// user's answers (in a subtask so the frame loop keeps flowing), and hand
-/// them back keyed by question text, as the tool expects.
+/// `AskUserQuestion` is intercepted — surface the questions through the
+/// engine's input bridge (which owns the `InputRequested`/`InputResolved`
+/// lifecycle), wait for the user's answers (in a subtask so the frame loop
+/// keeps flowing), and hand them back keyed by question text, as the tool
+/// expects.
 fn handle_control_request(
     req: ControlRequestFrame,
     request_input: &Arc<RequestInputFn>,
     stdin_tx: &mpsc::UnboundedSender<StdinMsg>,
-    event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
 ) {
     if req.request.subtype != "can_use_tool" {
         tracing::debug!(
@@ -546,26 +547,23 @@ fn handle_control_request(
     }
     let request_input = Arc::clone(request_input);
     let stdin_tx = stdin_tx.clone();
-    let event_tx = event_tx.clone();
     tokio::spawn(async move {
         let request_id = req.request_id;
         let input = req.request.input;
         let questions = parse_questions(&input);
-        let _ = event_tx
-            .send(Ok(AgentEvent::InputRequested {
-                request_id: request_id.clone(),
-                questions: questions.clone(),
-            }))
-            .await;
+        // The engine's input bridge is the SOLE emitter of
+        // `InputRequested`/`InputResolved`: it mints the request id, parks the
+        // resolver for `respond_input`, and surfaces both events. Emitting our
+        // own copy here (keyed by Claude's control-request id) folded a SECOND
+        // input part into the doc whose id no resolver knew — the QuestionPanel
+        // answered that unanswerable twin and the run never resumed.
+        //
         // A dropped sender (caller went away) degrades to empty answers so the
         // agent is unblocked rather than wedged.
         let answers = (request_input)(questions.clone()).await.unwrap_or_default();
         let updated = updated_input_with_answers(&input, &questions, &answers);
         let line = control_response_line(&request_id, allow_response(updated));
         let _ = stdin_tx.send(StdinMsg::Line(line));
-        let _ = event_tx
-            .send(Ok(AgentEvent::InputResolved { request_id }))
-            .await;
     });
 }
 

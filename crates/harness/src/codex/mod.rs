@@ -705,7 +705,6 @@ async fn run_session(session: Session) {
                         &params,
                         request.auto_approve,
                         &request_input,
-                        &event_tx,
                     );
                 }
 
@@ -921,7 +920,6 @@ fn handle_server_request(
     params: &Value,
     auto_approve: bool,
     request_input: &Arc<RequestInputFn>,
-    event_tx: &mpsc::Sender<Result<AgentEvent, HarnessError>>,
 ) {
     let is_approval = matches!(
         method,
@@ -941,22 +939,14 @@ fn handle_server_request(
     }
 
     let question = approval_question(method, params);
-    let request_id = format!(
-        "approval-{}",
-        id.as_i64()
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| id.to_string())
-    );
     let client = client.clone();
     let request_input = Arc::clone(request_input);
-    let event_tx = event_tx.clone();
     tokio::spawn(async move {
-        let _ = event_tx
-            .send(Ok(AgentEvent::InputRequested {
-                request_id: request_id.clone(),
-                questions: vec![question.clone()],
-            }))
-            .await;
+        // The engine's input bridge owns the `InputRequested`/`InputResolved`
+        // lifecycle (it mints the request id the resolver is parked under);
+        // emitting our own copy here doubled the doc's input part with an id
+        // `respond_input` could never match.
+        //
         // A dropped sender (caller went away) degrades to a decline so the
         // agent is unblocked — never silently allowed.
         let answers = (request_input)(vec![question.clone()])
@@ -969,9 +959,6 @@ fn handle_server_request(
             &id,
             json!({ "decision": if accept { "accept" } else { "decline" } }),
         );
-        let _ = event_tx
-            .send(Ok(AgentEvent::InputResolved { request_id }))
-            .await;
     });
 }
 

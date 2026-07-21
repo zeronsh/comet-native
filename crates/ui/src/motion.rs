@@ -130,6 +130,9 @@ pub const EASE_OUT: CubicBezier = CubicBezier::new(0.0, 0.0, 0.58, 1.0);
 pub const EASE: CubicBezier = CubicBezier::new(0.25, 0.1, 0.25, 1.0);
 /// Sidebar resort glide — CSS `cubic-bezier(0.22, 1, 0.36, 1)` (used from M3b).
 pub const EASE_RESORT: CubicBezier = CubicBezier::new(0.22, 1.0, 0.36, 1.0);
+/// CSS `ease-in-out` — the transcript scroll glide (browser smooth-scroll
+/// shape: gentle start, cruise, gentle landing).
+pub const EASE_IN_OUT: CubicBezier = CubicBezier::new(0.42, 0.0, 0.58, 1.0);
 
 // ---------------------------------------------------------------------------
 // Motion specs (the catalog)
@@ -210,6 +213,10 @@ pub const COLLAPSE: MotionSpec = MotionSpec::new(180, EASE_OUT);
 /// Diff-pane chevron rotate: 200ms (§1.11; approximated as a crossfade — gpui
 /// divs have no rotation transform at the pinned rev, same caveat as scale).
 pub const CHEVRON: MotionSpec = MotionSpec::new(200, EASE);
+/// Rail-tick / scroll-to-row glide: 500ms ease-in-out over the whole distance
+/// (Electron parity — the original rail rode the browser's native smooth
+/// scroll, a fixed-duration gentle ease, never percent-of-remaining).
+pub const SCROLL_GLIDE: MotionSpec = MotionSpec::new(500, EASE_IN_OUT);
 /// Comet loader pulse period: 2.4s.
 pub const COMET_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
 /// Gradient matrix spinner wave period: 750ms.
@@ -369,7 +376,7 @@ mod tests {
         // EASE_OUT_EXPO, tripping gpui's `delta ∈ [0,1]` assert (SIGABRT on
         // the user's machine). Sweep densely, including the values right
         // below 1.0 where Newton lands closest to the endpoint.
-        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_RESORT] {
+        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_RESORT, EASE_IN_OUT] {
             for i in 0..=100_000u32 {
                 let x = i as f32 / 100_000.0;
                 let y = curve.eval(x);
@@ -428,7 +435,7 @@ mod tests {
 
     #[test]
     fn bezier_endpoints_and_clamping() {
-        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_RESORT] {
+        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_RESORT, EASE_IN_OUT] {
             assert_eq!(curve.eval(0.0), 0.0);
             assert_eq!(curve.eval(1.0), 1.0);
             assert_eq!(curve.eval(-0.5), 0.0);
@@ -438,7 +445,7 @@ mod tests {
 
     #[test]
     fn bezier_is_monotonic_for_catalog_curves() {
-        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_RESORT] {
+        for curve in [EASE_OUT_EXPO, EASE_OUT, EASE, EASE_RESORT, EASE_IN_OUT] {
             let mut last = 0.0;
             for i in 0..=100 {
                 let y = curve.eval(i as f32 / 100.0);

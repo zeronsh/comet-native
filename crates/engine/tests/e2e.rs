@@ -190,6 +190,17 @@ fn entries(core: &EngineCore) -> Vec<SessionMessageEntry> {
         .expect("read entries")
 }
 
+/// Tolerant read for hot-polling predicates: a snapshot taken between a
+/// segment writer's `push_container` and its field writes deserializes with
+/// fields missing — treat that instant as "not yet" instead of panicking.
+fn entries_now(core: &EngineCore) -> Vec<SessionMessageEntry> {
+    core.doc_host
+        .open(CHAT)
+        .ok()
+        .and_then(|h| h.doc().read_entries().ok())
+        .unwrap_or_default()
+}
+
 fn command_status(core: &EngineCore, id: &str) -> Option<(SessionCommandStatus, Option<String>)> {
     core.doc_host
         .open(CHAT)
@@ -871,7 +882,7 @@ async fn respond_input_resolves_pending_question() {
 
     wait_for(
         || {
-            entries(&core).iter().any(|e| {
+            entries_now(&core).iter().any(|e| {
                 e.status == Some(MessageStatus::Complete)
                     && e.parts
                         .iter()
@@ -886,6 +897,493 @@ async fn respond_input_resolves_pending_question() {
         Some((SessionCommandStatus::Applied, None))
     );
     // The input part is marked resolved in the doc.
+    assert!(entries(&core).iter().any(|e| {
+        e.parts
+            .iter()
+            .any(|p| matches!(p, MessagePart::Input { resolved: true, .. }))
+    }));
+    assert_eq!(
+        core.sessions.session_status(CHAT).map(|s| s.status),
+        Some(SessionStatus::Idle)
+    );
+}
+
+/// Resilience: a RespondInput whose id matches no pending request is REJECTED
+/// with a resolution (never silently dropped), the question stays live (the
+/// panel persists), and a subsequent correct answer still resumes the run —
+/// a wrong answer can never brick the session.
+#[tokio::test(flavor = "multi_thread")]
+async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
+    struct AskingHarness;
+    #[async_trait]
+    impl Harness for AskingHarness {
+        fn id(&self) -> HarnessId {
+            HarnessId::Mock
+        }
+        fn display_name(&self) -> &str {
+            "Asking"
+        }
+        fn supports_steering(&self) -> bool {
+            false
+        }
+        fn steering_mode(&self) -> SteeringMode {
+            SteeringMode::TurnBoundary
+        }
+        fn reasoning_levels(&self) -> &[ReasoningLevel] {
+            &[]
+        }
+        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+            Ok(vec![])
+        }
+        async fn run(
+            &self,
+            _request: RunRequest,
+            controls: RunControls,
+        ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(16);
+            tokio::spawn(async move {
+                let answers = (controls.request_input)(vec![comet_proto::UserInputQuestion {
+                    id: "q1".into(),
+                    header: "Pick".into(),
+                    question: "Which one?".into(),
+                    options: vec!["a".into(), "b".into()],
+                    multi_select: false,
+                }])
+                .await
+                .unwrap_or_default();
+                let picked = answers
+                    .first()
+                    .and_then(|a| a.labels.first().cloned())
+                    .unwrap_or_else(|| "none".into());
+                let _ = tx
+                    .send(Ok(AgentEvent::TextDelta {
+                        text: format!("picked {picked}"),
+                    }))
+                    .await;
+                let _ = tx.send(Ok(done(DoneStatus::Completed))).await;
+            });
+            Ok(futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|event| (event, rx))
+            })
+            .boxed())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(dir.path(), Arc::new(AskingHarness));
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-run-wrong",
+        SessionCommandPayload::Run {
+            request: run_request("ask me"),
+            message_id: "m-1".into(),
+        },
+    );
+    wait_for(
+        || {
+            core.sessions.session_status(CHAT).map(|s| s.status)
+                == Some(SessionStatus::AwaitingInput)
+        },
+        "awaiting input",
+    )
+    .await;
+    wait_for(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::Input { resolved: false, .. }))
+            })
+        },
+        "input part in doc",
+    )
+    .await;
+
+    // A wrong-id answer: rejected with a resolution, question still live.
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-answer-bogus",
+        SessionCommandPayload::RespondInput {
+            request_id: "bogus-id".into(),
+            answers: vec![comet_proto::UserInputAnswer {
+                question_id: "q1".into(),
+                labels: vec!["a".into()],
+            }],
+        },
+    );
+    wait_for(
+        || command_status(&core, "cmd-answer-bogus").is_some_and(|(s, _)| s != SessionCommandStatus::Pending),
+        "bogus answer processed",
+    )
+    .await;
+    assert_eq!(
+        command_status(&core, "cmd-answer-bogus"),
+        Some((
+            SessionCommandStatus::Rejected,
+            Some("no pending input request".into())
+        ))
+    );
+    // The run is still waiting and the part is still unresolved — the
+    // QuestionPanel keeps presenting the real request.
+    assert_eq!(
+        core.sessions.session_status(CHAT).map(|s| s.status),
+        Some(SessionStatus::AwaitingInput)
+    );
+    let request_id = entries(&core)
+        .iter()
+        .find_map(|e| {
+            e.parts.iter().find_map(|p| match p {
+                MessagePart::Input {
+                    request_id,
+                    resolved: false,
+                    ..
+                } => Some(request_id.clone()),
+                _ => None,
+            })
+        })
+        .expect("question still live after rejected answer");
+
+    // The correct answer still resumes and completes the run.
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-answer-right",
+        SessionCommandPayload::RespondInput {
+            request_id,
+            answers: vec![comet_proto::UserInputAnswer {
+                question_id: "q1".into(),
+                labels: vec!["b".into()],
+            }],
+        },
+    );
+    wait_for(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.status == Some(MessageStatus::Complete)
+                    && e.parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::Text { text, .. } if text == "picked b"))
+            })
+        },
+        "answered turn to complete",
+    )
+    .await;
+    assert_eq!(
+        core.sessions.session_status(CHAT).map(|s| s.status),
+        Some(SessionStatus::Idle)
+    );
+}
+
+/// Resilience: interrupting a run that is BLOCKED on a question unparks the
+/// harness immediately (the pending resolver is failed with empty answers),
+/// the entry settles `aborted`, the chip flips terminal (never dangles
+/// unresolved), and the next run works — a blocked question can never brick
+/// the session.
+#[tokio::test(flavor = "multi_thread")]
+async fn interrupt_unblocks_a_run_awaiting_input() {
+    struct BlockingHarness;
+    #[async_trait]
+    impl Harness for BlockingHarness {
+        fn id(&self) -> HarnessId {
+            HarnessId::Mock
+        }
+        fn display_name(&self) -> &str {
+            "Blocking"
+        }
+        fn supports_steering(&self) -> bool {
+            false
+        }
+        fn steering_mode(&self) -> SteeringMode {
+            SteeringMode::TurnBoundary
+        }
+        fn reasoning_levels(&self) -> &[ReasoningLevel] {
+            &[]
+        }
+        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+            Ok(vec![])
+        }
+        async fn run(
+            &self,
+            request: RunRequest,
+            controls: RunControls,
+        ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(16);
+            if request.prompt == "second run" {
+                // The post-interrupt turn: completes immediately.
+                tokio::spawn(async move {
+                    let _ = tx
+                        .send(Ok(AgentEvent::TextDelta {
+                            text: "second done".into(),
+                        }))
+                        .await;
+                    let _ = tx.send(Ok(done(DoneStatus::Completed))).await;
+                });
+            } else {
+                let interrupt = controls.interrupt.clone();
+                tokio::spawn(async move {
+                    // Blocks on the question; an interrupt fails the resolver
+                    // (empty answers) and cancels the token — like a real CLI
+                    // being torn down, the stream then ends WITHOUT a Done.
+                    let _ = (controls.request_input)(vec![comet_proto::UserInputQuestion {
+                        id: "q1".into(),
+                        header: "Pick".into(),
+                        question: "Which one?".into(),
+                        options: vec!["a".into(), "b".into()],
+                        multi_select: false,
+                    }])
+                    .await;
+                    interrupt.cancelled().await;
+                    drop(tx);
+                });
+            }
+            Ok(futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|event| (event, rx))
+            })
+            .boxed())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(dir.path(), Arc::new(BlockingHarness));
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-run-block",
+        SessionCommandPayload::Run {
+            request: run_request("ask and block"),
+            message_id: "m-1".into(),
+        },
+    );
+    wait_for(
+        || {
+            core.sessions.session_status(CHAT).map(|s| s.status)
+                == Some(SessionStatus::AwaitingInput)
+        },
+        "awaiting input",
+    )
+    .await;
+    wait_for(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::Input { resolved: false, .. }))
+            })
+        },
+        "input part in doc",
+    )
+    .await;
+
+    // Interrupt while blocked: settles promptly (well under the 3s grace —
+    // the unparked resolver lets the harness wind down on its own).
+    let start = std::time::Instant::now();
+    core.sessions.interrupt(CHAT).await.unwrap();
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(3),
+        "interrupt settled via the unparked resolver, not the grace timeout"
+    );
+    wait_for(
+        || {
+            entries_now(&core)
+                .iter()
+                .any(|e| e.status == Some(MessageStatus::Aborted))
+        },
+        "entry stamped aborted",
+    )
+    .await;
+    // The chip is terminal — no dangling unresolved question survives the run.
+    assert!(entries(&core).iter().all(|e| {
+        e.parts
+            .iter()
+            .all(|p| !matches!(p, MessagePart::Input { resolved: false, .. }))
+    }));
+
+    // And the session is usable: the next run completes.
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-run-second",
+        SessionCommandPayload::Run {
+            request: run_request("second run"),
+            message_id: "m-2".into(),
+        },
+    );
+    wait_for(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.status == Some(MessageStatus::Complete)
+                    && e.parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::Text { text, .. } if text == "second done"))
+            })
+        },
+        "second run to complete",
+    )
+    .await;
+}
+
+/// Regression (the "nothing happened after I answered" bug): a harness that
+/// emits its OWN `InputRequested` (keyed by its internal id — Claude's
+/// control-request id) *and* asks through `RunControls::request_input` used to
+/// fold TWO input parts into the doc. The UI answers the LAST unresolved part;
+/// the harness-emitted twin's id was unknown to `respond_input`'s pending map,
+/// so the RespondInput doc command was rejected and the run never resumed.
+/// The engine now drops harness-emitted `InputRequested` events (the input
+/// bridge is the sole authority), so exactly one — answerable — part folds.
+#[tokio::test(flavor = "multi_thread")]
+async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
+    struct DoubleEmitHarness;
+    #[async_trait]
+    impl Harness for DoubleEmitHarness {
+        fn id(&self) -> HarnessId {
+            HarnessId::Mock
+        }
+        fn display_name(&self) -> &str {
+            "DoubleEmit"
+        }
+        fn supports_steering(&self) -> bool {
+            false
+        }
+        fn steering_mode(&self) -> SteeringMode {
+            SteeringMode::TurnBoundary
+        }
+        fn reasoning_levels(&self) -> &[ReasoningLevel] {
+            &[]
+        }
+        async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+            Ok(vec![])
+        }
+        async fn run(
+            &self,
+            _request: RunRequest,
+            controls: RunControls,
+        ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(16);
+            tokio::spawn(async move {
+                let question = comet_proto::UserInputQuestion {
+                    id: "q1".into(),
+                    header: "Pick".into(),
+                    question: "Which one?".into(),
+                    options: vec!["a".into(), "b".into()],
+                    multi_select: false,
+                };
+                // The pre-fix Claude/Codex shape: surface the question under
+                // the harness's own id BEFORE asking through the bridge.
+                let _ = tx
+                    .send(Ok(AgentEvent::InputRequested {
+                        request_id: "claude-ctrl-1".into(),
+                        questions: vec![question.clone()],
+                    }))
+                    .await;
+                let answers = (controls.request_input)(vec![question])
+                    .await
+                    .unwrap_or_default();
+                let picked = answers
+                    .first()
+                    .and_then(|a| a.labels.first().cloned())
+                    .unwrap_or_else(|| "none".into());
+                let _ = tx
+                    .send(Ok(AgentEvent::TextDelta {
+                        text: format!("picked {picked}"),
+                    }))
+                    .await;
+                let _ = tx.send(Ok(done(DoneStatus::Completed))).await;
+            });
+            Ok(futures::stream::unfold(rx, |mut rx| async move {
+                rx.recv().await.map(|event| (event, rx))
+            })
+            .boxed())
+        }
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(dir.path(), Arc::new(DoubleEmitHarness));
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-run-twin",
+        SessionCommandPayload::Run {
+            request: run_request("ask me twice"),
+            message_id: "m-1".into(),
+        },
+    );
+
+    wait_for(
+        || {
+            core.sessions.session_status(CHAT).map(|s| s.status)
+                == Some(SessionStatus::AwaitingInput)
+        },
+        "awaiting input",
+    )
+    .await;
+    wait_for(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.parts
+                    .iter()
+                    .any(|p| matches!(p, MessagePart::Input { resolved: false, .. }))
+            })
+        },
+        "input part in doc",
+    )
+    .await;
+
+    // Exactly ONE input part folded, and not under the harness's own id.
+    let input_ids: Vec<String> = entries(&core)
+        .iter()
+        .flat_map(|e| {
+            e.parts.iter().filter_map(|p| match p {
+                MessagePart::Input { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            })
+        })
+        .collect();
+    assert_eq!(input_ids.len(), 1, "one chip, not a twin: {input_ids:?}");
+    assert_ne!(input_ids[0], "claude-ctrl-1");
+
+    // Answer the LAST unresolved part — exactly what the QuestionPanel does.
+    let request_id = entries(&core)
+        .iter()
+        .rev()
+        .find_map(|e| {
+            e.parts.iter().rev().find_map(|p| match p {
+                MessagePart::Input {
+                    request_id,
+                    resolved: false,
+                    ..
+                } => Some(request_id.clone()),
+                _ => None,
+            })
+        })
+        .unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-answer-twin",
+        SessionCommandPayload::RespondInput {
+            request_id,
+            answers: vec![comet_proto::UserInputAnswer {
+                question_id: "q1".into(),
+                labels: vec!["a".into()],
+            }],
+        },
+    );
+
+    // The run resumes and completes; the chip flips to resolved.
+    wait_for(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.status == Some(MessageStatus::Complete)
+                    && e.parts
+                        .iter()
+                        .any(|p| matches!(p, MessagePart::Text { text, .. } if text == "picked a"))
+            })
+        },
+        "answered turn to complete",
+    )
+    .await;
+    assert_eq!(
+        command_status(&core, "cmd-answer-twin"),
+        Some((SessionCommandStatus::Applied, None))
+    );
     assert!(entries(&core).iter().any(|e| {
         e.parts
             .iter()

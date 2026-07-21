@@ -210,7 +210,9 @@ pub enum RowKind {
         auto_open: bool,
     },
     InputChip {
-        questions: usize,
+        /// First question's header (chat-view.tsx `InputChip`: the resolved
+        /// chip shows it; unresolved shows "Awaiting your answer…").
+        header: SharedString,
         resolved: bool,
     },
     ErrorChip {
@@ -376,12 +378,17 @@ pub fn rows_for_entry(
                         resolved,
                         ..
                     } => {
+                        let header: SharedString = questions
+                            .first()
+                            .map(|q| q.header.clone())
+                            .unwrap_or_else(|| "Question".to_string())
+                            .into();
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
-                            version: (questions.len() as u64) << 1 | *resolved as u64,
+                            version: fnv1a(header.as_bytes()) << 1 | *resolved as u64,
                             turn_start: false,
                             kind: RowKind::InputChip {
-                                questions: questions.len(),
+                                header,
                                 resolved: *resolved,
                             },
                         });
@@ -986,7 +993,7 @@ impl Transcript {
         self.scroll_anim = Some(task);
     }
 
-    fn distance_from_bottom(&self) -> f32 {
+    pub(crate) fn distance_from_bottom(&self) -> f32 {
         let max = f32::from(self.list.max_offset_for_scrollbar().y);
         let cur = f32::from(self.list.scroll_px_offset_for_scrollbar().y);
         (max + cur).max(0.0)
@@ -1088,7 +1095,7 @@ impl Transcript {
     /// Whether the scroll offset is in a bottom-glued representation (`None`
     /// or anchored past the end) — states where the next layout hard-snaps to
     /// the new end instead of holding a pixel position.
-    fn is_glued(&self) -> bool {
+    pub(crate) fn is_glued(&self) -> bool {
         self.list.logical_scroll_top().item_ix >= self.rows.len()
     }
 
@@ -1375,20 +1382,8 @@ impl Transcript {
             RowKind::ToolGroup { tools, auto_open } => {
                 self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
             }
-            RowKind::InputChip {
-                questions,
-                resolved,
-            } => {
-                let (label, color) = if *resolved {
-                    ("Input provided", theme.text_muted)
-                } else {
-                    ("Awaiting input", theme.warning)
-                };
-                chip_row(
-                    format!("{label} · {}", plural(*questions, "question", "questions")),
-                    color,
-                    &theme,
-                )
+            RowKind::InputChip { header, resolved } => {
+                input_chip(header.clone(), *resolved, &theme)
             }
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
         };
@@ -1595,21 +1590,66 @@ fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
         .into_any_element()
 }
 
-fn chip_row(text: String, color: gpui::Hsla, theme: &Theme) -> AnyElement {
+/// A passive one-line chip marking a question the agent asked — the
+/// interactive controls live in the composer (chat-view.tsx `InputChip`):
+/// 34px row, `rounded-[10px] border-white/[0.08] bg-white/[0.045] px-2
+/// text-[12px]`, a 20px `bg-white/[0.09]` icon tile with a 12px
+/// ChatRoundLine, the medium "Question" label, then the truncating value —
+/// the first question's header once resolved, "Awaiting your answer…" while
+/// pending. Neutral tones throughout; resolution never recolors the chip.
+fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement {
+    let value: SharedString = if resolved {
+        header
+    } else {
+        "Awaiting your answer…".into()
+    };
     div()
-        .flex()
+        .py(px(4.0))
+        .w_full()
         .child(
             div()
-                .max_w_full()
-                .rounded(px(Theme::CONTROL_RADIUS))
+                .h(px(34.0))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .overflow_hidden()
+                .rounded(px(10.0))
                 .border_1()
-                .border_color(theme.border)
-                .px(px(10.0))
-                .py(px(4.0))
+                .border_color(crate::theme::white_alpha(0.08))
+                .bg(crate::theme::white_alpha(0.045))
+                .px(px(8.0))
                 .text_size(px(12.0))
-                .text_color(color)
-                .truncate()
-                .child(SharedString::from(text)),
+                .child(
+                    div()
+                        .flex_none()
+                        .size(px(20.0))
+                        .rounded(px(6.0))
+                        .bg(crate::theme::white_alpha(0.09))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            crate::icons::icon(crate::icons::CHAT_ROUND_LINE)
+                                .size(px(12.0))
+                                .text_color(theme.text_muted),
+                        ),
+                )
+                .child(
+                    div()
+                        .flex_none()
+                        .font_weight(gpui::FontWeight::MEDIUM)
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from("Question")),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .flex_1()
+                        .truncate()
+                        .text_color(theme.text.opacity(0.9))
+                        .child(value),
+                ),
         )
         .into_any_element()
 }

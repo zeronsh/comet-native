@@ -90,6 +90,7 @@ icon_assets![
     (WIDGET, "widget"),
     (CLOSE_CIRCLE, "close-circle"),
     (DANGER_TRIANGLE, "danger-triangle"),
+    (CHAT_ROUND_LINE, "chat-round-line"),
     // Hand-drawn comet glyphs (terminal-panel.tsx / composer-actions.tsx /
     // menu-check.tsx / logo.tsx).
     (TERMINAL, "terminal"),

@@ -2053,7 +2053,9 @@ impl Shell {
             .items_center()
             .gap(px(10.0))
             .cursor_pointer()
-            .hover(|s| s.bg(Theme::dark().element_hover))
+            // user-menu.tsx trigger: hover `bg-white/[0.04]`, open state
+            // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`.
+            .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
             .when(open, |el| el.bg(theme.element_hover))
             .on_click(cx.listener(|this, _, _, cx| {
                 // A click that just dismissed the menu (outside-click on the
@@ -2105,8 +2107,15 @@ impl Shell {
                     ),
             );
         if open {
+            // user-menu.tsx content: `w-[--radix-dropdown-menu-trigger-width]`
+            // (exactly as wide as the trigger row — sidebar minus its p-2
+            // gutters), `flex-col gap-0.5`, then: one small muted email line
+            // (`px-2 pb-1 pt-1.5 text-[11px] text-muted-foreground/70`),
+            // "Settings", separator, "Sign out". Both rows are plain
+            // `menuItem`s with muted 16px icons — sign-out carries NO
+            // destructive tone in the original.
             let menu = popover::popover_card(theme)
-                .w(px(220.0))
+                .w(px(self.settings.sidebar_width - 2.0 * Theme::SPACE_SM))
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
                     this.user_menu_open = false;
                     this.user_menu_dismissed_at = Some(std::time::Instant::now());
@@ -2114,45 +2123,17 @@ impl Shell {
                 }))
                 .flex()
                 .flex_col()
+                .gap(px(2.0))
                 .child(
                     div()
                         .px(px(8.0))
-                        .py(px(6.0))
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.0))
-                        .child(
-                            div()
-                                .text_size(px(13.0))
-                                .font_weight(gpui::FontWeight::MEDIUM)
-                                .text_color(theme.text)
-                                .truncate()
-                                .child(user_line),
-                        )
-                        .when_some(user_email, |el, email| {
-                            el.child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .text_color(theme.text_muted.opacity(0.7))
-                                    .truncate()
-                                    .child(email),
-                            )
-                        })
-                        .child(
-                            div().pt(px(4.0)).flex().flex_row().child(
-                                div()
-                                    .px(px(8.0))
-                                    .py(px(1.0))
-                                    .rounded_full()
-                                    .border_1()
-                                    .border_color(theme.border)
-                                    .text_size(px(10.0))
-                                    .text_color(theme.text_muted)
-                                    .child(SharedString::from("Alpha")),
-                            ),
-                        ),
+                        .pt(px(6.0))
+                        .pb(px(4.0))
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted.opacity(0.7))
+                        .truncate()
+                        .child(user_email.unwrap_or(user_line)),
                 )
-                .child(popover::menu_separator())
                 .child(
                     popover::menu_row(theme, false)
                         .id("user-menu-settings")
@@ -2164,17 +2145,17 @@ impl Shell {
                                 .size(px(16.0))
                                 .text_color(theme.text_muted),
                         )
-                        .child(SharedString::from("Open settings")),
+                        .child(SharedString::from("Settings")),
                 )
+                .child(popover::menu_separator())
                 .child(
                     popover::menu_row(theme, false)
                         .id("user-menu-signout")
-                        .text_color(theme.danger)
                         .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
                         .child(
                             icon(icons::LOGOUT_2)
                                 .size(px(16.0))
-                                .text_color(theme.danger),
+                                .text_color(theme.text_muted),
                         )
                         .child(SharedString::from("Sign out")),
                 )

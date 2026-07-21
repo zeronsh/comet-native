@@ -2,6 +2,7 @@
 //! `tests/fixtures/fake-codex.sh` (no real `codex` binary involved).
 
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use futures::StreamExt;
@@ -12,7 +13,7 @@ use comet_harness::{
 };
 use comet_proto::{
     AgentEvent, DoneStatus, HarnessId, ReasoningLevel, RunRequest, SandboxLevel, TodoItem,
-    ToolCall, UserInputAnswer,
+    ToolCall, UserInputAnswer, UserInputQuestion,
 };
 
 fn fixture_path() -> PathBuf {
@@ -349,39 +350,51 @@ async fn rejected_steer_falls_back_to_a_follow_up_turn() {
 
 #[tokio::test]
 async fn approvals_round_trip_as_input_requests() {
-    let (controls, _steer, _token) = controls("Yes");
+    // Approvals must reach the ENGINE's input bridge (`request_input`) — and
+    // the harness must NOT emit its own `InputRequested`/`InputResolved`
+    // twins: the bridge owns that lifecycle (it mints the request id the
+    // resolver is parked under; a harness-emitted copy folded an unanswerable
+    // duplicate chip into the doc).
+    let asked: Arc<Mutex<Vec<UserInputQuestion>>> = Arc::new(Mutex::new(Vec::new()));
+    let (steer_tx, steer_rx) = mpsc::channel(8);
+    let _steer = steer_tx;
+    let token = CancellationToken::new();
+    let seen = asked.clone();
+    let controls = RunControls {
+        request_input: Box::new(move |questions| {
+            seen.lock().unwrap().extend(questions.iter().cloned());
+            let (tx, rx) = oneshot::channel();
+            let answers: Vec<UserInputAnswer> = questions
+                .iter()
+                .map(|q| UserInputAnswer {
+                    question_id: q.id.clone(),
+                    labels: vec!["Yes".into()],
+                })
+                .collect();
+            let _ = tx.send(answers);
+            rx
+        }),
+        steering: steer_rx,
+        interrupt: token.clone(),
+    };
     let mut req = request("scenario:approve");
     req.auto_approve = false;
     let events = run_to_end(&harness(), req, controls).await;
 
-    let requested: Vec<_> = events
-        .iter()
-        .filter_map(|e| match e {
-            AgentEvent::InputRequested {
-                request_id,
-                questions,
-            } => Some((request_id.clone(), questions.clone())),
-            _ => None,
-        })
-        .collect();
-    assert_eq!(requested.len(), 2, "{events:?}");
-    assert_eq!(requested[0].0, "approval-101");
-    assert_eq!(requested[0].1.len(), 1);
-    assert_eq!(requested[0].1[0].header, "Approve command");
-    assert!(requested[0].1[0].question.contains("rm -rf /tmp/x"));
-    assert_eq!(
-        requested[0].1[0].options,
-        vec!["Yes".to_string(), "No".to_string()]
+    let asked = asked.lock().unwrap();
+    assert_eq!(asked.len(), 2, "{events:?}");
+    assert_eq!(asked[0].header, "Approve command");
+    assert!(asked[0].question.contains("rm -rf /tmp/x"));
+    assert_eq!(asked[0].options, vec!["Yes".to_string(), "No".to_string()]);
+    assert_eq!(asked[1].header, "Approve file change");
+    assert!(asked[1].question.contains("/tmp/a.rs"));
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            AgentEvent::InputRequested { .. } | AgentEvent::InputResolved { .. }
+        )),
+        "harness must not emit input lifecycle events itself: {events:?}"
     );
-    assert_eq!(requested[1].0, "approval-102");
-    assert_eq!(requested[1].1[0].header, "Approve file change");
-    assert!(requested[1].1[0].question.contains("/tmp/a.rs"));
-    assert!(events.contains(&AgentEvent::InputResolved {
-        request_id: "approval-101".into()
-    }));
-    assert!(events.contains(&AgentEvent::InputResolved {
-        request_id: "approval-102".into()
-    }));
 
     // The fake only completes the turn after seeing BOTH accept decisions.
     assert_eq!(
