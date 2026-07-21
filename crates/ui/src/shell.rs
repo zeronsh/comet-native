@@ -3239,7 +3239,18 @@ fn window_control_button(
         .rounded(px(6.0))
         .cursor_pointer()
         .hover(|s| s.bg(Theme::dark().element_hover))
-        .on_click(on_click)
+        // Buttons in/over a titlebar drag strip must CONSUME their clicks —
+        // zed's ButtonLike pattern (crates/ui .. button_like.rs `on_click`):
+        // stop_propagation keeps a rapid double-click on the button from
+        // bubbling to the strip's `click_count == 2` zoom handler, and
+        // prevent_default on mouse-down keeps the platform layer from
+        // treating the press as titlebar interaction. Double-click on EMPTY
+        // strip space still zooms — nothing there stops the bubble.
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_click(move |event, window, cx| {
+            cx.stop_propagation();
+            on_click(event, window, cx)
+        })
         .child(icon(icon_path).size(px(16.0)).text_color(muted))
 }
 
@@ -3289,7 +3300,14 @@ fn header_icon_button(
         .rounded(px(6.0))
         .cursor_pointer()
         .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
-        .on_click(on_click)
+        // Same click-swallowing as [`window_control_button`]: this button sits
+        // inside the chat header's titlebar drag region, so double-clicks must
+        // not bubble into the strip's zoom handler (zed ButtonLike pattern).
+        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+        .on_click(move |event, window, cx| {
+            cx.stop_propagation();
+            on_click(event, window, cx)
+        })
         .child(icon(icon_path).size(px(16.0)).text_color(muted))
 }
 
