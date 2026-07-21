@@ -2188,6 +2188,8 @@ mod tests {
             last_message_preview: None,
             last_message_at: None,
             created_at: base + TimeDelta::minutes(min),
+            harness_session_id: None,
+            harness_session_cwd: None,
         };
         // Input is already sidebar-sorted; recent_cwds just walks it.
         let chats = vec![

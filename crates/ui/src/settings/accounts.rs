@@ -63,6 +63,39 @@ pub fn usage_color(level: UsageLevel, theme: &Theme) -> Hsla {
     }
 }
 
+/// Why a `ListAgentAccounts` load is happening. Pure input to
+/// [`force_usage_for`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadTrigger {
+    /// Page construction — the visit's first list.
+    Mount,
+    /// "Click to retry" after a failed load — still the visit's first
+    /// successful list.
+    Retry,
+    /// The explicit Refresh button.
+    Refresh,
+    /// After a completed add-account login flow.
+    PostLogin,
+    /// After Switch/Forget succeeds.
+    PostAction,
+}
+
+/// Whether a load should ask the engine to probe usage (`forceUsage`). The
+/// engine only hits the provider when forced; non-forced lists serve the 60s
+/// usage cache or nothing (engine/src/agent_accounts.rs module docs — the
+/// design expects the UI to force "on page mount/refresh"). The visit's first
+/// list (mount, or retry after a failure) must force, or every first open
+/// renders "Usage unavailable" until a manual Refresh — the old app fetched
+/// usage on every list. Post-Switch/Forget lists ride the still-warm cache.
+pub fn force_usage_for(trigger: LoadTrigger) -> bool {
+    match trigger {
+        LoadTrigger::Mount | LoadTrigger::Retry | LoadTrigger::Refresh | LoadTrigger::PostLogin => {
+            true
+        }
+        LoadTrigger::PostAction => false,
+    }
+}
+
 /// Compact absolute reset moment (comet settings.agents.tsx `formatReset`):
 /// a local clock time ("3:45 PM") when it lands within ~22h, else a short
 /// weekday ("Mon"); the caller prefixes "resets ". Pure given `now`.
@@ -178,7 +211,12 @@ impl AccountsPage {
             _observe: observe,
             _code_events: code_events,
         };
-        page.load(false, cx);
+        // Force the usage probe on the visit's first list — a plain list
+        // returns no usage windows on a cold engine cache, which rendered
+        // every account as "Usage unavailable" until a manual Refresh. The
+        // Loading skeleton (meter ghosts) covers the probe latency, so
+        // "Usage unavailable" is reserved for a probe that genuinely failed.
+        page.load(force_usage_for(LoadTrigger::Mount), cx);
         page
     }
 
@@ -241,7 +279,7 @@ impl AccountsPage {
             this.update(cx, |page, cx| {
                 page.busy_account = None;
                 match result {
-                    Ok(_) => page.load(false, cx),
+                    Ok(_) => page.load(force_usage_for(LoadTrigger::PostAction), cx),
                     Err(err) => page.error = Some(format!("{err}").into()),
                 }
                 cx.notify();
@@ -335,7 +373,7 @@ impl AccountsPage {
                 match result {
                     Ok(_) => {
                         page.login = None;
-                        page.load(true, cx);
+                        page.load(force_usage_for(LoadTrigger::PostLogin), cx);
                     }
                     Err(err) => {
                         if let Some(LoginFlow::PasteCode {
@@ -383,7 +421,7 @@ impl AccountsPage {
                         Some(poll) => match poll.status {
                             AgentLoginStatus::Done => {
                                 page.login = None;
-                                page.load(true, cx);
+                                page.load(force_usage_for(LoadTrigger::PostLogin), cx);
                                 cx.notify();
                                 true
                             }
@@ -1044,7 +1082,10 @@ impl Render for AccountsPage {
                     widgets::error_strip(message)
                         .id("accounts-load-error")
                         .cursor_pointer()
-                        .on_click(cx.listener(|this, _, _, cx| this.load(false, cx)))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            // Retry IS the visit's first successful list — force usage.
+                            this.load(force_usage_for(LoadTrigger::Retry), cx)
+                        }))
                         .child(
                             div()
                                 .mt(px(4.0))
@@ -1163,7 +1204,9 @@ impl Render for AccountsPage {
                                     .text_size(px(12.5))
                                     .hover(widgets::ghost_hover)
                                     .when(refreshing, |el| el.opacity(0.5))
-                                    .on_click(cx.listener(|this, _, _, cx| this.load(true, cx)))
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.load(force_usage_for(LoadTrigger::Refresh), cx)
+                                    }))
                                     .child(
                                         crate::icons::icon(crate::icons::REFRESH)
                                             .size(px(16.0))
@@ -1214,6 +1257,21 @@ impl Render for AccountsPage {
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+
+    #[test]
+    fn first_load_of_a_visit_forces_the_usage_probe() {
+        // The engine only probes usage when forced (M5c); without forcing on
+        // mount, the first Accounts open always rendered "Usage unavailable".
+        assert!(force_usage_for(LoadTrigger::Mount));
+        // A retry after a failed load is still the visit's first successful
+        // list — same requirement.
+        assert!(force_usage_for(LoadTrigger::Retry));
+        // Explicit refresh and a just-completed login always re-probe.
+        assert!(force_usage_for(LoadTrigger::Refresh));
+        assert!(force_usage_for(LoadTrigger::PostLogin));
+        // Switch/Forget re-lists ride the still-warm 60s cache.
+        assert!(!force_usage_for(LoadTrigger::PostAction));
+    }
 
     #[test]
     fn usage_thresholds_match_comet() {

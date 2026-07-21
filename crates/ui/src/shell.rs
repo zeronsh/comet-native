@@ -1332,8 +1332,19 @@ impl Shell {
                 MouseButton::Left,
                 cx.listener(|this, _, _, _| this.titlebar_should_move = true),
             )
-            .on_mouse_move(cx.listener(|this, _, window, _| {
-                if this.titlebar_should_move {
+            // Hand the drag to the compositor only while the button is
+            // actually held (`pressed_button` guard): on macOS
+            // `start_window_move` runs AppKit's NATIVE drag session
+            // (`performWindowDragWithEvent:`), and AppKit resolves a quick
+            // second click inside that session as a titlebar double-click —
+            // system zoom — natively, beyond gpui's reach. Without the guard a
+            // stale `titlebar_should_move` (armed by a down whose bubble was
+            // later stopped) would start that session from a mere hover move
+            // between the two clicks of a double-click.
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, _| {
+                if this.titlebar_should_move
+                    && event.pressed_button == Some(MouseButton::Left)
+                {
                     this.titlebar_should_move = false;
                     window.start_window_move();
                 }
@@ -3239,13 +3250,19 @@ fn window_control_button(
         .rounded(px(6.0))
         .cursor_pointer()
         .hover(|s| s.bg(Theme::dark().element_hover))
-        // Buttons in/over a titlebar drag strip must CONSUME their clicks —
-        // zed's ButtonLike pattern (crates/ui .. button_like.rs `on_click`):
-        // stop_propagation keeps a rapid double-click on the button from
-        // bubbling to the strip's `click_count == 2` zoom handler, and
-        // prevent_default on mouse-down keeps the platform layer from
-        // treating the press as titlebar interaction. Double-click on EMPTY
-        // strip space still zooms — nothing there stops the bubble.
+        // Buttons in/over a titlebar drag strip must be EXCLUDED from the
+        // strip's event surface entirely. `.occlude()` (gpui
+        // `HitboxBehavior::BlockMouse`) makes the window hit-test STOP at the
+        // button, so every `is_hovered`-guarded strip listener — the
+        // mouse-down that arms the drag, the mouse-move that hands AppKit a
+        // native drag session (`performWindowDragWithEvent:`, whose second
+        // quick click zooms NATIVELY on macOS), and the `click_count == 2`
+        // zoom handler — never fires with the pointer over a button. It also
+        // removes the button's rect from the native Drag control-area
+        // hit-test on Windows/Linux. The click-level stop_propagation is
+        // zed's ButtonLike belt on top. Double-click on EMPTY strip space
+        // still zooms — nothing occludes it there.
+        .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {
             cx.stop_propagation();
@@ -3271,6 +3288,9 @@ fn nav_history_button(
             .flex()
             .items_center()
             .justify_center()
+            // Even disabled it reads as a control — occlude so double-clicks
+            // on it don't fall through to the titlebar strip's zoom handler.
+            .occlude()
             .child(
                 icon(icon_path)
                     .size(px(16.0))
@@ -3300,9 +3320,10 @@ fn header_icon_button(
         .rounded(px(6.0))
         .cursor_pointer()
         .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
-        // Same click-swallowing as [`window_control_button`]: this button sits
-        // inside the chat header's titlebar drag region, so double-clicks must
-        // not bubble into the strip's zoom handler (zed ButtonLike pattern).
+        // Same occlusion + click-swallowing as [`window_control_button`]: this
+        // button sits inside the chat header's titlebar drag region, so its
+        // rect must be carved out of the strip's drag/double-click surface.
+        .occlude()
         .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
         .on_click(move |event, window, cx| {
             cx.stop_propagation();
