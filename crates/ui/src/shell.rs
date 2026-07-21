@@ -336,13 +336,28 @@ impl Render for DragGhost {
     }
 }
 
-/// A oneshot width tween (200ms ease-out). `epoch` keys the animation element so
-/// each toggle restarts the timeline.
+/// A oneshot width tween (200ms ease-out), driven MANUALLY from render via
+/// [`Shell::eval_tween`] — never through a `with_animation` wrapper. gpui keys
+/// an animation element's start time by its full global element-id path, so a
+/// wrapper that mounts/remounts (route swap, or an ancestor animation keyed by
+/// a fresh epoch) silently REPLAYS the tween from t=0. Manual evaluation keeps
+/// the element tree's shape constant: a finished or stale tween is exactly the
+/// steady state, no matter how the tree around it remounts (round-6 §1–3).
 #[derive(Debug, Clone, Copy)]
 struct WidthTween {
     from: f32,
     to: f32,
-    epoch: usize,
+    started: std::time::Instant,
+}
+
+impl WidthTween {
+    fn new(from: f32, to: f32) -> Self {
+        Self {
+            from,
+            to,
+            started: std::time::Instant::now(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,7 +458,13 @@ pub struct Shell {
     terminal_tween_task: Option<Task<()>>,
     /// Height-drag anchor: (pointer y, height) at mouse-down on the handle.
     terminal_drag_anchor: Option<(f32, f32)>,
-    tween_epoch: usize,
+    /// `motion::reduced_motion` snapshot, refreshed at the top of each render
+    /// pass so [`Shell::eval_tween`] (called from `&self` render helpers) can
+    /// snap without a `cx`.
+    reduced_motion: bool,
+    /// Set by [`Shell::eval_tween`] when any tween is mid-flight this frame;
+    /// render schedules the next animation frame off it.
+    motion_active: std::cell::Cell<bool>,
     splash: SplashPhase,
     splash_task: Option<Task<()>>,
     save_task: Option<Task<()>>,
@@ -576,7 +597,8 @@ impl Shell {
             titlebar_should_move: false,
             terminal_tween_task: None,
             terminal_drag_anchor: None,
-            tween_epoch: 0,
+            reduced_motion: false,
+            motion_active: std::cell::Cell::new(false),
             splash: SplashPhase::Visible,
             splash_task: None,
             save_task: None,
@@ -704,19 +726,10 @@ impl Shell {
         let from = self.sidebar_target();
         let inset_from = self.header_inset();
         self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
-        self.tween_epoch += 1;
-        self.sidebar_tween = Some(WidthTween {
-            from,
-            to: self.sidebar_target(),
-            epoch: self.tween_epoch,
-        });
+        self.sidebar_tween = Some(WidthTween::new(from, self.sidebar_target()));
         // The title glides with the same 200ms ease-out as the sidebar width
         // (comet __root.tsx `transition-[padding-left]`).
-        self.header_inset_tween = Some(WidthTween {
-            from: inset_from,
-            to: self.header_inset(),
-            epoch: self.tween_epoch,
-        });
+        self.header_inset_tween = Some(WidthTween::new(inset_from, self.header_inset()));
         self.schedule_save(cx);
         cx.notify();
     }
@@ -725,12 +738,7 @@ impl Shell {
         let from = self.right_target();
         let key = self.active_chat.clone();
         let open = self.panels.toggle_changes(&key);
-        self.tween_epoch += 1;
-        self.right_tween = Some(WidthTween {
-            from,
-            to: self.right_target(),
-            epoch: self.tween_epoch,
-        });
+        self.right_tween = Some(WidthTween::new(from, self.right_target()));
         if open {
             // Lazy: the Changes entity (and its WatchCheckoutDiffs) exists only
             // once the pane has been opened.
@@ -773,12 +781,7 @@ impl Shell {
         let from = self.terminal_target();
         let key = self.active_chat.clone();
         let open = self.panels.toggle_terminal(&key);
-        self.tween_epoch += 1;
-        self.terminal_tween = Some(WidthTween {
-            from,
-            to: self.terminal_target(),
-            epoch: self.tween_epoch,
-        });
+        self.terminal_tween = Some(WidthTween::new(from, self.terminal_target()));
         let panel = self.terminal_panel(cx);
         panel.update(cx, |panel, cx| panel.set_open(open, cx));
         if !open {
@@ -789,7 +792,7 @@ impl Shell {
         }
         self.terminal_tween_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
-                .timer(RESIZE.total() + Duration::from_millis(30))
+                .timer(RESIZE.total().mul_f32(motion::speed_scale()) + Duration::from_millis(30))
                 .await;
             this.update(cx, |shell, cx| {
                 shell.terminal_tween = None;
@@ -881,12 +884,17 @@ impl Shell {
         self.nav.push(NavEntry::Settings(section));
         self.user_menu_open = false;
         self.chat_menu = None;
+        // Route changes swap the header INSTANTLY (comet keys the header
+        // variants, remounting them with no animation) — kill any in-flight
+        // padding glide so the title never slides across the swap.
+        self.header_inset_tween = None;
         cx.notify();
     }
 
     fn close_settings(&mut self, cx: &mut Context<Self>) {
         self.route = Route::Chat;
         self.nav.push(NavEntry::Chat(self.active_chat.clone()));
+        self.header_inset_tween = None;
         cx.notify();
     }
 
@@ -922,6 +930,8 @@ impl Shell {
         }
         self.user_menu_open = false;
         self.chat_menu = None;
+        // Any navigation snaps the header inset (route swaps are instant).
+        self.header_inset_tween = None;
         cx.notify();
     }
 
@@ -1232,63 +1242,69 @@ impl Shell {
 
     // ---- render pieces ----
 
+    /// Evaluate a width tween at "now" (manual drive — see [`WidthTween`]).
+    /// Mid-flight: eased 200ms lerp, and `motion_active` is flagged so render
+    /// schedules the next animation frame. Finished, stale, absent, or under
+    /// reduced motion: exactly `target`. Honors `COMET_MOTION_SCALE`.
+    fn eval_tween(&self, tween: Option<WidthTween>, target: f32) -> f32 {
+        let Some(WidthTween { from, to, started }) = tween else {
+            return target;
+        };
+        if self.reduced_motion {
+            return target;
+        }
+        let total = RESIZE.total().mul_f32(motion::speed_scale());
+        let raw = started.elapsed().as_secs_f32() / total.as_secs_f32();
+        if raw >= 1.0 {
+            return target;
+        }
+        self.motion_active.set(true);
+        motion::lerp(from, to, RESIZE.progress(raw))
+    }
+
     /// Animated width container: tweens 200ms ease-out on collapse/expand, and
     /// clips a fixed-width inner so content never reflows mid-transition.
     fn pane_container(
         &self,
-        id_base: &'static str,
         tween: Option<WidthTween>,
         target: f32,
         inner: AnyElement,
     ) -> AnyElement {
-        let container = div().h_full().flex_none().overflow_hidden().child(inner);
-        match tween {
-            Some(WidthTween { from, to, epoch }) => container
-                .with_animation((id_base, epoch), RESIZE.animation(), move |el, t| {
-                    el.w(px(motion::lerp(from, to, t)))
-                })
-                .into_any_element(),
-            None => container.w(px(target)).into_any_element(),
-        }
+        div()
+            .h_full()
+            .flex_none()
+            .overflow_hidden()
+            .w(px(self.eval_tween(tween, target)))
+            .child(inner)
+            .into_any_element()
     }
 
     /// The animated spacer clearing the macOS traffic lights ahead of a
     /// titlebar control cluster. Fullscreen toggles tween the cluster start
-    /// over 200ms ease-out ([`RESIZE`]; reduced motion snaps via
-    /// `with_animation`). `None` off macOS — no phantom flex child.
-    fn titlebar_spacer(&self, id: &'static str, container_pad: f32) -> Option<AnyElement> {
+    /// over 200ms ease-out ([`RESIZE`]; reduced motion snaps).
+    /// `None` off macOS — no phantom flex child.
+    fn titlebar_spacer(&self, container_pad: f32) -> Option<AnyElement> {
         if !cfg!(target_os = "macos") {
             return None;
         }
         let fullscreen = self.fullscreen.unwrap_or(false);
-        let target = titlebar_spacer_width(true, fullscreen, container_pad);
-        let spacer = div().flex_none().h_full();
-        Some(match self.titlebar_tween {
-            Some(WidthTween { from, to, epoch }) => spacer
-                .with_animation((id, epoch), RESIZE.animation(), move |el, t| {
-                    el.w(px((motion::lerp(from, to, t) - container_pad).max(0.0)))
-                })
-                .into_any_element(),
-            None => spacer.w(px(target)).into_any_element(),
-        })
+        // The tween runs in cluster-start coordinates; the spacer is that
+        // minus the container's own padding.
+        let start = self.eval_tween(self.titlebar_tween, titlebar_cluster_start(fullscreen));
+        let width = (start - container_pad).max(0.0);
+        Some(div().flex_none().h_full().w(px(width)).into_any_element())
     }
 
     /// The header's content row with the animated left inset — the native port
     /// of comet __root.tsx `transition-[padding-left] duration-200 ease-out` +
-    /// `style={{ paddingLeft: headerInset }}`: on sidebar toggles the SAME
-    /// element's padding tweens, so the title glides to its new x-position;
-    /// with no tween in flight it sits at the target instantly (route/chat
-    /// changes remount the keyed header — instant swap, no animation).
-    fn header_inset_container(&self, id: &'static str, content: gpui::Div) -> AnyElement {
-        let target = self.header_inset();
-        match self.header_inset_tween {
-            Some(WidthTween { from, to, epoch }) => content
-                .with_animation((id, epoch), RESIZE.animation(), move |el, t| {
-                    el.pl(px(motion::lerp(from, to, t)))
-                })
-                .into_any_element(),
-            None => content.pl(px(target)).into_any_element(),
-        }
+    /// `style={{ paddingLeft: headerInset }}`: on sidebar toggles (and macOS
+    /// fullscreen flips) the SAME element's padding tweens, so the title
+    /// glides to its new x-position. Route changes SNAP: the tween is killed
+    /// by every route transition (comet remounts the keyed header variants —
+    /// instant swap, zero horizontal motion).
+    fn header_inset_container(&self, content: gpui::Div) -> AnyElement {
+        let pl = self.eval_tween(self.header_inset_tween, self.header_inset());
+        content.pl(px(pl)).into_any_element()
     }
 
     /// Make a titlebar strip drag the window — zed's platform-titlebar
@@ -1353,7 +1369,7 @@ impl Shell {
             .items_center()
             .gap(px(2.0))
             .px(px(10.0))
-            .children(self.titlebar_spacer("titlebar-cluster-inset", 12.0))
+            .children(self.titlebar_spacer(12.0))
             .child(window_control_button(
                 "toggle-sidebar",
                 icons::SIDEBAR_MINIMALISTIC_LEFT,
@@ -1387,7 +1403,6 @@ impl Shell {
         // Transparent — the sidebar sits directly on the frost shell; the main
         // card's own border provides the separation.
         self.pane_container(
-            "sidebar-width",
             self.sidebar_tween,
             target,
             div().h_full().child(inner).into_any_element(),
@@ -2396,7 +2411,7 @@ impl Shell {
                 .flex_none()
                 .border_b_1()
                 .border_color(border)
-                .child(self.header_inset_container("settings-header-inset", inner));
+                .child(self.header_inset_container(inner));
             return div()
                 .flex_1()
                 .min_w_0()
@@ -2518,7 +2533,7 @@ impl Shell {
                 .flex_none()
                 .border_b_1()
                 .border_color(border)
-                .child(self.header_inset_container("chat-header-inset", inner));
+                .child(self.header_inset_container(inner));
             self.titlebar_drag_region("chat-header-titlebar", bar, cx)
                 .into_any_element()
         } else {
@@ -2638,23 +2653,15 @@ impl Shell {
             .child(handle)
             .child(div().flex_1().min_h_0().child(panel));
 
-        let container = div()
+        div()
             .w_full()
             .flex_none()
             .overflow_hidden()
             .border_t_1()
             .border_color(border)
-            .child(inner);
-        match tween {
-            Some(WidthTween { from, to, epoch }) => container
-                .with_animation(
-                    ("terminal-height", epoch),
-                    RESIZE.animation(),
-                    move |el, t| el.h(px(motion::lerp(from, to, t))),
-                )
-                .into_any_element(),
-            None => container.h(px(target)).into_any_element(),
-        }
+            .h(px(self.eval_tween(tween, target)))
+            .child(inner)
+            .into_any_element()
     }
 
     /// Working indicator strip: gradient spinner + rotating flavour word (7s,
@@ -2747,7 +2754,6 @@ impl Shell {
         // card — the divider hairline between it and the conversation is drawn
         // by the card row (render, `right_divider`).
         self.pane_container(
-            "right-pane-width",
             self.right_tween,
             target,
             div().h_full().bg(bg).child(inner).into_any_element(),
@@ -3254,24 +3260,24 @@ impl Render for Shell {
         let fullscreen = window.is_fullscreen();
         if self.fullscreen != Some(fullscreen) {
             if self.fullscreen.is_some() && cfg!(target_os = "macos") {
-                self.tween_epoch += 1;
-                self.titlebar_tween = Some(WidthTween {
-                    from: titlebar_cluster_start(!fullscreen),
-                    to: titlebar_cluster_start(fullscreen),
-                    epoch: self.tween_epoch,
-                });
+                self.titlebar_tween = Some(WidthTween::new(
+                    titlebar_cluster_start(!fullscreen),
+                    titlebar_cluster_start(fullscreen),
+                ));
                 // Collapsed headers inset past the traffic lights — glide the
                 // title with the cluster (comet `headerInset` 204 ↔ 128).
                 if self.settings.sidebar_collapsed {
-                    self.header_inset_tween = Some(WidthTween {
-                        from: self.header_inset_for(!fullscreen),
-                        to: self.header_inset_for(fullscreen),
-                        epoch: self.tween_epoch,
-                    });
+                    self.header_inset_tween = Some(WidthTween::new(
+                        self.header_inset_for(!fullscreen),
+                        self.header_inset_for(fullscreen),
+                    ));
                 }
             }
             self.fullscreen = Some(fullscreen);
         }
+        // Manual tween drive bookkeeping for this pass (see [`WidthTween`]).
+        self.reduced_motion = motion::reduced_motion(cx);
+        self.motion_active.set(false);
 
         // Keyboard shortcuts (mod-s/b/j) dispatch through the window focus
         // chain — with nothing focused they go dead. Land initial focus on the
@@ -3406,32 +3412,28 @@ impl Render for Shell {
                     .child(main)
                     .children(right_divider)
                     .child(right);
-                let card: AnyElement = match self.sidebar_tween {
-                    Some(WidthTween { epoch, .. }) => {
-                        let (from, to) = if inset { (0.0, 1.0) } else { (1.0, 0.0) };
-                        card.with_animation(
-                            ("main-card-melt", epoch),
-                            RESIZE.animation(),
-                            move |el, t| {
-                                let x = motion::lerp(from, to, t);
-                                el.my(px(8.0 * x))
-                                    .mr(px(8.0 * x))
-                                    .rounded(px(12.0 * x))
-                                    .border_color(border_color.opacity(x))
-                            },
-                        )
-                        .into_any_element()
-                    }
-                    None => card
-                        .when(inset, |el| {
-                            el.my(px(8.0))
-                                .mr(px(8.0))
-                                .rounded(px(12.0))
-                                .border_color(border_color)
-                        })
-                        .when(!inset, |el| el.border_color(gpui::transparent_black()))
-                        .into_any_element(),
-                };
+                // Manual drive on the SAME clock as the sidebar width tween.
+                // Crucially there is no `with_animation` wrapper here: the
+                // wrapper's epoch-keyed id used to change every card
+                // descendant's global element-id path on each toggle, which
+                // reset gpui's per-element animation state and REPLAYED any
+                // stale pane/terminal tween from t=0 (the changes pane slid
+                // ~100px under the clip mid-toggle — round-6 §2/§3).
+                let melt_target = if inset { 1.0 } else { 0.0 };
+                let melt = self.eval_tween(
+                    self.sidebar_tween.map(|tw| WidthTween {
+                        from: 1.0 - melt_target,
+                        to: melt_target,
+                        started: tw.started,
+                    }),
+                    melt_target,
+                );
+                let card: AnyElement = card
+                    .my(px(8.0 * melt))
+                    .mr(px(8.0 * melt))
+                    .rounded(px(12.0 * melt))
+                    .border_color(border_color.opacity(melt))
+                    .into_any_element();
                 // The whole app page is one keyed `animate-in` entrance (comet
                 // App.tsx `<div key={phase} className="animate-in h-full">`):
                 // arriving from the splash or any gate fades the page in; the
@@ -3457,6 +3459,12 @@ impl Render for Shell {
                 root.child(card)
             }
         };
+
+        // A manually-driven tween is mid-flight: keep frames coming (the same
+        // scheduling `with_animation` would have requested).
+        if self.motion_active.get() {
+            window.request_animation_frame();
+        }
 
         // Boot splash overlay: visible → crossfades out on Ready → removed.
         match self.splash {

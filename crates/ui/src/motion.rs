@@ -178,9 +178,10 @@ impl MotionSpec {
     }
 
     /// A oneshot gpui [`Animation`] for this spec (delay folded in).
+    /// Wall-clock span honors [`speed_scale`] (measurement knob).
     pub fn animation(&self) -> Animation {
         let spec = *self;
-        Animation::new(spec.total()).with_easing(move |d| spec.progress(d))
+        Animation::new(spec.total().mul_f32(speed_scale())).with_easing(move |d| spec.progress(d))
     }
 
     /// A repeating gpui [`Animation`] with linear easing over the raw period —
@@ -332,6 +333,22 @@ pub fn lerp(from: f32, to: f32, t: f32) -> f32 {
 // ---------------------------------------------------------------------------
 // Reduced motion
 // ---------------------------------------------------------------------------
+
+/// Dev/measurement knob (`COMET_MOTION_SCALE`, default 1): stretches every
+/// catalog timeline by this factor — e.g. `COMET_MOTION_SCALE=10` slows the
+/// 200ms pane tweens to 2s so screenshot bursts can sample the geometry
+/// per frame. Read once; never set in production.
+pub fn speed_scale() -> f32 {
+    static SCALE: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *SCALE.get_or_init(|| {
+        std::env::var("COMET_MOTION_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .filter(|s| s.is_finite())
+            .map(|s| s.clamp(0.01, 100.0))
+            .unwrap_or(1.0)
+    })
+}
 
 /// Global reduced-motion flag. gpui snaps every `with_animation` element when
 /// set (end state for oneshots, rest state for loops) and schedules no frames.
