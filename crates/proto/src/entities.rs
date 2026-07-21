@@ -48,6 +48,17 @@ pub struct Chat {
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
+    /// Harness-native session id of the chat's latest run — engine-owned resume
+    /// continuity across engine restarts (comet's `chats.harness_session_id`,
+    /// written via `orbit.setChatHarnessSession`). Empty string = explicit
+    /// "do not resume" tombstone after a rejected resume.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_session_id: Option<String>,
+    /// Cwd the harness session was created under. Harness session stores are
+    /// cwd-scoped (claude keys conversations by project directory), so resume
+    /// is only injected when the next run launches from the same cwd.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness_session_cwd: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

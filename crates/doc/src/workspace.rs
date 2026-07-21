@@ -7,7 +7,8 @@
 //! to the *same* row settle field-by-field LWW (exactly right for renames/archives):
 //! - `devices`: LoroMap keyed by deviceId → row map {id, name, platform, lastSeenAt}
 //! - `chats`: LoroMap keyed by chatId → row map {id, deviceId, title?, archived, cwd?,
-//!   branch?, checkoutId?, config?(json), lastMessagePreview?, lastMessageAt?, createdAt}
+//!   branch?, checkoutId?, config?(json), lastMessagePreview?, lastMessageAt?, createdAt,
+//!   harnessSessionId?, harnessSessionCwd?}
 //! - `sessions`: LoroMap keyed by chatId → row map {chatId, deviceId, status, startedAt?,
 //!   updatedAt}
 //!
@@ -149,6 +150,14 @@ impl WorkspaceDoc {
         )?;
         set_opt_ms(&row, "lastMessageAt", chat.last_message_at)?;
         row.insert("createdAt", chat.created_at.timestamp_millis())?;
+        // Preserved on full-row upserts (set_chat_activity/set_chat_host read →
+        // modify → upsert; dropping these here would silently amnesia the chat).
+        set_opt_str(&row, "harnessSessionId", chat.harness_session_id.as_deref())?;
+        set_opt_str(
+            &row,
+            "harnessSessionCwd",
+            chat.harness_session_cwd.as_deref(),
+        )?;
         self.doc.commit();
         Ok(())
     }
@@ -215,6 +224,26 @@ impl WorkspaceDoc {
             return Ok(false);
         };
         row.insert("config", LoroValue::from(serde_json::to_value(config)?))?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Host-side resume continuity: the harness-native session id of the chat's
+    /// latest run and the cwd it was created under (comet stored the same pair
+    /// on the chats table via `setChatHarness` — orbit-client.ts). An empty
+    /// `session_id` is the explicit "do not resume" tombstone written after a
+    /// harness rejects a resume. `false` when no such row.
+    pub fn set_chat_harness_session(
+        &self,
+        chat_id: &str,
+        session_id: &str,
+        cwd: &str,
+    ) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        row.insert("harnessSessionId", session_id)?;
+        row.insert("harnessSessionCwd", cwd)?;
         self.doc.commit();
         Ok(true)
     }
@@ -402,6 +431,10 @@ struct RawChat {
     last_message_at: Option<i64>,
     #[serde(default)]
     created_at: i64,
+    #[serde(default)]
+    harness_session_id: Option<String>,
+    #[serde(default)]
+    harness_session_cwd: Option<String>,
 }
 
 impl From<RawChat> for Chat {
@@ -418,6 +451,8 @@ impl From<RawChat> for Chat {
             last_message_preview: raw.last_message_preview,
             last_message_at: raw.last_message_at.map(dt),
             created_at: dt(raw.created_at),
+            harness_session_id: raw.harness_session_id,
+            harness_session_cwd: raw.harness_session_cwd,
         }
     }
 }
@@ -484,6 +519,8 @@ mod tests {
             last_message_preview: None,
             last_message_at: None,
             created_at: ts(2_000),
+            harness_session_id: None,
+            harness_session_cwd: None,
         }
     }
 

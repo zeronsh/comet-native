@@ -250,6 +250,8 @@ impl WorkspaceHost {
             last_message_preview: None,
             last_message_at: None,
             created_at: Utc::now(),
+            harness_session_id: None,
+            harness_session_cwd: None,
         })?;
         Ok(())
     }
@@ -280,6 +282,37 @@ impl WorkspaceHost {
         });
         if let Err(err) = result {
             tracing::warn!(chat = %chat_id, error = %err, "workspace last-message write failed");
+        }
+    }
+
+    /// Resume continuity: stamp the chat row with the harness-native session id
+    /// of its latest run and the cwd it was created under (comet's
+    /// `orbit.setChatHarnessSession`, sessions.ts:1039). An empty `session_id`
+    /// tombstones the row ("do not resume" after a rejected resume). Best-effort:
+    /// a missing chat row (claim happens on first command) just returns.
+    pub fn set_chat_harness_session(&self, chat_id: &str, session_id: &str, cwd: &str) {
+        match self.inner.doc.set_chat_harness_session(chat_id, session_id, cwd) {
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(chat = %chat_id, error = %err, "workspace harness-session write failed");
+            }
+        }
+    }
+
+    /// The chat row's stored harness session `(session_id, cwd)`, if stamped.
+    /// The empty-string tombstone passes through — callers must treat it as
+    /// "explicitly no resume" (and must NOT fall back to older sources).
+    pub fn chat_harness_session(&self, chat_id: &str) -> Option<(String, Option<String>)> {
+        match self.inner.doc.chat(chat_id) {
+            Ok(chat) => {
+                let chat = chat?;
+                let id = chat.harness_session_id?;
+                Some((id, chat.harness_session_cwd))
+            }
+            Err(err) => {
+                tracing::warn!(chat = %chat_id, error = %err, "workspace chat read failed");
+                None
+            }
         }
     }
 
@@ -315,6 +348,8 @@ impl WorkspaceHost {
             last_message_preview: None,
             last_message_at: None,
             created_at: Utc::now(),
+            harness_session_id: None,
+            harness_session_cwd: None,
         })?;
         Ok(())
     }

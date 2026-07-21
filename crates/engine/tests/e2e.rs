@@ -902,10 +902,13 @@ async fn respond_input_resolves_pending_question() {
             .iter()
             .any(|p| matches!(p, MessagePart::Input { resolved: true, .. }))
     }));
-    assert_eq!(
-        core.sessions.session_status(CHAT).map(|s| s.status),
-        Some(SessionStatus::Idle)
-    );
+    // The run task writes the Complete entry BEFORE settling the status row —
+    // wait for the transition instead of asserting the instant in between.
+    wait_for(
+        || core.sessions.session_status(CHAT).map(|s| s.status) == Some(SessionStatus::Idle),
+        "session to settle idle",
+    )
+    .await;
 }
 
 /// Resilience: a RespondInput whose id matches no pending request is REJECTED
@@ -1389,8 +1392,11 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
             .iter()
             .any(|p| matches!(p, MessagePart::Input { resolved: true, .. }))
     }));
-    assert_eq!(
-        core.sessions.session_status(CHAT).map(|s| s.status),
-        Some(SessionStatus::Idle)
-    );
+    // The run task writes the Complete entry BEFORE settling the status row —
+    // wait for the transition instead of asserting the instant in between.
+    wait_for(
+        || core.sessions.session_status(CHAT).map(|s| s.status) == Some(SessionStatus::Idle),
+        "session to settle idle",
+    )
+    .await;
 }

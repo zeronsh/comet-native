@@ -486,7 +486,15 @@ impl DocHost {
                     SteerOutcome::NotSteerable => {
                         // No live steerable run: the durable command still delivers —
                         // run it as the next turn (comet's fallback, executor-side).
-                        let Some(mut request) = sessions.last_request(chat_id) else {
+                        // After an engine restart `last_request` is empty too, so
+                        // rebuild the run config from the chat's workspace row
+                        // (comet derived dispatch config from the chat row the
+                        // same way — sessions.ts:601-620); dispatch's engine-owned
+                        // resume then reattaches the prior harness conversation.
+                        let request = sessions
+                            .last_request(chat_id)
+                            .or_else(|| self.request_from_chat_row(chat_id, prompt));
+                        let Some(mut request) = request else {
                             return Ok((
                                 SessionCommandStatus::Rejected,
                                 Some("no live run and no prior run config".into()),
@@ -527,6 +535,38 @@ impl DocHost {
                 }
             }
         }
+    }
+
+    /// A steer-turned-run with no in-process `last_request` (engine restarted
+    /// since the last turn): rebuild the run config from the chat's workspace
+    /// row — cwd from the row, model/reasoning/options/sandbox from its config
+    /// (composer defaults otherwise). `None` without a workspace host or row.
+    fn request_from_chat_row(&self, chat_id: &str, prompt: &str) -> Option<comet_proto::RunRequest> {
+        let workspace = self.workspace()?;
+        let chat = match workspace.doc().chat(chat_id) {
+            Ok(chat) => chat?,
+            Err(err) => {
+                tracing::warn!(chat = %chat_id, error = %err, "workspace chat read failed");
+                return None;
+            }
+        };
+        let config = chat.config;
+        Some(comet_proto::RunRequest {
+            prompt: prompt.to_string(),
+            model: config.as_ref().and_then(|c| c.model.clone()),
+            reasoning: config.as_ref().and_then(|c| c.reasoning),
+            model_options: config
+                .as_ref()
+                .map(|c| c.model_options.clone())
+                .unwrap_or_default(),
+            cwd: chat.cwd.unwrap_or_default(),
+            sandbox: config
+                .as_ref()
+                .map(|c| c.sandbox)
+                .unwrap_or(comet_proto::SandboxLevel::WorkspaceWrite),
+            auto_approve: false,
+            resume: None,
+        })
     }
 
     fn save_snapshot(&self, handle: &ChatDocHandle) {

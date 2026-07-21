@@ -53,6 +53,16 @@ pub enum SteerOutcome {
 
 type PendingInputs = Arc<Mutex<HashMap<String, oneshot::Sender<Vec<UserInputAnswer>>>>>;
 
+/// A harness-native session id plus the cwd it was created under. Harness
+/// session stores are cwd-scoped (claude keys conversations by project
+/// directory — comet sessions.ts:563 "harness session stores are keyed by
+/// cwd"), so resume is only injected for runs launched from the same cwd.
+#[derive(Debug, Clone)]
+struct HarnessSessionRef {
+    session_id: String,
+    cwd: String,
+}
+
 struct RunHandle {
     run_id: String,
     steerable: bool,
@@ -80,8 +90,11 @@ struct Inner {
     /// Last dispatched request per chat — the steer→new-turn fallback re-derives its
     /// run config from this (chat config rows land with the workspace doc in M4).
     last_requests: Mutex<HashMap<String, RunRequest>>,
-    /// Harness-native session ids per chat (resume continuity across turns).
-    harness_sessions: Mutex<HashMap<String, String>>,
+    /// Harness-native session ids per chat (resume continuity across turns) —
+    /// the live-process cache over the durable copy on the workspace chat row
+    /// (comet kept the same pair on `chats.harness_session_id`). An empty
+    /// session id is the "do not resume" tombstone after a rejected resume.
+    harness_sessions: Mutex<HashMap<String, HarnessSessionRef>>,
     /// Auto-titler for untitled chats (wired at engine assembly; absent in bare tests).
     titles: OnceLock<crate::titles::TitleGenerator>,
 }
@@ -187,8 +200,36 @@ impl SessionsEngine {
         &self,
         chat_id: &str,
         harness_id: HarnessId,
+        request: RunRequest,
+        message_id: Option<String>,
+    ) -> Result<String, EngineError> {
+        self.dispatch_with(chat_id, harness_id, request, message_id, true)
+            .await
+    }
+
+    /// [`Self::dispatch`] with resume injection controllable: the failed-resume
+    /// retry re-dispatches with `inject_resume = false` so a session id the
+    /// harness just rejected can never be re-injected from the journal.
+    /// Boxed future: `drive_run` re-enters this for that retry, and the
+    /// erasure breaks the opaque-type cycle the recursion would otherwise form.
+    fn dispatch_with<'a>(
+        &'a self,
+        chat_id: &'a str,
+        harness_id: HarnessId,
+        request: RunRequest,
+        message_id: Option<String>,
+        inject_resume: bool,
+    ) -> futures::future::BoxFuture<'a, Result<String, EngineError>> {
+        Box::pin(self.dispatch_inner(chat_id, harness_id, request, message_id, inject_resume))
+    }
+
+    async fn dispatch_inner(
+        &self,
+        chat_id: &str,
+        harness_id: HarnessId,
         mut request: RunRequest,
         message_id: Option<String>,
+        inject_resume: bool,
     ) -> Result<String, EngineError> {
         let routed = lock(&self.inner.runs)
             .get(chat_id)
@@ -216,8 +257,14 @@ impl SessionsEngine {
         handle.write_user_message(&user_id, &request.prompt, now_ms())?;
         self.inner.note_message(chat_id, &request.prompt);
 
-        if request.resume.is_none() {
-            request.resume = lock(&self.inner.harness_sessions).get(chat_id).cloned();
+        // Engine-owned resume (comet sessions.ts:736 — every dispatch read the
+        // chat's stored harness session): callers always send `resume: None`;
+        // the engine threads the chat's prior harness session back in so a new
+        // process (app restart) continues the same harness conversation.
+        let mut resume_injected = false;
+        if request.resume.is_none() && inject_resume {
+            request.resume = self.inner.resume_for(chat_id, &request.cwd);
+            resume_injected = request.resume.is_some();
         }
         lock(&self.inner.last_requests).insert(chat_id.to_string(), request.clone());
 
@@ -274,6 +321,10 @@ impl SessionsEngine {
             controls,
             engine_rx,
             cancel_rx,
+            RunResumeState {
+                user_message_id: user_id,
+                resume_injected,
+            },
         ));
         Ok(run_id)
     }
@@ -387,6 +438,14 @@ impl SessionsEngine {
             self.inner.publish(&chat_id, &done);
             let handle = self.doc_handle(&chat_id)?;
             let stamped = handle.mark_abandoned_streams()?;
+            // The crashed run's harness session is only in the journal (the
+            // debounced workspace-row write may never have landed) — stamp it
+            // onto the chat row so the next run resumes the conversation
+            // (comet recoverDraft did the same: sessions.ts:538-539).
+            if let Some((session_id, cwd)) = self.inner.journal_harness_session(&chat_id) {
+                self.inner
+                    .remember_harness_session(&chat_id, &session_id, &cwd);
+            }
             self.set_status(&chat_id, SessionStatus::Idle, false);
             tracing::info!(chat = %chat_id, stamped, "recovered stale session journal");
             recovered += 1;
@@ -481,10 +540,100 @@ impl Inner {
         }
     }
 
-    fn remember_harness_session(&self, chat_id: &str, session_id: &str) {
-        if !session_id.is_empty() {
-            lock(&self.harness_sessions).insert(chat_id.to_string(), session_id.to_string());
+    /// Record the chat's harness-native session id (and its cwd): live-process
+    /// cache plus the durable workspace chat row — the row is what survives an
+    /// engine restart (comet's `orbit.setChatHarnessSession`, sessions.ts:1039).
+    fn remember_harness_session(&self, chat_id: &str, session_id: &str, cwd: &str) {
+        if session_id.is_empty() {
+            return;
         }
+        lock(&self.harness_sessions).insert(
+            chat_id.to_string(),
+            HarnessSessionRef {
+                session_id: session_id.to_string(),
+                cwd: cwd.to_string(),
+            },
+        );
+        if let Some(ws) = self.workspace() {
+            ws.set_chat_harness_session(chat_id, session_id, cwd);
+        }
+    }
+
+    /// A harness rejected the stored session id: tombstone it (empty string on
+    /// the row, cleared cache) so no lookup source — including the journal,
+    /// which still names the dead id — can re-inject it.
+    fn forget_harness_session(&self, chat_id: &str) {
+        lock(&self.harness_sessions).insert(
+            chat_id.to_string(),
+            HarnessSessionRef {
+                session_id: String::new(),
+                cwd: String::new(),
+            },
+        );
+        if let Some(ws) = self.workspace() {
+            ws.set_chat_harness_session(chat_id, "", "");
+        }
+    }
+
+    /// The session id to resume for a run in `chat_id` launching from `cwd`
+    /// (comet sessions.ts:736 `orbit.chatHarnessSession` on every dispatch):
+    /// live-process cache → workspace chat row → journal scan (the crash path
+    /// where the debounced row write never landed — SessionStarted/Done events
+    /// are journaled per event, flushed immediately). Cwd-gated throughout:
+    /// harness session stores are keyed by cwd, so a session created elsewhere
+    /// never rides `--resume`. An empty stored id is the explicit tombstone —
+    /// no resume, no falling through to staler sources.
+    fn resume_for(&self, chat_id: &str, cwd: &str) -> Option<String> {
+        let cwd_ok = |session_cwd: &str| session_cwd.is_empty() || session_cwd == cwd;
+        if let Some(known) = lock(&self.harness_sessions).get(chat_id).cloned() {
+            return (!known.session_id.is_empty() && cwd_ok(&known.cwd))
+                .then_some(known.session_id);
+        }
+        if let Some(ws) = self.workspace()
+            && let Some((session_id, session_cwd)) = ws.chat_harness_session(chat_id)
+        {
+            return (!session_id.is_empty() && cwd_ok(session_cwd.as_deref().unwrap_or("")))
+                .then_some(session_id);
+        }
+        let (session_id, session_cwd) = self.journal_harness_session(chat_id)?;
+        // Cache the journal hit (memory + row) so later dispatches skip the scan.
+        self.remember_harness_session(chat_id, &session_id, &session_cwd);
+        cwd_ok(&session_cwd).then_some(session_id)
+    }
+
+    /// The last harness session id named anywhere in the chat's journal, with
+    /// the cwd of the `SessionStarted` that governs it. `Done.session_id`
+    /// inherits the cwd of the most recent `SessionStarted` (same run).
+    fn journal_harness_session(&self, chat_id: &str) -> Option<(String, String)> {
+        let events = match self.journal.replay(chat_id, 0) {
+            Ok(events) => events,
+            Err(err) => {
+                tracing::warn!(chat = %chat_id, error = %err, "journal scan for harness session failed");
+                return None;
+            }
+        };
+        let mut current_cwd = String::new();
+        let mut found: Option<(String, String)> = None;
+        for (_, event) in events {
+            match event {
+                AgentEvent::SessionStarted {
+                    session_id, cwd, ..
+                } => {
+                    current_cwd = cwd;
+                    if !session_id.is_empty() {
+                        found = Some((session_id, current_cwd.clone()));
+                    }
+                }
+                AgentEvent::Done {
+                    session_id: Some(session_id),
+                    ..
+                } if !session_id.is_empty() => {
+                    found = Some((session_id, current_cwd.clone()));
+                }
+                _ => {}
+            }
+        }
+        found
     }
 
     fn remove_run(&self, chat_id: &str, run_id: &str) {
@@ -571,6 +720,15 @@ fn finish_segment<'a>(
     }
 }
 
+/// Resume bookkeeping for one run task: which user entry the run answers (so a
+/// failed-resume retry re-dispatches idempotently against the same doc entry)
+/// and whether `dispatch` injected the resume id itself (only engine-injected
+/// resumes are retried fresh — a caller-specified resume fails loudly).
+struct RunResumeState {
+    user_message_id: String,
+    resume_injected: bool,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn drive_run(
     inner: Arc<Inner>,
@@ -582,12 +740,19 @@ async fn drive_run(
     controls: RunControls,
     mut engine_rx: mpsc::UnboundedReceiver<AgentEvent>,
     mut cancel_rx: watch::Receiver<bool>,
+    resume_state: RunResumeState,
 ) {
     let device_id = inner.device_id.clone();
     // Captured for post-run auto-titling (the request moves into the harness).
     let harness_id = harness.id();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
+    // Kept whole for the failed-resume retry (fresh session, same user entry).
+    // Option so the retry branch (inside the event loop) can take ownership.
+    let mut retry_request = Some(RunRequest {
+        resume: None,
+        ..request.clone()
+    });
     let mut stream = match harness.run(request, controls).await {
         Ok(stream) => stream,
         Err(err) => {
@@ -624,6 +789,7 @@ async fn drive_run(
     // stream (its token was cancelled); past it, a terminal Done is synthesized.
     let mut interrupt_deadline: Option<tokio::time::Instant> = None;
     let mut interrupted = false;
+    let mut saw_session_started = false;
 
     let final_status = loop {
         let event: AgentEvent = tokio::select! {
@@ -678,6 +844,49 @@ async fn drive_run(
             }
         };
 
+        // Failed-resume fallback: an engine-injected `--resume` naming a session
+        // the harness no longer knows dies before ever starting (claude exits
+        // without an init frame; codex falls back internally via thread/start).
+        // Signature: errored Done, no SessionStarted, nothing streamed. Retry
+        // ONCE as a fresh session against the same user entry — tombstone the
+        // dead id first so no lookup source (journal included) re-injects it.
+        if resume_state.resume_injected
+            && !saw_session_started
+            && folded.is_empty()
+            && !interrupted
+            && matches!(
+                &event,
+                AgentEvent::Done {
+                    status: DoneStatus::Errored,
+                    ..
+                }
+            )
+            && let Some(retry) = retry_request.take()
+        {
+            tracing::warn!(
+                chat = %chat_id,
+                "harness rejected injected resume id; retrying as a fresh session"
+            );
+            inner.forget_harness_session(&chat_id);
+            inner.remove_run(&chat_id, &run_id);
+            let engine = SessionsEngine {
+                inner: inner.clone(),
+            };
+            let chat = chat_id.clone();
+            let message_id = resume_state.user_message_id.clone();
+            tokio::spawn(async move {
+                // `inject_resume = false`: the retry must start fresh. The user
+                // entry write inside dispatch is idempotent by message id.
+                if let Err(err) = engine
+                    .dispatch_with(&chat, harness_id, retry, Some(message_id), false)
+                    .await
+                {
+                    tracing::error!(chat = %chat, error = %err, "fresh-session retry dispatch failed");
+                }
+            });
+            return;
+        }
+
         // A steer boundary splits the assistant entry exactly where the fold resets.
         if let AgentEvent::Steered {
             next_assistant_message_id,
@@ -705,14 +914,19 @@ async fn drive_run(
         }
 
         match &event {
-            AgentEvent::SessionStarted { session_id, .. } => {
-                inner.remember_harness_session(&chat_id, session_id);
+            AgentEvent::SessionStarted {
+                session_id, cwd, ..
+            } => {
+                saw_session_started = true;
+                // The event's own cwd (where the harness actually created the
+                // session) scopes the stored id, not the request's.
+                inner.remember_harness_session(&chat_id, session_id, cwd);
             }
             AgentEvent::Done {
                 session_id: Some(session_id),
                 ..
             } => {
-                inner.remember_harness_session(&chat_id, session_id);
+                inner.remember_harness_session(&chat_id, session_id, &run_cwd);
             }
             AgentEvent::InputRequested { request_id, .. } => {
                 // The engine's input bridge is the sole authority on input
