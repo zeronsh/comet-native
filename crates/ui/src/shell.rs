@@ -2632,7 +2632,10 @@ impl Shell {
                         .pl(px(11.0))
                         .pr(px(13.0))
                         .cursor_pointer()
-                        .hover(|s| s.bg(crate::theme::white_alpha(0.10)))
+                        // Hover must BRIGHTEN the opaque pill, never replace it
+                        // with a translucent wash (a 10%-alpha bg here made the
+                        // pill go see-through on hover — user-reported).
+                        .hover(|s| s.bg(crate::theme::neutral(0.29)))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.transcript
                                 .update(cx, |transcript, cx| transcript.jump_to_bottom(cx));
