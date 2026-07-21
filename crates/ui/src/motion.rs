@@ -26,9 +26,14 @@
 //! transformations), so `menu-in`/`dialog-in` approximate their scale component
 //! with fade + translate; see the module report in ARCHITECTURE §4 follow-ups.
 
-use std::time::Duration;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
-use gpui::{Animation, AnimationElement, App, ElementId, IntoElement, Styled, px};
+use gpui::{
+    Animation, AnimationElement, App, ElementId, Hsla, IntoElement, Rgba, SharedString, Styled,
+    Window, px,
+};
 
 pub use gpui::AnimationExt;
 
@@ -217,6 +222,12 @@ pub const CHEVRON: MotionSpec = MotionSpec::new(200, EASE);
 /// (Electron parity — the original rail rode the browser's native smooth
 /// scroll, a fixed-duration gentle ease, never percent-of-remaining).
 pub const SCROLL_GLIDE: MotionSpec = MotionSpec::new(500, EASE_IN_OUT);
+/// Tailwind's default transition curve — CSS `cubic-bezier(0.4, 0, 0.2, 1)`
+/// (`transition-colors` et al. carry it unless overridden; comet never does).
+pub const EASE_TAILWIND: CubicBezier = CubicBezier::new(0.4, 0.0, 0.2, 1.0);
+/// CSS `transition-colors` default: 150ms over [`EASE_TAILWIND`] — the temporal
+/// blend every interactive hover wash rides in the original.
+pub const HOVER_FADE: MotionSpec = MotionSpec::new(150, EASE_TAILWIND);
 /// Comet loader pulse period: 2.4s.
 pub const COMET_PULSE: MotionSpec = MotionSpec::new(2400, EASE);
 /// Gradient matrix spinner wave period: 750ms.
@@ -335,6 +346,203 @@ pub fn gspin_opacity(t: f32, dim: f32) -> f32 {
 /// Linear interpolation (layout tweens).
 pub fn lerp(from: f32, to: f32, t: f32) -> f32 {
     from + (to - from) * t
+}
+
+// ---------------------------------------------------------------------------
+// Hover color fades (CSS `transition-colors` parity)
+// ---------------------------------------------------------------------------
+//
+// gpui `.hover()` styles snap by construction — the style applies the frame
+// the pointer enters. The original comet puts Tailwind `transition-colors`
+// (150ms, cubic-bezier(0.4, 0, 0.2, 1)) on every interactive wash, so hover
+// states FADE. This is the manual-drive tween for that (the shell `WidthTween`
+// pattern — never `with_animation`, whose element-id-keyed clock replays on
+// remount): a per-element-key hover progress, advanced from wall time on each
+// evaluation, with the render tail requesting frames while any fade is
+// mid-flight.
+//
+// The store is a main-thread `thread_local` rather than a gpui Global so the
+// many free-function element builders (window-control buttons, popover menu
+// rows, markdown code blocks) can blend colors without threading `cx` through
+// every signature. All access happens on the UI thread (element builders,
+// mouse listeners, the render tail).
+//
+// Staleness: an element that unmounts mid-hover never gets its leave event, so
+// entries are stamped with a frame counter on every read and pruned by
+// [`hover_fades_active`] (the once-per-frame tick) when a full frame passes
+// without a read — a reopened menu never inherits a dead entry's wash.
+
+/// One element's hover fade: progress runs `origin → target` over
+/// [`HOVER_FADE`], re-anchored at `origin` whenever the pointer flips
+/// direction mid-flight so the blend is continuous.
+#[derive(Debug, Clone, Copy)]
+struct FadeEntry {
+    origin: f32,
+    target: f32,
+    started: Instant,
+    /// Frame counter at the last read (liveness stamp — see module notes).
+    seen: u64,
+}
+
+impl FadeEntry {
+    fn value(&self, now: Instant, duration: Duration) -> f32 {
+        let elapsed = now.saturating_duration_since(self.started);
+        if duration.is_zero() || elapsed >= duration {
+            return self.target;
+        }
+        let raw = elapsed.as_secs_f32() / duration.as_secs_f32();
+        lerp(self.origin, self.target, HOVER_FADE.curve.eval(raw))
+    }
+
+    fn settled(&self, now: Instant, duration: Duration) -> bool {
+        self.origin == self.target || now.saturating_duration_since(self.started) >= duration
+    }
+}
+
+/// Per-key hover progress store. Pure core (explicit `now`) — unit-testable;
+/// the thread-local wrappers below feed it wall time.
+#[derive(Default)]
+pub struct HoverFades {
+    entries: HashMap<String, FadeEntry>,
+    frame: u64,
+}
+
+impl HoverFades {
+    fn duration() -> Duration {
+        HOVER_FADE.total().mul_f32(speed_scale())
+    }
+
+    /// Pointer entered (`hovered`) or left the element behind `key`. Reduced
+    /// motion snaps straight to the endpoint.
+    pub fn set_at(&mut self, key: &str, hovered: bool, reduced: bool, now: Instant) {
+        let target = if hovered { 1.0 } else { 0.0 };
+        let duration = Self::duration();
+        let current = self
+            .entries
+            .get(key)
+            .map(|e| e.value(now, duration))
+            .unwrap_or(0.0);
+        if target == 0.0 && !self.entries.contains_key(key) {
+            return; // never-hovered element reporting a leave — nothing to do
+        }
+        let origin = if reduced { target } else { current };
+        let seen = self.frame;
+        self.entries.insert(
+            key.to_string(),
+            FadeEntry {
+                origin,
+                target,
+                started: now,
+                seen,
+            },
+        );
+    }
+
+    /// Hover progress (0..1) for `key` at `now`; stamps liveness.
+    pub fn value_at(&mut self, key: &str, now: Instant) -> f32 {
+        let frame = self.frame;
+        match self.entries.get_mut(key) {
+            Some(entry) => {
+                entry.seen = frame;
+                entry.value(now, Self::duration())
+            }
+            None => 0.0,
+        }
+    }
+
+    /// Once-per-frame bookkeeping: advance the frame counter, prune entries
+    /// that settled back to rest or went a full frame unread (unmounted), and
+    /// report whether any fade is still mid-flight (→ keep frames coming).
+    pub fn tick_at(&mut self, now: Instant) -> bool {
+        self.frame += 1;
+        let frame = self.frame;
+        let duration = Self::duration();
+        let mut active = false;
+        self.entries.retain(|_, entry| {
+            // Unread through the whole previous frame: the element unmounted
+            // (its leave event will never come) — drop the entry.
+            if entry.seen + 1 < frame {
+                return false;
+            }
+            let settled = entry.settled(now, duration);
+            if !settled {
+                active = true;
+            }
+            // Settled at rest — steady state, indistinguishable from absent.
+            !(settled && entry.target == 0.0)
+        });
+        active
+    }
+}
+
+thread_local! {
+    static HOVER_FADES: RefCell<HoverFades> = RefCell::new(HoverFades::default());
+}
+
+/// Hover progress (0..1) for `key` this frame.
+pub fn hover_t(key: &str) -> f32 {
+    HOVER_FADES.with(|fades| fades.borrow_mut().value_at(key, Instant::now()))
+}
+
+/// Record a hover flip for `key` (reduced motion snaps).
+pub fn set_hover(key: &str, hovered: bool, reduced: bool) {
+    HOVER_FADES.with(|fades| {
+        fades
+            .borrow_mut()
+            .set_at(key, hovered, reduced, Instant::now())
+    });
+}
+
+/// An `.on_hover` listener driving the fade for `key` — pair with
+/// [`hover_t`]/[`hover_blend`] reads of the same key in the same element.
+pub fn hover_listener(
+    key: impl Into<SharedString>,
+) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+    let key = key.into();
+    move |hovered, window, cx| {
+        set_hover(&key, *hovered, reduced_motion(cx));
+        // Event-dispatch context: `request_animation_frame` is draw-phase-only
+        // (it resolves the current view) — `refresh` marks the whole window
+        // dirty, the root render re-evaluates the blend and keeps frames
+        // coming via its tail while the fade is mid-flight.
+        window.refresh();
+    }
+}
+
+/// Frame-drive hook: call ONCE per window frame (the shell render tail); true
+/// while any hover fade is mid-flight and frames must keep coming.
+pub fn hover_fades_active() -> bool {
+    HOVER_FADES.with(|fades| fades.borrow_mut().tick_at(Instant::now()))
+}
+
+/// Blend two colors by `t` the way the browser transitions them: component
+/// interpolation in sRGB with premultiplied alpha — a wash fading in from
+/// transparent brightens without passing through grey.
+pub fn mix(from: Hsla, to: Hsla, t: f32) -> Hsla {
+    let t = t.clamp(0.0, 1.0);
+    if t <= 0.0 {
+        return from;
+    }
+    if t >= 1.0 {
+        return to;
+    }
+    let (f, g) = (Rgba::from(from), Rgba::from(to));
+    let a = lerp(f.a, g.a, t);
+    if a <= f32::EPSILON {
+        // Both endpoints (effectively) transparent — carry the target's hue.
+        return Hsla::from(Rgba { a: 0.0, ..g });
+    }
+    Hsla::from(Rgba {
+        r: lerp(f.r * f.a, g.r * g.a, t) / a,
+        g: lerp(f.g * f.a, g.g * g.a, t) / a,
+        b: lerp(f.b * f.a, g.b * g.a, t) / a,
+        a,
+    })
+}
+
+/// The standard hover blend: rest → hover color at `key`'s current progress.
+pub fn hover_blend(key: &str, rest: Hsla, hover: Hsla) -> Hsla {
+    mix(rest, hover, hover_t(key))
 }
 
 // ---------------------------------------------------------------------------
@@ -531,6 +739,126 @@ mod tests {
         assert_eq!(lerp(208.0, 400.0, 0.0), 208.0);
         assert_eq!(lerp(208.0, 400.0, 1.0), 400.0);
         assert_eq!(lerp(0.0, 10.0, 0.5), 5.0);
+    }
+
+    #[test]
+    fn hover_fade_ramps_and_reverses_continuously() {
+        let mut fades = HoverFades::default();
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+
+        // Enter: 0 at the flip, mid-flight strictly between, 1 at 150ms.
+        fades.set_at("pill", true, false, t0);
+        assert_eq!(fades.value_at("pill", t0), 0.0);
+        let mid = fades.value_at("pill", ms(75));
+        assert!(mid > 0.0 && mid < 1.0, "mid-flight enter: {mid}");
+        assert_eq!(fades.value_at("pill", ms(150)), 1.0);
+        assert_eq!(fades.value_at("pill", ms(400)), 1.0, "clamps past the end");
+
+        // Leave mid-flight re-anchors at the current value — no jump.
+        fades.set_at("pill", true, false, t0);
+        let at_flip = fades.value_at("pill", ms(75));
+        fades.set_at("pill", false, false, ms(75));
+        let after_flip = fades.value_at("pill", ms(75));
+        assert!(
+            (after_flip - at_flip).abs() < 1e-4,
+            "continuity: {at_flip} vs {after_flip}"
+        );
+        let falling = fades.value_at("pill", ms(140));
+        assert!(falling < after_flip, "fades back down");
+        assert_eq!(fades.value_at("pill", ms(225)), 0.0, "lands at rest");
+    }
+
+    #[test]
+    fn hover_fade_reduced_motion_snaps() {
+        let mut fades = HoverFades::default();
+        let t0 = Instant::now();
+        fades.set_at("row", true, true, t0);
+        assert_eq!(fades.value_at("row", t0), 1.0, "enter snaps to 1");
+        fades.set_at("row", false, true, t0);
+        assert_eq!(fades.value_at("row", t0), 0.0, "leave snaps to 0");
+    }
+
+    #[test]
+    fn hover_fade_leave_without_enter_is_inert() {
+        let mut fades = HoverFades::default();
+        let t0 = Instant::now();
+        fades.set_at("ghost", false, false, t0);
+        assert!(fades.entries.is_empty(), "no entry for a leave-only key");
+        assert_eq!(fades.value_at("ghost", t0), 0.0);
+    }
+
+    #[test]
+    fn hover_tick_reports_flight_and_prunes() {
+        let mut fades = HoverFades::default();
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+
+        fades.set_at("a", true, false, t0);
+        // Mid-flight: active, frames must keep coming (read each frame).
+        assert!(fades.tick_at(ms(50)));
+        fades.value_at("a", ms(50));
+        assert!(fades.tick_at(ms(100)));
+        fades.value_at("a", ms(100));
+        // Settled hovered (still read): no more frames needed, entry kept.
+        assert!(!fades.tick_at(ms(200)));
+        fades.value_at("a", ms(200));
+        assert_eq!(fades.value_at("a", ms(250)), 1.0);
+
+        // Leave → fades → settles at rest → entry evicted.
+        fades.set_at("a", false, false, ms(250));
+        assert!(fades.tick_at(ms(300)));
+        fades.value_at("a", ms(300));
+        assert!(!fades.tick_at(ms(500)), "settled at rest");
+        assert!(fades.entries.is_empty(), "rest entries are pruned");
+    }
+
+    #[test]
+    fn hover_tick_evicts_unread_entries() {
+        // An element that unmounts mid-hover never sends its leave — a full
+        // frame without a read drops the entry so a remount starts clean.
+        let mut fades = HoverFades::default();
+        let t0 = Instant::now();
+        let ms = |m: u64| t0 + Duration::from_millis(m);
+        fades.set_at("menu-row", true, false, t0);
+        fades.tick_at(ms(16));
+        fades.value_at("menu-row", ms(16)); // frame 1: mounted, read
+        fades.tick_at(ms(32)); // frame 2: unmounted — no read
+        fades.tick_at(ms(48)); // frame 3: a full unread frame has passed
+        assert!(fades.entries.is_empty(), "unread entry evicted");
+        assert_eq!(fades.value_at("menu-row", ms(64)), 0.0);
+    }
+
+    #[test]
+    fn mix_endpoints_and_transparent_blend() {
+        let rest = crate::theme::neutral(0.235);
+        let hover = crate::theme::neutral(0.29);
+        assert_eq!(mix(rest, hover, 0.0), rest);
+        assert_eq!(mix(rest, hover, 1.0), hover);
+        assert_eq!(mix(rest, hover, -1.0), rest, "t clamps low");
+        assert_eq!(mix(rest, hover, 2.0), hover, "t clamps high");
+
+        // Opaque blend: lightness moves monotonically between the endpoints.
+        let mid = mix(rest, hover, 0.5);
+        assert!(mid.l > rest.l && mid.l < hover.l, "mid lightness {}", mid.l);
+
+        // Transparent → wash: alpha ramps, hue stays the wash's (premultiplied
+        // — never a darkened grey mid-fade).
+        let wash = crate::theme::white_alpha(0.06);
+        let half = mix(gpui::transparent_black(), wash, 0.5);
+        assert!((half.a - 0.03).abs() < 1e-4, "alpha midpoint {}", half.a);
+        let half_rgba = Rgba::from(half);
+        assert!(
+            half_rgba.r > 0.99 && half_rgba.g > 0.99 && half_rgba.b > 0.99,
+            "white wash keeps its hue: {half_rgba:?}"
+        );
+    }
+
+    #[test]
+    fn hover_spec_matches_tailwind_transition_colors() {
+        assert_eq!(HOVER_FADE.duration_ms, 150);
+        assert_eq!(HOVER_FADE.delay_ms, 0);
+        assert_eq!(EASE_TAILWIND, CubicBezier::new(0.4, 0.0, 0.2, 1.0));
     }
 
     #[test]

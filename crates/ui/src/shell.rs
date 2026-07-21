@@ -788,10 +788,19 @@ impl Shell {
         self.terminal_tween = Some(WidthTween::new(from, self.terminal_target()));
         let panel = self.terminal_panel(cx);
         panel.update(cx, |panel, cx| panel.set_open(open, cx));
-        if !open {
+        if open {
+            // Opening lands keyboard focus IN the shell — typing goes straight
+            // to the prompt, no click needed (comet terminal-panel.tsx: the
+            // visible+active effect calls `terminal.focus()` on every open).
+            // The handle is focusable before the panel's first paint; once the
+            // terminal body mounts with `track_focus` it receives the keys.
+            window.focus(&panel.read(cx).focus_handle(), cx);
+        } else {
             // Hiding the panel removes the (likely focused) terminal view;
             // with nothing focused, window key bindings stop dispatching, so
-            // hand focus to the composer.
+            // hand focus to the composer. (Cmd+J is a pure toggle — a second
+            // press closes even while the terminal is focused, as in comet's
+            // `useHotkey(toggleShortcut, ... setOpenScoped(!open))`.)
             window.focus(&self.composer.focus_handle(cx), cx);
         }
         self.terminal_tween_task = Some(cx.spawn(async move |this, cx| {
@@ -1649,6 +1658,15 @@ impl Shell {
         let subline = theme.text_muted.opacity(0.5);
         let select_id = id.clone();
         let menu_id = id.clone();
+        // Hover fades over transition-colors (comet session-row.tsx) — both
+        // the wash and the title brighten ride the same 150ms blend.
+        let fade_key = format!("chat-row-{id}");
+        let rest_bg = if selected {
+            selected_wash
+        } else {
+            gpui::transparent_black()
+        };
+        let rest_text = if selected { text } else { text.opacity(0.8) };
         div()
             .id(SharedString::from(format!("chat-{id}")))
             .flex()
@@ -1657,9 +1675,9 @@ impl Shell {
             .rounded(px(8.0))
             .px(px(Theme::SPACE_SM))
             .py(px(6.0))
-            .text_color(if selected { text } else { text.opacity(0.8) })
-            .when(selected, |el| el.bg(selected_wash))
-            .hover(move |s| s.bg(hover).text_color(text))
+            .text_color(motion::hover_blend(&fade_key, rest_text, text))
+            .bg(motion::hover_blend(&fade_key, rest_bg, hover))
+            .on_hover(motion::hover_listener(fade_key))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, _, cx| {
                 let id = select_id.clone();
@@ -1958,11 +1976,19 @@ impl Shell {
                             .px(px(Theme::SPACE_SM))
                             .py(px(6.0))
                             .text_size(px(13.0))
-                            .text_color(theme.text_muted)
-                            .hover(|s| {
-                                s.bg(Theme::dark().element_hover)
-                                    .text_color(Theme::dark().text)
-                            })
+                            // comet sidebar.tsx: `transition-colors` — the wash
+                            // and text brighten fade in, not snap.
+                            .text_color(motion::hover_blend(
+                                "new-session",
+                                theme.text_muted,
+                                Theme::dark().text,
+                            ))
+                            .bg(motion::hover_blend(
+                                "new-session",
+                                gpui::transparent_black(),
+                                Theme::dark().element_hover,
+                            ))
+                            .on_hover(motion::hover_listener("new-session"))
                             .cursor_pointer()
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.route = Route::Chat;
@@ -2070,9 +2096,18 @@ impl Shell {
             .gap(px(10.0))
             .cursor_pointer()
             // user-menu.tsx trigger: hover `bg-white/[0.04]`, open state
-            // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`.
-            .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
-            .when(open, |el| el.bg(theme.element_hover))
+            // (`data-[state=open]`) the slightly stronger `bg-white/[0.06]`;
+            // the hover wash fades over `transition-colors`.
+            .bg(if open {
+                theme.element_hover
+            } else {
+                motion::hover_blend(
+                    "user-menu-trigger",
+                    gpui::transparent_black(),
+                    crate::theme::white_alpha(0.04),
+                )
+            })
+            .on_hover(motion::hover_listener("user-menu-trigger"))
             .on_click(cx.listener(|this, _, _, cx| {
                 // A click that just dismissed the menu (outside-click on the
                 // trigger) must not instantly reopen it.
@@ -2151,7 +2186,7 @@ impl Shell {
                         .child(user_email.unwrap_or(user_line)),
                 )
                 .child(
-                    popover::menu_row(theme, false)
+                    popover::menu_row(theme, false, "user-menu-settings")
                         .id("user-menu-settings")
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.open_settings(SettingsSection::Devices, cx)
@@ -2165,7 +2200,7 @@ impl Shell {
                 )
                 .child(popover::menu_separator())
                 .child(
-                    popover::menu_row(theme, false)
+                    popover::menu_row(theme, false, "user-menu-signout")
                         .id("user-menu-signout")
                         .on_click(cx.listener(|this, _, _, cx| this.sign_out(cx)))
                         .child(
@@ -2205,7 +2240,7 @@ impl Shell {
                 .flex()
                 .flex_col()
                 .child(
-                    popover::menu_row(&theme, false)
+                    popover::menu_row(&theme, false, format!("chat-menu-rename-{chat_id}"))
                         .id("chat-menu-rename")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_rename_chat(rename_id.clone(), cx)
@@ -2218,7 +2253,7 @@ impl Shell {
                         .child(SharedString::from("Rename…")),
                 )
                 .child(
-                    popover::menu_row(&theme, false)
+                    popover::menu_row(&theme, false, format!("chat-menu-archive-{chat_id}"))
                         .id("chat-menu-archive")
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.archive_chat(archive_id.clone(), cx)
@@ -2232,7 +2267,7 @@ impl Shell {
                 )
                 .child(popover::menu_separator())
                 .child(
-                    popover::menu_row(&theme, false)
+                    popover::menu_row(&theme, false, format!("chat-menu-delete-{chat_id}"))
                         .id("chat-menu-delete")
                         .text_color(theme.danger)
                         .on_click(cx.listener(move |this, _, _, cx| {
@@ -2277,7 +2312,7 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel")
+                            popover::btn_ghost(&theme, "Cancel", "rename-chat-cancel")
                                 .id("rename-chat-cancel")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.rename_dialog = None;
@@ -2321,7 +2356,7 @@ impl Shell {
                         .justify_end()
                         .gap(px(8.0))
                         .child(
-                            popover::btn_ghost(&theme, "Cancel")
+                            popover::btn_ghost(&theme, "Cancel", "delete-chat-cancel")
                                 .id("delete-chat-cancel")
                                 .on_click(cx.listener(|this, _, _, cx| {
                                     this.delete_confirm = None;
@@ -2622,7 +2657,6 @@ impl Shell {
                         .id("jump-to-bottom-btn")
                         .h(px(30.0))
                         .rounded_full()
-                        .bg(theme.surface_raised)
                         .border_1()
                         .border_color(theme.border)
                         .shadow_md()
@@ -2634,8 +2668,14 @@ impl Shell {
                         .cursor_pointer()
                         // Hover must BRIGHTEN the opaque pill, never replace it
                         // with a translucent wash (a 10%-alpha bg here made the
-                        // pill go see-through on hover — user-reported).
-                        .hover(|s| s.bg(crate::theme::neutral(0.29)))
+                        // pill go see-through on hover — user-reported), and it
+                        // fades over the CSS transition-colors 150ms, not snaps.
+                        .bg(motion::hover_blend(
+                            "jump-pill",
+                            theme.surface_raised,
+                            crate::theme::neutral(0.29),
+                        ))
+                        .on_hover(motion::hover_listener("jump-pill"))
                         .on_click(cx.listener(|this, _, _, cx| {
                             this.transcript
                                 .update(cx, |transcript, cx| transcript.jump_to_bottom(cx));
@@ -3243,6 +3283,7 @@ fn window_control_button(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let muted = theme.text_muted;
+    let fade_key = format!("window-control-{id}");
     div()
         .id(id)
         .size(px(24.0))
@@ -3252,7 +3293,13 @@ fn window_control_button(
         .justify_center()
         .rounded(px(6.0))
         .cursor_pointer()
-        .hover(|s| s.bg(Theme::dark().element_hover))
+        // comet window-controls.tsx: `transition-colors` — the wash fades.
+        .bg(motion::hover_blend(
+            &fade_key,
+            gpui::transparent_black(),
+            Theme::dark().element_hover,
+        ))
+        .on_hover(motion::hover_listener(fade_key))
         // Buttons in/over a titlebar drag strip must be EXCLUDED from the
         // strip's event surface entirely. `.occlude()` (gpui
         // `HitboxBehavior::BlockMouse`) makes the window hit-test STOP at the
@@ -3313,6 +3360,7 @@ fn header_icon_button(
     on_click: impl Fn(&gpui::ClickEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let muted = theme.text_muted;
+    let fade_key = format!("header-icon-{id}");
     div()
         .id(id)
         .size(px(28.0))
@@ -3322,7 +3370,13 @@ fn header_icon_button(
         .justify_center()
         .rounded(px(6.0))
         .cursor_pointer()
-        .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
+        // comet __root.tsx header buttons: `transition-colors`.
+        .bg(motion::hover_blend(
+            &fade_key,
+            gpui::transparent_black(),
+            crate::theme::white_alpha(0.04),
+        ))
+        .on_hover(motion::hover_listener(fade_key))
         // Same occlusion + click-swallowing as [`window_control_button`]: this
         // button sits inside the chat header's titlebar drag region, so its
         // rect must be carved out of the strip's drag/double-click surface.
@@ -3553,8 +3607,10 @@ impl Render for Shell {
         };
 
         // A manually-driven tween is mid-flight: keep frames coming (the same
-        // scheduling `with_animation` would have requested).
-        if self.motion_active.get() {
+        // scheduling `with_animation` would have requested). Hover color fades
+        // ride the same clock; their once-per-frame tick lives here (this is
+        // the window's root render — it runs exactly once per frame).
+        if self.motion_active.get() | motion::hover_fades_active() {
             window.request_animation_frame();
         }
 

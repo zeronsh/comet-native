@@ -26,6 +26,7 @@ use comet_proto::{
 use comet_rpc::methods;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
+use crate::motion;
 use crate::popover::{self, Loadable, MenuKey};
 use crate::state::{AppState, EngineHandle};
 use crate::theme::Theme;
@@ -957,15 +958,23 @@ impl Pickers {
             .rounded(px(8.0))
             .text_size(px(12.0))
             .font_weight(gpui::FontWeight::MEDIUM)
-            .text_color(if set {
-                theme.text.opacity(0.9)
+            // comet composer/styles.tsx `pill`: `transition-colors` — the wash
+            // and text brighten fade over 150ms.
+            .text_color(motion::hover_blend(
+                id,
+                if set {
+                    theme.text.opacity(0.9)
+                } else {
+                    theme.text_muted
+                },
+                Theme::dark().text,
+            ))
+            .bg(if open {
+                theme.element_hover
             } else {
-                theme.text_muted
+                motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
             })
-            .when(open, |el| el.bg(theme.element_hover))
-            .hover(|s| {
-                s.bg(theme.element_hover).text_color(Theme::dark().text)
-            })
+            .on_hover(motion::hover_listener(id))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _, window, cx| this.toggle(kind, window, cx)))
             .when_some(chip_icon, |el, (path, tint)| {
@@ -1097,7 +1106,12 @@ impl Pickers {
                                 let path: SharedString = repo.path.clone().into();
                                 let is_selected =
                                     selected_path.as_deref() == Some(repo.path.as_str());
-                                popover::menu_row_nav(&theme, is_selected, ix == active)
+                                popover::menu_row_nav(
+                                    &theme,
+                                    is_selected,
+                                    ix == active,
+                                    format!("repo-row-{ix}"),
+                                )
                                     .id(("repo-row", ix))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.pick_repo(repo.clone(), cx);
@@ -1128,7 +1142,7 @@ impl Pickers {
                               label: &'static str,
                               icon_path: &'static str,
                               pane: RepoPane| {
-                    popover::menu_row(&theme, false)
+                    popover::menu_row(&theme, false, id)
                         .id(id)
                         .child(
                             crate::icons::icon(icon_path)
@@ -1225,7 +1239,7 @@ impl Pickers {
                             .pb(px(2.0))
                             .pt(px(4.0))
                             .child(
-                                popover::btn_ghost(&theme, "Back")
+                                popover::btn_ghost(&theme, "Back", "repo-form-back")
                                     .id("repo-form-back")
                                     .px(px(8.0))
                                     .py(px(4.0))
@@ -1335,7 +1349,7 @@ impl Pickers {
                     .children(rows.iter().enumerate().map(|(ix, entry)| {
                         let name: SharedString = entry.name.clone().into();
                         let is_repo = entry.is_repo;
-                        popover::menu_row_nav(theme, false, ix == active)
+                        popover::menu_row_nav(theme, false, ix == active, format!("browser-row-{ix}"))
                             .id(("browser-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.active = ix;
@@ -1416,7 +1430,7 @@ impl Pickers {
                     .px(px(4.0))
                     .pb(px(2.0))
                     .child(
-                        popover::btn_ghost(theme, "Back")
+                        popover::btn_ghost(theme, "Back", "browser-back")
                             .id("browser-back")
                             .px(px(8.0))
                             .py(px(4.0))
@@ -1490,7 +1504,7 @@ impl Pickers {
                     .children(rows.into_iter().enumerate().map(|(ix, branch)| {
                         let label: SharedString = branch.clone().into();
                         let is_selected = selected.as_deref() == Some(branch.as_str());
-                        popover::menu_row_nav(&theme, is_selected, ix == active)
+                        popover::menu_row_nav(&theme, is_selected, ix == active, format!("branch-row-{ix}"))
                             .id(("branch-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_branch(branch.clone(), cx);
@@ -1519,7 +1533,7 @@ impl Pickers {
             // border-white/[0.06] pt-1`).
             .child(
                 popover::menu_section().child(
-                    popover::menu_row(&theme, false)
+                    popover::menu_row(&theme, false, "branch-isolated")
                         .id("branch-isolated")
                     .on_click(cx.listener(|this, _, _, cx| {
                         this.config.isolated_worktree = !this.config.isolated_worktree;
@@ -1682,7 +1696,7 @@ impl Pickers {
                         let id = model.id.clone();
                         let is_selected = selected.as_deref() == Some(model.id.as_str())
                             || (selected.is_none() && ix == 0);
-                        popover::menu_row_nav(&theme, is_selected, ix == active)
+                        popover::menu_row_nav(&theme, is_selected, ix == active, format!("model-row-{ix}"))
                             .id(("model-row", ix))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_model(id.clone(), cx);
@@ -1787,7 +1801,7 @@ impl Pickers {
                 .child(popover::menu_heading(&theme, "Reasoning"))
                 .children(levels.into_iter().enumerate().map(|(ix, level)| {
                     let is_active = current == Some(level);
-                    popover::menu_row_nav(&theme, is_active, ix == nav_active)
+                    popover::menu_row_nav(&theme, is_active, ix == nav_active, format!("reasoning-row-{ix}"))
                         .id(("reasoning-row", ix))
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.pick_reasoning(level, cx);
@@ -1847,6 +1861,7 @@ impl Pickers {
                                     &theme,
                                     is_active,
                                     option_base + choice_ix == nav_active,
+                                    format!("trait-choice-{opt_ix}-{choice_ix}"),
                                 )
                                     .id(("trait-choice", opt_ix * 32 + choice_ix))
                                     .on_click(cx.listener(move |this, _, _, cx| {

@@ -255,8 +255,11 @@ pub fn modal(
 
 /// One menu row (comet `menuItem`): `gap-2.5 rounded-lg px-2 py-1.5
 /// text-[13px]`, active = `bg-white/10 text-foreground`, hover wash
-/// `white/[0.08]`. The caller adds the id/click listener.
-pub fn menu_row(theme: &Theme, active: bool) -> gpui::Div {
+/// `white/[0.08]` fading over `transition-colors` (floating-styles.ts) via the
+/// per-`fade_key` [`motion::hover_blend`]. The caller adds the id/click
+/// listener — `fade_key` must be unique app-wide and stable across frames
+/// (the id string is a good choice).
+pub fn menu_row(theme: &Theme, active: bool, fade_key: impl Into<SharedString>) -> gpui::Div {
     let row = div()
         .flex()
         .flex_row()
@@ -270,8 +273,22 @@ pub fn menu_row(theme: &Theme, active: bool) -> gpui::Div {
     if active {
         row.bg(white_alpha(0.10)).text_color(theme.text)
     } else {
-        row.text_color(theme.text.opacity(0.9))
-            .hover(|s| s.bg(white_alpha(0.08)).text_color(Theme::dark().text))
+        let fade_key = fade_key.into();
+        let mut row = row
+            .text_color(motion::hover_blend(
+                &fade_key,
+                theme.text.opacity(0.9),
+                Theme::dark().text,
+            ))
+            .bg(motion::hover_blend(
+                &fade_key,
+                gpui::transparent_black(),
+                white_alpha(0.08),
+            ));
+        // Imperative form — the caller's `.id(...)` makes the element stateful
+        // (hover listeners need element state, `.on_hover` needs `Stateful`).
+        row.interactivity().on_hover(motion::hover_listener(fade_key));
+        row
     }
 }
 
@@ -279,8 +296,13 @@ pub fn menu_row(theme: &Theme, active: bool) -> gpui::Div {
 /// carries the full `bg-white/10` wash, the keyboard cursor the lighter
 /// `bg-white/[0.08]` (comet's `data-[highlighted]` styling) — two selected-
 /// looking rows never appear at once.
-pub fn menu_row_nav(theme: &Theme, selected: bool, highlighted: bool) -> gpui::Div {
-    let row = menu_row(theme, selected);
+pub fn menu_row_nav(
+    theme: &Theme,
+    selected: bool,
+    highlighted: bool,
+    fade_key: impl Into<SharedString>,
+) -> gpui::Div {
+    let row = menu_row(theme, selected, fade_key);
     if !selected && highlighted {
         row.bg(white_alpha(0.08)).text_color(theme.text)
     } else {
@@ -429,17 +451,30 @@ pub fn dialog_field(input: AnyElement) -> gpui::Div {
         .child(input)
 }
 
-/// Ghost button (`btnGhost`): quiet text, hover wash. Caller adds id + click.
-pub fn btn_ghost(theme: &Theme, label: &str) -> gpui::Div {
-    div()
+/// Ghost button (`btnGhost`): quiet text, hover wash fading over
+/// `transition-colors` (comet dialogs.tsx). Caller adds id + click; `fade_key`
+/// as in [`menu_row`].
+pub fn btn_ghost(theme: &Theme, label: &str, fade_key: impl Into<SharedString>) -> gpui::Div {
+    let fade_key = fade_key.into();
+    let mut btn = div()
         .px(px(12.0))
         .py(px(6.0))
         .rounded(px(8.0))
         .text_size(px(13.0))
-        .text_color(theme.text_muted)
+        .text_color(motion::hover_blend(
+            &fade_key,
+            theme.text_muted,
+            Theme::dark().text,
+        ))
+        .bg(motion::hover_blend(
+            &fade_key,
+            gpui::transparent_black(),
+            white_alpha(0.06),
+        ))
         .cursor_pointer()
-        .hover(|s| s.bg(white_alpha(0.06)).text_color(Theme::dark().text))
-        .child(SharedString::from(label.to_string()))
+        .child(SharedString::from(label.to_string()));
+    btn.interactivity().on_hover(motion::hover_listener(fade_key));
+    btn
 }
 
 /// Primary button (`btnPrimary`): white fill, near-black text.

@@ -811,7 +811,7 @@ impl AccountsPage {
                             .justify_end()
                             .gap(px(8.0))
                             .child(
-                                popover::btn_ghost(&theme, "Cancel")
+                                popover::btn_ghost(&theme, "Cancel", "login-cancel")
                                     .id("login-cancel")
                                     .on_click(
                                         cx.listener(|this, _, _, cx| this.cancel_login(cx)),
@@ -889,6 +889,7 @@ impl AccountsPage {
                                 popover::btn_ghost(
                                     &theme,
                                     if has_error { "Close" } else { "Cancel" },
+                                    "login-cancel",
                                 )
                                 .id("login-cancel")
                                 .on_click(cx.listener(|this, _, _, cx| this.cancel_login(cx))),

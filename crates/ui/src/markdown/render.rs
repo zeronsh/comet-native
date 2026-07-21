@@ -790,8 +790,9 @@ fn render_code_block(
         let copied = copy.copied_ix == Some(ix);
         let code_text: SharedString = code.to_string().into();
         let handler = copy.handler.clone();
+        let fade_key = format!("{}-copy{ix}", opts.row_key);
         div()
-            .id(SharedString::from(format!("{}-copy{ix}", opts.row_key)))
+            .id(SharedString::from(fade_key.clone()))
             .absolute()
             .top(px(3.0))
             .right(px(5.0))
@@ -803,7 +804,14 @@ fn render_code_block(
             .items_center()
             .gap(px(4.0))
             .cursor_pointer()
-            .hover(|s| s.bg(crate::theme::white_alpha(0.08)))
+            // Ghost-button hover wash fades over transition-colors like every
+            // other interactive chrome (crate::motion hover fades).
+            .bg(crate::motion::hover_blend(
+                &fade_key,
+                gpui::transparent_black(),
+                crate::theme::white_alpha(0.08),
+            ))
+            .on_hover(crate::motion::hover_listener(fade_key))
             .text_size(px(10.5))
             .text_color(theme.text_muted)
             .on_click(move |_, window, cx| handler(ix, code_text.clone(), window, cx))

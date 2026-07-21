@@ -2052,14 +2052,17 @@ impl Composer {
                 } else {
                     gpui::transparent_black()
                 })
+                // comet question-panel.tsx option rows: `transition-colors`.
                 .bg(if picked {
                     crate::theme::white_alpha(0.09)
                 } else {
-                    crate::theme::white_alpha(0.025)
+                    motion::hover_blend(
+                        &format!("wizard-option-{ix}"),
+                        crate::theme::white_alpha(0.025),
+                        crate::theme::white_alpha(0.06),
+                    )
                 })
-                .when(!picked, |el| {
-                    el.hover(|s| s.bg(crate::theme::white_alpha(0.06)))
-                })
+                .on_hover(motion::hover_listener(format!("wizard-option-{ix}")))
                 .cursor_pointer()
                 .on_click(cx.listener(move |this, _, _, cx| this.wizard_select(ix, cx)))
                 .child(
@@ -2194,7 +2197,7 @@ impl Composer {
                     .pb(px(16.0))
                     .pt(px(4.0))
                     .child(if page > 0 {
-                        crate::popover::btn_ghost(&theme, "Back")
+                        crate::popover::btn_ghost(&theme, "Back", "wizard-back")
                             .id("wizard-back")
                             .on_click(cx.listener(|this, _, _, cx| this.wizard_back(cx)))
                             .into_any_element()
@@ -2481,7 +2484,13 @@ impl Render for Composer {
             .justify_center()
             .rounded_full()
             .cursor_pointer()
-            .hover(|s| s.bg(crate::theme::white_alpha(0.10)))
+            // comet composer-actions.tsx attach: `transition-colors`.
+            .bg(motion::hover_blend(
+                "composer-attach",
+                gpui::transparent_black(),
+                crate::theme::white_alpha(0.10),
+            ))
+            .on_hover(motion::hover_listener("composer-attach"))
             .child(
                 crate::icons::icon(crate::icons::PAPERCLIP)
                     .size(px(16.0))

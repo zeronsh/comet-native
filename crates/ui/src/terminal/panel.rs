@@ -874,11 +874,16 @@ impl TerminalPanel {
                             .pl(px(8.0))
                             .pr(px(4.0))
                             .rounded(px(8.0))
-                            .bg(bg)
+                            // comet terminal-panel.tsx tab: `transition-colors`.
+                            .bg(motion::hover_blend(
+                                &format!("term-tab-{key}"),
+                                bg,
+                                theme.element_hover,
+                            ))
+                            .on_hover(motion::hover_listener(format!("term-tab-{key}")))
                             .text_size(px(12.0))
                             .text_color(text_color)
                             .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.select_tab(&chat_select, ix, cx);
                             }))
@@ -942,7 +947,13 @@ impl TerminalPanel {
                     .justify_center()
                     .rounded(px(8.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
+                    // comet terminal-panel.tsx icon buttons: `transition-colors`.
+                    .bg(motion::hover_blend(
+                        "term-new-tab",
+                        gpui::transparent_black(),
+                        crate::theme::white_alpha(0.05),
+                    ))
+                    .on_hover(motion::hover_listener("term-new-tab"))
                     .on_click(cx.listener(|this, _, _, cx| {
                         if let Some(chat) = this.selected_chat(cx) {
                             this.open_tab(chat, cx);
@@ -966,7 +977,12 @@ impl TerminalPanel {
                     .justify_center()
                     .rounded(px(8.0))
                     .cursor_pointer()
-                    .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
+                    .bg(motion::hover_blend(
+                        "term-collapse",
+                        gpui::transparent_black(),
+                        crate::theme::white_alpha(0.05),
+                    ))
+                    .on_hover(motion::hover_listener("term-collapse"))
                     .on_click(|_, window, cx| {
                         window.dispatch_action(Box::new(ToggleTerminal), cx);
                     })

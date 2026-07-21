@@ -159,7 +159,7 @@ impl DevicesPage {
                     .justify_end()
                     .gap(px(8.0))
                     .child(
-                        popover::btn_ghost(&theme, "Cancel")
+                        popover::btn_ghost(&theme, "Cancel", "rename-cancel")
                             .id("rename-cancel")
                             .on_click(cx.listener(|this, _, _, cx| {
                                 this.rename = None;
