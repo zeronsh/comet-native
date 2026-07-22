@@ -9,6 +9,7 @@
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, parent_path};
 use comet_proto::{ChatIndicator, Device, FolderListing, Space};
+use gpui::FocusHandle;
 
 /// The add-space palette (a command-K-style surface): device tabs across the
 /// top, a search input that filters the folder list, keyboard-first
@@ -30,6 +31,10 @@ pub(super) struct AddSpaceFlow {
     active: usize,
     submit_busy: bool,
     error: Option<SharedString>,
+    /// Tracked on the card (`track_focus`) — puts the card on the keyboard
+    /// dispatch path so ↑↓/⌫/esc reach `add_space_key` while the search input
+    /// holds focus (the structure every working picker uses).
+    focus: FocusHandle,
     focus_pending: bool,
     load_task: Option<Task<()>>,
     submit_task: Option<Task<()>>,
@@ -185,7 +190,7 @@ impl Shell {
                         crate::theme::white_alpha(0.06),
                     ))
                     .on_hover(motion::hover_listener("add-space"))
-                    .on_click(cx.listener(|this, _, window, cx| this.open_add_space(window, cx)))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx)))
                     .child(
                         icon(icons::PLUS)
                             .size(px(14.0))
@@ -220,7 +225,7 @@ impl Shell {
                     ))
                     .on_hover(motion::hover_listener("add-space-ghost"))
                     .cursor_pointer()
-                    .on_click(cx.listener(|this, _, window, cx| this.open_add_space(window, cx)))
+                    .on_click(cx.listener(|this, _, _, cx| this.open_add_space(cx)))
                     .child(
                         icon(icons::FOLDER)
                             .size(px(16.0))
@@ -396,7 +401,7 @@ impl Shell {
 
     // ---- add-space flow (the ⌘K-style palette) ----
 
-    pub(super) fn open_add_space(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn open_add_space(&mut self, cx: &mut Context<Self>) {
         let devices: Vec<Device> = self.state.read(cx).devices.clone();
         let local = self.state.read(cx).local_device_id.clone();
         // Land on this device's tab (else the first registered device).
@@ -405,7 +410,9 @@ impl Shell {
             .find(|d| local.as_deref() == Some(d.id.as_str()))
             .or_else(|| devices.first())
             .cloned();
-        let search = cx.new(|cx| ComposerInput::new("Search folders…", cx));
+        // "PaletteSearch" context: navigation keys stay unbound so ↑↓/←/→/⏎
+        // bubble to the palette frame instead of moving the text caret.
+        let search = cx.new(|cx| ComposerInput::with_context("Search folders…", "PaletteSearch", cx));
         let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| match event {
             ComposerInputEvent::Edited => {
                 if let Some(flow) = this.add_space.as_mut() {
@@ -413,8 +420,9 @@ impl Shell {
                 }
                 cx.notify();
             }
-            // Enter (in the input) descends into the highlighted folder.
-            ComposerInputEvent::Submitted => this.add_space_open_active(cx),
+            // Enter SELECTS the current folder — it mirrors the footer's
+            // "Enter ↵" action. Folder navigation rides ←/→.
+            ComposerInputEvent::Submitted => this.submit_add_space(cx),
             _ => {}
         });
         let has_device = device.is_some();
@@ -427,6 +435,7 @@ impl Shell {
             active: 0,
             submit_busy: false,
             error: None,
+            focus: cx.focus_handle(),
             focus_pending: true,
             load_task: None,
             submit_task: None,
@@ -652,10 +661,40 @@ impl Shell {
         cx.notify();
     }
 
-    /// Palette keys (bubbling from the focused search input): ↑↓ move, ⏎ open
-    /// (frame-level; the input's own Enter arrives as Submitted), ⌘⏎ use this
-    /// folder, ⌫ (empty query) up a level, esc close.
+    /// Go up to the parent folder (←, and ⌫ on an empty query).
+    fn add_space_go_up(&mut self, cx: &mut Context<Self>) {
+        let parent = self
+            .add_space
+            .as_ref()
+            .and_then(|f| f.browser.ready())
+            .and_then(|l| parent_path(&l.path));
+        if let Some(parent) = parent {
+            if let Some(flow) = self.add_space.as_mut() {
+                flow.browser_repo = false; // unknown at the parent
+            }
+            self.load_space_folders(Some(parent), cx);
+        }
+    }
+
+    /// Palette keys (bubbling from the focused search input) — every footer
+    /// legend maps to a REAL key: ↑↓ navigate, → open the highlighted folder,
+    /// ← up a level, ⏎ select the current folder (the input's own Enter
+    /// arrives as Submitted → same submit), ⌫ (empty query) also goes up,
+    /// esc closes.
     fn add_space_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
+        // ←/→ act on the FOLDERS, not the text cursor — the palette is a
+        // navigator first; queries are short and edited with ⌫.
+        match event.keystroke.key.as_str() {
+            "right" => {
+                self.add_space_open_active(cx);
+                return;
+            }
+            "left" => {
+                self.add_space_go_up(cx);
+                return;
+            }
+            _ => {}
+        }
         let key = popover::classify_key(
             event.keystroke.key.as_str(),
             event.keystroke.modifiers.platform,
@@ -675,23 +714,14 @@ impl Shell {
                     cx.notify();
                 }
             }
-            popover::MenuKey::Enter => self.add_space_open_active(cx),
-            popover::MenuKey::ModEnter => self.submit_add_space(cx),
+            popover::MenuKey::Enter | popover::MenuKey::ModEnter => self.submit_add_space(cx),
             popover::MenuKey::Backspace => {
                 let empty = self
                     .add_space
                     .as_ref()
                     .is_some_and(|f| f.search.read(cx).is_empty());
-                let parent = self
-                    .add_space
-                    .as_ref()
-                    .and_then(|f| f.browser.ready())
-                    .and_then(|l| parent_path(&l.path));
-                if empty && let Some(parent) = parent {
-                    if let Some(flow) = self.add_space.as_mut() {
-                        flow.browser_repo = false; // unknown at the parent
-                    }
-                    self.load_space_folders(Some(parent), cx);
+                if empty {
+                    self.add_space_go_up(cx);
                 }
             }
             popover::MenuKey::Other => {}
@@ -714,7 +744,7 @@ impl Shell {
                 window.focus(&handle, cx);
             }
         }
-        let (device, search, error, submit_busy, active, loading, load_error, listing) = {
+        let (device, search, error, submit_busy, active, loading, load_error, listing, focus) = {
             let flow = self.add_space.as_ref()?;
             (
                 flow.device.clone(),
@@ -725,6 +755,7 @@ impl Shell {
                 matches!(flow.browser, Loadable::Loading | Loadable::Idle),
                 flow.browser.error().map(str::to_string),
                 flow.browser.ready().cloned(),
+                flow.focus.clone(),
             )
         };
         let devices = self.state.read(cx).devices.clone();
@@ -733,23 +764,21 @@ impl Shell {
         let query_empty = search.read(cx).is_empty();
         let hairline = crate::theme::white_alpha(0.06);
 
-        // ── device tabs (browse any device's filesystem in place) ──────────
+        // ── device tabs: EXACTLY the session/terminal tab recipe (h-28
+        //    rounded-8 washes in an h-40 row), no platform glyph — the row
+        //    reads as one more tab strip, which it is.
         let tabs = div()
+            .h(px(40.0))
+            .flex_none()
             .flex()
             .flex_row()
             .items_center()
-            .flex_wrap()
             .gap(px(4.0))
-            .px(px(12.0))
-            .pt(px(12.0))
-            .pb(px(10.0))
+            .pl(px(8.0))
+            .pr(px(6.0))
             .children(devices.into_iter().enumerate().map(|(ix, dev)| {
                 let is_active = device.as_ref().is_some_and(|d| d.id == dev.id);
                 let is_local = local_id.as_deref() == Some(dev.id.as_str());
-                let glyph = match dev.platform.as_str() {
-                    "macos" | "darwin" => icons::LAPTOP,
-                    _ => icons::MONITOR,
-                };
                 let name: SharedString = dev.name.clone().into();
                 let pick = dev.clone();
                 div()
@@ -762,28 +791,22 @@ impl Shell {
                     .items_center()
                     .gap(px(6.0))
                     .text_size(px(12.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
                     .cursor_pointer()
                     .when(is_active, |el| {
-                        el.bg(crate::theme::white_alpha(0.10)).text_color(theme.text)
+                        el.bg(crate::theme::white_alpha(0.08)).text_color(theme.text)
                     })
                     .when(!is_active, |el| {
-                        el.text_color(theme.text_muted.opacity(0.7))
-                            .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
+                        el.text_color(theme.text_muted.opacity(0.6))
+                            .hover(|s| s.bg(theme.element_hover))
                     })
                     .on_click(cx.listener(move |this, _, _, cx| {
                         this.add_space_pick_device(pick.clone(), cx);
-                    }))
-                    .child(icon(glyph).size(px(14.0)).text_color(if is_active {
-                        theme.text_muted
-                    } else {
-                        theme.text_muted.opacity(0.5)
                     }))
                     .child(name)
                     .when(is_local, |el| {
                         el.child(
                             div()
-                                .size(px(5.0))
+                                .size(px(4.0))
                                 .rounded_full()
                                 .flex_none()
                                 .bg(crate::theme::oklch(0.765, 0.177, 163.223).opacity(0.9)),
@@ -816,7 +839,9 @@ impl Shell {
                     .child(search.clone().into_any_element()),
             );
 
-        // ── breadcrumbs ─────────────────────────────────────────────────────
+        // ── breadcrumbs: a quiet mono path line, `/` separators, clickable
+        //    ancestors. The root chip is dropped — the leading separator IS
+        //    the root (a "/" chip next to a "/" separator read as "//").
         let crumbs: AnyElement = match &listing {
             Some(listing) => {
                 let segments = breadcrumbs(&listing.path);
@@ -826,57 +851,64 @@ impl Shell {
                     .flex_row()
                     .flex_wrap()
                     .items_center()
-                    .gap(px(2.0))
-                    .px(px(14.0))
-                    .pt(px(10.0))
+                    .px(px(16.0))
+                    .pt(px(8.0))
                     .pb(px(2.0))
                     .text_size(px(11.0))
-                    .children(segments.into_iter().enumerate().map(|(ix, (label, full))| {
-                        let is_last = ix == last;
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(2.0))
-                            .when(ix > 0, |el| {
-                                el.child(
-                                    div()
-                                        .text_color(theme.text_faint)
-                                        .child(SharedString::from("/")),
-                                )
-                            })
-                            .child({
-                                let crumb = div()
-                                    .id(("add-space-crumb", ix))
-                                    .px(px(4.0))
-                                    .py(px(1.0))
-                                    .rounded(px(5.0))
-                                    .text_color(if is_last {
-                                        theme.text.opacity(0.85)
-                                    } else {
-                                        theme.text_muted.opacity(0.6)
-                                    })
-                                    .child(SharedString::from(if ix == 0 {
-                                        "/".to_string()
-                                    } else {
-                                        label
-                                    }));
-                                if is_last {
-                                    crumb.into_any_element()
-                                } else {
-                                    crumb
-                                        .cursor_pointer()
-                                        .hover(|s| s.bg(crate::theme::white_alpha(0.06)))
-                                        .on_click(cx.listener(move |this, _, _, cx| {
-                                            if let Some(flow) = this.add_space.as_mut() {
-                                                flow.browser_repo = false;
+                    .font_family(theme.font_mono.clone())
+                    .children(
+                        segments
+                            .into_iter()
+                            .enumerate()
+                            .skip(if last == 0 { 0 } else { 1 })
+                            .map(|(ix, (label, full))| {
+                                let is_last = ix == last;
+                                div()
+                                    .flex()
+                                    .flex_row()
+                                    .items_center()
+                                    .child(
+                                        div()
+                                            .text_color(theme.text_faint.opacity(0.7))
+                                            .child(SharedString::from("/")),
+                                    )
+                                    .when(ix > 0, |el| {
+                                        el.child({
+                                            let crumb = div()
+                                                .id(("add-space-crumb", ix))
+                                                .px(px(3.0))
+                                                .rounded(px(4.0))
+                                                .text_color(if is_last {
+                                                    theme.text.opacity(0.8)
+                                                } else {
+                                                    theme.text_muted.opacity(0.55)
+                                                })
+                                                .child(SharedString::from(label));
+                                            if is_last {
+                                                crumb.into_any_element()
+                                            } else {
+                                                crumb
+                                                    .cursor_pointer()
+                                                    .hover(|s| s.text_color(Theme::dark().text))
+                                                    .on_click(cx.listener(
+                                                        move |this, _, _, cx| {
+                                                            if let Some(flow) =
+                                                                this.add_space.as_mut()
+                                                            {
+                                                                flow.browser_repo = false;
+                                                            }
+                                                            this.load_space_folders(
+                                                                Some(full.clone()),
+                                                                cx,
+                                                            );
+                                                        },
+                                                    ))
+                                                    .into_any_element()
                                             }
-                                            this.load_space_folders(Some(full.clone()), cx);
-                                        }))
-                                        .into_any_element()
-                                }
-                            })
-                    }))
+                                        })
+                                    })
+                            }),
+                    )
                     .into_any_element()
             }
             None => div().pt(px(6.0)).into_any_element(),
@@ -971,46 +1003,49 @@ impl Shell {
                 .into_any_element()
         };
 
-        // ── footer: kbd hints + the primary action ──────────────────────────
-        let hint = |chip: &str, label: &str| {
+        // ── footer: icon key-caps (Solar set, same pack as the rest of the
+        //    app) + tiny verbs, one compact 22px row shared with Select.
+        let hint = |icon_path: &'static str, label: &'static str| {
             div()
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(4.0))
-                .child(popover::kbd_hint(&theme, chip))
+                .gap(px(5.0))
                 .child(
                     div()
-                        .text_size(px(11.0))
-                        .text_color(theme.text_muted.opacity(0.55))
-                        .child(SharedString::from(label.to_string())),
+                        .h(px(22.0))
+                        .px(px(5.0))
+                        .rounded(px(5.0))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .bg(crate::theme::white_alpha(0.05))
+                        .child(
+                            icon(icon_path)
+                                .size(px(12.5))
+                                .text_color(theme.text_muted.opacity(0.7)),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_size(px(10.5))
+                        .text_color(theme.text_muted.opacity(0.45))
+                        .child(SharedString::from(label)),
                 )
         };
-        let pick_label: SharedString = listing
-            .as_ref()
-            .map(|l| {
-                let name = std::path::Path::new(l.path.trim_end_matches('/'))
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .filter(|n| !n.is_empty())
-                    .unwrap_or_else(|| l.path.clone());
-                format!("Use “{name}”").into()
-            })
-            .unwrap_or_else(|| "Use this folder".into());
         let footer = div()
             .flex_none()
             .border_t_1()
             .border_color(hairline)
             .px(px(12.0))
-            .py(px(10.0))
+            .py(px(8.0))
             .flex()
             .flex_row()
             .items_center()
             .gap(px(12.0))
-            .child(hint("↑↓", "navigate"))
-            .child(hint("⏎", "open"))
-            .child(hint("⌫", "up"))
-            .child(hint("esc", "close"))
+            .child(hint(icons::SORT_VERTICAL, "Navigate"))
+            .child(hint(icons::ARROW_LEFT, "Up"))
+            .child(hint(icons::ARROW_RIGHT, "Open"))
             .when_some(error, |el, message| {
                 el.child(
                     div()
@@ -1023,10 +1058,23 @@ impl Shell {
             })
             .child(div().flex_1())
             .child(
-                popover::btn_primary(&theme, if submit_busy { "Adding…" } else { &pick_label })
+                popover::btn_primary(&theme, if submit_busy { "Adding…" } else { "Enter" })
                     .id("add-space-submit")
+                    .h(px(22.0))
+                    .px(px(9.0))
+                    .py(px(0.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(5.0))
+                    .text_size(px(12.0))
                     .when(submit_busy || listing.is_none(), |el| el.opacity(0.6))
-                    .on_click(cx.listener(|this, _, _, cx| this.submit_add_space(cx))),
+                    .on_click(cx.listener(|this, _, _, cx| this.submit_add_space(cx)))
+                    .child(
+                        icon(icons::RETURN)
+                            .size(px(12.0))
+                            .text_color(crate::theme::grey(0x0e).opacity(0.8)),
+                    ),
             );
 
         let card = div()
@@ -1041,6 +1089,10 @@ impl Shell {
             .flex()
             .flex_col()
             .text_color(theme.text)
+            // On the keyboard dispatch path (see `AddSpaceFlow::focus`) — the
+            // pickers' proven structure for frame-level keys with a focused
+            // child input.
+            .track_focus(&focus)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 this.add_space_key(event, cx)
             }))

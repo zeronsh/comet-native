@@ -66,6 +66,9 @@ icon_assets![
     (ARROW_LEFT, "arrow-left"),
     (ARROW_RIGHT, "arrow-right"),
     (ARROW_UP, "arrow-up"),
+    // Hand-drawn return/enter arrow in the Solar Linear style (like the
+    // terminal/plus/close ports) — the set has no return glyph.
+    (RETURN, "return"),
     (ALT_ARROW_DOWN, "alt-arrow-down"),
     (ALT_ARROW_LEFT, "alt-arrow-left"),
     (ALT_ARROW_RIGHT, "alt-arrow-right"),

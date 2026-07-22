@@ -567,6 +567,27 @@ pub fn init(cx: &mut App) {
         bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, ctx));
         bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, ctx));
     }
+    // Palette-search context: TEXT-EDITING keys only. gpui dispatches matched
+    // keybindings BEFORE raw key listeners (window.rs `dispatch_key_event`),
+    // so anything bound here can never reach a palette's `on_key_down` —
+    // navigation keys (up/down/left/right/enter) are deliberately unbound and
+    // bubble to the palette frame instead.
+    let palette = Some("PaletteSearch");
+    let mut palette_bindings = vec![
+        KeyBinding::new("backspace", Backspace, palette),
+        KeyBinding::new("delete", Delete, palette),
+        KeyBinding::new("home", Home, palette),
+        KeyBinding::new("end", End, palette),
+        KeyBinding::new("shift-left", SelectLeft, palette),
+        KeyBinding::new("shift-right", SelectRight, palette),
+    ];
+    for prefix in ["cmd", "ctrl"] {
+        palette_bindings.push(KeyBinding::new(&format!("{prefix}-a"), SelectAll, palette));
+        palette_bindings.push(KeyBinding::new(&format!("{prefix}-c"), Copy, palette));
+        palette_bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, palette));
+        palette_bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, palette));
+    }
+    cx.bind_keys(palette_bindings);
     cx.bind_keys(bindings);
 }
 
@@ -585,6 +606,9 @@ pub enum ComposerInputEvent {
 /// Multiline input entity: content + selection + IME marked text + measured
 /// layout (wrapped lines) for mouse mapping and auto-grow.
 pub struct ComposerInput {
+    /// Key context for the binding map ("Composer", or "PaletteSearch" for
+    /// palette filters whose navigation keys must bubble).
+    key_context: &'static str,
     focus_handle: FocusHandle,
     content: String,
     placeholder: SharedString,
@@ -616,7 +640,19 @@ pub struct ComposerInput {
 
 impl ComposerInput {
     pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
+        Self::with_context(placeholder, "Composer", cx)
+    }
+
+    /// An input in a custom KEY context — palettes use `"PaletteSearch"`,
+    /// whose keymap binds only text-editing keys so navigation keys bubble to
+    /// the surrounding frame (see `init`).
+    pub fn with_context(
+        placeholder: impl Into<SharedString>,
+        key_context: &'static str,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
+            key_context,
             focus_handle: cx.focus_handle(),
             content: String::new(),
             placeholder: placeholder.into(),
@@ -1483,7 +1519,7 @@ impl Render for ComposerInput {
             theme.text
         };
         div()
-            .key_context("Composer")
+            .key_context(self.key_context)
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::backspace))

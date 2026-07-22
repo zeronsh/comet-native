@@ -657,6 +657,13 @@ impl Shell {
     // ---- splash ----
 
     fn on_state_changed(&mut self, state: &Entity<AppState>, cx: &mut Context<Self>) {
+        // Capture knob: the add-space palette needs only the device registry.
+        if self.debug_dialog.as_deref() == Some("add-space")
+            && !state.read(cx).devices.is_empty()
+        {
+            self.debug_dialog = None;
+            self.open_add_space(cx);
+        }
         // Capture knob: pop the requested dialog once chats have landed.
         if let Some(which) = self.debug_dialog.clone()
             && let Some(first) = state.read(cx).chats.first().map(|c| c.id.clone())
@@ -2355,8 +2362,8 @@ impl Shell {
                             popover::btn_primary(&theme_owned, "Add a space")
                                 .id("onboarding-add-space")
                                 .mt(px(20.0))
-                                .on_click(cx.listener(|this, _, window, cx| {
-                                    this.open_add_space(window, cx)
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.open_add_space(cx)
                                 })),
                         ),
                 ))
