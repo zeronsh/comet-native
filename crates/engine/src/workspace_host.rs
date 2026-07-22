@@ -74,10 +74,13 @@ struct WorkspaceHostInner {
     /// Called with a device id whenever its presence heartbeat proves it alive —
     /// wired to `LinkCache::reset_cooldown` so a peer that comes back is dialed
     /// immediately instead of waiting out the failure backoff.
-    peer_alive: Mutex<Option<Arc<dyn Fn(&str) + Send + Sync>>>,
+    peer_alive: Mutex<Option<PeerAliveHook>>,
     /// Doc subscription (drop = unsubscribe) — bumps the change watch on every commit.
     _sub: loro::Subscription,
 }
+
+/// "This peer is alive" callback (device id) — see `WorkspaceHost::set_peer_alive_hook`.
+pub type PeerAliveHook = Arc<dyn Fn(&str) + Send + Sync>;
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
@@ -206,7 +209,7 @@ impl WorkspaceHost {
 
     /// Wire the "peer is alive" signal (fresh presence heartbeat) to a callback —
     /// the engine points this at `LinkCache::reset_cooldown`.
-    pub fn set_peer_alive_hook(&self, hook: Arc<dyn Fn(&str) + Send + Sync>) {
+    pub fn set_peer_alive_hook(&self, hook: PeerAliveHook) {
         *lock(&self.inner.peer_alive) = Some(hook);
     }
 

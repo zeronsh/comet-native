@@ -361,15 +361,24 @@ impl Engine {
             && auth.access_token().await.is_some();
         let edge = online.then(|| EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())));
 
-        // Workspace identity: the session's org claim (WorkOS) beats the
-        // configured one; the user id comes from the signed-in session (dev
-        // mode: the bearer's `user@org` prefix). Everything downstream — the
-        // per-user `ws3/{org}/{user}` workspace room and the org/user-scoped
-        // local store — keys off this pair.
+        // Workspace identity: the session's org claim (WorkOS) beats the dev
+        // bearer's `user@org` suffix beats the configured org; the user id
+        // comes from the signed-in session (dev mode: the bearer's prefix,
+        // mirroring the edge's parsing — the edge derives BOTH from the token,
+        // so the token must win over env or the room join 403s). Everything
+        // downstream — the per-user `ws3/{org}/{user}` workspace room and the
+        // org/user-scoped local store — keys off this pair.
+        let dev_token_org = config
+            .edge_token
+            .as_deref()
+            .and_then(|t| t.split_once('@'))
+            .map(|(_, org)| org.to_string())
+            .filter(|s| !s.is_empty());
         let org_id = auth
             .state()
             .org_id()
             .map(str::to_string)
+            .or(dev_token_org)
             .or(config.org_id.clone())
             .unwrap_or_else(|| env_or("COMET_ORG_ID", DEFAULT_ORG_ID));
         let user_id = auth
@@ -425,6 +434,7 @@ async fn wait_for_sign_in(auth: &Auth) {
     use std::io::IsTerminal;
     let mut state_rx = auth.watch_state();
     let mut stdin_reader: Option<tokio::task::JoinHandle<()>> = None;
+    let mut org_reader: Option<tokio::task::JoinHandle<()>> = None;
     loop {
         let state = state_rx.borrow().clone();
         match state {
@@ -434,10 +444,20 @@ async fn wait_for_sign_in(auth: &Auth) {
                 break;
             }
             AuthState::NeedsOrganization { user } => {
-                println!(
-                    "Signed in as {} — create or select a workspace from the Comet UI to continue.",
-                    user.email
-                );
+                if org_reader.is_none() {
+                    if std::io::stdin().is_terminal() {
+                        // Workspace onboarding on the TTY (old comet's
+                        // `backend login` flow): create if none, auto-join a
+                        // single membership, numbered picker otherwise.
+                        println!("Signed in as {}.", user.email);
+                        org_reader = Some(tokio::spawn(run_org_onboarding(auth.clone())));
+                    } else {
+                        println!(
+                            "Signed in as {} — create or select a workspace from the Comet UI to continue.",
+                            user.email
+                        );
+                    }
+                }
             }
             AuthState::SignedOut => {
                 if stdin_reader.is_none() {
@@ -448,14 +468,9 @@ async fn wait_for_sign_in(auth: &Auth) {
                         let auth = auth.clone();
                         stdin_reader = Some(tokio::spawn(async move {
                             loop {
-                                let line = tokio::task::spawn_blocking(|| {
-                                    let mut line = String::new();
-                                    std::io::stdin().read_line(&mut line).ok().map(|_| line)
-                                })
-                                .await
-                                .ok()
-                                .flatten();
-                                let Some(line) = line else { return };
+                                let Some(line) = read_stdin_line().await else {
+                                    return;
+                                };
                                 let pasted = line.trim();
                                 if pasted.is_empty() {
                                     continue;
@@ -476,6 +491,90 @@ async fn wait_for_sign_in(auth: &Auth) {
     }
     if let Some(reader) = stdin_reader {
         reader.abort();
+    }
+    if let Some(reader) = org_reader {
+        reader.abort();
+    }
+}
+
+/// One line from stdin (blocking read off the runtime). `None` = stdin closed.
+async fn read_stdin_line() -> Option<String> {
+    tokio::task::spawn_blocking(|| {
+        let mut line = String::new();
+        match std::io::stdin().read_line(&mut line) {
+            Ok(0) | Err(_) => None, // EOF / error
+            Ok(_) => Some(line),
+        }
+    })
+    .await
+    .ok()
+    .flatten()
+}
+
+/// TTY workspace onboarding for an org-less session (ports old comet's
+/// `backend login` flow): no memberships → prompt a name and create; exactly
+/// one → auto-join; several → numbered picker. Success flips the auth state to
+/// `SignedIn`, which ends [`wait_for_sign_in`]'s wait (and aborts this task).
+async fn run_org_onboarding(auth: Auth) {
+    let orgs = match auth.list_orgs().await {
+        Ok(orgs) => orgs,
+        Err(err) => {
+            println!(
+                "Could not list workspaces ({err}) — create or select one from the Comet UI to continue."
+            );
+            return;
+        }
+    };
+    match orgs.len() {
+        0 => {
+            println!("No workspaces yet — name your new workspace and press enter:");
+            loop {
+                let Some(line) = read_stdin_line().await else {
+                    return;
+                };
+                let name = line.trim();
+                if name.is_empty() {
+                    continue;
+                }
+                match auth.create_org(name).await {
+                    Ok(()) => return,
+                    Err(err) => println!("Creating workspace failed: {err}"),
+                }
+            }
+        }
+        1 => {
+            let only = &orgs[0];
+            println!("Joining workspace \"{}\"…", only.name);
+            if let Err(err) = auth.select_org(&only.organization_id).await {
+                println!("Joining workspace failed: {err}");
+            }
+        }
+        _ => {
+            println!("\nYour workspaces:");
+            for (index, org) in orgs.iter().enumerate() {
+                println!("  {}. {}", index + 1, org.name);
+            }
+            println!("Pick a workspace [1-{}]:", orgs.len());
+            loop {
+                let Some(line) = read_stdin_line().await else {
+                    return;
+                };
+                let choice = line
+                    .trim()
+                    .parse::<usize>()
+                    .ok()
+                    .and_then(|n| n.checked_sub(1))
+                    .and_then(|index| orgs.get(index));
+                let Some(org) = choice else {
+                    println!("Pick a workspace [1-{}]:", orgs.len());
+                    continue;
+                };
+                match auth.select_org(&org.organization_id).await {
+                    Ok(()) => return,
+                    Err(err) => println!("Joining workspace failed: {err}"),
+                }
+            }
+        }
     }
 }
 
