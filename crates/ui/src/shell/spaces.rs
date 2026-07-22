@@ -47,16 +47,19 @@ pub(super) struct RenameSpaceDialog {
 /// Dot color for a chat's display status (tab dots + Sessions rows).
 pub(super) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hsla {
     match status {
+        // Pink, not amber — the harsh yellow read as a warning; running is
+        // routine (user request).
         ChatIndicator::Working => {
-            crate::theme::oklch(0.879, 0.169, 91.605).opacity(0.8) // amber-300
+            crate::theme::oklch(0.718, 0.202, 349.761).opacity(0.85) // pink-400
         }
-        // Blue, not amber: "asking you a question" must read differently from
-        // "busy working" at a glance (user request).
+        // Blue: "asking you a question" must read differently from "busy
+        // working" at a glance.
         ChatIndicator::AwaitingInput => theme.accent.opacity(0.9),
         ChatIndicator::Errored => theme.danger,
-        // Finished-but-unseen: a solid bright dot, distinct from the amber
-        // live states and the faint idle rail.
-        ChatIndicator::Completed => theme.text.opacity(0.9),
+        // Green: finished-but-unseen reads as "ready for you".
+        ChatIndicator::Completed => {
+            crate::theme::oklch(0.765, 0.177, 163.223).opacity(0.9) // emerald-400
+        }
         ChatIndicator::Idle => crate::theme::white_alpha(0.14),
     }
 }

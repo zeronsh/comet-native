@@ -437,6 +437,9 @@ pub struct Shell {
     tabs_scroll: gpui::ScrollHandle,
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
+    /// Last seen session status per chat — the chime trigger compares against
+    /// it (a row's FIRST appearance never chimes, so boot stays silent).
+    sound_prev: std::collections::HashMap<String, comet_proto::SessionStatus>,
     user_menu_open: bool,
     /// Outside-click dismissal instant — suppresses the trigger click that
     /// follows the same mouse-down from instantly reopening the menu.
@@ -611,6 +614,7 @@ impl Shell {
             tab_drag: None,
             tabs_scroll: gpui::ScrollHandle::new(),
             space_boot_applied: false,
+            sound_prev: std::collections::HashMap::new(),
             user_menu_open: false,
             user_menu_dismissed_at: None,
             sidebar_notice: None,
@@ -663,6 +667,28 @@ impl Shell {
                     self.delete_confirm = Some(first);
                 }
                 _ => {}
+            }
+        }
+        // Session chimes (herdr semantics, `sound::sound_for_transition`): a
+        // question rings whenever a session flips to AwaitingInput, a
+        // completion rings on the Working→Idle edge — for ANY session on any
+        // device. A row's first appearance only seeds the baseline, so boot
+        // (restored rows) and fresh sends stay silent.
+        {
+            let sessions: Vec<(String, comet_proto::SessionStatus)> = state
+                .read(cx)
+                .sessions
+                .iter()
+                .map(|s| (s.chat_id.clone(), s.status))
+                .collect();
+            for (chat_id, status) in sessions {
+                let prev = self.sound_prev.insert(chat_id, status);
+                if let Some(prev) = prev
+                    && self.settings.sound_enabled
+                    && let Some(sound) = crate::sound::sound_for_transition(prev, status)
+                {
+                    crate::sound::play(sound);
+                }
             }
         }
         // Boot: restore the last selected space once the first spaces frame

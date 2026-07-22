@@ -249,6 +249,31 @@ async fn target_device_id_routes_over_the_relay() {
     };
     assert!(remote.is_array());
 
+    // The add-space picker's exact call: browse a folder ON B from A's IPC
+    // surface (ListFolders + targetDeviceId, relay-forwarded).
+    let browse_dir = dirs.path().join("b-folders");
+    std::fs::create_dir_all(browse_dir.join("project-x")).expect("browse fixture");
+    let listing = client
+        .call(
+            methods::LIST_FOLDERS,
+            serde_json::json!({
+                "path": browse_dir.to_string_lossy(),
+                "targetDeviceId": "device-b",
+            }),
+        )
+        .await
+        .expect("remote ListFolders");
+    let names: Vec<&str> = listing["entries"]
+        .as_array()
+        .expect("entries array")
+        .iter()
+        .filter_map(|e| e["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"project-x"),
+        "remote folder listing must come from B's filesystem: {names:?}"
+    );
+
     // Streaming proxy: WatchDocMessages against B's doc from A's IPC surface.
     let mut stream = client
         .subscribe(

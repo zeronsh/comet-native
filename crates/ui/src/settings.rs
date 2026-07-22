@@ -55,6 +55,9 @@ pub struct UiSettings {
     /// Missing chats are skipped; new chats append in creation order.
     #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
     pub tab_order: std::collections::HashMap<String, Vec<String>>,
+    /// Session notification chimes (done / awaiting-input). `COMET_DISABLE_SOUND`
+    /// overrides.
+    pub sound_enabled: bool,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, comet `sessionPanels` parity). Kept for file
@@ -75,6 +78,7 @@ impl Default for UiSettings {
             sidebar_grouped: false,
             last_space_id: None,
             tab_order: std::collections::HashMap::new(),
+            sound_enabled: true,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
@@ -328,6 +332,7 @@ mod tests {
                 "space-1".to_string(),
                 vec!["b".to_string(), "a".to_string()],
             )]),
+            sound_enabled: false,
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,

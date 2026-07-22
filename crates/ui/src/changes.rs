@@ -20,8 +20,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, Context, Entity, ListAlignment, ListState, SharedString, Subscription, Task,
-    Window, div, font, list, prelude::*, px,
+    AnyElement, App, Context, Entity, ListAlignment, ListState, MouseButton, SharedString,
+    Subscription, Task, Window, WindowControlArea, div, font, list, prelude::*, px,
 };
 
 use comet_proto::{Chat, CheckoutDiff};
@@ -469,6 +469,10 @@ pub struct Changes {
     folds: HashMap<String, FileFold>,
     highlights: HashMap<String, HighlightSlot>,
     list: ListState,
+    /// Armed by mouse-down on the pane header; the next mouse-move hands the
+    /// drag to the compositor (same idiom as `Shell::titlebar_drag_region` —
+    /// the header sits in the titlebar band, so it must drag the window).
+    titlebar_should_move: bool,
     _observe: Subscription,
 }
 
@@ -486,6 +490,7 @@ impl Changes {
             folds: HashMap::new(),
             highlights: HashMap::new(),
             list: ListState::new(0, ListAlignment::Top, px(320.0)),
+            titlebar_should_move: false,
             _observe: observe,
         }
     }
@@ -861,8 +866,9 @@ impl Changes {
     /// main header's row, and carries the same bottom hairline so the header
     /// rule reads as ONE continuous line across the conversation column, the
     /// vertical divider, and the pane (reference chrome).
-    fn render_pane_header(&self, theme: &Theme) -> AnyElement {
+    fn render_pane_header(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
         div()
+            .id("changes-header-titlebar")
             .flex_none()
             .h(px(Theme::HEADER_HEIGHT))
             .flex()
@@ -871,6 +877,34 @@ impl Changes {
             .px(px(Theme::SPACE_LG))
             .border_b_1()
             .border_color(theme.border)
+            // The pane header sits in the titlebar band — it must drag the
+            // window like every other h-44 strip (same wiring as
+            // `Shell::titlebar_drag_region`; user-reported gap).
+            .window_control_area(WindowControlArea::Drag)
+            .on_mouse_down_out(cx.listener(|this, _, _, _| this.titlebar_should_move = false))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.titlebar_should_move = false),
+            )
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, _, _| this.titlebar_should_move = true),
+            )
+            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, _| {
+                if this.titlebar_should_move && event.pressed_button == Some(MouseButton::Left) {
+                    this.titlebar_should_move = false;
+                    window.start_window_move();
+                }
+            }))
+            .on_click(|event, window, _| {
+                if event.click_count() == 2 {
+                    if cfg!(target_os = "macos") {
+                        window.titlebar_double_click();
+                    } else {
+                        window.zoom_window();
+                    }
+                }
+            })
             .child(
                 div()
                     .flex_1()
@@ -897,7 +931,13 @@ impl Changes {
                     .bg(crate::theme::white_alpha(0.06))
                     .cursor_pointer()
                     .hover(|s| s.bg(crate::theme::white_alpha(0.10)))
+                    // Carved out of the header's drag surface (same treatment
+                    // as `header_icon_button`): its rect must never arm the
+                    // window drag or the double-click zoom.
+                    .occlude()
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(|_, window, cx| {
+                        cx.stop_propagation();
                         window.dispatch_action(Box::new(crate::shell::ToggleChanges), cx);
                     })
                     .child(
@@ -1243,7 +1283,7 @@ impl Render for Changes {
             .flex()
             .flex_col()
             .bg(crate::theme::grey(8))
-            .child(self.render_pane_header(&theme))
+            .child(self.render_pane_header(&theme, cx))
             .when_some(error, |el, message| {
                 el.child(
                     div()
