@@ -121,10 +121,21 @@ pub const TICK_GAP: f32 = 3.0;
 /// Vertical breathing room kept clear above/below the tick stack.
 pub const RAIL_V_MARGIN: f32 = 24.0;
 
+/// Hard cap on visible ticks — the always-compact shadcn outline (its demo
+/// trigger holds a small fixed stack of micro-marks regardless of window
+/// height), not "fill the viewport, then condense".
+pub const MAX_RAIL_TICKS: usize = 12;
+
 /// How many tick slots fit in a rail of `height` px (always ≥ 1).
 pub fn rail_capacity(height: f32) -> usize {
     let usable = (height - 2.0 * RAIL_V_MARGIN).max(TICK_SLOT);
     (((usable + TICK_GAP) / (TICK_SLOT + TICK_GAP)).floor() as usize).max(1)
+}
+
+/// Slots the rail actually uses: what fits the viewport, hard-capped at
+/// [`MAX_RAIL_TICKS`] so the outline stays compact even on tall windows.
+pub fn rail_slots(height: f32) -> usize {
+    rail_capacity(height).min(MAX_RAIL_TICKS)
 }
 
 /// shadcn's Transcript Outline keeps the always-visible rail a FIXED footprint
@@ -427,12 +438,13 @@ impl Transcript {
         let hover = self.rail_hover();
         let theme = Theme::of(cx).clone();
 
-        // Fixed footprint (shadcn Transcript Outline): the rail never exceeds
-        // the viewport — past capacity, ticks become even buckets over the
-        // conversation. Pre-layout the viewport reads 0; assume a typical
-        // height for that one frame rather than collapsing to a single tick.
+        // Fixed footprint (shadcn Transcript Outline): a compact stack of at
+        // most MAX_RAIL_TICKS marks — past that, ticks become even buckets
+        // over the conversation. Pre-layout the viewport reads 0; assume a
+        // typical height for that one frame rather than collapsing to a
+        // single tick.
         let viewport_h = f32::from(self.list_state().viewport_bounds().size.height);
-        let capacity = rail_capacity(if viewport_h > 0.0 { viewport_h } else { 600.0 });
+        let capacity = rail_slots(if viewport_h > 0.0 { viewport_h } else { 600.0 });
         let buckets = tick_buckets(pairs.len(), capacity);
         let active_bucket = active.and_then(|ix| bucket_of(&buckets, ix));
 
@@ -565,6 +577,11 @@ mod tests {
         // Tiny (or unmeasured) heights still hand out one slot.
         assert_eq!(rail_capacity(0.0), 1);
         assert!(rail_capacity(200.0) >= 10);
+        // The rail itself is hard-capped: compact on any window height.
+        assert_eq!(rail_slots(880.0), MAX_RAIL_TICKS);
+        assert_eq!(rail_slots(2000.0), MAX_RAIL_TICKS);
+        // Short rails still shrink below the cap.
+        assert!(rail_slots(100.0) < MAX_RAIL_TICKS);
     }
 
     #[test]
