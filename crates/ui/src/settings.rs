@@ -51,6 +51,10 @@ pub struct UiSettings {
     /// The last selected space — restored on boot when the row still exists.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_space_id: Option<String>,
+    /// Manual session-tab order per space (drag-reorder; device-local).
+    /// Missing chats are skipped; new chats append in creation order.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub tab_order: std::collections::HashMap<String, Vec<String>>,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, comet `sessionPanels` parity). Kept for file
@@ -70,6 +74,7 @@ impl Default for UiSettings {
             sidebar_collapsed: false,
             sidebar_grouped: false,
             last_space_id: None,
+            tab_order: std::collections::HashMap::new(),
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
@@ -319,6 +324,10 @@ mod tests {
             sidebar_collapsed: true,
             sidebar_grouped: true,
             last_space_id: Some("space-1".into()),
+            tab_order: std::collections::HashMap::from([(
+                "space-1".to_string(),
+                vec!["b".to_string(), "a".to_string()],
+            )]),
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,

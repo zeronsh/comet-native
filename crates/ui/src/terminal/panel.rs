@@ -700,7 +700,7 @@ impl TerminalPanel {
         }
     }
 
-    fn close_tab(&mut self, chat: &str, key: u64, cx: &mut Context<Self>) {
+    fn close_tab(&mut self, chat: &str, key: u64, window: &mut Window, cx: &mut Context<Self>) {
         let engine = self.engine(cx);
         let Some(tabs) = self.chats.get_mut(chat) else {
             return;
@@ -710,7 +710,13 @@ impl TerminalPanel {
         };
         let tab = tabs.tabs.remove(ix);
         tabs.active = active_after_close(tabs.active, ix, tabs.tabs.len());
+        let now_empty = tabs.tabs.is_empty();
         self.drag = None;
+        // Closing the LAST terminal closes the drawer too — an empty dock is
+        // dead space (user request). Same path as the collapse chevron.
+        if now_empty && self.open {
+            window.dispatch_action(Box::new(ToggleTerminal), cx);
+        }
         if let (Some(engine), Some(id)) = (engine, tab.terminal_id.clone()) {
             cx.spawn(async move |_, _| {
                 let _ = engine
@@ -853,9 +859,9 @@ impl TerminalPanel {
                             .when(!selected, |el| el.invisible())
                             .cursor_pointer()
                             .hover(|s| s.bg(crate::theme::white_alpha(0.09)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, _, window, cx| {
                                 cx.stop_propagation();
-                                this.close_tab(&chat_close2, key, cx);
+                                this.close_tab(&chat_close2, key, window, cx);
                             }))
                             .child(
                                 crate::icons::icon(crate::icons::CLOSE)
@@ -890,8 +896,8 @@ impl TerminalPanel {
                             // Middle-click closes (§1.10).
                             .on_mouse_down(
                                 MouseButton::Middle,
-                                cx.listener(move |this, _, _, cx| {
-                                    this.close_tab(&chat_close, key, cx);
+                                cx.listener(move |this, _, window, cx| {
+                                    this.close_tab(&chat_close, key, window, cx);
                                 }),
                             )
                             .on_drag(

@@ -292,6 +292,18 @@ impl Shell {
                     cx.notify();
                 }),
             )
+            // Status dot LEADS the row (like session rows) so its position is
+            // stable — appearing/disappearing at the right edge made the row
+            // jitter (user request). Faint at rest, colored under attention.
+            .child(
+                div()
+                    .size(px(6.0))
+                    .rounded_full()
+                    .flex_none()
+                    .bg(attention
+                        .map(|status| status_dot_color(status, theme))
+                        .unwrap_or_else(|| crate::theme::white_alpha(0.14))),
+            )
             .child(
                 icon(icons::FOLDER)
                     .size(px(16.0))
@@ -318,15 +330,6 @@ impl Shell {
                     .text_color(theme.text_muted.opacity(0.6))
                     .child(SharedString::from(format!("@ {device_name}"))),
             )
-            .when_some(attention, |el, status| {
-                el.child(
-                    div()
-                        .size(px(6.0))
-                        .rounded_full()
-                        .flex_none()
-                        .bg(status_dot_color(status, theme)),
-                )
-            })
             .into_any_element()
     }
 

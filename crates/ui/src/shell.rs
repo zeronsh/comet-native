@@ -430,6 +430,11 @@ pub struct Shell {
     space_last_chat: std::collections::HashMap<String, String>,
     /// Session tab currently hovered (close button appears on hover).
     tab_hover: Option<String>,
+    /// Session-tab drag-reorder in flight (see `tabs::TabDragState`).
+    tab_drag: Option<tabs::TabDragState>,
+    /// Scroll position of the session tab region (drives the edge fades and
+    /// the drop-index math under horizontal overflow).
+    tabs_scroll: gpui::ScrollHandle,
     /// `settings.last_space_id` applied once after the first spaces frame.
     space_boot_applied: bool,
     user_menu_open: bool,
@@ -603,6 +608,8 @@ impl Shell {
             add_space: None,
             space_last_chat: std::collections::HashMap::new(),
             tab_hover: None,
+            tab_drag: None,
+            tabs_scroll: gpui::ScrollHandle::new(),
             space_boot_applied: false,
             user_menu_open: false,
             user_menu_dismissed_at: None,
@@ -1522,11 +1529,11 @@ impl Shell {
                 .and_then(|id| state.devices.iter().find(|d| d.id == id))
                 .cloned()
         };
-        // The settings sidebar renders at the DEFAULT width regardless of the
-        // user's chat-sidebar drag width (comet __root.tsx:
-        // `width: collapsed ? 0 : isSettings ? SIDEBAR_DEFAULT : width`).
+        // Match the user's dragged sidebar width — the pane container clips to
+        // it, so a hardcoded default here left hover washes stopping short of
+        // the sidebar's right edge (user-reported).
         div()
-            .w(px(SIDEBAR_DEFAULT))
+            .w(px(self.settings.sidebar_width))
             .h_full()
             .flex()
             .flex_col()
@@ -3374,6 +3381,22 @@ impl Render for Shell {
 
         let root = match &gate {
             GatePhase::Ready => {
+                // A run finishing while you're LOOKING at the session must not
+                // badge "completed" until you leave and return — mark it seen
+                // live while the window is active (idempotent guard inside;
+                // one extra frame settles it).
+                if window.is_window_active() {
+                    let unseen_selected = {
+                        let s = self.state.read(cx);
+                        s.selected_chat_row()
+                            .filter(|c| c.unseen())
+                            .map(|c| c.id.clone())
+                    };
+                    if let Some(chat_id) = unseen_selected {
+                        self.state
+                            .update(cx, |s, cx| s.mark_chat_seen(&chat_id, cx));
+                    }
+                }
                 // MessageRail width gate: hide below 48rem of main-panel width.
                 let viewport = f32::from(window.viewport_size().width);
                 let main_width = viewport - self.sidebar_target() - self.right_target(cx) - 10.0;

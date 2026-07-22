@@ -821,6 +821,14 @@ async fn drive_run(
     let mut interrupt_deadline: Option<tokio::time::Instant> = None;
     let mut interrupted = false;
     let mut saw_session_started = false;
+    // While the run is parked on a question the harness streams NOTHING — the
+    // user may think for minutes. Without a heartbeat the session row goes
+    // stale and the UI's 45s gate flips AwaitingInput off (dot + question
+    // panel vanish mid-question — user-reported). Ticks are cheap: they only
+    // touch when an input request is actually pending, and touch_session
+    // throttles at 10s.
+    let mut input_heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+    input_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
     let final_status = loop {
         let event: AgentEvent = tokio::select! {
@@ -841,6 +849,16 @@ async fn drive_run(
                 error: None,
                 session_id: None,
             },
+            _ = input_heartbeat.tick() => {
+                let awaiting = lock(&inner.runs)
+                    .get(&chat_id)
+                    .map(|h| h.pending_inputs.clone())
+                    .is_some_and(|p| !lock(&p).is_empty());
+                if awaiting {
+                    inner.touch_session(&chat_id);
+                }
+                continue;
+            }
             Some(event) = engine_rx.recv() => event,
             next = stream.next() => match next {
                 Some(Ok(event)) => event,
