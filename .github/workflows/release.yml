@@ -72,6 +72,11 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     needs: [linux, macos]
     runs-on: ubuntu-latest
+    env:
+      # `secrets` is not a valid context in step `if:` expressions — surface
+      # the token through job env and gate on that instead.
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: b57dde68ee5964dccc025437b5478a5b
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -89,10 +94,7 @@ jobs:
           files: dist/*
           generate_release_notes: true
       - name: upload to R2 (comet.zeron.sh/releases/*)
-        if: secrets.CLOUDFLARE_API_TOKEN != ''
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: b57dde68ee5964dccc025437b5478a5b
+        if: env.CLOUDFLARE_API_TOKEN != ''
         run: |
           for f in dist/*; do
             npx wrangler@4 r2 object put "comet-native-releases/$(basename "$f")" \
