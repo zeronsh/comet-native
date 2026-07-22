@@ -44,12 +44,15 @@ pub(super) struct RenameSpaceDialog {
     pub _events: Subscription,
 }
 
-/// Dot color for a chat's display status (tab dots + Active rows).
+/// Dot color for a chat's display status (tab dots + Sessions rows).
 pub(super) fn status_dot_color(status: ChatIndicator, theme: &Theme) -> gpui::Hsla {
     match status {
-        ChatIndicator::Working | ChatIndicator::AwaitingInput => {
+        ChatIndicator::Working => {
             crate::theme::oklch(0.879, 0.169, 91.605).opacity(0.8) // amber-300
         }
+        // Blue, not amber: "asking you a question" must read differently from
+        // "busy working" at a glance (user request).
+        ChatIndicator::AwaitingInput => theme.accent.opacity(0.9),
         ChatIndicator::Errored => theme.danger,
         // Finished-but-unseen: a solid bright dot, distinct from the amber
         // live states and the faint idle rail.
@@ -102,7 +105,7 @@ impl Shell {
             Vec<Space>,
             Option<String>,
             std::collections::HashMap<String, String>,
-            std::collections::HashSet<String>,
+            std::collections::HashMap<String, ChatIndicator>,
         ) = {
             let now = Utc::now();
             let state = self.state.read(cx);
@@ -119,18 +122,33 @@ impl Shell {
                     )
                 })
                 .collect();
-            // Spaces with a live/awaiting session get an aggregate dot so the
-            // attention signal survives even with the Active list scrolled off.
-            let attention = state
-                .visible_chats()
-                .filter(|c| {
-                    matches!(
-                        state.display_status_for(c, now),
-                        ChatIndicator::Working | ChatIndicator::AwaitingInput
-                    )
-                })
-                .filter_map(|c| c.space_id.clone())
-                .collect();
+            // Spaces with a live/awaiting session get an aggregate dot (the
+            // most urgent member status wins) so the attention signal survives
+            // even with the Sessions list scrolled off.
+            let mut attention: std::collections::HashMap<String, ChatIndicator> =
+                std::collections::HashMap::new();
+            for chat in state.visible_chats() {
+                let status = state.display_status_for(chat, now);
+                if !matches!(
+                    status,
+                    ChatIndicator::Working | ChatIndicator::AwaitingInput
+                ) {
+                    continue;
+                }
+                let Some(space_id) = chat.space_id.clone() else {
+                    continue;
+                };
+                attention
+                    .entry(space_id)
+                    .and_modify(|held| {
+                        if crate::state::attention_rank(status)
+                            < crate::state::attention_rank(*held)
+                        {
+                            *held = status;
+                        }
+                    })
+                    .or_insert(status);
+            }
             (spaces, state.selected_space.clone(), device_names, attention)
         };
 
@@ -215,8 +233,8 @@ impl Shell {
                         .cloned()
                         .unwrap_or_else(|| "Unknown device".to_string());
                     let is_selected = selected.as_deref() == Some(space.id.as_str());
-                    let has_attention = attention.contains(&space.id);
-                    self.render_space_row(space, device_name, is_selected, has_attention, theme, cx)
+                    let attention = attention.get(&space.id).copied();
+                    self.render_space_row(space, device_name, is_selected, attention, theme, cx)
                 }),
             ));
         }
@@ -229,7 +247,7 @@ impl Shell {
         space: Space,
         device_name: String,
         selected: bool,
-        has_attention: bool,
+        attention: Option<ChatIndicator>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -289,6 +307,7 @@ impl Shell {
                     .font_weight(gpui::FontWeight::MEDIUM)
                     .child(name),
             )
+            .child(div().flex_1())
             .child(
                 div()
                     .flex_none()
@@ -299,14 +318,13 @@ impl Shell {
                     .text_color(theme.text_muted.opacity(0.6))
                     .child(SharedString::from(format!("@ {device_name}"))),
             )
-            .child(div().flex_1())
-            .when(has_attention, |el| {
+            .when_some(attention, |el, status| {
                 el.child(
                     div()
                         .size(px(6.0))
                         .rounded_full()
                         .flex_none()
-                        .bg(crate::theme::oklch(0.879, 0.169, 91.605).opacity(0.8)),
+                        .bg(status_dot_color(status, theme)),
                 )
             })
             .into_any_element()

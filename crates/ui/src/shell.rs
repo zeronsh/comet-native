@@ -2703,10 +2703,9 @@ impl Shell {
                     )
                     .into_any_element()
             }
-            Indicator::AwaitingInput => strip
-                .text_color(theme.warning)
-                .child(SharedString::from("Awaiting your input"))
-                .into_any_element(),
+            // No label: the QuestionPanel right below IS the awaiting-input
+            // surface — a strip caption above it was redundant (user request).
+            Indicator::AwaitingInput => strip.into_any_element(),
             Indicator::Errored => strip
                 .text_color(theme.danger)
                 .child(SharedString::from("Run failed"))
