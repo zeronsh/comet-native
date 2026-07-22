@@ -423,7 +423,8 @@ pub struct Shell {
     rename_space_dialog: Option<RenameSpaceDialog>,
     /// Space id awaiting delete confirmation (hard delete + session cascade).
     delete_space_confirm: Option<String>,
-    /// The add-space picker flow (device → folder), `Some` while open.
+    /// The add-space palette (⌘K-style; device tabs + folder search), `Some`
+    /// while open.
     add_space: Option<AddSpaceFlow>,
     /// Last selected chat per space (in-memory, like [`SessionPanels`]) — a
     /// space switch lands back on the tab you left.
@@ -1547,17 +1548,10 @@ impl Shell {
             SettingsSection::Shortcuts => icons::KEYBOARD,
             SettingsSection::Archived => icons::ARCHIVE_MINIMALISTIC,
         };
-        let device = {
-            let state = self.state.read(cx);
-            state
-                .local_device_id
-                .as_deref()
-                .and_then(|id| state.devices.iter().find(|d| d.id == id))
-                .cloned()
-        };
         // Match the user's dragged sidebar width — the pane container clips to
         // it, so a hardcoded default here left hover washes stopping short of
-        // the sidebar's right edge (user-reported).
+        // the sidebar's right edge (user-reported). Device identity lives on
+        // the Accounts page now — the one surface where the device matters.
         div()
             .w(px(self.settings.sidebar_width))
             .h_full()
@@ -1572,14 +1566,6 @@ impl Shell {
                     .items_center();
                 self.titlebar_drag_region("settings-titlebar", strip, cx)
             })
-            // Device switcher in the same slot as the main sidebar (comet
-            // settings-sidebar.tsx `px-2 pb-1` DeviceSwitcher block).
-            .child(
-                div()
-                    .px(px(Theme::SPACE_SM))
-                    .pb(px(4.0))
-                    .child(self.render_device_row(&device, theme)),
-            )
             .child(
                 div()
                     .flex_1()
@@ -1663,56 +1649,6 @@ impl Shell {
                                 .text_color(theme.text_muted),
                         )
                         .child(SharedString::from("Back")),
-                ),
-            )
-            .into_any_element()
-    }
-
-    /// Device identity row (comet device-switcher.tsx): platform glyph · name ·
-    /// presence dot · sort glyph. The native app is single-device, so the row
-    /// is identity, not a menu. It tops BOTH sidebars — the settings sidebar
-    /// keeps the switcher in the same slot (comet settings-sidebar.tsx).
-    fn render_device_row(&self, device: &Option<comet_proto::Device>, theme: &Theme) -> AnyElement {
-        let device_name: SharedString = device
-            .as_ref()
-            .map(|d| d.name.clone().into())
-            .unwrap_or_else(|| SharedString::from("This device"));
-        let device_icon = match device.as_ref().map(|d| d.platform.as_str()) {
-            Some("macos") | Some("darwin") => icons::LAPTOP,
-            _ => icons::MONITOR,
-        };
-        let emerald = crate::theme::oklch(0.765, 0.177, 163.223); // emerald-400
-        div()
-            .id("device-switcher")
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(Theme::SPACE_SM))
-            .rounded(px(8.0))
-            .px(px(Theme::SPACE_SM))
-            .py(px(6.0))
-            .cursor_default()
-            .hover(|s| s.bg(Theme::dark().element_hover))
-            .child(
-                icon(device_icon)
-                    .size(px(16.0))
-                    .text_color(theme.text_muted),
-            )
-            .child(
-                div()
-                    .min_w_0()
-                    .truncate()
-                    .text_size(px(13.0))
-                    .font_weight(gpui::FontWeight::MEDIUM)
-                    .text_color(theme.text)
-                    .child(device_name),
-            )
-            .child(div().size(px(6.0)).rounded_full().flex_none().bg(emerald))
-            .child(
-                div().ml_auto().flex_none().child(
-                    icon(icons::SORT_VERTICAL)
-                        .size(px(14.0))
-                        .text_color(theme.text_muted.opacity(0.4)),
                 ),
             )
             .into_any_element()

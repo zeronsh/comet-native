@@ -1222,6 +1222,59 @@ impl Render for AccountsPage {
                          live session, keeps each account backed up, and can swap between \
                          them.",
                     ))
+                    // Device identity (moved here from the sidebar — accounts
+                    // are the one per-device surface left now that spaces own
+                    // the folder/device pairing).
+                    .child({
+                        let device = {
+                            let s = self.state.read(cx);
+                            s.local_device_id
+                                .as_deref()
+                                .and_then(|id| s.devices.iter().find(|d| d.id == id))
+                                .cloned()
+                        };
+                        let glyph = match device.as_ref().map(|d| d.platform.as_str()) {
+                            Some("macos") | Some("darwin") => crate::icons::LAPTOP,
+                            _ => crate::icons::MONITOR,
+                        };
+                        let name: SharedString = device
+                            .as_ref()
+                            .map(|d| d.name.clone().into())
+                            .unwrap_or_else(|| SharedString::from("This device"));
+                        let emerald = crate::theme::oklch(0.765, 0.177, 163.223);
+                        widgets::section_card(&theme).mt(px(16.0)).child(
+                            div()
+                                .px(px(16.0))
+                                .py(px(12.0))
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(10.0))
+                                .child(
+                                    crate::icons::icon(glyph)
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(
+                                    div()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(13.0))
+                                        .font_weight(gpui::FontWeight::MEDIUM)
+                                        .text_color(theme.text)
+                                        .child(name),
+                                )
+                                .child(div().size(px(6.0)).rounded_full().flex_none().bg(emerald))
+                                .child(div().flex_1())
+                                .child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(11.0))
+                                        .text_color(theme.text_muted.opacity(0.6))
+                                        .child(SharedString::from("This device")),
+                                ),
+                        )
+                    })
                     .when_some(self.error.clone(), |el, message| {
                         el.child(
                             widgets::error_strip(message)

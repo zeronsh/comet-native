@@ -1,5 +1,6 @@
-//! Spaces sidebar: the spaces list (folder + device rows), the global Active
-//! sessions list, and the add-space picker flow (device → folder browser).
+//! Spaces sidebar: the spaces list (folder + device rows), the global
+//! Sessions list, and the add-space palette (⌘K-style: device tabs + filtered
+//! folder browser).
 //!
 //! A space = a synced (device, folder) pair; the sidebar's job is switching
 //! between them and surfacing which sessions want attention. Child module of
@@ -8,19 +9,16 @@
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, parent_path};
 use comet_proto::{ChatIndicator, Device, FolderListing, Space};
-use gpui::FocusHandle;
 
-/// Which step of the add-space flow is showing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum AddSpaceStep {
-    PickDevice,
-    Browse,
-}
-
-/// The add-space picker (modal): pick a device, browse its folders, confirm.
+/// The add-space palette (a command-K-style surface): device tabs across the
+/// top, a search input that filters the folder list, keyboard-first
+/// navigation, kbd-hint footer. One surface — switching device tabs rebrowses
+/// in place, no step wizard.
 pub(super) struct AddSpaceFlow {
-    step: AddSpaceStep,
+    /// The device tab currently browsed.
     device: Option<Device>,
+    /// Filter input; Enter descends into the highlighted folder.
+    search: Entity<ComposerInput>,
     browser: Loadable<FolderListing>,
     /// Requested browser path (`None` = the device's default, i.e. home).
     browser_path: Option<String>,
@@ -28,12 +26,14 @@ pub(super) struct AddSpaceFlow {
     /// descended through an entry whose `is_repo` we saw; the owning device's
     /// SpacesSync re-verifies either way).
     browser_repo: bool,
+    /// Keyboard highlight within the FILTERED folder rows.
+    active: usize,
     submit_busy: bool,
     error: Option<SharedString>,
-    focus: FocusHandle,
     focus_pending: bool,
     load_task: Option<Task<()>>,
     submit_task: Option<Task<()>>,
+    _search_events: Subscription,
 }
 
 /// The space-row Rename dialog (same shape as [`RenameChatDialog`]).
@@ -394,46 +394,119 @@ impl Shell {
             .collect()
     }
 
-    // ---- add-space flow ----
+    // ---- add-space flow (the ⌘K-style palette) ----
 
     pub(super) fn open_add_space(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let devices: Vec<Device> = self.state.read(cx).devices.clone();
-        let single = (devices.len() == 1).then(|| devices[0].clone());
-        let browse = single.is_some();
+        let local = self.state.read(cx).local_device_id.clone();
+        // Land on this device's tab (else the first registered device).
+        let device = devices
+            .iter()
+            .find(|d| local.as_deref() == Some(d.id.as_str()))
+            .or_else(|| devices.first())
+            .cloned();
+        let search = cx.new(|cx| ComposerInput::new("Search folders…", cx));
+        let search_events = cx.subscribe(&search, |this: &mut Shell, _, event, cx| match event {
+            ComposerInputEvent::Edited => {
+                if let Some(flow) = this.add_space.as_mut() {
+                    flow.active = 0;
+                }
+                cx.notify();
+            }
+            // Enter (in the input) descends into the highlighted folder.
+            ComposerInputEvent::Submitted => this.add_space_open_active(cx),
+            _ => {}
+        });
+        let has_device = device.is_some();
         self.add_space = Some(AddSpaceFlow {
-            step: if browse {
-                AddSpaceStep::Browse
-            } else {
-                AddSpaceStep::PickDevice
-            },
-            device: single,
+            device,
+            search,
             browser: Loadable::Idle,
             browser_path: None,
             browser_repo: false,
+            active: 0,
             submit_busy: false,
             error: None,
-            focus: cx.focus_handle(),
             focus_pending: true,
             load_task: None,
             submit_task: None,
+            _search_events: search_events,
         });
-        if browse {
+        if has_device {
             self.load_space_folders(None, cx);
         }
         cx.notify();
     }
 
+    /// Device tab click: rebrowse the same palette on another device.
     fn add_space_pick_device(&mut self, device: Device, cx: &mut Context<Self>) {
-        if let Some(flow) = self.add_space.as_mut() {
-            flow.device = Some(device);
-            flow.step = AddSpaceStep::Browse;
-            flow.browser = Loadable::Idle;
-            flow.browser_path = None;
-            flow.browser_repo = false;
-            flow.error = None;
+        let Some(flow) = self.add_space.as_mut() else {
+            return;
+        };
+        if flow.device.as_ref().is_some_and(|d| d.id == device.id) {
+            return;
         }
+        flow.device = Some(device);
+        flow.browser = Loadable::Idle;
+        flow.browser_path = None;
+        flow.browser_repo = false;
+        flow.active = 0;
+        flow.error = None;
+        let search = flow.search.clone();
+        search.update(cx, |input, cx| input.set_text("", cx));
         self.load_space_folders(None, cx);
         cx.notify();
+    }
+
+    /// The current listing's folder rows filtered by the search query
+    /// (prefix matches first — `popover::filter_indices`).
+    fn add_space_filtered(&self, cx: &App) -> Vec<comet_proto::FolderEntry> {
+        let Some(flow) = self.add_space.as_ref() else {
+            return Vec::new();
+        };
+        let Some(listing) = flow.browser.ready() else {
+            return Vec::new();
+        };
+        let dirs = browser_rows(listing);
+        let query = flow.search.read(cx).text().to_string();
+        let names: Vec<&str> = dirs.iter().map(|e| e.name.as_str()).collect();
+        popover::filter_indices(&query, &names)
+            .into_iter()
+            .map(|ix| dirs[ix].clone())
+            .collect()
+    }
+
+    /// Descend into the highlighted (filtered) folder; clears the query.
+    fn add_space_open_active(&mut self, cx: &mut Context<Self>) {
+        let rows = self.add_space_filtered(cx);
+        let Some(flow) = self.add_space.as_ref() else {
+            return;
+        };
+        let Some(listing) = flow.browser.ready() else {
+            return;
+        };
+        let Some(entry) = rows.get(flow.active) else {
+            return;
+        };
+        let full = crate::pickers::child_path(&listing.path, &entry.name);
+        let is_repo = entry.is_repo;
+        let search = flow.search.clone();
+        if let Some(flow) = self.add_space.as_mut() {
+            flow.browser_repo = is_repo;
+        }
+        search.update(cx, |input, cx| input.set_text("", cx));
+        self.load_space_folders(Some(full), cx);
+    }
+
+    /// Descend into a specific folder row (mouse path); clears the query.
+    fn add_space_descend(&mut self, full: String, is_repo: bool, cx: &mut Context<Self>) {
+        let Some(flow) = self.add_space.as_mut() else {
+            return;
+        };
+        flow.browser_repo = is_repo;
+        let search = flow.search.clone();
+        search.update(cx, |input, cx| input.set_text("", cx));
+        self.load_space_folders(Some(full), cx);
     }
 
     /// ListFolders on the flow's device (relay-forwarded when remote).
@@ -448,6 +521,7 @@ impl Shell {
         let device_id = flow.device.as_ref().map(|d| d.id.clone());
         flow.browser_path = path.clone();
         flow.browser = Loadable::Loading;
+        flow.active = 0;
         flow.load_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
             if let Some(p) = &path {
@@ -487,7 +561,7 @@ impl Shell {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
         };
-        let Some(flow) = self.add_space.as_mut() else {
+        let Some(flow) = self.add_space.as_ref() else {
             return;
         };
         if flow.submit_busy {
@@ -578,51 +652,54 @@ impl Shell {
         cx.notify();
     }
 
+    /// Palette keys (bubbling from the focused search input): ↑↓ move, ⏎ open
+    /// (frame-level; the input's own Enter arrives as Submitted), ⌘⏎ use this
+    /// folder, ⌫ (empty query) up a level, esc close.
     fn add_space_key(&mut self, event: &gpui::KeyDownEvent, cx: &mut Context<Self>) {
-        let key = event.keystroke.key.as_str();
-        let Some(flow) = self.add_space.as_mut() else {
-            return;
-        };
-        match (key, flow.step) {
-            ("escape", AddSpaceStep::PickDevice) => {
+        let key = popover::classify_key(
+            event.keystroke.key.as_str(),
+            event.keystroke.modifiers.platform,
+            event.keystroke.modifiers.control,
+        );
+        match key {
+            popover::MenuKey::Escape => {
                 self.add_space = None;
                 cx.notify();
             }
-            ("escape", AddSpaceStep::Browse) => {
-                // Back to the device step (or close for single-device setups).
-                let devices = self.state.read(cx).devices.len();
-                if devices > 1 {
-                    if let Some(flow) = self.add_space.as_mut() {
-                        flow.step = AddSpaceStep::PickDevice;
-                        flow.error = None;
-                    }
-                } else {
-                    self.add_space = None;
+            popover::MenuKey::Up | popover::MenuKey::Down => {
+                let count = self.add_space_filtered(cx).len();
+                let delta = if key == popover::MenuKey::Up { -1 } else { 1 };
+                if let Some(flow) = self.add_space.as_mut() {
+                    flow.active =
+                        popover::menu_step(Some(flow.active), count, delta).unwrap_or(0);
+                    cx.notify();
                 }
-                cx.notify();
             }
-            ("backspace", AddSpaceStep::Browse) => {
-                if let Some(parent) = flow
-                    .browser
-                    .ready()
-                    .and_then(|l| parent_path(&l.path))
-                {
+            popover::MenuKey::Enter => self.add_space_open_active(cx),
+            popover::MenuKey::ModEnter => self.submit_add_space(cx),
+            popover::MenuKey::Backspace => {
+                let empty = self
+                    .add_space
+                    .as_ref()
+                    .is_some_and(|f| f.search.read(cx).is_empty());
+                let parent = self
+                    .add_space
+                    .as_ref()
+                    .and_then(|f| f.browser.ready())
+                    .and_then(|l| parent_path(&l.path));
+                if empty && let Some(parent) = parent {
                     if let Some(flow) = self.add_space.as_mut() {
                         flow.browser_repo = false; // unknown at the parent
                     }
                     self.load_space_folders(Some(parent), cx);
                 }
             }
-            ("enter", AddSpaceStep::Browse)
-                if event.keystroke.modifiers.platform || event.keystroke.modifiers.control =>
-            {
-                self.submit_add_space(cx);
-            }
-            _ => {}
+            popover::MenuKey::Other => {}
         }
     }
 
-    /// The add-space modal card (device step or browser step).
+    /// The palette card: device tabs · search · breadcrumbs · folder list ·
+    /// kbd-hint footer with the primary "Use" action.
     pub(super) fn render_add_space_overlay(
         &mut self,
         viewport: gpui::Size<Pixels>,
@@ -630,102 +707,156 @@ impl Shell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
-        let flow = self.add_space.as_mut()?;
-        if std::mem::take(&mut flow.focus_pending) {
-            window.focus(&flow.focus, cx);
+        {
+            let flow = self.add_space.as_mut()?;
+            if std::mem::take(&mut flow.focus_pending) {
+                let handle = flow.search.focus_handle(cx);
+                window.focus(&handle, cx);
+            }
         }
-        let step = flow.step;
-        let device = flow.device.clone();
-        let error = flow.error.clone();
-        let submit_busy = flow.submit_busy;
-        let focus = flow.focus.clone();
+        let (device, search, error, submit_busy, active, loading, load_error, listing) = {
+            let flow = self.add_space.as_ref()?;
+            (
+                flow.device.clone(),
+                flow.search.clone(),
+                flow.error.clone(),
+                flow.submit_busy,
+                flow.active,
+                matches!(flow.browser, Loadable::Loading | Loadable::Idle),
+                flow.browser.error().map(str::to_string),
+                flow.browser.ready().cloned(),
+            )
+        };
+        let devices = self.state.read(cx).devices.clone();
+        let local_id = self.state.read(cx).local_device_id.clone();
+        let rows = self.add_space_filtered(cx);
+        let query_empty = search.read(cx).is_empty();
+        let hairline = crate::theme::white_alpha(0.06);
 
-        let body: AnyElement = match step {
-            AddSpaceStep::PickDevice => {
-                let devices = self.state.read(cx).devices.clone();
-                let local = self.state.read(cx).local_device_id.clone();
+        // ── device tabs (browse any device's filesystem in place) ──────────
+        let tabs = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .flex_wrap()
+            .gap(px(4.0))
+            .px(px(12.0))
+            .pt(px(12.0))
+            .pb(px(10.0))
+            .children(devices.into_iter().enumerate().map(|(ix, dev)| {
+                let is_active = device.as_ref().is_some_and(|d| d.id == dev.id);
+                let is_local = local_id.as_deref() == Some(dev.id.as_str());
+                let glyph = match dev.platform.as_str() {
+                    "macos" | "darwin" => icons::LAPTOP,
+                    _ => icons::MONITOR,
+                };
+                let name: SharedString = dev.name.clone().into();
+                let pick = dev.clone();
+                div()
+                    .id(("add-space-device-tab", ix))
+                    .h(px(28.0))
+                    .px(px(10.0))
+                    .rounded(px(8.0))
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(6.0))
+                    .text_size(px(12.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .cursor_pointer()
+                    .when(is_active, |el| {
+                        el.bg(crate::theme::white_alpha(0.10)).text_color(theme.text)
+                    })
+                    .when(!is_active, |el| {
+                        el.text_color(theme.text_muted.opacity(0.7))
+                            .hover(|s| s.bg(crate::theme::white_alpha(0.05)))
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.add_space_pick_device(pick.clone(), cx);
+                    }))
+                    .child(icon(glyph).size(px(14.0)).text_color(if is_active {
+                        theme.text_muted
+                    } else {
+                        theme.text_muted.opacity(0.5)
+                    }))
+                    .child(name)
+                    .when(is_local, |el| {
+                        el.child(
+                            div()
+                                .size(px(5.0))
+                                .rounded_full()
+                                .flex_none()
+                                .bg(crate::theme::oklch(0.765, 0.177, 163.223).opacity(0.9)),
+                        )
+                    })
+            }));
+
+        // ── search input row (the ⌘K bar) ───────────────────────────────────
+        let input_row = div()
+            .h(px(46.0))
+            .flex_none()
+            .px(px(16.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .border_b_1()
+            .border_color(hairline)
+            .child(
+                icon(icons::MAGNIFER)
+                    .size(px(15.0))
+                    .flex_none()
+                    .text_color(theme.text_muted.opacity(0.6)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .text_size(px(14.0))
+                    .child(search.clone().into_any_element()),
+            );
+
+        // ── breadcrumbs ─────────────────────────────────────────────────────
+        let crumbs: AnyElement = match &listing {
+            Some(listing) => {
+                let segments = breadcrumbs(&listing.path);
+                let last = segments.len().saturating_sub(1);
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
+                    .flex_wrap()
+                    .items_center()
                     .gap(px(2.0))
-                    .mt(px(10.0))
-                    .children(devices.into_iter().enumerate().map(|(ix, d)| {
-                        let glyph = match d.platform.as_str() {
-                            "macos" | "darwin" => icons::LAPTOP,
-                            _ => icons::MONITOR,
-                        };
-                        let is_local = local.as_deref() == Some(d.id.as_str());
-                        let name: SharedString = d.name.clone().into();
-                        let subline: SharedString = if is_local {
-                            format!("{} · this device", d.platform).into()
-                        } else {
-                            d.platform.clone().into()
-                        };
-                        let pick = d.clone();
-                        popover::menu_row_nav(&theme, false, false, format!("add-space-device-{ix}"))
-                            .id(("add-space-device", ix))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.add_space_pick_device(pick.clone(), cx);
-                            }))
-                            .child(
-                                icon(glyph)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().truncate().child(name))
-                                    .child(
-                                        div()
-                                            .truncate()
-                                            .text_size(px(11.0))
-                                            .text_color(theme.text_muted.opacity(0.7))
-                                            .child(subline),
-                                    ),
-                            )
-                    }))
-                    .into_any_element()
-            }
-            AddSpaceStep::Browse => {
-                let listing = self.add_space.as_ref().and_then(|f| f.browser.ready().cloned());
-                let loading = self
-                    .add_space
-                    .as_ref()
-                    .is_some_and(|f| f.browser.is_loading());
-                let load_error = self
-                    .add_space
-                    .as_ref()
-                    .and_then(|f| f.browser.error().map(str::to_string));
-                let crumbs: AnyElement = match &listing {
-                    Some(listing) => {
-                        let segments = breadcrumbs(&listing.path);
-                        let last = segments.len().saturating_sub(1);
+                    .px(px(14.0))
+                    .pt(px(10.0))
+                    .pb(px(2.0))
+                    .text_size(px(11.0))
+                    .children(segments.into_iter().enumerate().map(|(ix, (label, full))| {
+                        let is_last = ix == last;
                         div()
                             .flex()
                             .flex_row()
-                            .flex_wrap()
                             .items_center()
                             .gap(px(2.0))
-                            .mt(px(10.0))
-                            .px(px(2.0))
-                            .children(segments.into_iter().enumerate().map(|(ix, (label, full))| {
-                                let is_last = ix == last;
+                            .when(ix > 0, |el| {
+                                el.child(
+                                    div()
+                                        .text_color(theme.text_faint)
+                                        .child(SharedString::from("/")),
+                                )
+                            })
+                            .child({
                                 let crumb = div()
                                     .id(("add-space-crumb", ix))
                                     .px(px(4.0))
                                     .py(px(1.0))
                                     .rounded(px(5.0))
-                                    .text_size(px(11.0))
                                     .text_color(if is_last {
-                                        theme.text
+                                        theme.text.opacity(0.85)
                                     } else {
-                                        theme.text_muted.opacity(0.7)
+                                        theme.text_muted.opacity(0.6)
                                     })
-                                    .child(SharedString::from(if label == "/" && ix == 0 {
+                                    .child(SharedString::from(if ix == 0 {
                                         "/".to_string()
                                     } else {
                                         label
@@ -744,183 +875,180 @@ impl Shell {
                                         }))
                                         .into_any_element()
                                 }
-                            }))
-                            .into_any_element()
-                    }
-                    None => div().mt(px(10.0)).into_any_element(),
-                };
-                let rows: AnyElement = if loading {
-                    div()
-                        .mt(px(6.0))
-                        .child(popover::skeleton_rows("add-space-skeleton", &theme, 5))
-                        .into_any_element()
-                } else if let Some(message) = load_error {
-                    let device_line = device
-                        .as_ref()
-                        .map(|d| format!("{} didn't respond — is it online?", d.name))
-                        .unwrap_or_else(|| message.clone());
-                    popover::error_row(&theme, &device_line)
-                        .mt(px(6.0))
-                        .child(
-                            div()
-                                .id("add-space-retry")
-                                .px(px(Theme::SPACE_SM))
-                                .py(px(3.0))
-                                .rounded(px(Theme::CONTROL_RADIUS))
-                                .border_1()
-                                .border_color(theme.border)
-                                .text_color(theme.text)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(theme.element_hover))
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    let path =
-                                        this.add_space.as_ref().and_then(|f| f.browser_path.clone());
-                                    this.load_space_folders(path, cx);
-                                }))
-                                .child(SharedString::from("Retry")),
-                        )
-                        .into_any_element()
-                } else if let Some(listing) = &listing {
-                    let dirs = browser_rows(listing);
-                    if dirs.is_empty() {
-                        div()
-                            .mt(px(6.0))
-                            .p(px(Theme::SPACE_SM))
-                            .text_size(px(12.0))
-                            .text_color(theme.text_faint)
-                            .child(SharedString::from("No folders here"))
-                            .into_any_element()
-                    } else {
-                        let base = listing.path.clone();
-                        div()
-                            .id("add-space-folders")
-                            .mt(px(6.0))
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .max_h(px(280.0))
-                            .overflow_y_scroll()
-                            .children(dirs.into_iter().enumerate().map(|(ix, entry)| {
-                                let name: SharedString = entry.name.clone().into();
-                                let full = crate::pickers::child_path(&base, &entry.name);
-                                let is_repo = entry.is_repo;
-                                popover::menu_row_nav(
-                                    &theme,
-                                    false,
-                                    false,
-                                    format!("add-space-folder-{ix}"),
-                                )
-                                .id(("add-space-folder", ix))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    if let Some(flow) = this.add_space.as_mut() {
-                                        flow.browser_repo = is_repo;
-                                    }
-                                    this.load_space_folders(Some(full.clone()), cx);
-                                }))
-                                .child(
-                                    icon(icons::FOLDER)
-                                        .size(px(15.0))
-                                        .text_color(theme.text_muted),
-                                )
-                                .child(div().flex_1().min_w_0().truncate().child(name))
-                                .when(is_repo, |el| {
-                                    el.child(
-                                        div()
-                                            .flex_none()
-                                            .px(px(5.0))
-                                            .py(px(1.0))
-                                            .rounded(px(5.0))
-                                            .bg(crate::theme::white_alpha(0.05))
-                                            .text_size(px(10.0))
-                                            .text_color(theme.text_muted.opacity(0.7))
-                                            .child(SharedString::from("git")),
-                                    )
-                                })
-                            }))
-                            .into_any_element()
-                    }
-                } else {
-                    div().into_any_element()
-                };
-                let pick_label: SharedString = listing
-                    .as_ref()
-                    .map(|l| {
-                        let name = std::path::Path::new(l.path.trim_end_matches('/'))
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .filter(|n| !n.is_empty())
-                            .unwrap_or_else(|| l.path.clone());
-                        format!("Use “{name}”").into()
-                    })
-                    .unwrap_or_else(|| "Use this folder".into());
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(crumbs)
-                    .child(rows)
-                    .when_some(error.clone(), |el, message| {
-                        el.child(
-                            div()
-                                .mt(px(6.0))
-                                .px(px(4.0))
-                                .text_size(px(11.0))
-                                .text_color(theme.danger)
-                                .child(message),
-                        )
-                    })
-                    .child(
-                        div()
-                            .mt(px(14.0))
-                            .flex()
-                            .flex_row()
-                            .justify_between()
-                            .items_center()
-                            .child(
-                                popover::btn_ghost(&theme, "Back", "add-space-back")
-                                    .id("add-space-back")
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        let multi = this.state.read(cx).devices.len() > 1;
-                                        if multi {
-                                            if let Some(flow) = this.add_space.as_mut() {
-                                                flow.step = AddSpaceStep::PickDevice;
-                                                flow.error = None;
-                                            }
-                                        } else {
-                                            this.add_space = None;
-                                        }
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                popover::btn_primary(
-                                    &theme,
-                                    if submit_busy { "Adding…" } else { &pick_label },
-                                )
-                                .id("add-space-submit")
-                                .when(submit_busy || listing.is_none(), |el| el.opacity(0.6))
-                                .on_click(cx.listener(|this, _, _, cx| this.submit_add_space(cx))),
-                            ),
-                    )
+                            })
+                    }))
                     .into_any_element()
             }
+            None => div().pt(px(6.0)).into_any_element(),
         };
 
-        let subtitle: SharedString = match step {
-            AddSpaceStep::PickDevice => "Choose the device this space lives on.".into(),
-            AddSpaceStep::Browse => device
+        // ── folder list ─────────────────────────────────────────────────────
+        let base_path = listing.as_ref().map(|l| l.path.clone()).unwrap_or_default();
+        let list: AnyElement = if loading {
+            div()
+                .px(px(8.0))
+                .py(px(6.0))
+                .child(popover::skeleton_rows("add-space-skeleton", &theme, 6))
+                .into_any_element()
+        } else if let Some(message) = load_error {
+            let device_line = device
                 .as_ref()
-                .map(|d| format!("Pick a folder on {}.", d.name).into())
-                .unwrap_or_else(|| "Pick a folder.".into()),
+                .map(|d| format!("{} didn't respond — is it online?", d.name))
+                .unwrap_or(message);
+            popover::error_row(&theme, &device_line)
+                .px(px(14.0))
+                .py(px(10.0))
+                .child(
+                    div()
+                        .id("add-space-retry")
+                        .px(px(Theme::SPACE_SM))
+                        .py(px(3.0))
+                        .rounded(px(Theme::CONTROL_RADIUS))
+                        .border_1()
+                        .border_color(theme.border)
+                        .text_color(theme.text)
+                        .cursor_pointer()
+                        .hover(|s| s.bg(theme.element_hover))
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            let path = this.add_space.as_ref().and_then(|f| f.browser_path.clone());
+                            this.load_space_folders(path, cx);
+                        }))
+                        .child(SharedString::from("Retry")),
+                )
+                .into_any_element()
+        } else if rows.is_empty() {
+            div()
+                .px(px(14.0))
+                .py(px(16.0))
+                .text_size(px(12.5))
+                .text_color(theme.text_faint)
+                .child(SharedString::from(if query_empty {
+                    "No folders here"
+                } else {
+                    "No folders match"
+                }))
+                .into_any_element()
+        } else {
+            div()
+                .id("add-space-folders")
+                .max_h(px(302.0))
+                .overflow_y_scroll()
+                .px(px(8.0))
+                .py(px(6.0))
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .children(rows.into_iter().enumerate().map(|(ix, entry)| {
+                    let name: SharedString = entry.name.clone().into();
+                    let full = crate::pickers::child_path(&base_path, &entry.name);
+                    let is_repo = entry.is_repo;
+                    popover::menu_row_nav(&theme, false, ix == active, format!("add-space-folder-{ix}"))
+                        .id(("add-space-folder", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.add_space_descend(full.clone(), is_repo, cx);
+                        }))
+                        .child(
+                            icon(icons::FOLDER)
+                                .size(px(15.0))
+                                .flex_none()
+                                .text_color(theme.text_muted.opacity(0.8)),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(name))
+                        .when(is_repo, |el| {
+                            el.child(
+                                div()
+                                    .flex_none()
+                                    .px(px(5.0))
+                                    .py(px(1.0))
+                                    .rounded(px(5.0))
+                                    .bg(crate::theme::white_alpha(0.05))
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_muted.opacity(0.7))
+                                    .child(SharedString::from("git")),
+                            )
+                        })
+                }))
+                .into_any_element()
         };
-        let card = popover::dialog_card(&theme)
-            .w(px(420.0))
-            .track_focus(&focus)
+
+        // ── footer: kbd hints + the primary action ──────────────────────────
+        let hint = |chip: &str, label: &str| {
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(4.0))
+                .child(popover::kbd_hint(&theme, chip))
+                .child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(theme.text_muted.opacity(0.55))
+                        .child(SharedString::from(label.to_string())),
+                )
+        };
+        let pick_label: SharedString = listing
+            .as_ref()
+            .map(|l| {
+                let name = std::path::Path::new(l.path.trim_end_matches('/'))
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .filter(|n| !n.is_empty())
+                    .unwrap_or_else(|| l.path.clone());
+                format!("Use “{name}”").into()
+            })
+            .unwrap_or_else(|| "Use this folder".into());
+        let footer = div()
+            .flex_none()
+            .border_t_1()
+            .border_color(hairline)
+            .px(px(12.0))
+            .py(px(10.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.0))
+            .child(hint("↑↓", "navigate"))
+            .child(hint("⏎", "open"))
+            .child(hint("⌫", "up"))
+            .child(hint("esc", "close"))
+            .when_some(error, |el, message| {
+                el.child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .text_size(px(11.0))
+                        .text_color(theme.danger)
+                        .child(message),
+                )
+            })
+            .child(div().flex_1())
+            .child(
+                popover::btn_primary(&theme, if submit_busy { "Adding…" } else { &pick_label })
+                    .id("add-space-submit")
+                    .when(submit_busy || listing.is_none(), |el| el.opacity(0.6))
+                    .on_click(cx.listener(|this, _, _, cx| this.submit_add_space(cx))),
+            );
+
+        let card = div()
+            .id("add-space-palette")
+            .w(px(560.0))
+            .rounded(px(14.0))
+            .border_1()
+            .border_color(crate::theme::white_alpha(0.10))
+            .bg(crate::theme::grey(0x10))
+            .shadow_lg()
+            .overflow_hidden()
+            .flex()
+            .flex_col()
+            .text_color(theme.text)
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 this.add_space_key(event, cx)
             }))
-            .child(popover::dialog_title(&theme, "Add a space"))
-            .child(div().mt(px(4.0)).child(popover::dialog_body(&theme, subtitle)))
-            .child(body)
+            .child(tabs)
+            .child(input_row)
+            .child(crumbs)
+            .child(list)
+            .child(footer)
             .into_any_element();
         Some(popover::modal("add-space-dialog", viewport, card))
     }
