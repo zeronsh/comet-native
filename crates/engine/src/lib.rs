@@ -340,6 +340,16 @@ impl Engine {
         {
             auth_config.workos_api_base = base;
         }
+        // Fixed loopback callback port so the headed sign-in redirect URI
+        // (`http://127.0.0.1:{port}/callback`) can be registered EXACTLY with
+        // WorkOS (no wildcard ports there). `COMET_CALLBACK_PORT=0` forces the
+        // old ephemeral behavior.
+        auth_config.callback_port = Some(
+            std::env::var("COMET_CALLBACK_PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(27641),
+        );
         if let Some(token) = &config.edge_token {
             auth_config.dev_user_id = token.clone();
         }

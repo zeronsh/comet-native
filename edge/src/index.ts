@@ -32,6 +32,7 @@ import { handleAuthRoute } from "./auth-routes";
 import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
 import { SessionRoom } from "./session-room";
 import { DeviceRoom } from "./device-room";
+import installSh from "./install.sh";
 
 export { SessionRoom, DeviceRoom };
 
@@ -77,6 +78,39 @@ export default {
 
     if (url.pathname === "/health") {
       return json({ ok: true, auth: env.AUTH_MODE === "dev" ? "dev" : "workos" });
+    }
+
+    // ── public install surface (also routed from comet.zeron.sh): the
+    //    `curl | sh` installer and the release artifacts it downloads ───────
+    if (url.pathname === "/install.sh" && (request.method === "GET" || request.method === "HEAD")) {
+      return new Response(request.method === "HEAD" ? null : installSh, {
+        headers: {
+          "content-type": "application/x-sh",
+          "cache-control": "public, max-age=0, must-revalidate"
+        }
+      });
+    }
+    if (
+      parts[0] === "releases" &&
+      parts.length >= 2 &&
+      (request.method === "GET" || request.method === "HEAD")
+    ) {
+      const key = decodeURIComponent(url.pathname.slice("/releases/".length));
+      if (key.length === 0 || key.includes("..")) return json({ error: "bad request" }, 400);
+      const object = await env.RELEASES.get(key);
+      if (!object) return json({ error: "not_found" }, 404);
+      const headers = new Headers({
+        "content-type": key.endsWith(".txt")
+          ? "text/plain; charset=utf-8"
+          : "application/octet-stream",
+        "content-length": String(object.size),
+        // latest.txt flips on release; artifacts are immutable by name.
+        "cache-control": key.endsWith(".txt")
+          ? "public, max-age=60"
+          : "public, max-age=86400, immutable",
+        etag: object.httpEtag
+      });
+      return new Response(request.method === "HEAD" ? null : object.body, { headers });
     }
 
     // ── WorkOS auth routes (pre-bearer: exchange/refresh/callback have no

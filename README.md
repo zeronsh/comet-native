@@ -60,25 +60,41 @@ first macOS build may surface errors there; they're isolated to `crates/engine/s
 agent_accounts.rs` and safe to stub if needed. Window chrome (traffic-light inset,
 vibrancy) is untested on real macOS — see dist/README.md for bundling.
 
-## Run
+## Install (headless, Linux)
+
+```bash
+curl -fsSL https://comet.zeron.sh/install.sh | sh
+```
+
+Installs the self-contained binary to `~/.comet-native/app`, links `comet` into
+`~/.local/bin`, and sets up a systemd user service. Production endpoints
+(`https://edge.comet.zeron.sh` + WorkOS auth) are baked in — no configuration
+needed. First run `comet headless` to sign in (paste-code flow), then
+`systemctl --user start comet-native`.
+
+## Run (from source)
 
 ```bash
 # Headed (connects to a running daemon on COMET_IPC_PORT, else embeds the engine):
 cargo run -p comet
 
-# Headless engine (VPS / second device):
-COMET_DATA_DIR=~/.comet-native \
+# Headless engine — zero config: production edge + WorkOS sign-in by default:
+cargo run -p comet -- headless
+
+# Headless against a local wrangler dev edge (dev-mode auth):
 COMET_EDGE_URL=http://localhost:27640 \
 COMET_EDGE_TOKEN=alice@org1 \
 COMET_ORG_ID=org1 \
-COMET_IPC_PORT=27654 \
 cargo run -p comet -- headless
 ```
 
-`COMET_EDGE_TOKEN` is the dev-mode bearer (`user@org`); omit it to run fully offline.
-Other knobs: `COMET_HARNESS` (`claude-code` default | `codex` | `mock`) picks the default
-harness for chats without a config row; `COMET_WORKOS_CLIENT_ID` enables real WorkOS auth
-(dev mode otherwise); `COMET_DEVICE_NAME` overrides the registry hostname.
+Setting `COMET_EDGE_TOKEN` (the dev-mode bearer, `user@org`) — or
+`COMET_WORKOS_CLIENT_ID=""` — switches auth to dev mode; `COMET_EDGE_URL`
+overrides the baked production edge. Other knobs: `COMET_HARNESS`
+(`claude-code` default | `codex` | `mock`) picks the default harness for chats
+without a config row; `COMET_WORKOS_CLIENT_ID` overrides the baked client id;
+`COMET_CALLBACK_PORT` moves the headed sign-in loopback (default 27641);
+`COMET_DEVICE_NAME` overrides the registry hostname.
 
 ## Two-device e2e smoke
 

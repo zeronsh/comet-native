@@ -17,10 +17,17 @@ Produces `target/package/comet-<version>-linux-<arch>.tar.gz` containing:
 The release profile in the root `Cargo.toml` sets `lto = "thin"` and
 `strip = "symbols"` for distribution builds.
 
-## macOS (config only — not yet executed)
+## macOS
 
-The `dist/macos/Info.plist` template is ready; the bundling steps, to be run on a
-macOS host (gpui needs Metal; no cross-build from Linux):
+```sh
+scripts/package-macos.sh    # → target/package/comet-<version>-macos-<arch>.dmg
+```
+
+Builds the release binary, assembles `Comet.app` (Info.plist + icns), ad-hoc
+signs it (set `CODESIGN_IDENTITY` for a real Developer ID), and wraps it in a
+dmg. CI runs this on tags (`.github/workflows/release.yml`). The manual steps
+it automates, for reference (run on a macOS host — gpui needs Metal; no
+cross-build from Linux):
 
 1. Build the universal (or per-arch) binary:
    ```sh

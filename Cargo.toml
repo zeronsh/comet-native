@@ -42,6 +42,7 @@ gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "a6bf17cf02861
     "wayland",
     "x11",
     "font-kit",
+    "runtime_shaders",
 ] }
 gpui_tokio = { git = "https://github.com/wingleeio/zed", rev = "a6bf17cf028612a6eea80c32645a3305bd7cded4" }
 

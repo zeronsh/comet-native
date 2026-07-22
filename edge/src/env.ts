@@ -2,6 +2,9 @@ export interface Env {
   SESSION_ROOMS: DurableObjectNamespace;
   DEVICE_ROOMS: DurableObjectNamespace;
   BLOBS: R2Bucket;
+  /** Release artifacts (headless tarballs, dmgs, latest.txt) served at
+   * /releases/* for the curl-install flow. */
+  RELEASES: R2Bucket;
   WORKOS_CLIENT_ID: string;
   /** "workos" (verify AuthKit JWTs) or "dev" (bearer == userId, never prod). */
   AUTH_MODE: string;

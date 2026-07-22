@@ -1,0 +1,103 @@
+name: release
+
+# Build release artifacts and publish them:
+#   - Linux headless tarballs (x86_64 + aarch64) via scripts/package-linux.sh
+#   - macOS dmg (Apple silicon) via scripts/package-macos.sh
+# then create a GitHub Release AND upload everything to the
+# `comet-native-releases` R2 bucket (served at comet.zeron.sh/releases/* for
+# `curl -fsSL https://comet.zeron.sh/install.sh | sh`), bumping latest.txt.
+#
+# Trigger: push a tag `v<version>` matching the workspace version in
+# Cargo.toml (bump it in the same commit), or run manually via
+# workflow_dispatch (builds + uploads artifacts, no release/R2 publish).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04 # x86_64
+          - runner: ubuntu-24.04-arm # aarch64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: gpui system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcb1-dev libx11-xcb-dev \
+            libfontconfig1-dev libfreetype-dev libasound2-dev \
+            libvulkan-dev pkg-config cmake
+      - name: rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: package
+        run: scripts/package-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ runner.arch }}
+          path: target/package/*.tar.gz
+          if-no-files-found: error
+
+  # Heads-up: the macOS cfg paths (Keychain in agent_accounts.rs) have never
+  # been type-checked against the Apple SDK — this job may surface errors on
+  # its first runs. continue-on-error keeps the Linux release shippable.
+  macos:
+    runs-on: macos-latest # Apple silicon
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: rust toolchain (rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: package dmg
+        run: scripts/package-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ runner.arch }}
+          path: target/package/*.dmg
+          if-no-files-found: error
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: version guard (tag == artifact version)
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          ls dist/
+          ls dist/ | grep -q "comet-$ver-" \
+            || { echo "tag v$ver does not match built artifact versions — bump Cargo.toml [workspace.package] version"; exit 1; }
+          echo "VERSION=$ver" >> "$GITHUB_ENV"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+      - name: upload to R2 (comet.zeron.sh/releases/*)
+        if: secrets.CLOUDFLARE_API_TOKEN != ''
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: b57dde68ee5964dccc025437b5478a5b
+        run: |
+          for f in dist/*; do
+            npx wrangler@4 r2 object put "comet-native-releases/$(basename "$f")" \
+              --file "$f" --remote
+          done
+          printf '%s' "$VERSION" > latest.txt
+          npx wrangler@4 r2 object put comet-native-releases/latest.txt \
+            --file latest.txt --remote
