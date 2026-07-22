@@ -141,12 +141,39 @@ impl EngineHandle {
             .edge_token
             .clone()
             .map(|token| EdgeConfig::with_static_token(config.edge_url.clone(), token));
+        // Identity for the embedded (dev) engine: the dev bearer's `user@org`
+        // parts (mirroring the edge's parsing), env overrides, dev defaults —
+        // must match what the edge derives from the token, or the per-user
+        // `ws3/{org}/{user}` workspace room join is refused.
+        let (token_user, token_org) = match config.edge_token.as_deref() {
+            Some(token) => match token.split_once('@') {
+                Some((user, org)) => (Some(user.to_string()), Some(org.to_string())),
+                None => (Some(token.to_string()), None),
+            },
+            None => (None, None),
+        };
+        let org_id = token_org
+            .or_else(|| {
+                std::env::var("COMET_ORG_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| comet_engine::DEFAULT_ORG_ID.to_string());
+        let user_id = token_user
+            .or_else(|| {
+                std::env::var("COMET_USER_ID")
+                    .ok()
+                    .filter(|s| !s.trim().is_empty())
+            })
+            .unwrap_or_else(|| comet_engine::DEFAULT_USER_ID.to_string());
         let core = tokio::task::spawn_blocking(move || {
-            EngineCore::assemble(
+            EngineCore::assemble_with_identity(
                 &config.data_dir,
                 Arc::new(default_registry()),
                 config.default_harness,
                 edge,
+                &org_id,
+                &user_id,
             )
         })
         .await??;

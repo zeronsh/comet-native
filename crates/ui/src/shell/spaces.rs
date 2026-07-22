@@ -277,6 +277,7 @@ impl Shell {
 
     /// One space row: folder icon + folder name, device name subline.
     /// `host_offline` marks a remote host whose presence heartbeat lapsed.
+    #[allow(clippy::too_many_arguments)]
     fn render_space_row(
         &self,
         space: Space,

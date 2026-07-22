@@ -1,7 +1,9 @@
-//! WorkspaceHost — owns the per-org `WorkspaceDoc` (ARCHITECTURE §2.2): local snapshot
-//! persistence (doc id `"workspace"`), edge room sync (`ws/{orgId}`, offline-tolerant),
-//! the device registry row for THIS device, and the typed watch channels the
-//! WatchChats/WatchDevices/WatchSessions RPC streams are fed from.
+//! WorkspaceHost — owns the per-user `WorkspaceDoc` (ARCHITECTURE §2.2, made
+//! per-user for privacy): local snapshot persistence, edge room sync
+//! (`ws3/{orgId}/{userId}`, offline-tolerant — spaces/sessions are private to
+//! their owner, never org-visible), the device registry row for THIS device,
+//! and the typed watch channels the WatchChats/WatchDevices/WatchSessions RPC
+//! streams are fed from.
 //!
 //! Writer discipline (kept from the doc schema): this host writes its own device row,
 //! its own session-status rows, and rows for chats it hosts; renames/archives are LWW
@@ -25,12 +27,16 @@ use crate::{EngineError, now_ms};
 
 /// Snapshot row id in the local `DocsStore` (chat ids never collide with it).
 /// `workspace2` = the spaces-overhaul destructive break: the legacy `workspace`
-/// row is simply never read again (fresh doc, fresh `ws2/{orgId}` room).
+/// row is simply never read again. (The per-user room break — `ws2/{orgId}` →
+/// `ws3/{orgId}/{userId}` — needed no row-id bump: the local store itself moved
+/// to `orgs/{org}/{user}/`, so the old snapshot is unreachable anyway.)
 pub const WORKSPACE_DOC_ID: &str = "workspace2";
 /// Legacy (pre-spaces) snapshot row — best-effort deleted on open.
 const LEGACY_WORKSPACE_DOC_ID: &str = "workspace";
 /// Org used when none is configured (matches the edge's dev-mode `user@org` bearers).
 pub const DEFAULT_ORG_ID: &str = "dev-org";
+/// User used when none is configured (dev mode without a bearer).
+pub const DEFAULT_USER_ID: &str = "dev-user";
 /// Ephemeral presence refresh cadence.
 const PRESENCE_INTERVAL_MS: u64 = 15_000;
 /// A presence heartbeat younger than this marks the device alive (3 missed
@@ -48,6 +54,9 @@ pub struct WorkspaceHostConfig {
     /// `std::env::consts::OS`-style platform string.
     pub platform: String,
     pub org_id: String,
+    /// The signed-in user — workspace docs are per-user (`ws3/{orgId}/{userId}`):
+    /// spaces/sessions are private to their owner, never org-visible.
+    pub user_id: String,
     /// When present, the host joins `/workspace/{orgId}/ws`. `None` = fully offline
     /// (local snapshots only; the doc still drives everything device-side).
     pub edge: Option<EdgeConfig>,
@@ -157,8 +166,10 @@ impl WorkspaceHost {
         let org_id = self.inner.config.org_id.clone();
         // Per-dial URL provider: the bearer is re-read on every (re)connect.
         let url = edge.room_url(format!("/workspace/{org_id}/ws"));
-        // `ws2` = the spaces-overhaul fresh room (must match the edge's join id).
-        let room_id = format!("ws2/{org_id}");
+        // `ws3/{orgId}/{userId}` = the per-user privacy room (must match the
+        // edge's join id, which it derives from the caller's own auth claim —
+        // a mismatched user can never join).
+        let room_id = format!("ws3/{}/{}", org_id, self.inner.config.user_id);
         let room_doc = self.inner.doc.doc().clone();
         let device_id = self.inner.config.device_id.clone();
         let weak = Arc::downgrade(&self.inner);

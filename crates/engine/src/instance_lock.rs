@@ -4,7 +4,7 @@
 //! individual statements, not whole-file ownership), so the second instance must
 //! fail fast with a clear error instead of corrupting state.
 //!
-//! The lock is taken in `EngineCore::assemble_with_org` BEFORE any store is opened
+//! The lock is taken in `EngineCore::assemble_with_identity` BEFORE any store is opened
 //! and before the IPC port binds, which also closes the race where a headed app's
 //! TCP probe sees no daemon during another instance's startup window.
 

@@ -8,7 +8,8 @@
  *   5. ephemeral (%EPH) presence relays between peers
  *   6. device room relays client↔host frames and serves sidecar slots
  *   7. R2 attachments: PUT (hash verified) then GET
- *   8. workspace room (`ws/{orgId}`): two org members converge; wrong org 403
+ *   8. workspace room (`ws3/{orgId}/{userId}`): one user's devices converge;
+ *      teammates in the same org are isolated (per-user docs); wrong org 403
  *   9. absorbed /auth routes: 501 without WORKOS_API_KEY; cli callback page
  *
  * Usage: node scripts/smoke.mjs [baseUrl]   (default http://127.0.0.1:27640)
@@ -136,34 +137,52 @@ await new Promise((r) => setTimeout(r, 100));
   ok("ephemeral presence relay");
 }
 
-// ── workspace room: org-membership authz, two members converge ────────────
+// ── workspace room: per-user docs — one user's devices converge, teammates
+//    in the same org are isolated ─────────────────────────────────────────
 {
-  // Dev-mode org claim: token `userId@orgId`.
-  const roomId = `ws/${orgId}`;
-  const memberA = new LoroWebsocketClient({
+  // Dev-mode org claim: token `userId@orgId`. The room id is derived at the
+  // edge from the caller's OWN user claim: `ws3/{orgId}/{userId}`.
+  const roomA = `ws3/${orgId}/alice`;
+  const deviceA1 = new LoroWebsocketClient({
     url: `${wsBase}/workspace/${orgId}/ws?token=alice@${orgId}`
   });
-  await memberA.waitConnected();
-  const wsAdaptorA = new LoroAdaptor();
-  await memberA.join({ roomId, crdtAdaptor: wsAdaptorA });
-  const wsDocA = wsAdaptorA.getDoc();
-  wsDocA.getMap("meta").set("chatId", roomId);
+  await deviceA1.waitConnected();
+  const wsAdaptorA1 = new LoroAdaptor();
+  await deviceA1.join({ roomId: roomA, crdtAdaptor: wsAdaptorA1 });
+  const wsDocA = wsAdaptorA1.getDoc();
+  wsDocA.getMap("meta").set("chatId", roomA);
   wsDocA.getMap("chats").set("chat-1", { title: "hello" });
   wsDocA.commit();
 
-  // A DIFFERENT user of the same org joins the same room — membership, not
-  // per-chat ownership (which would have rejected the second user).
+  // A SECOND DEVICE of the same user joins the same per-user room and
+  // backfills.
+  const deviceA2 = new LoroWebsocketClient({
+    url: `${wsBase}/workspace/${orgId}/ws?token=alice@${orgId}`
+  });
+  await deviceA2.waitConnected();
+  const wsAdaptorA2 = new LoroAdaptor();
+  await deviceA2.join({ roomId: roomA, crdtAdaptor: wsAdaptorA2 });
+  await until(
+    () => wsAdaptorA2.getDoc().getMap("chats").get("chat-1") !== undefined,
+    "workspace second-device backfill"
+  );
+  ok("workspace room: one user's devices converge");
+
+  // A TEAMMATE (same org, different user) lands in their OWN empty room —
+  // alice's spaces/sessions must be invisible to bob.
   const memberB = new LoroWebsocketClient({
     url: `${wsBase}/workspace/${orgId}/ws?token=bob@${orgId}`
   });
   await memberB.waitConnected();
   const wsAdaptorB = new LoroAdaptor();
-  await memberB.join({ roomId, crdtAdaptor: wsAdaptorB });
-  await until(
-    () => wsAdaptorB.getDoc().getMap("chats").get("chat-1") !== undefined,
-    "workspace member B backfill"
-  );
-  ok("workspace room: two org members converge");
+  await memberB.join({ roomId: `ws3/${orgId}/bob`, crdtAdaptor: wsAdaptorB });
+  await new Promise((resolve) => setTimeout(resolve, 400)); // any (wrong) backfill gets a beat
+  if (wsAdaptorB.getDoc().getMap("chats").get("chat-1") !== undefined) {
+    fail("teammate must NOT see another user's workspace doc");
+  }
+  ok("workspace room: teammates isolated (per-user docs)");
+  memberB.close();
+  deviceA2.close();
 
   // Wrong org claim rejected at the Worker.
   const wrongOrg = await fetch(`${base}/workspace/${orgId}/tail?token=mallory@org-other`);
@@ -176,8 +195,7 @@ await new Promise((r) => setTimeout(r, 100));
   if (memberTail.status !== 200) fail(`member workspace tail ${memberTail.status}`);
   ok("workspace room: org membership enforced (403 for outsiders)");
 
-  memberA.close();
-  memberB.close();
+  deviceA1.close();
 }
 
 // ── device room ───────────────────────────────────────────────────────────

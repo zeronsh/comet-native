@@ -465,14 +465,16 @@ async fn two_engines_converge_through_a_real_workspace_room() {
             base.clone(),
             format!("{user}@{org}"),
         ));
-        EngineCore::assemble_with_org(dir, registry(), HarnessId::Mock, edge, &org)
+        EngineCore::assemble_with_identity(dir, registry(), HarnessId::Mock, edge, &org, user)
             .expect("engine core assembles")
     };
 
+    // Workspace docs are per-user (`ws3/{org}/{user}`): convergence is across
+    // ONE user's devices — two engines, same user, different device ids.
     let dir_a = tempfile::tempdir().unwrap();
     let dir_b = tempfile::tempdir().unwrap();
     let a = assemble_live(dir_a.path(), "dev-live-a", "alice");
-    let b = assemble_live(dir_b.path(), "dev-live-b", "bob");
+    let b = assemble_live(dir_b.path(), "dev-live-b", "alice");
 
     // Both device rows converge through the real room.
     for core in [&a, &b] {

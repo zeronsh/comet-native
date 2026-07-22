@@ -117,16 +117,19 @@ export default {
       return forward(env.SESSION_ROOMS, parts[1], request, auth.userId, "/append", "");
     }
 
-    // ── workspace rooms (`ws/{orgId}`, ARCHITECTURE §2.2/§6.1): same
-    //    SessionRoom DO class; membership = the caller's WorkOS org claim
-    //    (`org_id`) must equal the room's orgId — no per-chat ownership. ────
+    // ── workspace rooms (ARCHITECTURE §2.2/§6.1): same SessionRoom DO class;
+    //    the caller's WorkOS org claim (`org_id`) must equal the URL's orgId,
+    //    and the room itself is derived from the caller's OWN user id — the
+    //    workspace doc (spaces, chats index, devices) is per-user; teammates
+    //    in the same org can never address each other's rooms. ──────────────
     if (parts[0] === "workspace" && parts[1] && ID_RE.test(parts[1])) {
       const orgId = parts[1];
       if (auth.orgId !== orgId) return json({ error: "forbidden" }, 403);
-      // `ws2` = the spaces-overhaul destructive break: a fresh DO instance with
-      // an empty doc; the legacy `ws/{orgId}` room is orphaned (hibernated,
-      // ~zero cost). URL path stays `/workspace/:orgId/*`.
-      const room = `ws2/${orgId}`;
+      // `ws3` = the per-user privacy destructive break (`ws2` was the spaces
+      // overhaul): a fresh DO instance with an empty doc; legacy org-wide
+      // rooms are orphaned (hibernated, ~zero cost). URL path stays
+      // `/workspace/:orgId/*`.
+      const room = `ws3/${orgId}/${auth.userId}`;
       if (parts[2] === "ws") {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
           return json({ error: "expected websocket" }, 426);

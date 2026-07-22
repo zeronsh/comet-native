@@ -434,7 +434,7 @@ async fn interrupt_stamps_streaming_entry_aborted() {
         Some((SessionCommandStatus::Applied, None))
     );
     // Journal closed with a Done — nothing left to recover.
-    let journal = RunJournal::open(dir.path().join("orgs/dev-org/journals")).unwrap();
+    let journal = RunJournal::open(dir.path().join("orgs/dev-org/dev-user/journals")).unwrap();
     assert!(journal.stale_sessions().unwrap().is_empty());
     assert_eq!(
         core.sessions.session_status(CHAT).map(|s| s.status),
@@ -529,7 +529,7 @@ async fn processed_commands_are_skipped_on_redelivery() {
     // Simulate a crash AFTER mark-processed but BEFORE execute/outcome: the ledger has
     // the id, the doc still says pending.
     {
-        let store = DocsStore::open(dir.path().join("orgs/dev-org")).unwrap();
+        let store = DocsStore::open(dir.path().join("orgs/dev-org/dev-user")).unwrap();
         assert!(store.mark_processed("cmd-crashed").unwrap());
     }
 
@@ -563,7 +563,7 @@ async fn processed_commands_are_skipped_on_redelivery() {
     assert!(core.sessions.session_status(CHAT).is_none());
 
     // Direct ledger-evaluation check: re-evaluating a processed command = Skip.
-    let store = DocsStore::open(dir.path().join("orgs/dev-org")).unwrap();
+    let store = DocsStore::open(dir.path().join("orgs/dev-org/dev-user")).unwrap();
     let commands = handle.doc().read_commands().unwrap();
     let entry = commands.iter().find(|c| c.id == "cmd-crashed").unwrap();
     let is_processed = |id: &str| store.is_processed(id).unwrap_or(false);
@@ -591,7 +591,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
     // Craft the crash state: a journal without a terminal Done + a doc snapshot whose
     // assistant entry is still `streaming`.
     {
-        let journal = RunJournal::open(dir.path().join("orgs/dev-org/journals")).unwrap();
+        let journal = RunJournal::open(dir.path().join("orgs/dev-org/dev-user/journals")).unwrap();
         journal
             .append(
                 CHAT,
@@ -623,7 +623,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
             }])
             .unwrap();
         // No finish — the "process" dies here with the entry still streaming.
-        let store = DocsStore::open(dir.path().join("orgs/dev-org")).unwrap();
+        let store = DocsStore::open(dir.path().join("orgs/dev-org/dev-user")).unwrap();
         store
             .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
             .unwrap();
@@ -647,7 +647,7 @@ async fn recover_stale_journal_stamps_aborted_on_boot() {
     }
 
     // Journal closed with a synthetic Done{interrupted}; no longer stale.
-    let journal = RunJournal::open(dir.path().join("orgs/dev-org/journals")).unwrap();
+    let journal = RunJournal::open(dir.path().join("orgs/dev-org/dev-user/journals")).unwrap();
     assert!(journal.stale_sessions().unwrap().is_empty());
     let (_, last) = journal.last_event(CHAT).unwrap().unwrap();
     assert!(matches!(

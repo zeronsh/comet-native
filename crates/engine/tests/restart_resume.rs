@@ -320,7 +320,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
     //   the only copy of the harness session id (the debounced workspace-row
     //   write never landed).
     {
-        let store = DocsStore::open(dir.join("orgs/dev-org")).unwrap();
+        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
         let doc = SessionDoc::init(CHAT).unwrap();
         doc.push_message(&SessionMessageEntry {
             id: "msg-user-1".into(),
@@ -352,7 +352,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
             .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
             .unwrap();
 
-        let journal = RunJournal::open(dir.join("orgs/dev-org/journals")).unwrap();
+        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
         journal
             .append(
                 CHAT,
@@ -392,7 +392,7 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[1].status, Some(MessageStatus::Aborted));
     // … and closed the stale journal with a synthetic Done.
-    let journal = RunJournal::open(dir.join("orgs/dev-org/journals")).unwrap();
+    let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
     assert!(matches!(
         journal.last_event(CHAT).unwrap(),
         Some((_, AgentEvent::Done { .. }))

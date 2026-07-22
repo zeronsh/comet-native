@@ -42,7 +42,9 @@ pub use spaces::SpacesSync;
 pub use terminals::Terminals;
 pub use titles::TitleGenerator;
 pub use uploads::{AttachmentChunk, Uploads};
-pub use workspace_host::{DEFAULT_ORG_ID, WORKSPACE_DOC_ID, WorkspaceHost, WorkspaceHostConfig};
+pub use workspace_host::{
+    DEFAULT_ORG_ID, DEFAULT_USER_ID, WORKSPACE_DOC_ID, WorkspaceHost, WorkspaceHostConfig,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineError {
@@ -111,27 +113,27 @@ pub struct EngineCore {
 
 impl EngineCore {
     /// Open stores under `data_dir`, wire sessions ⇄ doc host ⇄ workspace host, and
-    /// recover stale journals from a previous crash. Org id comes from `$COMET_ORG_ID`
-    /// (dev default `dev-org`); use [`Self::assemble_with_org`] to pass one explicitly.
+    /// recover stale journals from a previous crash. Identity comes from
+    /// `$COMET_ORG_ID` / `$COMET_USER_ID` (dev defaults `dev-org` / `dev-user`);
+    /// use [`Self::assemble_with_identity`] to pass one explicitly.
     pub fn assemble(
         data_dir: &Path,
         registry: Arc<HarnessRegistry>,
         default_harness: HarnessId,
         edge: Option<EdgeConfig>,
     ) -> Result<Self, EngineError> {
-        let org_id = std::env::var("COMET_ORG_ID")
-            .ok()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| DEFAULT_ORG_ID.to_string());
-        Self::assemble_with_org(data_dir, registry, default_harness, edge, &org_id)
+        let org_id = env_or("COMET_ORG_ID", DEFAULT_ORG_ID);
+        let user_id = env_or("COMET_USER_ID", DEFAULT_USER_ID);
+        Self::assemble_with_identity(data_dir, registry, default_harness, edge, &org_id, &user_id)
     }
 
-    pub fn assemble_with_org(
+    pub fn assemble_with_identity(
         data_dir: &Path,
         registry: Arc<HarnessRegistry>,
         default_harness: HarnessId,
         edge: Option<EdgeConfig>,
         org_id: &str,
+        user_id: &str,
     ) -> Result<Self, EngineError> {
         std::fs::create_dir_all(data_dir)?;
         // Single-instance guard: two engines on one data dir would race the
@@ -140,9 +142,12 @@ impl EngineCore {
         let lock = InstanceLock::acquire(data_dir)?;
         let device_id = load_or_create_device_id(data_dir)?;
         // Identity-scoped storage: snapshots, the command ledger, and run
-        // journals live under `orgs/{orgId}/` so switching accounts/orgs on one
-        // machine never reuses another identity's cached docs.
-        let org_dir = data_dir.join("orgs").join(sanitize_path_id(org_id));
+        // journals live under `orgs/{orgId}/{userId}/` so switching accounts or
+        // orgs on one machine never reuses another identity's cached docs.
+        let org_dir = data_dir
+            .join("orgs")
+            .join(sanitize_path_id(org_id))
+            .join(sanitize_path_id(user_id));
         let store = Arc::new(DocsStore::open(&org_dir)?);
         let journal = Arc::new(RunJournal::open(org_dir.join("journals"))?);
         let sessions = SessionsEngine::new(device_id.clone(), journal, registry.clone());
@@ -161,6 +166,7 @@ impl EngineCore {
                 device_name: local_device_name(),
                 platform: std::env::consts::OS.to_string(),
                 org_id: org_id.to_string(),
+                user_id: user_id.to_string(),
                 edge: edge.clone(),
             },
         )?;
@@ -355,27 +361,28 @@ impl Engine {
             && auth.access_token().await.is_some();
         let edge = online.then(|| EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())));
 
-        // Workspace org: the session's org claim (WorkOS) beats the configured one.
+        // Workspace identity: the session's org claim (WorkOS) beats the
+        // configured one; the user id comes from the signed-in session (dev
+        // mode: the bearer's `user@org` prefix). Everything downstream — the
+        // per-user `ws3/{org}/{user}` workspace room and the org/user-scoped
+        // local store — keys off this pair.
         let org_id = auth
             .state()
             .org_id()
             .map(str::to_string)
-            .or(config.org_id.clone());
-        let core = match &org_id {
-            Some(org_id) => EngineCore::assemble_with_org(
-                &config.data_dir,
-                Arc::new(default_registry()),
-                config.default_harness,
-                edge.clone(),
-                org_id,
-            )?,
-            None => EngineCore::assemble(
-                &config.data_dir,
-                Arc::new(default_registry()),
-                config.default_harness,
-                edge.clone(),
-            )?,
-        };
+            .or(config.org_id.clone())
+            .unwrap_or_else(|| env_or("COMET_ORG_ID", DEFAULT_ORG_ID));
+        let user_id = auth
+            .user_id()
+            .unwrap_or_else(|| env_or("COMET_USER_ID", DEFAULT_USER_ID));
+        let core = EngineCore::assemble_with_identity(
+            &config.data_dir,
+            Arc::new(default_registry()),
+            config.default_harness,
+            edge.clone(),
+            &org_id,
+            &user_id,
+        )?;
         core.set_auth(auth.clone());
         tracing::info!(device_id = %core.device_id, "engine core assembled");
 
@@ -483,7 +490,16 @@ fn local_device_name() -> String {
         .unwrap_or_else(|| "unknown-device".to_string())
 }
 
-/// Filesystem-safe form of an org id (path segment for `orgs/{orgId}/`).
+/// Trimmed env var or the given default.
+fn env_or(key: &str, default: &str) -> String {
+    std::env::var(key)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default.to_string())
+}
+
+/// Filesystem-safe form of an org/user id (path segments for `orgs/{org}/{user}/`).
 fn sanitize_path_id(id: &str) -> String {
     id.chars()
         .map(|c| {

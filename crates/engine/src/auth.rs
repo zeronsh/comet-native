@@ -84,6 +84,13 @@ impl AuthState {
         }
     }
 
+    pub fn user(&self) -> Option<&AuthUser> {
+        match self {
+            AuthState::SignedIn { user, .. } | AuthState::NeedsOrganization { user } => Some(user),
+            AuthState::SignedOut => None,
+        }
+    }
+
     /// The proto wire twin — the one shape the engine emits over AuthStatus.
     pub fn to_proto(&self) -> comet_proto::AuthState {
         let profile = |user: &AuthUser| comet_proto::UserProfile {
@@ -296,6 +303,18 @@ impl Auth {
 
     pub fn state(&self) -> AuthState {
         self.inner.state_tx.borrow().clone()
+    }
+
+    /// The signed-in user id — the identity that scopes workspace rooms
+    /// (`ws3/{orgId}/{userId}`) and local storage (`orgs/{org}/{user}/`).
+    /// Dev mode mirrors the edge's dev-bearer parsing (`user@org` → `user`,
+    /// a bare token IS the user id). `None` = signed out (WorkOS only).
+    pub fn user_id(&self) -> Option<String> {
+        if self.inner.workos.is_none() {
+            let dev = &self.inner.config.dev_user_id;
+            return Some(dev.split('@').next().unwrap_or(dev).to_string());
+        }
+        self.state().user().map(|u| u.id.clone())
     }
 
     /// Current bearer for edge rooms / the device relay — `None` when signed out.
