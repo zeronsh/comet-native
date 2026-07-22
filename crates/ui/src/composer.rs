@@ -9,14 +9,16 @@
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, Bounds, ClipboardItem, Context, CursorStyle, ElementInputHandler, Entity,
+    App, Bounds, ClipboardEntry, ClipboardItem, Context, CursorStyle, ElementInputHandler, Entity,
     EntityInputHandler, EventEmitter, FocusHandle, Focusable, GlobalElementId, KeyBinding,
-    KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PaintQuad,
-    Pixels, Point, SharedString, Style, Subscription, Task, TextRun, TextStyle, UTF16Selection,
-    UnderlineStyle, Window, WrappedLine, actions, div, fill, point, prelude::*, px, relative, size,
+    KeyDownEvent, LayoutId, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit,
+    PaintQuad, PathPromptOptions, Pixels, Point, SharedString, Style, StyledImage as _,
+    Subscription, Task, TextRun, TextStyle, UTF16Selection, UnderlineStyle, Window, WrappedLine,
+    actions, div, fill, img, point, prelude::*, px, relative, size,
 };
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -24,6 +26,7 @@ use comet_doc::{MessagePart, MessageStatus, SessionCommandPayload, SessionMessag
 use comet_proto::{RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion};
 use comet_rpc::methods;
 
+use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::pickers::Pickers;
 use crate::state::{AppState, Indicator};
@@ -128,6 +131,26 @@ pub fn composer_total_height(content_height: f32) -> f32 {
     (content_height + TEXTAREA_PAD_V).clamp(TEXTAREA_MIN, TEXTAREA_MAX)
         + ACTIONS_ROW_HEIGHT
         + PILL_BORDER_V
+}
+
+/// Staged-attachment strip metrics (comet attachment-ui.tsx AttachmentStrip:
+/// `flex flex-wrap gap-2 px-4 pt-3`, `size-14` thumbs).
+pub const STRIP_THUMB: f32 = 56.0;
+pub const STRIP_GAP: f32 = 8.0;
+pub const STRIP_PAD_TOP: f32 = 12.0;
+pub const STRIP_PAD_X: f32 = 16.0;
+
+/// Height the wrap strip adds to the pill for `count` staged thumbnails at an
+/// `inner_width` pill content width (0 when empty). Mirrors flex-wrap: as many
+/// 56px thumbs per row as fit with 8px gaps inside the 16px side insets.
+pub fn attachment_strip_height(count: usize, inner_width: f32) -> f32 {
+    if count == 0 {
+        return 0.0;
+    }
+    let usable = (inner_width - 2.0 * STRIP_PAD_X).max(STRIP_THUMB);
+    let per_row = (((usable + STRIP_GAP) / (STRIP_THUMB + STRIP_GAP)).floor() as usize).max(1);
+    let rows = count.div_ceil(per_row);
+    STRIP_PAD_TOP + rows as f32 * STRIP_THUMB + (rows - 1) as f32 * STRIP_GAP
 }
 
 /// Compact↔expanded flip morph (round 9): the flip used to snap between the
@@ -548,10 +571,15 @@ pub fn init(cx: &mut App) {
 }
 
 /// Events the composer wrapper listens for.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposerInputEvent {
     Submitted,
     Edited,
+    /// Images pasted from the clipboard (screenshots / copied image data) —
+    /// the wrapper stages them as attachments (use-attachments.ts onPaste).
+    PastedImages(Vec<gpui::Image>),
+    /// File paths pasted from the clipboard (a file manager "Copy").
+    PastedPaths(Vec<PathBuf>),
 }
 
 /// Multiline input entity: content + selection + IME marked text + measured
@@ -875,7 +903,32 @@ impl ComposerInput {
     }
 
     fn paste(&mut self, _: &Paste, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+        let Some(item) = cx.read_from_clipboard() else {
+            return;
+        };
+        // Image data (or copied files) beats text — the original composer's
+        // onPaste prevents the default text insert when `clipboardData.files`
+        // is non-empty and stages the images instead.
+        let mut images: Vec<gpui::Image> = Vec::new();
+        let mut paths: Vec<PathBuf> = Vec::new();
+        for entry in &item.entries {
+            match entry {
+                ClipboardEntry::Image(image) => images.push(image.clone()),
+                ClipboardEntry::ExternalPaths(files) => {
+                    paths.extend(files.paths().iter().cloned());
+                }
+                ClipboardEntry::String(_) => {}
+            }
+        }
+        if !images.is_empty() {
+            cx.emit(ComposerInputEvent::PastedImages(images));
+            return;
+        }
+        if !paths.is_empty() {
+            cx.emit(ComposerInputEvent::PastedPaths(paths));
+            return;
+        }
+        if let Some(text) = item.text() {
             // Multiline input: newlines are welcome (unlike the single-line example).
             self.replace_text_in_range(None, &text, window, cx);
         }
@@ -1403,7 +1456,9 @@ impl gpui::Element for ComposerTextElement {
             // Caret only when this input is actually focused in an active
             // window (Electron hides it on window deactivation too), and only
             // in the "on" blink phase — solid while typing, ~500ms blink idle.
-            if self.input.update(cx, |input, cx| input.caret_shown(window, cx))
+            if self
+                .input
+                .update(cx, |input, cx| input.caret_shown(window, cx))
                 && let Some(cursor) = prepaint.cursor.take()
             {
                 window.paint_quad(cursor);
@@ -1481,6 +1536,13 @@ pub struct Composer {
     pickers: Entity<Pickers>,
     /// Draft text per chat key ("" = new-chat canvas), surviving navigation.
     drafts: HashMap<String, String>,
+    /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`):
+    /// navigating away and back restores them; memory-only, like the original.
+    attachments: HashMap<String, Vec<StagedAttachment>>,
+    /// The staged attachment being viewed full-size (click a thumbnail).
+    preview: Option<attachments::PreviewImage>,
+    /// In-flight file-picker prompt (paperclip).
+    picker_task: Option<Task<()>>,
     current_key: String,
     sending: bool,
     failure: Option<SharedString>,
@@ -1534,13 +1596,24 @@ impl Composer {
         let input_events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.on_submit(cx),
             ComposerInputEvent::Edited => cx.notify(),
+            ComposerInputEvent::PastedImages(images) => {
+                let staged = images
+                    .iter()
+                    .map(|image| attachments::stage_clipboard_image(image.clone()))
+                    .collect();
+                this.add_staged(staged, cx);
+            }
+            ComposerInputEvent::PastedPaths(paths) => this.add_paths(paths.clone(), cx),
         });
         let current_key = state.read(cx).selected_chat.clone().unwrap_or_default();
-        Self {
+        let mut composer = Self {
             state,
             input,
             pickers,
             drafts: HashMap::new(),
+            attachments: HashMap::new(),
+            preview: None,
+            picker_task: None,
             current_key,
             sending: false,
             failure: None,
@@ -1562,11 +1635,188 @@ impl Composer {
             route_snap_until: None,
             _observe: observe,
             _input_events: input_events,
+        };
+        // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
+        // a rig) — `COMET_ATTACH=/path/a.png[,/path/b.png]`, and
+        // `COMET_ATTACH_PREVIEW=1` boots with the first one's lightbox open.
+        if let Ok(spec) = std::env::var("COMET_ATTACH") {
+            let staged: Vec<StagedAttachment> = spec
+                .split(',')
+                .filter(|s| !s.trim().is_empty())
+                .filter_map(|path| {
+                    match attachments::stage_file(std::path::Path::new(path.trim())) {
+                        Ok(att) => Some(att),
+                        Err(err) => {
+                            tracing::warn!(%path, error = %err, "COMET_ATTACH stage failed");
+                            None
+                        }
+                    }
+                })
+                .collect();
+            if std::env::var("COMET_ATTACH_PREVIEW").is_ok_and(|v| v == "1")
+                && let Some(first) = staged.first()
+            {
+                composer.preview = Some(attachments::PreviewImage {
+                    name: first.name.clone().into(),
+                    image: first.image.clone(),
+                });
+            }
+            if !staged.is_empty() {
+                composer
+                    .attachments
+                    .entry(composer.current_key.clone())
+                    .or_default()
+                    .extend(staged);
+            }
         }
+        composer
     }
 
     pub fn is_sending(&self) -> bool {
         self.sending
+    }
+
+    // ---- attachment staging (use-attachments.ts) ----
+
+    /// Staged attachments for the chat the composer is showing.
+    fn staged(&self) -> &[StagedAttachment] {
+        self.attachments
+            .get(&self.current_key)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
+    }
+
+    fn add_staged(&mut self, staged: Vec<StagedAttachment>, cx: &mut Context<Self>) {
+        if staged.is_empty() {
+            return;
+        }
+        self.attachments
+            .entry(self.current_key.clone())
+            .or_default()
+            .extend(staged);
+        cx.notify();
+    }
+
+    /// Stage image files (picker / drop / pasted paths). Non-images are
+    /// skipped silently (matching the original's `image/*` filter); read
+    /// failures and oversize files surface in the failure notice.
+    pub(crate) fn add_paths(&mut self, paths: Vec<PathBuf>, cx: &mut Context<Self>) {
+        let mut staged = Vec::new();
+        for path in &paths {
+            if attachments::format_by_extension(path).is_none() {
+                continue;
+            }
+            match attachments::stage_file(path) {
+                Ok(att) => staged.push(att),
+                Err(message) => {
+                    self.failure = Some(message.into());
+                    cx.notify();
+                }
+            }
+        }
+        self.add_staged(staged, cx);
+    }
+
+    fn remove_attachment(&mut self, id: &str, cx: &mut Context<Self>) {
+        if let Some(list) = self.attachments.get_mut(&self.current_key) {
+            list.retain(|a| a.id != id);
+            if list.is_empty() {
+                self.attachments.remove(&self.current_key);
+            }
+        }
+        cx.notify();
+    }
+
+    /// The staged-thumbnail strip (attachment-ui.tsx AttachmentStrip):
+    /// `flex flex-wrap gap-2 px-4 pt-3`, 56px rounded thumbs, a remove button
+    /// revealed on hover, click opens the full-size preview.
+    fn render_attachment_strip(&self, theme: &Theme, cx: &mut Context<Self>) -> Option<gpui::Div> {
+        let staged = self.staged();
+        if staged.is_empty() {
+            return None;
+        }
+        let mut strip = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .gap(px(STRIP_GAP))
+            .px(px(STRIP_PAD_X))
+            .pt(px(STRIP_PAD_TOP));
+        for (ix, att) in staged.iter().enumerate() {
+            let group: SharedString = format!("composer-att-{}", att.id).into();
+            let preview = attachments::PreviewImage {
+                name: att.name.clone().into(),
+                image: att.image.clone(),
+            };
+            let remove_id = att.id.clone();
+            strip = strip.child(
+                div()
+                    .group(group.clone())
+                    .relative()
+                    .child(
+                        div()
+                            .id(("composer-att-thumb", ix))
+                            .size(px(STRIP_THUMB))
+                            .rounded(px(8.0))
+                            .overflow_hidden()
+                            .border_1()
+                            .border_color(crate::theme::white_alpha(0.10))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.preview = Some(preview.clone());
+                                cx.notify();
+                            }))
+                            .child(
+                                img(att.image.clone())
+                                    .size_full()
+                                    .object_fit(ObjectFit::Cover),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id(("composer-att-remove", ix))
+                            .absolute()
+                            .top(px(-6.0))
+                            .right(px(-6.0))
+                            .size(px(18.0))
+                            .rounded_full()
+                            .bg(theme.bg)
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .cursor_pointer()
+                            .shadow_sm()
+                            .opacity(0.0)
+                            .group_hover(group, |s| s.opacity(1.0))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.remove_attachment(&remove_id, cx);
+                            }))
+                            .child(
+                                crate::icons::icon(crate::icons::CLOSE_CIRCLE)
+                                    .size(px(14.0))
+                                    .text_color(theme.text_muted),
+                            ),
+                    ),
+            );
+        }
+        Some(strip)
+    }
+
+    /// Paperclip: the native image picker (the original's hidden
+    /// `<input type=file accept=image/* multiple>`).
+    fn open_file_picker(&mut self, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: true,
+            prompt: Some("Attach".into()),
+        });
+        self.picker_task = Some(cx.spawn(async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await {
+                this.update(cx, |composer, cx| composer.add_paths(paths, cx))
+                    .ok();
+            }
+        }));
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
@@ -1590,6 +1840,9 @@ impl Composer {
             self.current_key = key;
             self.failure = None;
             self.wizard = None;
+            // Attachments stay stashed under their chat key (the map swap IS
+            // the navigation); only the transient chrome resets.
+            self.preview = None;
             // Route changes snap (round 5/6): a mode difference between the
             // old and new session's composer must not glide across
             // navigation. Killing the in-flight morph here isn't enough —
@@ -1598,8 +1851,7 @@ impl Composer {
             // window snaps (see ROUTE_SNAP_MS).
             self.flip_morph = None;
             self.last_rendered_height = 0.0;
-            self.route_snap_until =
-                Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
+            self.route_snap_until = Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
         }
 
@@ -1615,10 +1867,7 @@ impl Composer {
                     self.advance_task = None;
                     // The shared input becomes the panel's free-text override.
                     self.input.update(cx, |input, cx| {
-                        input.set_placeholder(
-                            "Type your own answer, or pick an option above",
-                            cx,
-                        )
+                        input.set_placeholder("Type your own answer, or pick an option above", cx)
                     });
                 }
             }
@@ -1656,7 +1905,9 @@ impl Composer {
     }
 
     fn button_mode(&self, cx: &App) -> SendButtonMode {
-        let has_text = !self.input.read(cx).text().trim().is_empty();
+        // A staged image counts as content: image-only sends are legal
+        // (the prompt body becomes "See the attached image(s).").
+        let has_text = !self.input.read(cx).text().trim().is_empty() || !self.staged().is_empty();
         send_button_mode(self.run_live(cx), has_text)
     }
 
@@ -1673,7 +1924,7 @@ impl Composer {
         let text = self.input.read(cx).text().trim().to_string();
         match self.button_mode(cx) {
             SendButtonMode::Stop => self.interrupt(cx),
-            _ if text.is_empty() => {}
+            _ if text.is_empty() && self.staged().is_empty() => {}
             SendButtonMode::Send => self.send(text, false, cx),
             SendButtonMode::Steer => self.send(text, true, cx),
         }
@@ -1712,7 +1963,34 @@ impl Composer {
                 .or_else(|| state.devices.first().map(|d| d.id.clone()))
                 .unwrap_or_else(|| "local".to_string())
         };
+        // Uploads/read-backs target the chat's HOST device (forwardable RPCs);
+        // a new chat is created on this device, so no explicit target needed.
+        let host_device_id = if is_new {
+            None
+        } else {
+            self.state
+                .read(cx)
+                .selected_chat_row()
+                .map(|c| c.device_id.clone())
+        };
+        // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
+        // strip empties the instant you hit send; a failure hands the files
+        // back into the chat's stash.
+        let staged = self
+            .attachments
+            .remove(&self.current_key)
+            .unwrap_or_default();
+        self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
+        let created_at = chrono::Utc::now().timestamp_millis();
+
+        // Image-only sends echo the same body `with_attachments` will use, so
+        // the bubble never renders empty (refs are upserted in post-upload).
+        let echo_text = if text.is_empty() && !staged.is_empty() {
+            attachments::ATTACHMENT_ONLY_TEXT.to_string()
+        } else {
+            text.clone()
+        };
 
         // Optimistic echo (client-minted id doubles as the persisted message id,
         // so the doc frame dedups it away).
@@ -1721,9 +1999,9 @@ impl Composer {
             role: comet_doc::MessageRole::User,
             parts: vec![MessagePart::Text {
                 id: "t0".into(),
-                text: text.clone(),
+                text: echo_text.clone(),
             }],
-            created_at: chrono::Utc::now().timestamp_millis(),
+            created_at,
             device_id: "local".into(),
             status: None,
             continuation_of: None,
@@ -1799,15 +2077,78 @@ impl Composer {
                     }
                 }
 
+                // Stage every attachment on the host device (sequential — the
+                // chunks share one channel), then thread the refs into the
+                // prompt text (`with_attachments`, the persisted transport)
+                // and the paths onto the Run request (inline image blocks).
+                let mut content = text.clone();
+                let mut attachment_paths: Vec<String> = Vec::new();
+                if !staged.is_empty() {
+                    for att in &staged {
+                        match attachments::upload_attachment(
+                            &engine,
+                            cx.background_executor(),
+                            host_device_id.as_deref(),
+                            att,
+                        )
+                        .await
+                        {
+                            Ok(path) => attachment_paths.push(path),
+                            Err(err) => {
+                                tracing::warn!(name = %att.name, error = %err, "attachment upload failed");
+                                return Err(
+                                    "Couldn't upload the attachment — the device may be offline."
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                    // Seed the transcript cache from local bytes so the sent
+                    // bubble's thumbnails never round-trip (seedTranscript-
+                    // Attachment in the original send path).
+                    let seed_device = host_device_id.clone().unwrap_or_else(|| device_id.clone());
+                    for (path, att) in attachment_paths.iter().zip(&staged) {
+                        attachments::seed_attachment(&seed_device, path, &att.name, att.image.clone());
+                        if seed_device != device_id {
+                            attachments::seed_attachment(&device_id, path, &att.name, att.image.clone());
+                        }
+                    }
+                    content = attachments::with_attachments(&text, &attachment_paths);
+                    // Refresh the echo in place with the attachment refs
+                    // (same id, same clock — the bubble grows its thumbnails
+                    // without flickering).
+                    let refreshed = SessionMessageEntry {
+                        id: message_id.clone(),
+                        role: comet_doc::MessageRole::User,
+                        parts: vec![MessagePart::Text {
+                            id: "t0".into(),
+                            text: content.clone(),
+                        }],
+                        created_at,
+                        device_id: "local".into(),
+                        status: None,
+                        continuation_of: None,
+                    };
+                    let echo_chat_id = chat_id.clone();
+                    this.update(cx, |composer, cx| {
+                        composer.state.update(cx, |s, cx| {
+                            s.remove_echo(&echo_chat_id, &message_id);
+                            s.push_echo(&echo_chat_id, refreshed);
+                            cx.notify();
+                        });
+                    })
+                    .ok();
+                }
+
                 let command = if steer_cmd {
                     SessionCommandPayload::Steer {
-                        prompt: text.clone(),
+                        prompt: content.clone(),
                         message_id: Some(message_id.clone()),
                     }
                 } else {
                     SessionCommandPayload::Run {
                         request: RunRequest {
-                            prompt: text.clone(),
+                            prompt: content.clone(),
                             model: resolved.model.clone(),
                             reasoning: resolved.reasoning,
                             model_options: resolved.model_options.clone(),
@@ -1815,6 +2156,7 @@ impl Composer {
                             sandbox: SandboxLevel::WorkspaceWrite,
                             auto_approve: false,
                             resume: None,
+                            attachments: attachment_paths,
                         },
                         message_id: message_id.clone(),
                     }
@@ -1833,13 +2175,25 @@ impl Composer {
             this.update(cx, |composer, cx| {
                 composer.sending = false;
                 if let Err(message) = result {
-                    // Failure: red banner, echo removed, prompt back in the draft.
+                    // Failure: red banner, echo removed, prompt back in the
+                    // draft, staged files back in the chat's stash.
                     composer.failure = Some(message.into());
                     composer.state.update(cx, |s, cx| {
                         s.remove_echo(&err_chat_id, &err_message_id);
                         cx.notify();
                     });
                     composer.input.update(cx, |input, cx| input.set_text(restore_text, cx));
+                    if !staged.is_empty() {
+                        // Merge by id (stashAttachments): files the user staged
+                        // while the send was in flight survive the hand-back.
+                        let slot = composer.attachments.entry(err_chat_id.clone()).or_default();
+                        let mut merged = staged.clone();
+                        merged.extend(
+                            slot.drain(..)
+                                .filter(|e| !staged.iter().any(|f| f.id == e.id)),
+                        );
+                        *slot = merged;
+                    }
                 }
                 cx.notify();
             })
@@ -1972,9 +2326,7 @@ impl Composer {
             // once the host has had ample time to execute and the resolved
             // flag to sync back, the answer demonstrably didn't take —
             // un-hide the panel instead of leaving the question unanswerable.
-            cx.background_executor()
-                .timer(Duration::from_secs(2))
-                .await;
+            cx.background_executor().timer(Duration::from_secs(2)).await;
             this.update(cx, |composer, cx| {
                 let transcript = composer.state.read(cx).transcript.clone();
                 let still_pending = pending_input_request(&transcript)
@@ -2176,7 +2528,14 @@ impl Composer {
                                 .child(SharedString::from("Select one or more options.")),
                         )
                     })
-                    .child(div().mt(px(12.0)).flex().flex_col().gap(px(4.0)).children(options))
+                    .child(
+                        div()
+                            .mt(px(12.0))
+                            .flex()
+                            .flex_col()
+                            .gap(px(4.0))
+                            .children(options),
+                    )
                     // Free-text override over a hairline (shares the composer
                     // input entity).
                     .child(
@@ -2208,14 +2567,11 @@ impl Composer {
                         gpui::Empty.into_any_element()
                     })
                     .child(
-                        crate::popover::btn_primary(
-                            &theme,
-                            if last { "Submit" } else { "Next" },
-                        )
-                        .id("wizard-submit")
-                        .px(px(16.0))
-                        .when(!can_advance, |el| el.opacity(0.4))
-                        .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
+                        crate::popover::btn_primary(&theme, if last { "Submit" } else { "Next" })
+                            .id("wizard-submit")
+                            .px(px(16.0))
+                            .when(!can_advance, |el| el.opacity(0.4))
+                            .on_click(cx.listener(|this, _, _, cx| this.wizard_advance(cx))),
                     ),
             )
             .into_any_element()
@@ -2344,7 +2700,13 @@ impl Render for Composer {
         } else {
             f32::MAX
         };
-        let next = composer_flip(self.expanded_mode, text_width, capacity, has_newline, resizing);
+        let next = composer_flip(
+            self.expanded_mode,
+            text_width,
+            capacity,
+            has_newline,
+            resizing,
+        );
         let committed_flip = next != self.expanded_mode && measured_since_flip;
         if committed_flip {
             self.expanded_mode = next;
@@ -2454,11 +2816,17 @@ impl Render for Composer {
         // Committed-height morph: the layout below is already the NEW mode's;
         // only the pill's height (and the entrance fade/text glide driven by
         // `morph_t`) animates. Steady state renders exactly the target.
-        let target_height = if expanded {
+        // Staged attachments add the wrap strip's height to the pill in BOTH
+        // modes (attachment-ui.tsx AttachmentStrip sits above the input row).
+        let staged_count = self.staged().len();
+        let strip_width_hint = if last_width > 0.0 { last_width } else { 720.0 };
+        let strip_h = attachment_strip_height(staged_count, strip_width_hint);
+        let base_height = if expanded {
             composer_total_height(content_height)
         } else {
             COMPACT_TOTAL_HEIGHT
         };
+        let target_height = base_height + strip_h;
         let (pill_height, morph_t, morphing) = match self.flip_morph {
             Some(m) if !m.done(now_ms) => {
                 (m.height(target_height, now_ms), m.progress(now_ms), true)
@@ -2474,9 +2842,10 @@ impl Render for Composer {
         self.last_rendered_height = pill_height;
 
         let send_button = self.render_send_button(mode, cx);
-        // Attach button (visual affordance; uploads arrive via paste/drop).
-        // `ml-1` per the source cluster — chips→attach reads 8px (4 gap + 4
-        // margin) in BOTH modes.
+        // Attach button — opens the native image picker (the original's hidden
+        // `<input type=file accept="image/*" multiple>`); paste/drop also feed
+        // the same strip. `ml-1` per the source cluster — chips→attach reads
+        // 8px (4 gap + 4 margin) in BOTH modes.
         let attach = div()
             .id("composer-attach")
             .ml(px(4.0))
@@ -2494,11 +2863,15 @@ impl Render for Composer {
                 crate::theme::white_alpha(0.10),
             ))
             .on_hover(motion::hover_listener("composer-attach"))
+            .on_click(cx.listener(|this, _, _, cx| this.open_file_picker(cx)))
             .child(
                 crate::icons::icon(crate::icons::PAPERCLIP)
                     .size(px(16.0))
                     .text_color(theme.text_muted),
             );
+        // Staged-thumbnail strip (attachment-ui.tsx AttachmentStrip), above
+        // the input inside the pill in both modes.
+        let strip = self.render_attachment_strip(&theme, cx);
 
         // The pill chrome (comet composer.tsx): `rounded-[26px] border
         // border-white/[0.08] bg-white/[0.03] shadow-xl` — a floating pill with
@@ -2533,10 +2906,11 @@ impl Render for Composer {
                 .relative()
                 .flex()
                 .flex_col()
+                .children(strip)
                 .child(
                     div()
                         .h(px(
-                            (target_height - PILL_BORDER_V - ACTIONS_ROW_HEIGHT).max(0.0)
+                            (base_height - PILL_BORDER_V - ACTIONS_ROW_HEIGHT).max(0.0)
                         ))
                         .px(px(16.0))
                         .pt(px(text_pt))
@@ -2584,6 +2958,7 @@ impl Render for Composer {
                 .flex()
                 .flex_col()
                 .justify_end()
+                .children(strip)
                 .child(
                     div()
                         .h(px(COMPACT_TOTAL_HEIGHT - PILL_BORDER_V))
@@ -2621,7 +2996,26 @@ impl Render for Composer {
                         ),
                 )
         };
-        container.child(motion::fade_quick("composer-input", body))
+        // The file dropzone lives in the shell (the whole conversation column,
+        // not just the pill — shell.rs `chat-dropzone`); drops land back here
+        // via `add_paths`.
+        let container = container.child(motion::fade_quick("composer-input", body));
+        // Full-size preview of a staged thumbnail (AttachmentPreviewDialog).
+        if let Some(preview) = self.preview.clone() {
+            let weak = cx.weak_entity();
+            return container.child(attachments::lightbox(
+                window.viewport_size(),
+                &preview,
+                move |_, cx| {
+                    weak.update(cx, |this, cx| {
+                        this.preview = None;
+                        cx.notify();
+                    })
+                    .ok();
+                },
+            ));
+        }
+        container
     }
 }
 
@@ -2741,13 +3135,19 @@ mod tests {
         assert_eq!(m.start_ms, 100.0);
         // …and same-mode renders keep it UNCHANGED (no restart at the
         // boundary, whatever the heights are doing).
-        assert_eq!(flip_morph_step(Some(m), false, 80.0, 150.0, false, false), Some(m));
+        assert_eq!(
+            flip_morph_step(Some(m), false, 80.0, 150.0, false, false),
+            Some(m)
+        );
         // A finished morph clears on the next same-mode render.
         assert_eq!(
             flip_morph_step(Some(m), false, 124.0, 100.0 + ALMOST, false, false),
             Some(m)
         );
-        assert_eq!(flip_morph_step(Some(m), false, 124.0, 300.0, false, false), None);
+        assert_eq!(
+            flip_morph_step(Some(m), false, 124.0, 300.0, false, false),
+            None
+        );
     }
 
     #[test]
@@ -2813,8 +3213,14 @@ mod tests {
             from: 49.0,
             start_ms: 0.0,
         };
-        assert_eq!(flip_morph_step(Some(m), false, 80.0, 50.0, false, true), None);
-        assert_eq!(flip_morph_step(Some(m), true, 80.0, 50.0, false, true), None);
+        assert_eq!(
+            flip_morph_step(Some(m), false, 80.0, 50.0, false, true),
+            None
+        );
+        assert_eq!(
+            flip_morph_step(Some(m), true, 80.0, 50.0, false, true),
+            None
+        );
         // …while outside the window the same flip animates as usual.
         let armed = flip_morph_step(None, true, 49.0, 300.0, false, false).unwrap();
         assert_eq!(armed.from, 49.0);
@@ -3004,7 +3410,10 @@ mod tests {
             questions: vec![],
             resolved: true,
         };
-        let t = vec![entry(Some(MessageStatus::Streaming), vec![resolved.clone()])];
+        let t = vec![entry(
+            Some(MessageStatus::Streaming),
+            vec![resolved.clone()],
+        )];
         assert!(pending_input_request(&t).is_none());
         assert!(pending_input_request(&[]).is_none());
 

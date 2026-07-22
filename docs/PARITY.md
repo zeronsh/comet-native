@@ -15,8 +15,8 @@ not built yet).
 | 1.4 Keyboard shortcuts | done | Customizable keymap, click-to-record with conflict detection, per-row reset (`ui/src/settings/shortcuts.rs`); persisted with UI settings. |
 | 1.5 Routes | partial | Native navigation instead of URL routes; devices / agents / shortcuts / archived settings pages exist. Profile page (heatmap) is an §8 exclusion. |
 | 1.6 Sidebar | done | Device switcher, new session, grouped-by-project or flat, status dots (staleness-checked), row context menu (rename/archive/delete), resort glide. |
-| 1.7 Composer | partial | Send/Steer/Stop morph, compact↔expanded flip, per-chat drafts, optimistic echo with failure return-to-draft, QuestionPanel (paged, auto-advance, number keys), all four pickers (harness/model, traits, repo with folder browser + clone/create, branch with worktree toggle). Gap: attachment UI (drag-drop/paste strip) — engine upload RPCs exist, UI not wired. |
-| 1.8 Transcript | done | Doc-projection source, virtualized, markdown + syntax highlight, tool folding (ToolGroup/ToolChip), input/error chips, stick-to-bottom band, MessageRail minimap (hover preview, hidden < 48rem). |
+| 1.7 Composer | done | Send/Steer/Stop morph, compact↔expanded flip, per-chat drafts, optimistic echo with failure return-to-draft, QuestionPanel (paged, auto-advance, number keys), all four pickers (harness/model, traits, repo with folder browser + clone/create, branch with worktree toggle), image attachments (paste/drop/picker → strip → chunked upload to host device → `withAttachments` refs in prompt text + inline image blocks for the Claude harness; per-chat stash, failure hand-back, lightbox — `ui/src/attachments.rs`). |
+| 1.8 Transcript | done | Doc-projection source, virtualized, markdown + syntax highlight, tool folding (ToolGroup/ToolChip), input/error chips, stick-to-bottom band, MessageRail minimap (hover preview, hidden < 48rem), user-bubble attachment thumbnails (112×80, read-back from owning device, 2s→15s retry ladder, seeded cache, click-to-expand lightbox). |
 | 1.9 Accounts settings | done | Provider cards, usage meters with 80/95% thresholds + reset time, Switch/Forget, paste-code and browser-poll add flows, device switcher (`targetDeviceId`). |
 | 1.10 Terminal panel | done | Session-scoped tabs, drag-reorder, middle-click close, height drag, replay-then-tail streams, input coalescing, ANSI emulator (`ui/src/terminal/`). |
 | 1.11 Changes viewer | done | Patch → file/hunk/line rows, per-file collapse, ±gutters, time-sliced highlighting, preparing/clean/error states, checkout_id → device+cwd resolution. |
@@ -98,13 +98,11 @@ not built yet).
   contents not designed.
 - **Cursor harness** (§4).
 - **macOS packaging execution** — config + steps in `dist/` only (needs a Mac).
-- **Attachment UI** (composer strip, previews) — engine surface ready.
 - **Engine hardening**: single-instance lock, parent-PID watchdog, crash
   shield, idle reaper / stall watchdog, boot warm-open of recent chats.
 
 ## Summary
 
-Table rows above: **38 done · 7 partial · 1 deferred** (Cursor harness), plus
+Table rows above: **39 done · 6 partial · 1 deferred** (Cursor harness), plus
 the cross-cutting deferrals (mobile, E2EE, macOS packaging execution,
-attachment UI, engine hardening) — the last two overlap the named gaps in the
-partial rows.
+engine hardening) — the last overlaps the named gaps in the partial rows.

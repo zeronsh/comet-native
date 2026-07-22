@@ -38,7 +38,7 @@ pub struct RailTick {
 }
 
 fn user_text(entry: &SessionMessageEntry) -> String {
-    entry
+    let raw = entry
         .parts
         .iter()
         .filter_map(|part| match part {
@@ -46,7 +46,11 @@ fn user_text(entry: &SessionMessageEntry) -> String {
             _ => None,
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    // Attachment refs ride the message text — the rail shows the visible
+    // prompt, or "Attached image(s)" for image-only sends
+    // (message-attachments.ts `userMessageRailText`).
+    crate::attachments::user_message_rail_text(&raw)
 }
 
 fn first_reply_text(entries: &[SessionMessageEntry]) -> Option<String> {

@@ -170,6 +170,7 @@ impl TitleGenerator {
                 cwd: cwd.to_string(),
                 sandbox: SandboxLevel::ReadOnly,
                 auto_approve: true,
+                attachments: Vec::new(),
                 resume: None,
             };
             match collect_text(harness.as_ref(), request).await {

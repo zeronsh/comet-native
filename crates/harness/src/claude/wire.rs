@@ -190,6 +190,44 @@ pub(crate) fn user_message_line(text: &str) -> String {
     .to_string()
 }
 
+/// One inline image for a stdin user turn (Anthropic base64 image source).
+pub(crate) struct ImageBlock {
+    /// One of the API-supported media types (png/jpeg/gif/webp).
+    pub media_type: String,
+    /// Raw base64 (no data-URL prefix).
+    pub data: String,
+}
+
+/// A stdin user turn whose content is an array of blocks: the attached images
+/// first, then the text — the standard Anthropic image+text message shape
+/// (verified against the real CLI: `--input-format stream-json` accepts image
+/// content blocks in user frames). Empty `images` degrades to the plain line.
+pub(crate) fn user_message_line_with_images(text: &str, images: &[ImageBlock]) -> String {
+    if images.is_empty() {
+        return user_message_line(text);
+    }
+    let mut blocks: Vec<Value> = images
+        .iter()
+        .map(|img| {
+            json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data,
+                },
+            })
+        })
+        .collect();
+    blocks.push(json!({ "type": "text", "text": text }));
+    json!({
+        "type": "user",
+        "message": { "role": "user", "content": blocks },
+        "parent_tool_use_id": null,
+    })
+    .to_string()
+}
+
 /// Success reply to a CLI control request (`can_use_tool` allow/deny payloads).
 pub(crate) fn control_response_line(request_id: &str, response: Value) -> String {
     json!({
@@ -246,5 +284,31 @@ mod tests {
         assert_eq!(v["type"], "user");
         assert_eq!(v["message"]["content"], "hi");
         assert!(v["parent_tool_use_id"].is_null());
+    }
+
+    #[test]
+    fn user_line_with_images_is_blocks_then_text() {
+        let line = user_message_line_with_images(
+            "what is this?",
+            &[ImageBlock {
+                media_type: "image/png".into(),
+                data: "QUJD".into(),
+            }],
+        );
+        let v: Value = serde_json::from_str(&line).expect("json");
+        assert_eq!(v["type"], "user");
+        let content = v["message"]["content"].as_array().expect("array content");
+        assert_eq!(content.len(), 2);
+        assert_eq!(content[0]["type"], "image");
+        assert_eq!(content[0]["source"]["type"], "base64");
+        assert_eq!(content[0]["source"]["media_type"], "image/png");
+        assert_eq!(content[0]["source"]["data"], "QUJD");
+        assert_eq!(content[1]["type"], "text");
+        assert_eq!(content[1]["text"], "what is this?");
+        // No images ⇒ identical to the plain string line.
+        assert_eq!(
+            user_message_line_with_images("hi", &[]),
+            user_message_line("hi")
+        );
     }
 }

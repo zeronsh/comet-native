@@ -394,6 +394,10 @@ pub struct Shell {
     state: Entity<AppState>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
+    /// External file drag hovering the conversation column — shows the
+    /// "Drop images to attach" veil over the whole chat area; a drop stages
+    /// the files in the composer.
+    file_drag_active: bool,
     /// Lazy panes: no entity (and no RPC) until first opened.
     terminal: Option<Entity<TerminalPanel>>,
     changes: Option<Entity<Changes>>,
@@ -563,6 +567,7 @@ impl Shell {
             state,
             transcript,
             composer,
+            file_drag_active: false,
             terminal: None,
             changes: None,
             route,
@@ -1350,14 +1355,15 @@ impl Shell {
             // stale `titlebar_should_move` (armed by a down whose bubble was
             // later stopped) would start that session from a mere hover move
             // between the two clicks of a double-click.
-            .on_mouse_move(cx.listener(|this, event: &gpui::MouseMoveEvent, window, _| {
-                if this.titlebar_should_move
-                    && event.pressed_button == Some(MouseButton::Left)
-                {
-                    this.titlebar_should_move = false;
-                    window.start_window_move();
-                }
-            }))
+            .on_mouse_move(
+                cx.listener(|this, event: &gpui::MouseMoveEvent, window, _| {
+                    if this.titlebar_should_move && event.pressed_button == Some(MouseButton::Left)
+                    {
+                        this.titlebar_should_move = false;
+                        window.start_window_move();
+                    }
+                }),
+            )
             .on_click(|event, window, _| {
                 if event.click_count() == 2 {
                     if cfg!(target_os = "macos") {
@@ -1501,10 +1507,7 @@ impl Shell {
                         SettingsSection::ALL.into_iter().map(|item| {
                             let selected = item == section;
                             div()
-                                .id(SharedString::from(format!(
-                                    "settings-nav-{}",
-                                    item.label()
-                                )))
+                                .id(SharedString::from(format!("settings-nav-{}", item.label())))
                                 .flex()
                                 .flex_row()
                                 .items_center()
@@ -1528,9 +1531,7 @@ impl Shell {
                                         .text_color(Theme::dark().text)
                                 })
                                 .on_click(
-                                    cx.listener(move |this, _, _, cx| {
-                                        this.open_settings(item, cx)
-                                    }),
+                                    cx.listener(move |this, _, _, cx| this.open_settings(item, cx)),
                                 )
                                 .child(
                                     icon(section_icon(item))
@@ -1578,11 +1579,7 @@ impl Shell {
     /// presence dot · sort glyph. The native app is single-device, so the row
     /// is identity, not a menu. It tops BOTH sidebars — the settings sidebar
     /// keeps the switcher in the same slot (comet settings-sidebar.tsx).
-    fn render_device_row(
-        &self,
-        device: &Option<comet_proto::Device>,
-        theme: &Theme,
-    ) -> AnyElement {
+    fn render_device_row(&self, device: &Option<comet_proto::Device>, theme: &Theme) -> AnyElement {
         let device_name: SharedString = device
             .as_ref()
             .map(|d| d.name.clone().into())
@@ -1747,15 +1744,11 @@ impl Shell {
                     el.hover(|el| el.bg(crate::theme::white_alpha(0.06)))
                 })
                 .cursor_pointer()
-                .child(
-                    icon(icon_path)
-                        .size(px(14.0))
-                        .text_color(if active {
-                            theme.text
-                        } else {
-                            theme.text_muted.opacity(0.45)
-                        }),
-                )
+                .child(icon(icon_path).size(px(14.0)).text_color(if active {
+                    theme.text
+                } else {
+                    theme.text_muted.opacity(0.45)
+                }))
         };
         div()
             .flex()
@@ -2245,11 +2238,7 @@ impl Shell {
                         .on_click(cx.listener(move |this, _, _, cx| {
                             this.open_rename_chat(rename_id.clone(), cx)
                         }))
-                        .child(
-                            icon(icons::PEN)
-                                .size(px(16.0))
-                                .text_color(theme.text_muted),
-                        )
+                        .child(icon(icons::PEN).size(px(16.0)).text_color(theme.text_muted))
                         .child(SharedString::from("Rename…")),
                 )
                 .child(
@@ -2590,12 +2579,36 @@ impl Shell {
             self.titlebar_drag_region("empty-header-titlebar", bar, cx)
                 .into_any_element()
         };
+        // File dropzone over the ENTIRE conversation column (transcript +
+        // composer, not just the pill): dragging OS files anywhere across the
+        // chat area shows the "Drop images to attach" veil; a drop stages the
+        // files in the composer. `has_active_drag` gates the veil so a drag
+        // that left the window (FileDrop Exited) can't strand it.
+        let file_drag_active = self.file_drag_active && cx.has_active_drag();
         div()
+            .id("chat-dropzone")
+            .relative()
             .flex_1()
             .min_w_0()
             .h_full()
             .flex()
             .flex_col()
+            .on_drag_move::<gpui::ExternalPaths>(cx.listener(
+                |this, e: &gpui::DragMoveEvent<gpui::ExternalPaths>, _, cx| {
+                    let inside = e.bounds.contains(&e.event.position);
+                    if this.file_drag_active != inside {
+                        this.file_drag_active = inside;
+                        cx.notify();
+                    }
+                },
+            ))
+            .on_drop(cx.listener(|this, paths: &gpui::ExternalPaths, _, cx| {
+                this.file_drag_active = false;
+                let paths = paths.paths().to_vec();
+                this.composer
+                    .update(cx, |composer, cx| composer.add_paths(paths, cx));
+                cx.notify();
+            }))
             .child(header)
             .child(
                 // The conversation fades out at its bottom edge instead of
@@ -2628,6 +2641,20 @@ impl Shell {
             .child(status)
             .child(self.composer.clone())
             .child(self.render_terminal_container(cx))
+            .when(file_drag_active, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .bg(gpui::hsla(0.0, 0.0, 0.0, 0.4))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_size(px(13.0))
+                        .text_color(theme.text)
+                        .child("Drop images to attach"),
+                )
+            })
             .into_any_element()
     }
 
@@ -3001,69 +3028,70 @@ impl Shell {
             .auth_user()
             .map(|u| u.email.clone().into());
 
-        let memberships: AnyElement = match &orgs {
-            Loadable::Idle | Loadable::Loading => div()
-                .mt(px(24.0))
-                .child(popover::skeleton_rows("org-skeleton", &theme, 2))
-                .into_any_element(),
-            Loadable::Error(message) => div()
-                .mt(px(24.0))
-                .child(
-                    popover::error_row(&theme, message).child(
+        let memberships: AnyElement =
+            match &orgs {
+                Loadable::Idle | Loadable::Loading => div()
+                    .mt(px(24.0))
+                    .child(popover::skeleton_rows("org-skeleton", &theme, 2))
+                    .into_any_element(),
+                Loadable::Error(message) => div()
+                    .mt(px(24.0))
+                    .child(
+                        popover::error_row(&theme, message).child(
+                            div()
+                                .id("orgs-retry")
+                                .px(px(Theme::SPACE_SM))
+                                .py(px(3.0))
+                                .rounded(px(Theme::CONTROL_RADIUS))
+                                .border_1()
+                                .border_color(theme.border)
+                                .text_color(theme.text)
+                                .cursor_pointer()
+                                .hover(|s| s.bg(theme.element_hover))
+                                .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
+                                .child(SharedString::from("Retry")),
+                        ),
+                    )
+                    .into_any_element(),
+                Loadable::Ready(rows) if rows.is_empty() => Empty.into_any_element(),
+                Loadable::Ready(rows) => div()
+                    .mt(px(24.0))
+                    .flex()
+                    .flex_col()
+                    .child(
                         div()
-                            .id("orgs-retry")
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(3.0))
-                            .rounded(px(Theme::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .text_color(theme.text)
-                            .cursor_pointer()
-                            .hover(|s| s.bg(theme.element_hover))
-                            .on_click(cx.listener(|this, _, _, cx| this.load_orgs(cx)))
-                            .child(SharedString::from("Retry")),
-                    ),
-                )
-                .into_any_element(),
-            Loadable::Ready(rows) if rows.is_empty() => Empty.into_any_element(),
-            Loadable::Ready(rows) => div()
-                .mt(px(24.0))
-                .flex()
-                .flex_col()
-                .child(
-                    div()
-                        .pb(px(8.0))
-                        .text_size(px(11.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(theme.text_muted.opacity(0.6))
-                        .child(SharedString::from(
-                            "Or continue in a workspace you belong to",
-                        )),
-                )
-                .child(div().flex().flex_col().gap(px(4.0)).children(
-                    rows.iter().enumerate().map(|(ix, row)| {
-                        let org_id = row.organization_id.clone();
-                        div()
-                            .id(("org-row", ix))
-                            .px(px(12.0))
-                            .py(px(8.0))
-                            .rounded(px(8.0))
-                            .border_1()
-                            .border_color(theme.border)
-                            .bg(theme.bg)
-                            .text_size(px(13.0))
-                            .text_color(theme.text)
-                            .when(submitting, |el| el.opacity(0.5))
-                            .cursor_pointer()
-                            .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.select_org(org_id.clone(), cx);
-                            }))
-                            .child(SharedString::from(row.name.clone()))
-                    }),
-                ))
-                .into_any_element(),
-        };
+                            .pb(px(8.0))
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from(
+                                "Or continue in a workspace you belong to",
+                            )),
+                    )
+                    .child(div().flex().flex_col().gap(px(4.0)).children(
+                        rows.iter().enumerate().map(|(ix, row)| {
+                            let org_id = row.organization_id.clone();
+                            div()
+                                .id(("org-row", ix))
+                                .px(px(12.0))
+                                .py(px(8.0))
+                                .rounded(px(8.0))
+                                .border_1()
+                                .border_color(theme.border)
+                                .bg(theme.bg)
+                                .text_size(px(13.0))
+                                .text_color(theme.text)
+                                .when(submitting, |el| el.opacity(0.5))
+                                .cursor_pointer()
+                                .hover(|s| s.bg(crate::theme::white_alpha(0.04)))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.select_org(org_id.clone(), cx);
+                                }))
+                                .child(SharedString::from(row.name.clone()))
+                        }),
+                    ))
+                    .into_any_element(),
+            };
 
         // comet App.tsx OrgGate: w-400 card on the grid — logo, headline,
         // explainer (+ signed-in email), name form with a white Create button,
@@ -3231,13 +3259,19 @@ fn grid_backdrop(theme: &Theme) -> AnyElement {
         .children(horizontals)
         // Mask approximation: fade the grid back into the background toward
         // the window edges (the original masks to an ellipse at 50% / 40%).
-        .child(div().absolute().top_0().left_0().right_0().h(px(120.0)).bg(
-            gpui::linear_gradient(
-                180.0,
-                gpui::linear_color_stop(bg, 0.0),
-                gpui::linear_color_stop(bg.opacity(0.0), 1.0),
-            ),
-        ))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .left_0()
+                .right_0()
+                .h(px(120.0))
+                .bg(gpui::linear_gradient(
+                    180.0,
+                    gpui::linear_color_stop(bg, 0.0),
+                    gpui::linear_color_stop(bg.opacity(0.0), 1.0),
+                )),
+        )
         .child(
             div()
                 .absolute()
@@ -3251,13 +3285,19 @@ fn grid_backdrop(theme: &Theme) -> AnyElement {
                     gpui::linear_color_stop(bg.opacity(0.0), 1.0),
                 )),
         )
-        .child(div().absolute().top_0().bottom_0().left_0().w(px(200.0)).bg(
-            gpui::linear_gradient(
-                90.0,
-                gpui::linear_color_stop(bg, 0.0),
-                gpui::linear_color_stop(bg.opacity(0.0), 1.0),
-            ),
-        ))
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left_0()
+                .w(px(200.0))
+                .bg(gpui::linear_gradient(
+                    90.0,
+                    gpui::linear_color_stop(bg, 0.0),
+                    gpui::linear_color_stop(bg.opacity(0.0), 1.0),
+                )),
+        )
         .child(
             div()
                 .absolute()
@@ -3658,9 +3698,15 @@ mod tests {
         assert_eq!(cluster_clearance(false, false, 16.0), 78.0);
         assert_eq!(cluster_clearance(false, false, 10.0), 84.0);
         // macOS: buttons start at the 88px traffic-light cluster start.
-        assert_eq!(cluster_clearance(true, false, 16.0), 88.0 + 76.0 + 8.0 - 16.0);
+        assert_eq!(
+            cluster_clearance(true, false, 16.0),
+            88.0 + 76.0 + 8.0 - 16.0
+        );
         // macOS fullscreen: cluster reclaims the inset (starts at 12).
-        assert_eq!(cluster_clearance(true, true, 16.0), 12.0 + 76.0 + 8.0 - 16.0);
+        assert_eq!(
+            cluster_clearance(true, true, 16.0),
+            12.0 + 76.0 + 8.0 - 16.0
+        );
     }
 
     // ---- per-session panel flags (§1.10/1.11 parity: comet sessionPanels) ----

@@ -31,7 +31,8 @@ use std::time::{Duration, Instant};
 
 use gpui::{
     AnyElement, ClipboardItem, Context, Entity, ListAlignment, ListScrollEvent, ListState,
-    SharedString, Subscription, Task, Window, div, list, prelude::*, px,
+    ObjectFit, SharedString, StyledImage as _, Subscription, Task, Window, div, img, list,
+    prelude::*, px,
 };
 
 use comet_doc::{MessagePart, MessageRole, MessageStatus, SessionMessageEntry};
@@ -69,6 +70,11 @@ pub const CHIP_HEIGHT: f32 = 38.0;
 pub const CHIP_GAP: f32 = 0.0;
 pub const CHIP_CARD_HEIGHT: f32 = 30.0;
 const CHIPS_TOP_PAD: f32 = 2.0;
+/// User-bubble attachment thumbnails (user-attachments.tsx): 112×80 thumbs in
+/// a FIXED-height strip (load-state flips never shift the virtualizer).
+pub const ATT_THUMB_W: f32 = 112.0;
+pub const ATT_THUMB_H: f32 = 80.0;
+pub const ATT_STRIP_H: f32 = ATT_THUMB_H + 10.0;
 
 // ---------------------------------------------------------------------------
 // Stick-to-bottom spring (mugen §1e — same constants as its DEFAULT_SPRING,
@@ -188,7 +194,11 @@ pub struct ToolItem {
 #[derive(Clone)]
 pub enum RowKind {
     User {
+        /// Visible prompt (attachment-ref trailer already stripped).
         text: SharedString,
+        /// Image refs parsed out of the message text (message-attachments.ts):
+        /// thumbnails load from the owning device via ReadAttachmentChunk.
+        attachments: Arc<Vec<crate::attachments::UserImageAttachment>>,
         /// Optimistic echo not yet confirmed by a doc frame.
         pending: bool,
     },
@@ -246,7 +256,10 @@ where
     Tz::Offset: std::fmt::Display,
 {
     match chrono::DateTime::from_timestamp_millis(ms) {
-        Some(utc) => utc.with_timezone(tz).format("%b %-d, %-I:%M %p").to_string(),
+        Some(utc) => utc
+            .with_timezone(tz)
+            .format("%b %-d, %-I:%M %p")
+            .to_string(),
         None => String::new(),
     }
 }
@@ -287,7 +300,7 @@ pub fn rows_for_entry(
     let entry_id: SharedString = entry.id.clone().into();
 
     if entry.role == MessageRole::User {
-        let text: String = entry
+        let raw: String = entry
             .parts
             .iter()
             .filter_map(|p| match p {
@@ -296,12 +309,16 @@ pub fn rows_for_entry(
             })
             .collect::<Vec<_>>()
             .join("\n\n");
+        // Attachment refs ride the plain text (the `withAttachments`
+        // transport); split them back out for the thumbnail strip.
+        let parsed = crate::attachments::parse_user_message_images(&raw);
         return vec![Row {
             id: entry.id.clone().into(),
-            version: (text.len() as u64) << 1 | pending as u64,
+            version: (raw.len() as u64) << 1 | pending as u64,
             turn_start: true,
             kind: RowKind::User {
-                text: text.into(),
+                text: parsed.text.into(),
+                attachments: Arc::new(parsed.attachments),
                 pending,
             },
             entry_id,
@@ -476,9 +493,8 @@ pub fn rows_for_entry(
 /// the smoothness measurement knob. Off by default; zero cost when off.
 fn frame_stats_enabled() -> bool {
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ENABLED.get_or_init(|| {
-        std::env::var("COMET_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0")
-    })
+    *ENABLED
+        .get_or_init(|| std::env::var("COMET_FRAME_STATS").is_ok_and(|v| !v.is_empty() && v != "0"))
 }
 
 const FRAME_STATS_WINDOW: usize = 240;
@@ -593,12 +609,7 @@ pub fn top_gap_for(prev: Option<&Row>, row: &Row) -> f32 {
     if row.turn_start {
         return GAP_TURN;
     }
-    let is_md = |k: &RowKind| {
-        matches!(
-            k,
-            RowKind::Markdown { .. } | RowKind::LiveMarkdown { .. }
-        )
-    };
+    let is_md = |k: &RowKind| matches!(k, RowKind::Markdown { .. } | RowKind::LiveMarkdown { .. });
     let same_part_markdown = prev.is_some_and(|p| {
         is_md(&p.kind) && is_md(&row.kind) && part_prefix(&p.id) == part_prefix(&row.id)
     });
@@ -981,6 +992,13 @@ pub struct Transcript {
     /// the companion task after ~1.2s.
     copied_code: Option<(SharedString, usize)>,
     copied_clear: Option<Task<()>>,
+    /// Transcript attachment being viewed full-size (click a user thumbnail).
+    attachment_preview: Option<crate::attachments::PreviewImage>,
+    /// In-flight ReadAttachmentChunk loads, keyed `(deviceId, path)` — one per
+    /// source; results land in the global attachment cache.
+    attachment_loads: HashMap<(String, String), Task<()>>,
+    /// Scheduled retry wake-ups for errored sources (the 2s→15s ladder).
+    attachment_retries: HashMap<(String, String), Task<()>>,
     _observe: Subscription,
 }
 
@@ -1023,6 +1041,9 @@ impl Transcript {
             hovered_entry: None,
             copied_code: None,
             copied_clear: None,
+            attachment_preview: None,
+            attachment_loads: HashMap::new(),
+            attachment_retries: HashMap::new(),
             _observe: observe,
         };
         this.sync(cx);
@@ -1362,14 +1383,203 @@ impl Transcript {
         entry.epoch += 1;
     }
 
-    // ---- rendering ----
+    // ---- attachment read-back (user-attachments.tsx + transcript cache) ----
 
-    fn render_row(
+    /// Devices that may own a user message's attachment files: the chat's host
+    /// device (uploads targeted it) plus this device (comet's
+    /// `uniqueIds([attachmentDeviceId, m.device_id])`).
+    fn attachment_device_ids(&self, cx: &Context<Self>) -> Vec<String> {
+        let state = self.state.read(cx);
+        let mut ids = Vec::new();
+        if let Some(chat) = state.selected_chat_row() {
+            ids.push(chat.device_id.clone());
+        }
+        if let Some(local) = state.local_device_id.clone()
+            && !ids.contains(&local)
+        {
+            ids.push(local);
+        }
+        ids
+    }
+
+    /// Effective load state for one attachment across its candidate devices:
+    /// first Loaded source wins; otherwise loads are (re)claimed and the
+    /// snapshot degrades Loading → Error with a scheduled retry wake-up.
+    fn attachment_state(
         &mut self,
-        ix: usize,
-        window: &mut Window,
+        device_ids: &[String],
+        path: &str,
+        cx: &mut Context<Self>,
+    ) -> crate::attachments::AttachmentSnapshot {
+        use crate::attachments::{AttachmentSnapshot, attachment_snapshot, begin_load};
+        for dev in device_ids {
+            if let AttachmentSnapshot::Loaded(image) = attachment_snapshot(dev, path) {
+                return AttachmentSnapshot::Loaded(image);
+            }
+        }
+        let mut any_loading = false;
+        let mut min_retry: Option<Duration> = None;
+        for dev in device_ids {
+            if begin_load(dev, path) {
+                self.spawn_attachment_load(dev.clone(), path.to_string(), cx);
+            }
+            match attachment_snapshot(dev, path) {
+                AttachmentSnapshot::Loaded(image) => return AttachmentSnapshot::Loaded(image),
+                AttachmentSnapshot::Loading => any_loading = true,
+                AttachmentSnapshot::Error { retry_in } => {
+                    min_retry = Some(min_retry.map_or(retry_in, |m| m.min(retry_in)));
+                }
+            }
+        }
+        if any_loading {
+            return AttachmentSnapshot::Loading;
+        }
+        match min_retry {
+            Some(retry_in) => {
+                if let Some(dev) = device_ids.first() {
+                    self.schedule_attachment_retry((dev.clone(), path.to_string()), retry_in, cx);
+                }
+                AttachmentSnapshot::Error { retry_in }
+            }
+            // No candidate devices at all — the "unavailable" thumb, no retry.
+            None => AttachmentSnapshot::Error {
+                retry_in: Duration::MAX,
+            },
+        }
+    }
+
+    fn spawn_attachment_load(&mut self, device_id: String, path: String, cx: &mut Context<Self>) {
+        use crate::attachments::{read_attachment_image, store_error, store_loaded};
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            store_error(&device_id, &path);
+            return;
+        };
+        let local = self.state.read(cx).local_device_id.clone();
+        // Relay-forward only for a genuinely remote owner; the local device's
+        // files are served directly.
+        let target = (local.as_deref() != Some(device_id.as_str())).then(|| device_id.clone());
+        let key = (device_id.clone(), path.clone());
+        let task = cx.spawn(async move |this, cx| {
+            match read_attachment_image(&engine, cx.background_executor(), target.as_deref(), &path)
+                .await
+            {
+                Some(loaded) => store_loaded(&device_id, &path, loaded.name.into(), loaded.image),
+                None => store_error(&device_id, &path),
+            }
+            this.update(cx, |transcript, cx| {
+                transcript
+                    .attachment_loads
+                    .remove(&(device_id.clone(), path.clone()));
+                cx.notify();
+            })
+            .ok();
+        });
+        self.attachment_loads.insert(key, task);
+    }
+
+    /// One wake-up per errored source: after the backoff elapses, a notify
+    /// re-renders the thumb, whose `begin_load` then claims the retry.
+    fn schedule_attachment_retry(
+        &mut self,
+        key: (String, String),
+        delay: Duration,
+        cx: &mut Context<Self>,
+    ) {
+        if delay == Duration::MAX || self.attachment_retries.contains_key(&key) {
+            return;
+        }
+        let wake = key.clone();
+        let task = cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(delay + Duration::from_millis(60))
+                .await;
+            this.update(cx, |transcript, cx| {
+                transcript.attachment_retries.remove(&wake);
+                cx.notify();
+            })
+            .ok();
+        });
+        self.attachment_retries.insert(key, task);
+    }
+
+    /// The right-aligned thumbnail strip above a user bubble.
+    fn render_user_attachments(
+        &mut self,
+        row_id: &SharedString,
+        atts: &[crate::attachments::UserImageAttachment],
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        use crate::attachments::AttachmentSnapshot;
+        let device_ids = self.attachment_device_ids(cx);
+        let mut strip = div()
+            .w_full()
+            .h(px(ATT_STRIP_H))
+            .flex()
+            .flex_row()
+            .justify_end()
+            .items_start()
+            .gap(px(8.0))
+            .overflow_hidden()
+            .px(px(4.0))
+            .pt(px(4.0));
+        for (aix, att) in atts.iter().enumerate() {
+            let state = self.attachment_state(&device_ids, &att.path, cx);
+            let frame = div()
+                .flex_none()
+                .w(px(ATT_THUMB_W))
+                .h(px(ATT_THUMB_H))
+                .rounded(px(8.0))
+                .overflow_hidden();
+            let thumb: AnyElement = match state {
+                AttachmentSnapshot::Loaded(image) => {
+                    let preview = crate::attachments::PreviewImage {
+                        name: image.name.clone(),
+                        image: image.image.clone(),
+                    };
+                    frame
+                        .id(SharedString::from(format!("{row_id}#att{aix}")))
+                        .border_1()
+                        .border_color(crate::theme::white_alpha(0.11))
+                        .bg(crate::theme::white_alpha(0.035))
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.attachment_preview = Some(preview.clone());
+                            cx.notify();
+                        }))
+                        .child(
+                            img(image.image.clone())
+                                .size_full()
+                                .object_fit(ObjectFit::Cover),
+                        )
+                        .into_any_element()
+                }
+                // Errored/unavailable: the dashed "missing" thumb.
+                AttachmentSnapshot::Error { .. } => frame
+                    .border_1()
+                    .border_dashed()
+                    .border_color(crate::theme::white_alpha(0.14))
+                    .bg(crate::theme::white_alpha(0.025))
+                    .into_any_element(),
+                // Loading: the pulsing skeleton (same wash as popover skeletons).
+                AttachmentSnapshot::Loading => frame
+                    .border_1()
+                    .border_color(crate::theme::white_alpha(0.08))
+                    .bg(crate::theme::white_alpha(0.055))
+                    .with_animation(
+                        SharedString::from(format!("{row_id}#att-pulse{aix}")),
+                        motion::COMET_PULSE.repeating(),
+                        move |el, delta| el.opacity(0.35 + 0.4 * motion::pulse_wave(delta)),
+                    )
+                    .into_any_element(),
+            };
+            strip = strip.child(thumb);
+        }
+        strip.into_any_element()
+    }
+
+    // ---- rendering ----
+
+    fn render_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let Some(row) = self.rows.get(ix).cloned() else {
             return gpui::Empty.into_any_element();
         };
@@ -1382,28 +1592,46 @@ impl Transcript {
         let bottom_pad = if ix + 1 == self.rows.len() { 24.0 } else { 0.0 };
 
         let inner: AnyElement = match &row.kind {
-            RowKind::User { text, pending } => {
-                // `min_w_0` is load-bearing: gpui text answers min/max-content
-                // probes with its UNWRAPPED width, so without it the bubble's
-                // automatic min-size is the full single-line width — the flex
-                // item can't shrink, `justify_end` pushes the overflow off the
-                // left edge, and long prompts render as one clipped line
-                // instead of wrapping inside the 80% column cap.
-                let bubble = div().w_full().flex().justify_end().child(
-                    div()
-                        .min_w_0()
-                        .max_w(px(MAX_CONTENT_WIDTH * 0.8))
-                        .bg(theme.surface_raised)
-                        .rounded(px(Theme::BUBBLE_RADIUS))
-                        .px(px(16.0))
-                        .py(px(10.0))
-                        .text_size(px(14.0))
-                        .line_height(px(22.0))
-                        .text_color(theme.text)
-                        .when(*pending, |el| el.opacity(0.65))
-                        .child(text.clone()),
-                );
-                bubble.into_any_element()
+            RowKind::User {
+                text,
+                attachments,
+                pending,
+            } => {
+                let attachments = attachments.clone();
+                let text = text.clone();
+                let pending = *pending;
+                // Attachment thumbnails ride ABOVE the bubble, right-aligned
+                // (chat-view.tsx RowView: UserAttachmentStrip then the text
+                // HStack); image-only sends show no bubble at all.
+                let mut column = div().w_full().flex().flex_col();
+                if !attachments.is_empty() {
+                    column = column.child(self.render_user_attachments(&row.id, &attachments, cx));
+                }
+                if !text.is_empty() {
+                    // `min_w_0` is load-bearing: gpui text answers min/max-content
+                    // probes with its UNWRAPPED width, so without it the bubble's
+                    // automatic min-size is the full single-line width — the flex
+                    // item can't shrink, `justify_end` pushes the overflow off the
+                    // left edge, and long prompts render as one clipped line
+                    // instead of wrapping inside the 80% column cap.
+                    column = column.child(
+                        div().w_full().flex().justify_end().child(
+                            div()
+                                .min_w_0()
+                                .max_w(px(MAX_CONTENT_WIDTH * 0.8))
+                                .bg(theme.surface_raised)
+                                .rounded(px(Theme::BUBBLE_RADIUS))
+                                .px(px(16.0))
+                                .py(px(10.0))
+                                .text_size(px(14.0))
+                                .line_height(px(22.0))
+                                .text_color(theme.text)
+                                .when(pending, |el| el.opacity(0.65))
+                                .child(text),
+                        ),
+                    );
+                }
+                column.into_any_element()
             }
             RowKind::Markdown { tree, block_ix } => {
                 let opts = RenderOptions {
@@ -1517,10 +1745,7 @@ impl Transcript {
                         div()
                             .text_size(px(11.0))
                             .text_color(theme.text_muted.opacity(0.55))
-                            .child(SharedString::from(format_timestamp(
-                                ms,
-                                &chrono::Local,
-                            ))),
+                            .child(SharedString::from(format_timestamp(ms, &chrono::Local))),
                     ))
                 })
         });
@@ -1604,10 +1829,7 @@ impl Transcript {
                     })
                     .ok();
             });
-        render::CopyUi {
-            handler,
-            copied_ix,
-        }
+        render::CopyUi { handler, copied_ix }
     }
 
     /// Request highlights for the code blocks of a tree. `only` limits to one
@@ -2010,7 +2232,7 @@ impl Render for Transcript {
         // region overlay): it must float just above the composer and paint
         // OVER the bottom fade gradient, which is a later sibling of this
         // outlet — an overlay here would be tinted by the fade.
-        div()
+        let root = div()
             .relative()
             .size_full()
             .min_h_0()
@@ -2019,7 +2241,24 @@ impl Render for Transcript {
                     .size_full()
                     .with_sizing_behavior(gpui::ListSizingBehavior::Auto),
             )
-            .child(rail)
+            .child(rail);
+        // Full-size viewer for a clicked user-bubble thumbnail
+        // (AttachmentPreviewDialog: bare lightbox, click closes).
+        if let Some(preview) = self.attachment_preview.clone() {
+            let weak = cx.weak_entity();
+            return root.child(crate::attachments::lightbox(
+                window.viewport_size(),
+                &preview,
+                move |_, cx| {
+                    weak.update(cx, |this, cx| {
+                        this.attachment_preview = None;
+                        cx.notify();
+                    })
+                    .ok();
+                },
+            ));
+        }
+        root
     }
 }
 
@@ -2047,7 +2286,11 @@ mod tests {
         for i in 0..commits {
             // Each commit appends ~half a paragraph (crosses block boundaries).
             let chunk = &paragraph[..paragraph.len() / 2];
-            text.push_str(if i % 2 == 0 { chunk } else { &paragraph[paragraph.len() / 2..] });
+            text.push_str(if i % 2 == 0 {
+                chunk
+            } else {
+                &paragraph[paragraph.len() / 2..]
+            });
             let (tree, outcome) =
                 parse_for_row(true, "e1#p1", &text, &mut live_parsers, &mut tree_cache);
             assert!(!tree.blocks.is_empty());
@@ -2314,14 +2557,8 @@ mod tests {
         // Rows: t0.0, t0.1, t0.2 (three MD blocks), g0, t1.0.
         assert_eq!(rows.len(), 5);
         // Sibling markdown blocks from the same part: md block gap.
-        assert_eq!(
-            top_gap_for(Some(&rows[0]), &rows[1]),
-            render::MD_BLOCK_GAP
-        );
-        assert_eq!(
-            top_gap_for(Some(&rows[1]), &rows[2]),
-            render::MD_BLOCK_GAP
-        );
+        assert_eq!(top_gap_for(Some(&rows[0]), &rows[1]), render::MD_BLOCK_GAP);
+        assert_eq!(top_gap_for(Some(&rows[1]), &rows[2]), render::MD_BLOCK_GAP);
         // Markdown → tool group and tool group → next part: block gap.
         assert_eq!(top_gap_for(Some(&rows[2]), &rows[3]), GAP_BLOCK);
         assert_eq!(top_gap_for(Some(&rows[3]), &rows[4]), GAP_BLOCK);
@@ -2398,6 +2635,43 @@ mod tests {
             &echoed[0].kind,
             RowKind::User { pending: true, .. }
         ));
+    }
+
+    #[test]
+    fn user_rows_split_attachment_refs_from_text() {
+        let content = crate::attachments::with_attachments(
+            "what color is this?",
+            &["/data/uploads/ab12-red.png".to_string()],
+        );
+        let mut entry = assistant("u2", MessageStatus::Complete, vec![]);
+        entry.role = MessageRole::User;
+        entry.status = None;
+        entry.parts = vec![text_part("t0", &content)];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        assert_eq!(rows.len(), 1);
+        let RowKind::User {
+            text, attachments, ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert_eq!(text.as_ref(), "what color is this?");
+        assert_eq!(attachments.len(), 1);
+        assert_eq!(attachments[0].path, "/data/uploads/ab12-red.png");
+        assert_eq!(attachments[0].name, "ab12-red.png");
+
+        // Image-only send: no bubble text, refs parsed.
+        let only = crate::attachments::with_attachments("", &["/a/p.png".to_string()]);
+        entry.parts = vec![text_part("t0", &only)];
+        let rows = rows_for_entry(&entry, false, &mut parse);
+        let RowKind::User {
+            text, attachments, ..
+        } = &rows[0].kind
+        else {
+            panic!("expected a user row");
+        };
+        assert_eq!(text.as_ref(), "");
+        assert_eq!(attachments.len(), 1);
     }
 
     #[test]
@@ -2585,7 +2859,11 @@ mod tests {
         assert_eq!(rows[0].timestamp, Some(ms));
 
         // Assistant entries: strip on the LAST row once settled…
-        let done = assistant("a1", MessageStatus::Complete, vec![text_part("p1", "one\n\ntwo")]);
+        let done = assistant(
+            "a1",
+            MessageStatus::Complete,
+            vec![text_part("p1", "one\n\ntwo")],
+        );
         let rows = rows_for_entry(&done, false, &mut parse);
         assert!(rows.len() >= 2);
         assert_eq!(rows.last().unwrap().timestamp, Some(done.created_at));

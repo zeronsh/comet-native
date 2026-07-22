@@ -502,6 +502,10 @@ impl DocHost {
                         };
                         request.prompt = prompt.clone();
                         request.resume = None; // dispatch re-derives the harness session
+                        // A reused config must not re-inline the PREVIOUS
+                        // turn's images; this steer's own refs (if any) already
+                        // ride the prompt text.
+                        request.attachments = Vec::new();
                         sessions
                             .dispatch(
                                 chat_id,
@@ -541,7 +545,11 @@ impl DocHost {
     /// since the last turn): rebuild the run config from the chat's workspace
     /// row — cwd from the row, model/reasoning/options/sandbox from its config
     /// (composer defaults otherwise). `None` without a workspace host or row.
-    fn request_from_chat_row(&self, chat_id: &str, prompt: &str) -> Option<comet_proto::RunRequest> {
+    fn request_from_chat_row(
+        &self,
+        chat_id: &str,
+        prompt: &str,
+    ) -> Option<comet_proto::RunRequest> {
         let workspace = self.workspace()?;
         let chat = match workspace.doc().chat(chat_id) {
             Ok(chat) => chat?,
@@ -565,6 +573,7 @@ impl DocHost {
                 .map(|c| c.sandbox)
                 .unwrap_or(comet_proto::SandboxLevel::WorkspaceWrite),
             auto_approve: false,
+            attachments: Vec::new(),
             resume: None,
         })
     }

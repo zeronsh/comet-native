@@ -91,6 +91,14 @@ pub struct RunRequest {
     pub auto_approve: bool,
     /// Harness-native session id to resume, if any.
     pub resume: Option<String>,
+    /// Absolute paths of image attachments already staged on the run device
+    /// (composer uploads: UploadChunk/UploadCommit → durable path). The same
+    /// paths also ride the prompt text as `Attached images (local files …)`
+    /// refs (comet's `withAttachments` transport — that's what persists in the
+    /// doc); this field additionally lets a harness inline the bytes as image
+    /// content blocks. Additive + serde-defaulted for wire compat.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub attachments: Vec<String>,
 }
 
 /// A decoded tool invocation, reduced to the fields each kind renders.
@@ -269,6 +277,25 @@ mod tests {
         };
         let json = serde_json::to_string(&ev).unwrap();
         assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
+    }
+
+    #[test]
+    fn run_request_attachments_default_and_round_trip() {
+        // Old-wire JSON without the field parses (additive compat)…
+        let old = r#"{"prompt":"p","model":null,"reasoning":null,"cwd":".","sandbox":"workspace-write","resume":null}"#;
+        let req: RunRequest = serde_json::from_str(old).unwrap();
+        assert!(req.attachments.is_empty());
+        // …and an empty list serializes away (old readers never see it).
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("attachments").is_none());
+        // Populated lists round-trip.
+        let req = RunRequest {
+            attachments: vec!["/tmp/a.png".into()],
+            ..req
+        };
+        let round: RunRequest =
+            serde_json::from_value(serde_json::to_value(&req).unwrap()).unwrap();
+        assert_eq!(round.attachments, vec!["/tmp/a.png".to_string()]);
     }
 
     #[test]

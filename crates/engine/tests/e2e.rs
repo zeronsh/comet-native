@@ -34,6 +34,7 @@ fn run_request(prompt: &str) -> RunRequest {
         cwd: "/tmp".into(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
+        attachments: Vec::new(),
         resume: None,
     }
 }
@@ -994,9 +995,15 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
     wait_for(
         || {
             entries_now(&core).iter().any(|e| {
-                e.parts
-                    .iter()
-                    .any(|p| matches!(p, MessagePart::Input { resolved: false, .. }))
+                e.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::Input {
+                            resolved: false,
+                            ..
+                        }
+                    )
+                })
             })
         },
         "input part in doc",
@@ -1016,7 +1023,10 @@ async fn wrong_id_respond_is_rejected_and_correct_answer_still_resumes() {
         },
     );
     wait_for(
-        || command_status(&core, "cmd-answer-bogus").is_some_and(|(s, _)| s != SessionCommandStatus::Pending),
+        || {
+            command_status(&core, "cmd-answer-bogus")
+                .is_some_and(|(s, _)| s != SessionCommandStatus::Pending)
+        },
         "bogus answer processed",
     )
     .await;
@@ -1168,9 +1178,15 @@ async fn interrupt_unblocks_a_run_awaiting_input() {
     wait_for(
         || {
             entries_now(&core).iter().any(|e| {
-                e.parts
-                    .iter()
-                    .any(|p| matches!(p, MessagePart::Input { resolved: false, .. }))
+                e.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::Input {
+                            resolved: false,
+                            ..
+                        }
+                    )
+                })
             })
         },
         "input part in doc",
@@ -1196,9 +1212,15 @@ async fn interrupt_unblocks_a_run_awaiting_input() {
     .await;
     // The chip is terminal — no dangling unresolved question survives the run.
     assert!(entries(&core).iter().all(|e| {
-        e.parts
-            .iter()
-            .all(|p| !matches!(p, MessagePart::Input { resolved: false, .. }))
+        e.parts.iter().all(|p| {
+            !matches!(
+                p,
+                MessagePart::Input {
+                    resolved: false,
+                    ..
+                }
+            )
+        })
     }));
 
     // And the session is usable: the next run completes.
@@ -1214,9 +1236,9 @@ async fn interrupt_unblocks_a_run_awaiting_input() {
         || {
             entries_now(&core).iter().any(|e| {
                 e.status == Some(MessageStatus::Complete)
-                    && e.parts
-                        .iter()
-                        .any(|p| matches!(p, MessagePart::Text { text, .. } if text == "second done"))
+                    && e.parts.iter().any(
+                        |p| matches!(p, MessagePart::Text { text, .. } if text == "second done"),
+                    )
             })
         },
         "second run to complete",
@@ -1321,9 +1343,15 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
     wait_for(
         || {
             entries_now(&core).iter().any(|e| {
-                e.parts
-                    .iter()
-                    .any(|p| matches!(p, MessagePart::Input { resolved: false, .. }))
+                e.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::Input {
+                            resolved: false,
+                            ..
+                        }
+                    )
+                })
             })
         },
         "input part in doc",
@@ -1399,4 +1427,278 @@ async fn harness_emitted_input_twin_is_dropped_and_answer_resumes() {
         "session to settle idle",
     )
     .await;
+}
+
+// ---------------------------------------------------------------------------
+// Attachments (round 17): chunked upload → durable path → Run carrying both
+// the prompt-embedded refs (the persisted transport) and the staged paths.
+// ---------------------------------------------------------------------------
+
+/// Delegates to a scripted mock but records every RunRequest the engine hands
+/// over (the chat run AND the auto-title run share the harness) — proves
+/// `attachments` survives doc-queue → executor → harness.
+struct CapturingHarness {
+    script: Vec<AgentEvent>,
+    seen: Arc<std::sync::Mutex<Vec<RunRequest>>>,
+}
+
+#[async_trait]
+impl Harness for CapturingHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Capturing"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::StepBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[ReasoningLevel::Medium]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        self.seen.lock().unwrap().push(request.clone());
+        MockHarness {
+            script: self.script.clone(),
+        }
+        .run(request, controls)
+        .await
+    }
+}
+
+#[tokio::test]
+async fn attachment_upload_then_run_threads_refs_and_paths() {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let dir = tempfile::tempdir().unwrap();
+    let seen: Arc<std::sync::Mutex<Vec<RunRequest>>> = Default::default();
+    let core = assemble(
+        dir.path(),
+        Arc::new(CapturingHarness {
+            script: mock_script(),
+            seen: seen.clone(),
+        }),
+    );
+    let client = comet_rpc::memory_client(core.rpc_service());
+
+    // Chunked upload exactly as the composer sends it: base64 split across
+    // positional UploadChunk slots, then UploadCommit → the durable path.
+    let payload: Vec<u8> = (0..=255u8).cycle().take(9_001).collect();
+    let encoded = b64.encode(&payload);
+    let (first, second) = encoded.split_at(encoded.len() / 2);
+    for (seq, data) in [(0, first), (1, second)] {
+        client
+            .call(
+                comet_rpc::methods::UPLOAD_CHUNK,
+                serde_json::json!({ "uploadId": "e2e-att", "seq": seq, "data": data }),
+            )
+            .await
+            .expect("UploadChunk");
+    }
+    let committed = client
+        .call(
+            comet_rpc::methods::UPLOAD_COMMIT,
+            serde_json::json!({ "uploadId": "e2e-att", "fileName": "red.png" }),
+        )
+        .await
+        .expect("UploadCommit");
+    let path = committed["path"].as_str().expect("path").to_string();
+    assert_eq!(
+        std::fs::read(&path).expect("durable upload file"),
+        payload,
+        "committed file holds the exact reassembled bytes"
+    );
+
+    // Run with the comet `withAttachments` transport: refs embedded in the
+    // prompt text (this is what persists), paths on the additive field.
+    let prompt = format!(
+        "what color is this?\n\nAttached images (local files — open them to view):\n- {path}"
+    );
+    let mut request = run_request(&prompt);
+    request.attachments = vec![path.clone()];
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-att-1",
+        SessionCommandPayload::Run {
+            request,
+            message_id: "msg-att-1".into(),
+        },
+    );
+    wait_for(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+            })
+        },
+        "assistant entry to complete",
+    )
+    .await;
+
+    // Doc user entry: the message text carries the refs verbatim (render-back
+    // parses them into thumbnails).
+    let all = entries(&core);
+    assert_eq!(all[0].id, "msg-att-1");
+    assert_eq!(all[0].role, MessageRole::User);
+    match &all[0].parts[0] {
+        MessagePart::Text { text, .. } => {
+            assert!(text.contains("Attached images (local files"));
+            assert!(text.contains(&path));
+        }
+        other => panic!("unexpected user part {other:?}"),
+    }
+
+    // The harness saw the staged paths on the request itself (the chat run;
+    // a later auto-title run legitimately carries none).
+    let requests = seen.lock().unwrap().clone();
+    let chat_run = requests
+        .iter()
+        .find(|r| r.prompt.contains("what color is this?"))
+        .expect("chat run reached the harness");
+    assert_eq!(chat_run.attachments, vec![path.clone()]);
+    assert!(chat_run.prompt.contains(&path));
+
+    // Read-back over the same RPC surface the transcript uses.
+    let chunk = client
+        .call(
+            comet_rpc::methods::READ_ATTACHMENT_CHUNK,
+            serde_json::json!({ "path": path, "offset": 0 }),
+        )
+        .await
+        .expect("ReadAttachmentChunk");
+    assert_eq!(chunk["mimeType"], "image/png");
+    assert_eq!(chunk["name"], "e2e-att-red.png");
+}
+
+/// Real-CLI proof of the image pipeline: upload a tiny solid-red PNG through
+/// the chunked RPC path, run claude (haiku) with the staged path on
+/// `attachments` + the refs in the prompt, and check the reply names the
+/// color — it can only know it by SEEING the inline image block (the sandbox
+/// prompt forbids opening the file). Ignored by default: needs an installed,
+/// authenticated `claude` CLI and spends real tokens.
+/// Run with: `cargo test -p comet-engine --test e2e -- --ignored`
+#[tokio::test(flavor = "multi_thread")]
+#[ignore = "requires installed+authenticated claude CLI; spends tokens"]
+async fn real_claude_sees_uploaded_image_inline() {
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    let cwd = tmp.path().join("project");
+    std::fs::create_dir_all(&cwd).unwrap();
+
+    let core = EngineCore::assemble(
+        &dir,
+        Arc::new(comet_engine::default_registry()),
+        HarnessId::ClaudeCode,
+        None,
+    )
+    .expect("engine core assembles");
+    // Pre-title the chat so the auto-titler doesn't spend a second model call.
+    core.workspace
+        .create_chat(CHAT, &core.device_id, None, Some("/tmp".into()))
+        .expect("create chat row");
+    core.workspace
+        .rename_chat(CHAT, "Pre-titled")
+        .expect("rename chat");
+
+    // 8×8 solid-red PNG, uploaded exactly as the composer does.
+    const RED_PNG_B64: &str = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAEklEQVR4nGP4z8CAB+GTG2wAAJP0GeGuMDBnAAAAAElFTkSuQmCC";
+    let client = comet_rpc::memory_client(core.rpc_service());
+    client
+        .call(
+            comet_rpc::methods::UPLOAD_CHUNK,
+            serde_json::json!({ "uploadId": "real-img", "seq": 0, "data": RED_PNG_B64 }),
+        )
+        .await
+        .expect("UploadChunk");
+    let committed = client
+        .call(
+            comet_rpc::methods::UPLOAD_COMMIT,
+            serde_json::json!({ "uploadId": "real-img", "fileName": "swatch.png" }),
+        )
+        .await
+        .expect("UploadCommit");
+    let path = committed["path"].as_str().expect("path").to_string();
+    assert_eq!(
+        std::fs::read(&path).expect("committed file"),
+        b64.decode(RED_PNG_B64).unwrap()
+    );
+
+    let prompt = format!(
+        "Without running any tools or opening any files, answer from the attached image alone: \
+         what solid color is this image? Reply with exactly one lowercase word.\n\n\
+         Attached images (local files — open them to view):\n- {path}"
+    );
+    let request = RunRequest {
+        prompt,
+        model: Some("haiku".into()),
+        reasoning: None,
+        model_options: Default::default(),
+        cwd: cwd.to_string_lossy().to_string(),
+        sandbox: SandboxLevel::WorkspaceWrite,
+        auto_approve: false,
+        attachments: vec![path],
+        resume: None,
+    };
+    core.doc_host
+        .queue_command(
+            CHAT,
+            SessionCommandPayload::Run {
+                request,
+                message_id: "msg-img-1".into(),
+            },
+        )
+        .expect("queue real image run");
+    wait_for_within_secs(
+        || {
+            entries_now(&core).iter().any(|e| {
+                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+            })
+        },
+        "real claude image turn",
+        120,
+    )
+    .await;
+
+    let reply: String = entries(&core)
+        .iter()
+        .filter(|e| e.role == MessageRole::Assistant)
+        .flat_map(|e| e.parts.iter())
+        .filter_map(|p| match p {
+            MessagePart::Text { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    assert!(
+        reply.contains("red"),
+        "claude should name the image's color; got: {reply:?}"
+    );
+    core.shutdown().await;
+}
+
+async fn wait_for_within_secs<F>(mut predicate: F, what: &str, secs: u64)
+where
+    F: FnMut() -> bool,
+{
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(secs);
+    while !predicate() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }

@@ -340,6 +340,8 @@ impl Pickers {
                 cx.notify();
             }
             ComposerInputEvent::Submitted => this.on_search_submit(cx),
+            // Pasted images/files don't apply to a search box.
+            ComposerInputEvent::PastedImages(_) | ComposerInputEvent::PastedPaths(_) => {}
         });
         // Chat selection / config changes must re-render the chips (child views
         // only re-render on their own notify). A selection change also drops
@@ -918,11 +920,7 @@ impl Pickers {
     /// (LWW workspace write — restarts and other devices see it). The written
     /// row always carries the CONCRETE resolved model/reasoning, with the
     /// reasoning re-clamped to the (possibly just-changed) model's ladder.
-    fn update_chat_config(
-        &mut self,
-        cx: &mut Context<Self>,
-        change: impl FnOnce(&mut ChatConfig),
-    ) {
+    fn update_chat_config(&mut self, cx: &mut Context<Self>, change: impl FnOnce(&mut ChatConfig)) {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
         };
@@ -1369,28 +1367,28 @@ impl Pickers {
                                     ix == active,
                                     format!("repo-row-{ix}"),
                                 )
-                                    .id(("repo-row", ix))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.pick_repo(repo.clone(), cx);
-                                    }))
-                                    .child(
-                                        // Two-line row (comet repo-picker.tsx):
-                                        // name over the mono path.
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .flex_col()
-                                            .child(div().truncate().child(name))
-                                            .child(
-                                                div()
-                                                    .truncate()
-                                                    .font_family(theme.font_mono.clone())
-                                                    .text_size(px(11.0))
-                                                    .text_color(theme.text_muted.opacity(0.7))
-                                                    .child(path),
-                                            ),
-                                    )
+                                .id(("repo-row", ix))
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.pick_repo(repo.clone(), cx);
+                                }))
+                                .child(
+                                    // Two-line row (comet repo-picker.tsx):
+                                    // name over the mono path.
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(div().truncate().child(name))
+                                        .child(
+                                            div()
+                                                .truncate()
+                                                .font_family(theme.font_mono.clone())
+                                                .text_size(px(11.0))
+                                                .text_color(theme.text_muted.opacity(0.7))
+                                                .child(path),
+                                        ),
+                                )
                             }))
                             .into_any_element()
                     }
@@ -1521,9 +1519,7 @@ impl Pickers {
                                 .py(px(4.0))
                                 .text_size(px(12.0))
                                 .when(busy, |el| el.opacity(0.6))
-                                .on_click(
-                                    cx.listener(|this, _, _, cx| this.submit_repo_form(cx)),
-                                ),
+                                .on_click(cx.listener(|this, _, _, cx| this.submit_repo_form(cx))),
                             ),
                     )
                     .into_any_element()
@@ -1606,31 +1602,36 @@ impl Pickers {
                     .children(rows.iter().enumerate().map(|(ix, entry)| {
                         let name: SharedString = entry.name.clone().into();
                         let is_repo = entry.is_repo;
-                        popover::menu_row_nav(theme, false, ix == active, format!("browser-row-{ix}"))
-                            .id(("browser-row", ix))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.active = ix;
-                                this.browser_activate(cx);
-                            }))
-                            .child(
+                        popover::menu_row_nav(
+                            theme,
+                            false,
+                            ix == active,
+                            format!("browser-row-{ix}"),
+                        )
+                        .id(("browser-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.active = ix;
+                            this.browser_activate(cx);
+                        }))
+                        .child(
+                            div()
+                                .flex_none()
+                                .text_color(if is_repo {
+                                    theme.accent
+                                } else {
+                                    theme.text_faint
+                                })
+                                .child(SharedString::from(if is_repo { "◆" } else { "▸" })),
+                        )
+                        .child(div().flex_1().min_w_0().truncate().child(name))
+                        .when(is_repo, |el| {
+                            el.child(
                                 div()
-                                    .flex_none()
-                                    .text_color(if is_repo {
-                                        theme.accent
-                                    } else {
-                                        theme.text_faint
-                                    })
-                                    .child(SharedString::from(if is_repo { "◆" } else { "▸" })),
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_faint)
+                                    .child(SharedString::from("repo")),
                             )
-                            .child(div().flex_1().min_w_0().truncate().child(name))
-                            .when(is_repo, |el| {
-                                el.child(
-                                    div()
-                                        .text_size(px(10.0))
-                                        .text_color(theme.text_faint)
-                                        .child(SharedString::from("repo")),
-                                )
-                            })
+                        })
                     }));
                 div()
                     .flex()
@@ -1761,13 +1762,18 @@ impl Pickers {
                     .children(rows.into_iter().enumerate().map(|(ix, branch)| {
                         let label: SharedString = branch.clone().into();
                         let is_selected = selected.as_deref() == Some(branch.as_str());
-                        popover::menu_row_nav(&theme, is_selected, ix == active, format!("branch-row-{ix}"))
-                            .id(("branch-row", ix))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pick_branch(branch.clone(), cx);
-                            }))
-                            .child(div().flex_1().min_w_0().truncate().child(label))
-                            .when(is_selected, |el| el.child(popover::menu_check(&theme)))
+                        popover::menu_row_nav(
+                            &theme,
+                            is_selected,
+                            ix == active,
+                            format!("branch-row-{ix}"),
+                        )
+                        .id(("branch-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_branch(branch.clone(), cx);
+                        }))
+                        .child(div().flex_1().min_w_0().truncate().child(label))
+                        .when(is_selected, |el| el.child(popover::menu_check(&theme)))
                     }))
                     .into_any_element()
             }
@@ -1792,33 +1798,33 @@ impl Pickers {
                 popover::menu_section().child(
                     popover::menu_row(&theme, false, "branch-isolated")
                         .id("branch-isolated")
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        this.config.isolated_worktree = !this.config.isolated_worktree;
-                        cx.notify();
-                    }))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .child(
-                                div()
-                                    .text_color(theme.text)
-                                    .child(SharedString::from("Isolated worktree")),
-                            )
-                            .child(
-                                div()
-                                    .truncate()
-                                    .font_family(theme.font_mono.clone())
-                                    .text_size(px(11.0))
-                                    .text_color(theme.text_muted.opacity(0.7))
-                                    .child(SharedString::from(format!(
-                                        "~/.comet/worktrees/{repo_name}/<name>"
-                                    ))),
-                            ),
-                    )
-                    .child(toggle_switch(&theme, isolated)),
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.config.isolated_worktree = !this.config.isolated_worktree;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(
+                                    div()
+                                        .text_color(theme.text)
+                                        .child(SharedString::from("Isolated worktree")),
+                                )
+                                .child(
+                                    div()
+                                        .truncate()
+                                        .font_family(theme.font_mono.clone())
+                                        .text_size(px(11.0))
+                                        .text_color(theme.text_muted.opacity(0.7))
+                                        .child(SharedString::from(format!(
+                                            "~/.comet/worktrees/{repo_name}/<name>"
+                                        ))),
+                                ),
+                        )
+                        .child(toggle_switch(&theme, isolated)),
                 ),
             )
             .into_any_element()
@@ -1888,15 +1894,13 @@ impl Pickers {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_harness(harness, cx);
                             }))
-                            .child(
-                                crate::icons::icon(icon_path)
-                                    .size(px(20.0))
-                                    .text_color(tint.unwrap_or(if is_viewed {
-                                        theme.text
-                                    } else {
-                                        theme.text_muted
-                                    })),
-                            )
+                            .child(crate::icons::icon(icon_path).size(px(20.0)).text_color(
+                                tint.unwrap_or(if is_viewed {
+                                    theme.text
+                                } else {
+                                    theme.text_muted
+                                }),
+                            ))
                             .when(is_viewed, |el| {
                                 el.child(
                                     div()
@@ -1953,32 +1957,37 @@ impl Pickers {
                         let id = model.id.clone();
                         let is_selected = selected.as_deref() == Some(model.id.as_str())
                             || (selected.is_none() && ix == 0);
-                        popover::menu_row_nav(&theme, is_selected, ix == active, format!("model-row-{ix}"))
-                            .id(("model-row", ix))
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                this.pick_model(id.clone(), cx);
-                            }))
-                            .child(
-                                // Name + 11px muted description subline, per
-                                // harness-model-picker.tsx (`min-w-0 flex-1` column).
-                                div()
-                                    .flex_1()
-                                    .min_w_0()
-                                    .flex()
-                                    .flex_col()
-                                    .child(div().w_full().truncate().child(label))
-                                    .when_some(description, |el, description| {
-                                        el.child(
-                                            div()
-                                                .w_full()
-                                                .truncate()
-                                                .text_size(px(11.0))
-                                                .text_color(theme.text_muted.opacity(0.7))
-                                                .child(description),
-                                        )
-                                    }),
-                            )
-                            .when(is_selected, |el| el.child(popover::menu_check(&theme)))
+                        popover::menu_row_nav(
+                            &theme,
+                            is_selected,
+                            ix == active,
+                            format!("model-row-{ix}"),
+                        )
+                        .id(("model-row", ix))
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.pick_model(id.clone(), cx);
+                        }))
+                        .child(
+                            // Name + 11px muted description subline, per
+                            // harness-model-picker.tsx (`min-w-0 flex-1` column).
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .flex()
+                                .flex_col()
+                                .child(div().w_full().truncate().child(label))
+                                .when_some(description, |el, description| {
+                                    el.child(
+                                        div()
+                                            .w_full()
+                                            .truncate()
+                                            .text_size(px(11.0))
+                                            .text_color(theme.text_muted.opacity(0.7))
+                                            .child(description),
+                                    )
+                                }),
+                        )
+                        .when(is_selected, |el| el.child(popover::menu_check(&theme)))
                     }))
                     .into_any_element()
             }
@@ -2058,19 +2067,24 @@ impl Pickers {
                 .child(popover::menu_heading(&theme, "Reasoning"))
                 .children(levels.into_iter().enumerate().map(|(ix, level)| {
                     let is_active = current == Some(level);
-                    popover::menu_row_nav(&theme, is_active, ix == nav_active, format!("reasoning-row-{ix}"))
-                        .id(("reasoning-row", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick_reasoning(level, cx);
-                        }))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(SharedString::from(reasoning_label(level))),
-                        )
-                        .when(is_active, |el| el.child(popover::menu_check(&theme)))
+                    popover::menu_row_nav(
+                        &theme,
+                        is_active,
+                        ix == nav_active,
+                        format!("reasoning-row-{ix}"),
+                    )
+                    .id(("reasoning-row", ix))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.pick_reasoning(level, cx);
+                    }))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(reasoning_label(level))),
+                    )
+                    .when(is_active, |el| el.child(popover::menu_check(&theme)))
                 }))
                 .into_any_element()
         };
@@ -2108,18 +2122,22 @@ impl Pickers {
                         .flex_col()
                         .gap(px(2.0))
                         .child(popover::menu_heading(&theme, &option.label))
-                        .children(option.choices.iter().enumerate().map(
-                            |(choice_ix, choice)| {
-                                let is_active = selected_choice == choice.id;
-                                let choice_id = choice.id.clone();
-                                let option_id = option_id.clone();
-                                let is_default = choice.id == default_choice;
-                                popover::menu_row_nav(
-                                    &theme,
-                                    is_active,
-                                    option_base + choice_ix == nav_active,
-                                    format!("trait-choice-{opt_ix}-{choice_ix}"),
-                                )
+                        .children(
+                            option
+                                .choices
+                                .iter()
+                                .enumerate()
+                                .map(|(choice_ix, choice)| {
+                                    let is_active = selected_choice == choice.id;
+                                    let choice_id = choice.id.clone();
+                                    let option_id = option_id.clone();
+                                    let is_default = choice.id == default_choice;
+                                    popover::menu_row_nav(
+                                        &theme,
+                                        is_active,
+                                        option_base + choice_ix == nav_active,
+                                        format!("trait-choice-{opt_ix}-{choice_ix}"),
+                                    )
                                     .id(("trait-choice", opt_ix * 32 + choice_ix))
                                     .on_click(cx.listener(move |this, _, _, cx| {
                                         this.pick_option(
@@ -2141,16 +2159,14 @@ impl Pickers {
                                             .when(is_default, |el| {
                                                 el.child(
                                                     div()
-                                                        .text_color(
-                                                            theme.text_muted.opacity(0.5),
-                                                        )
+                                                        .text_color(theme.text_muted.opacity(0.5))
                                                         .child(SharedString::from("(default)")),
                                                 )
                                             }),
                                     )
                                     .when(is_active, |el| el.child(popover::menu_check(&theme)))
-                            },
-                        ))
+                                }),
+                        )
                 }));
 
         div()
@@ -2171,9 +2187,10 @@ impl Pickers {
 /// Claude-flavoured runs, so it wears the Claude mark).
 fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gpui::Hsla>) {
     match harness {
-        HarnessId::ClaudeCode | HarnessId::Mock => {
-            (crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand()))
-        }
+        HarnessId::ClaudeCode | HarnessId::Mock => (
+            crate::icons::CLAUDE_MARK,
+            Some(crate::icons::claude_brand()),
+        ),
         HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
         HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
     }
@@ -2212,7 +2229,11 @@ fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
 /// `COMET_HARNESS=mock` (the e2e/dev rig) opts the mock harness into the UI;
 /// production launches never set it, so the mock never surfaces there.
 fn mock_harness_enabled() -> bool {
-    std::env::var("COMET_HARNESS").ok().as_deref().map(str::trim) == Some("mock")
+    std::env::var("COMET_HARNESS")
+        .ok()
+        .as_deref()
+        .map(str::trim)
+        == Some("mock")
 }
 
 /// Production pickers AND chip resolution hide the mock harness — the
@@ -2335,7 +2356,10 @@ impl Render for Pickers {
         let harness_icon: (&'static str, Option<gpui::Hsla>) = self
             .effective_harness(cx)
             .map(harness_brand_icon)
-            .unwrap_or((crate::icons::CLAUDE_MARK, Some(crate::icons::claude_brand())));
+            .unwrap_or((
+                crate::icons::CLAUDE_MARK,
+                Some(crate::icons::claude_brand()),
+            ));
         let explicit_options = self.explicit_options(cx);
         let traits_set = traits_summary(
             self.selected_model(cx),
@@ -2376,7 +2400,12 @@ impl Render for Pickers {
         // Left cluster: repo/branch (new chats only). Right cluster: agent+model
         // and traits — the composer appends attach + send after this element
         // (comet composer-actions.tsx arrangement).
-        let mut left = div().flex().flex_row().items_center().min_w_0().gap(px(4.0));
+        let mut left = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .min_w_0()
+            .gap(px(4.0));
         if new_chat {
             let repo_chip = self.trigger_chip(
                 PickerKind::Repo,

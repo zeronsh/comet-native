@@ -13,6 +13,7 @@
 //! - [`loaders`] — comet pulse loader, gradient spinner, boot splash.
 
 pub mod app_menus;
+pub mod attachments;
 pub mod changes;
 pub mod composer;
 pub mod icons;

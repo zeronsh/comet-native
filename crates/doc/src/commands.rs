@@ -310,6 +310,7 @@ mod tests {
             cwd: "/tmp".into(),
             sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
             auto_approve: false,
+            attachments: Vec::new(),
             resume: None,
         }
     }

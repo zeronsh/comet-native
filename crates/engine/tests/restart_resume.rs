@@ -20,8 +20,7 @@ use futures::StreamExt;
 use futures::stream::BoxStream;
 
 use comet_doc::{
-    MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionDoc,
-    SessionMessageEntry,
+    MessagePart, MessageRole, MessageStatus, SessionCommandPayload, SessionDoc, SessionMessageEntry,
 };
 use comet_engine::{EngineCore, HarnessRegistry, RunJournal};
 use comet_harness::{Harness, HarnessError, RunControls};
@@ -44,6 +43,7 @@ fn run_request(prompt: &str, cwd: &str) -> RunRequest {
         cwd: cwd.into(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: true,
+        attachments: Vec::new(),
         resume: None,
     }
 }
@@ -184,7 +184,8 @@ fn stored_harness_session(core: &EngineCore) -> Option<(String, Option<String>)>
         .chat(CHAT)
         .expect("read chat row")
         .expect("chat row exists");
-    chat.harness_session_id.map(|id| (id, chat.harness_session_cwd))
+    chat.harness_session_id
+        .map(|id| (id, chat.harness_session_cwd))
 }
 
 /// Create + name the chat row up front so the auto-titler (which runs its own
@@ -211,7 +212,12 @@ async fn run_one_turn_and_shutdown(dir: &std::path::Path, requests: &RequestLog,
         },
     );
     pre_title(&core);
-    queue_run(&core, "remember the codeword PINEAPPLE", "/tmp", "msg-user-1");
+    queue_run(
+        &core,
+        "remember the codeword PINEAPPLE",
+        "/tmp",
+        "msg-user-1",
+    );
     wait_for(
         || complete_assistant_count(&core) == 1,
         "first turn to complete",
@@ -258,7 +264,11 @@ async fn restart_roundtrip_restores_chats_transcript_and_resume() {
 
     // Transcript survived: user + completed assistant entry, texts intact.
     let entries = entries_now(&core);
-    assert_eq!(entries.len(), 2, "transcript survives restart: {entries:#?}");
+    assert_eq!(
+        entries.len(),
+        2,
+        "transcript survives restart: {entries:#?}"
+    );
     assert_eq!(entries[0].id, "msg-user-1");
     assert_eq!(entries[0].role, MessageRole::User);
     assert_eq!(entries[1].role, MessageRole::Assistant);
@@ -420,7 +430,12 @@ async fn resume_is_cwd_scoped() {
     );
     // Same chat, different launch directory: claude session stores are keyed
     // by cwd, so the stored id must NOT be injected.
-    queue_run(&core, "now from another project", "/elsewhere", "msg-user-2");
+    queue_run(
+        &core,
+        "now from another project",
+        "/elsewhere",
+        "msg-user-2",
+    );
     wait_for(
         || complete_assistant_count(&core) == 2,
         "cross-cwd turn to complete",
@@ -506,6 +521,7 @@ async fn real_claude_remembers_codeword_across_engine_restart() {
         cwd: cwd.clone(),
         sandbox: SandboxLevel::WorkspaceWrite,
         auto_approve: false,
+        attachments: Vec::new(),
         resume: None,
     };
     let assemble_real = || {
