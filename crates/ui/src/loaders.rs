@@ -165,14 +165,18 @@ pub fn gradient_spinner(id: &'static str, _theme: &Theme, cell_px: f32) -> impl 
 }
 
 /// A 2×3 miniature of [`gradient_spinner`] sized for a status-dot slot
-/// (sessions-sidebar working rows): same wave and row tints, ~6×10px
-/// footprint at the default 2.5px cells.
+/// (sessions-sidebar working rows): same row tints and pulse timing, but the
+/// brightness SNAKES around the grid's perimeter (every cell of a 2×3 grid is
+/// on the ring) instead of sweeping as a vertical wave — a tiny radial chase.
+/// ~6×10px footprint at the default 2.5px cells.
 pub fn mini_gradient_spinner(key: impl Into<SharedString>, cell_px: f32) -> impl IntoElement {
     const COLS: usize = 2;
     const ROWS: usize = 3;
+    /// Clockwise ring position of each `(row, col)` cell, top-left first:
+    /// (0,0) → (0,1) → (1,1) → (2,1) → (2,0) → (1,0).
+    const RING: [[usize; COLS]; ROWS] = [[0, 1], [5, 2], [4, 3]];
+    const RING_LEN: f32 = (COLS * ROWS) as f32;
     let key = key.into();
-    let center = (COLS as f32 - 1.0) / 2.0;
-    let max = ROWS as f32 - 1.0 + center;
     div()
         .flex()
         .flex_col()
@@ -186,8 +190,7 @@ pub fn mini_gradient_spinner(key: impl Into<SharedString>, cell_px: f32) -> impl
                 .gap(px(cell_px / 2.0))
                 .children((0..COLS).map(move |col| {
                     let cell_ix = row * COLS + col;
-                    let d = ROWS as f32 - 1.0 - row as f32 + (col as f32 - center).abs();
-                    let phase = if max == 0.0 { 0.0 } else { d / (max + 1.0) };
+                    let phase = RING[row][col] as f32 / RING_LEN;
                     div()
                         .size(px(cell_px))
                         .rounded(px(cell_px / 2.0))
