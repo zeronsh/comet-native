@@ -33,14 +33,17 @@ loro = "1.13"
 # frames, cross-checked by its js_snapshots tests).
 loro-protocol = "0.3"
 
-# gpui — pinned to the same rev as the local ~/github/zed reference clone
-gpui = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
-gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57", features = [
+# gpui — the wingleeio/zed fork: upstream f14fea9 + one commit
+# (`comet/line-wrap-closing-punctuation`, a5d7d36) fixing the line wrapper so
+# closing punctuation ("  )  !  ?) never wraps alone onto the next line.
+# Rebase that branch when bumping the upstream rev.
+gpui = { git = "https://github.com/wingleeio/zed", rev = "a5d7d36bd57de6144e483a2aef2285ee0f65700c" }
+gpui_platform = { git = "https://github.com/wingleeio/zed", rev = "a5d7d36bd57de6144e483a2aef2285ee0f65700c", features = [
     "wayland",
     "x11",
     "font-kit",
 ] }
-gpui_tokio = { git = "https://github.com/zed-industries/zed", rev = "f14fea9bf3c93797d5161f7440ed418655bc6c57" }
+gpui_tokio = { git = "https://github.com/wingleeio/zed", rev = "a5d7d36bd57de6144e483a2aef2285ee0f65700c" }
 
 # async / net
 tokio = { version = "1", features = ["full"] }
