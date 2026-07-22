@@ -164,6 +164,45 @@ pub fn gradient_spinner(id: &'static str, _theme: &Theme, cell_px: f32) -> impl 
         }))
 }
 
+/// A 2×3 miniature of [`gradient_spinner`] sized for a status-dot slot
+/// (sessions-sidebar working rows): same wave and row tints, ~6×10px
+/// footprint at the default 2.5px cells.
+pub fn mini_gradient_spinner(key: impl Into<SharedString>, cell_px: f32) -> impl IntoElement {
+    const COLS: usize = 2;
+    const ROWS: usize = 3;
+    let key = key.into();
+    let center = (COLS as f32 - 1.0) / 2.0;
+    let max = ROWS as f32 - 1.0 + center;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(cell_px / 2.0))
+        .children((0..ROWS).map(move |row| {
+            let tint: gpui::Hsla = gpui::rgb(GSPIN_ROW_TINTS[row]).into();
+            let key = key.clone();
+            div()
+                .flex()
+                .flex_row()
+                .gap(px(cell_px / 2.0))
+                .children((0..COLS).map(move |col| {
+                    let cell_ix = row * COLS + col;
+                    let d = ROWS as f32 - 1.0 - row as f32 + (col as f32 - center).abs();
+                    let phase = if max == 0.0 { 0.0 } else { d / (max + 1.0) };
+                    div()
+                        .size(px(cell_px))
+                        .rounded(px(cell_px / 2.0))
+                        .bg(tint)
+                        .with_animation(
+                            SharedString::from(format!("{key}-{cell_ix}")),
+                            GRADIENT_SPIN.repeating(),
+                            move |el, delta| {
+                                el.opacity(motion::gspin_opacity(delta + phase, GSPIN_DIM))
+                            },
+                        )
+                }))
+        }))
+}
+
 /// Full-window boot splash (comet App.tsx `Splash`): the animated comet mark
 /// (`h-16`) over the app background with an uppercase tracked "Loading" line.
 /// While `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px

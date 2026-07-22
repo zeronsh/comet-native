@@ -936,9 +936,14 @@ impl TerminalPanel {
                                     ))
                                     .into_any_element()
                             }
-                            Some((from, ..)) if ix == from => {
-                                tab_el.opacity(0.35).into_any_element()
-                            }
+                            // Invisible spacer — the ghost carries the tab; a
+                            // dimmed original overlapped the sibling that
+                            // slides into the vacated slot.
+                            Some((from, ..)) if ix == from => div()
+                                .w(px(TAB_WIDTH))
+                                .h(px(28.0))
+                                .flex_none()
+                                .into_any_element(),
                             _ => tab_el.into_any_element(),
                         }
                     }),

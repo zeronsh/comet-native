@@ -35,6 +35,9 @@ pub(super) struct AddSpaceFlow {
     /// dispatch path so ↑↓/⌫/esc reach `add_space_key` while the search input
     /// holds focus (the structure every working picker uses).
     focus: FocusHandle,
+    /// Folder-list scroll — keyboard navigation keeps the highlighted row in
+    /// view (`scroll_to_item`).
+    list_scroll: gpui::ScrollHandle,
     focus_pending: bool,
     load_task: Option<Task<()>>,
     submit_task: Option<Task<()>>,
@@ -436,6 +439,7 @@ impl Shell {
             submit_busy: false,
             error: None,
             focus: cx.focus_handle(),
+            list_scroll: gpui::ScrollHandle::new(),
             focus_pending: true,
             load_task: None,
             submit_task: None,
@@ -531,6 +535,7 @@ impl Shell {
         flow.browser_path = path.clone();
         flow.browser = Loadable::Loading;
         flow.active = 0;
+        flow.list_scroll.set_offset(gpui::Point::default());
         flow.load_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
             if let Some(p) = &path {
@@ -711,6 +716,10 @@ impl Shell {
                 if let Some(flow) = self.add_space.as_mut() {
                     flow.active =
                         popover::menu_step(Some(flow.active), count, delta).unwrap_or(0);
+                    // Keep the highlighted row in view as the cursor walks
+                    // past the viewport (user-reported: the list didn't
+                    // follow the keyboard).
+                    flow.list_scroll.scroll_to_item(flow.active);
                     cx.notify();
                 }
             }
@@ -744,7 +753,7 @@ impl Shell {
                 window.focus(&handle, cx);
             }
         }
-        let (device, search, error, submit_busy, active, loading, load_error, listing, focus) = {
+        let (device, search, error, submit_busy, active, loading, load_error, listing, focus, list_scroll) = {
             let flow = self.add_space.as_ref()?;
             (
                 flow.device.clone(),
@@ -756,6 +765,7 @@ impl Shell {
                 flow.browser.error().map(str::to_string),
                 flow.browser.ready().cloned(),
                 flow.focus.clone(),
+                flow.list_scroll.clone(),
             )
         };
         let devices = self.state.read(cx).devices.clone();
@@ -965,11 +975,13 @@ impl Shell {
                 .id("add-space-folders")
                 .max_h(px(302.0))
                 .overflow_y_scroll()
+                .track_scroll(&list_scroll)
                 .px(px(8.0))
                 .py(px(6.0))
                 .flex()
                 .flex_col()
-                .gap(px(1.0))
+                // The app-wide list rhythm (sidebar rows, menu rows): 2px.
+                .gap(px(2.0))
                 .children(rows.into_iter().enumerate().map(|(ix, entry)| {
                     let name: SharedString = entry.name.clone().into();
                     let full = crate::pickers::child_path(&base_path, &entry.name);
@@ -986,19 +998,6 @@ impl Shell {
                                 .text_color(theme.text_muted.opacity(0.8)),
                         )
                         .child(div().flex_1().min_w_0().truncate().child(name))
-                        .when(is_repo, |el| {
-                            el.child(
-                                div()
-                                    .flex_none()
-                                    .px(px(5.0))
-                                    .py(px(1.0))
-                                    .rounded(px(5.0))
-                                    .bg(crate::theme::white_alpha(0.05))
-                                    .text_size(px(10.0))
-                                    .text_color(theme.text_muted.opacity(0.7))
-                                    .child(SharedString::from("git")),
-                            )
-                        })
                 }))
                 .into_any_element()
         };

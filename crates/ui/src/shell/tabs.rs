@@ -364,7 +364,16 @@ impl Shell {
                             ))
                             .into_any_element()
                     }
-                    Some((from, ..)) if ix == from => tab_el.opacity(0.35).into_any_element(),
+                    // The dragged tab is represented by the cursor ghost; its
+                    // flow slot renders as an INVISIBLE spacer. A dimmed tab
+                    // here overlapped whatever sibling slid into the vacated
+                    // slot (slide_offset moves one tab exactly there —
+                    // user-reported double-exposure).
+                    Some((from, ..)) if ix == from => div()
+                        .w(px(SESSION_TAB_WIDTH))
+                        .h(px(28.0))
+                        .flex_none()
+                        .into_any_element(),
                     _ => tab_el.into_any_element(),
                 }
             })

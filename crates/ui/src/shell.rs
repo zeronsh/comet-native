@@ -1661,9 +1661,10 @@ impl Shell {
             .into_any_element()
     }
 
-    /// One session row (comet session-row.tsx): status dot on the left rail,
-    /// title + relative time on the first line, "folder · device" underneath
-    /// aligned to the title. Click selects; right-click opens the context menu.
+    /// One session row (comet session-row.tsx): status rail on the left
+    /// (a live 2×3 mini spinner while working, a dot otherwise), title +
+    /// relative time on the first line, "folder · device" underneath aligned
+    /// to the title. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
     fn render_chat_row(
         &self,
@@ -1676,11 +1677,30 @@ impl Shell {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Status is a dot, not a word (comet session-row.tsx): always present
-        // as a left rail — amber while working / awaiting input, red when
-        // errored, bright when completed-unseen — so rows align and state
-        // changes read in place.
+        // Status is a rail, not a word (comet session-row.tsx): always present
+        // so rows align and state changes read in place. Working animates (the
+        // composer-strip spinner, miniaturized); every other status is a dot.
         let dot_color = spaces::status_dot_color(status, theme);
+        let status_rail: AnyElement = if status == comet_proto::ChatIndicator::Working {
+            div()
+                .w(px(6.0))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .child(loaders::mini_gradient_spinner(
+                    format!("chat-working-{id}"),
+                    2.0,
+                ))
+                .into_any_element()
+        } else {
+            div()
+                .size(px(6.0))
+                .rounded_full()
+                .flex_none()
+                .bg(dot_color)
+                .into_any_element()
+        };
         let (hover, text) = (theme.element_hover, theme.text);
         let selected_wash = crate::theme::white_alpha(0.08);
         let subline = theme.text_muted.opacity(0.5);
@@ -1725,7 +1745,7 @@ impl Shell {
                     .flex_row()
                     .items_center()
                     .gap(px(Theme::SPACE_SM))
-                    .child(div().size(px(6.0)).rounded_full().flex_none().bg(dot_color))
+                    .child(status_rail)
                     .child(
                         div()
                             .flex_1()
@@ -1747,6 +1767,7 @@ impl Shell {
                 el.child(
                     div()
                         .w_full()
+                        // Aligned under the title: rail(6) + gap(8).
                         .pl(px(14.0))
                         .truncate()
                         .text_size(px(11.0))
