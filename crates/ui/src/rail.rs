@@ -111,6 +111,43 @@ pub fn active_tick(tick_rows: &[usize], top_row: usize) -> Option<usize> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fixed-footprint outline (shadcn MessageScroller "Transcript Outline")
+// ---------------------------------------------------------------------------
+
+/// One tick's hit-row height and the gap between ticks (message-rail.tsx).
+pub const TICK_SLOT: f32 = 10.0;
+pub const TICK_GAP: f32 = 3.0;
+/// Vertical breathing room kept clear above/below the tick stack.
+pub const RAIL_V_MARGIN: f32 = 24.0;
+
+/// How many tick slots fit in a rail of `height` px (always ≥ 1).
+pub fn rail_capacity(height: f32) -> usize {
+    let usable = (height - 2.0 * RAIL_V_MARGIN).max(TICK_SLOT);
+    (((usable + TICK_GAP) / (TICK_SLOT + TICK_GAP)).floor() as usize).max(1)
+}
+
+/// shadcn's Transcript Outline keeps the always-visible rail a FIXED footprint
+/// (tiny marks in a fixed-size trigger; the full turn list lives behind it) —
+/// it never grows with the conversation. Same idea here: when prompts
+/// outnumber the slots that fit the viewport, ticks become evenly-sized
+/// BUCKETS over the conversation (a downsampled minimap) instead of
+/// overflowing. Returns each bucket's `[start, end)` tick range; with
+/// `n <= capacity` every bucket is a single tick — the identity, i.e. the
+/// old per-prompt rail.
+pub fn tick_buckets(n: usize, capacity: usize) -> Vec<(usize, usize)> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let cap = capacity.clamp(1, n);
+    (0..cap).map(|k| (k * n / cap, (k + 1) * n / cap)).collect()
+}
+
+/// The bucket containing tick `ix` (for active/hover mapping).
+pub fn bucket_of(buckets: &[(usize, usize)], ix: usize) -> Option<usize> {
+    buckets.iter().position(|&(s, e)| ix >= s && ix < e)
+}
+
 /// Char-cap a preview with an ellipsis. Whitespace runs (including newlines —
 /// prompts and replies are free text) collapse to single spaces first: the
 /// preview card's title is a one-line surface (message-rail.tsx line-clamp-1).
@@ -390,6 +427,15 @@ impl Transcript {
         let hover = self.rail_hover();
         let theme = Theme::of(cx).clone();
 
+        // Fixed footprint (shadcn Transcript Outline): the rail never exceeds
+        // the viewport — past capacity, ticks become even buckets over the
+        // conversation. Pre-layout the viewport reads 0; assume a typical
+        // height for that one frame rather than collapsing to a single tick.
+        let viewport_h = f32::from(self.list_state().viewport_bounds().size.height);
+        let capacity = rail_capacity(if viewport_h > 0.0 { viewport_h } else { 600.0 });
+        let buckets = tick_buckets(pairs.len(), capacity);
+        let active_bucket = active.and_then(|ix| bucket_of(&buckets, ix));
+
         div()
             .absolute()
             .left(px(16.0))
@@ -400,9 +446,16 @@ impl Transcript {
             .flex_col()
             .items_start()
             .justify_center()
-            .gap(px(3.0))
-            .children(pairs.into_iter().enumerate().map(|(ix, (tick, row))| {
-                let is_active = active == Some(ix);
+            .gap(px(TICK_GAP))
+            .children(buckets.into_iter().enumerate().map(|(ix, (start, end))| {
+                // The bucket's representative prompt: the ACTIVE tick when it
+                // falls inside (hover then previews what you're reading),
+                // the first prompt of the range otherwise.
+                let rep = active.filter(|&a| a >= start && a < end).unwrap_or(start);
+                let (tick, row) = &pairs[rep];
+                let (tick, row) = (tick.clone(), *row);
+                let bucket_len = end - start;
+                let is_active = active_bucket == Some(ix);
                 let is_hovered = hover == Some(ix);
                 // Only hover grows the tick; the active one just reads brighter
                 // (message-rail.tsx: w-3 rest, w-5 hovered).
@@ -438,12 +491,22 @@ impl Transcript {
                                     .child(SharedString::from(reply)),
                             )
                         })
+                        // Condensed bucket: say how many prompts it stands for
+                        // (the outline still spans the whole conversation).
+                        .when(bucket_len > 1, |el| {
+                            el.child(
+                                div()
+                                    .text_size(px(10.0))
+                                    .text_color(theme.text_muted.opacity(0.7))
+                                    .child(SharedString::from(format!("{bucket_len} prompts"))),
+                            )
+                        })
                         .into_any_element()
                 });
                 div()
                     .id(("rail-tick", ix))
                     .relative()
-                    .h(px(10.0))
+                    .h(px(TICK_SLOT))
                     .w_full()
                     .flex()
                     .items_center()
@@ -493,6 +556,56 @@ mod tests {
             status: Some(MessageStatus::Complete),
             continuation_of: None,
         }
+    }
+
+    #[test]
+    fn capacity_counts_slots_that_fit() {
+        // 880px viewport − 48 margin = 832 usable → (832+3)/13 = 64 slots.
+        assert_eq!(rail_capacity(880.0), 64);
+        // Tiny (or unmeasured) heights still hand out one slot.
+        assert_eq!(rail_capacity(0.0), 1);
+        assert!(rail_capacity(200.0) >= 10);
+    }
+
+    #[test]
+    fn buckets_are_identity_under_capacity() {
+        // n <= capacity: one tick per prompt — the old per-prompt rail.
+        let b = tick_buckets(5, 64);
+        assert_eq!(b.len(), 5);
+        assert!(
+            b.iter()
+                .enumerate()
+                .all(|(k, &(s, e))| s == k && e == k + 1)
+        );
+    }
+
+    #[test]
+    fn buckets_partition_evenly_over_capacity() {
+        // 100 prompts into 8 slots: every tick in exactly one bucket, in
+        // order, first starts at 0, last ends at n, sizes within ±1 of even.
+        let n = 100;
+        let b = tick_buckets(n, 8);
+        assert_eq!(b.len(), 8);
+        assert_eq!(b[0].0, 0);
+        assert_eq!(b.last().unwrap().1, n);
+        for w in b.windows(2) {
+            assert_eq!(w[0].1, w[1].0, "contiguous");
+        }
+        for &(s, e) in &b {
+            assert!((e - s) == 12 || (e - s) == 13, "even split, got {}", e - s);
+        }
+    }
+
+    #[test]
+    fn bucket_of_maps_ticks_to_their_bucket() {
+        let b = tick_buckets(10, 3); // [0,3) [3,6) [6,10)
+        assert_eq!(bucket_of(&b, 0), Some(0));
+        assert_eq!(bucket_of(&b, 3), Some(1));
+        assert_eq!(bucket_of(&b, 9), Some(2));
+        assert_eq!(bucket_of(&b, 10), None);
+        // Degenerate inputs.
+        assert!(tick_buckets(0, 8).is_empty());
+        assert_eq!(tick_buckets(3, 0), vec![(0, 3)]);
     }
 
     #[test]
