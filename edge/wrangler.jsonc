@@ -5,6 +5,8 @@
   // sidecar), §8 (device-room streams), §1.2 (R2 attachments), §3.3 (R2
   // backups); comet-native ARCHITECTURE.md §6.
   "$schema": "node_modules/wrangler/config-schema.json",
+  // Deployed by .github/workflows/deploy.yml on pushes to main that touch
+  // edge/ (CLOUDFLARE_API_TOKEN repo secret).
   "name": "comet-native-edge",
   "main": "src/index.ts",
   "compatibility_date": "2026-07-01",
