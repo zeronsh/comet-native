@@ -94,6 +94,8 @@ impl Shell {
         let git = self.space_git_detected(cx);
         let hovered = self.tab_hover.clone();
         let on_canvas = selected.is_none();
+        // No sessions yet → the canvas already shows; a `+` would be redundant.
+        let has_tabs = !tabs.is_empty();
 
         let tab_elements: Vec<AnyElement> = tabs
             .into_iter()
@@ -117,6 +119,12 @@ impl Shell {
                 let middle_id = id.clone();
                 let hover_id = id.clone();
                 // Trailing 20px slot: status dot at rest ↔ close on hover.
+                // NB: no `.occlude()` here — the TAB already occludes (for the
+                // titlebar drag region), and an occluding child would block
+                // the tab's own hover hit-test: hovering the close button
+                // un-hovers the tab, which swaps the button back to the dot,
+                // which re-hovers the tab… a flicker loop (user-reported).
+                // `stop_propagation` on click is enough to not select the tab.
                 let trailing: AnyElement = if is_hovered {
                     div()
                         .id(SharedString::from(format!("session-tab-close-{id}")))
@@ -127,8 +135,6 @@ impl Shell {
                         .justify_center()
                         .rounded(px(6.0))
                         .hover(|s| s.bg(crate::theme::white_alpha(0.09)))
-                        .occlude()
-                        .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                         .on_click(cx.listener(move |this, _, _, cx| {
                             cx.stop_propagation();
                             this.close_session_tab(close_id.clone(), cx);
@@ -257,7 +263,7 @@ impl Shell {
                     .overflow_x_scroll()
                     .children(tab_elements),
             )
-            .when(has_space, |el| el.child(new_tab))
+            .when(has_space && has_tabs, |el| el.child(new_tab))
             .child(div().flex_1())
             .when(!self.right_pane_open(cx) && git, |el| {
                 el.child(header_icon_button(

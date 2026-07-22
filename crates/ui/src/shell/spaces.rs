@@ -248,11 +248,15 @@ impl Shell {
         };
         let select_id = id.clone();
         let menu_id = id.clone();
+        // One line: "name @ device" — the folder name carries the weight, the
+        // device tag rides along slightly muted. Long names truncate; the
+        // device tag stays visible.
         div()
             .id(SharedString::from(format!("space-{id}")))
             .flex()
-            .flex_col()
-            .gap(px(2.0))
+            .flex_row()
+            .items_center()
+            .gap(px(Theme::SPACE_SM))
             .rounded(px(8.0))
             .px(px(Theme::SPACE_SM))
             .py(px(6.0))
@@ -271,52 +275,45 @@ impl Shell {
                 }),
             )
             .child(
-                div()
-                    .w_full()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(Theme::SPACE_SM))
-                    .child(
-                        icon(icons::FOLDER)
-                            .size(px(16.0))
-                            .text_color(theme.text_muted),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_size(px(13.0))
-                            .line_height(px(17.0))
-                            .font_weight(gpui::FontWeight::MEDIUM)
-                            .child(name),
-                    )
-                    .when(has_attention, |el| {
-                        el.child(
-                            div()
-                                .size(px(6.0))
-                                .rounded_full()
-                                .flex_none()
-                                .bg(crate::theme::oklch(0.879, 0.169, 91.605).opacity(0.8)),
-                        )
-                    }),
+                icon(icons::FOLDER)
+                    .size(px(16.0))
+                    .flex_none()
+                    .text_color(theme.text_muted),
             )
             .child(
                 div()
-                    .w_full()
-                    .pl(px(24.0))
+                    .min_w_0()
                     .truncate()
-                    .text_size(px(11.0))
-                    .line_height(px(14.0))
-                    .text_color(theme.text_muted.opacity(0.5))
-                    .child(SharedString::from(device_name)),
+                    .text_size(px(13.0))
+                    .line_height(px(17.0))
+                    .font_weight(gpui::FontWeight::MEDIUM)
+                    .child(name),
             )
+            .child(
+                div()
+                    .flex_none()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(12.0))
+                    .line_height(px(17.0))
+                    .text_color(theme.text_muted.opacity(0.6))
+                    .child(SharedString::from(format!("@ {device_name}"))),
+            )
+            .child(div().flex_1())
+            .when(has_attention, |el| {
+                el.child(
+                    div()
+                        .size(px(6.0))
+                        .rounded_full()
+                        .flex_none()
+                        .bg(crate::theme::oklch(0.879, 0.169, 91.605).opacity(0.8)),
+                )
+            })
             .into_any_element()
     }
 
-    /// The global "Active" list: every non-idle session across all spaces,
-    /// attention-sorted. Rows are keyed for the FLIP resort glide.
+    /// The global "Sessions" list: every session across all spaces (idle
+    /// included), attention-sorted. Rows are keyed for the FLIP resort glide.
     pub(super) fn render_active_rows(
         &mut self,
         theme: &Theme,
@@ -326,7 +323,7 @@ impl Shell {
         let rows: Vec<(ChatIndicator, comet_proto::Chat, String)> = {
             let state = self.state.read(cx);
             state
-                .active_chats(now)
+                .overview_chats(now)
                 .into_iter()
                 .map(|(status, chat)| {
                     let space = state.space_for_chat(chat);

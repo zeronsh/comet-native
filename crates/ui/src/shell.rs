@@ -1888,7 +1888,7 @@ impl Shell {
                             .text_size(px(11.0))
                             .font_weight(gpui::FontWeight::MEDIUM)
                             .text_color(theme.text_muted.opacity(0.6))
-                            .child(SharedString::from("Active")),
+                            .child(SharedString::from("Sessions")),
                     )
                     .child(if !list_items.is_empty() {
                         div()
@@ -1904,7 +1904,7 @@ impl Shell {
                             .pb(px(Theme::SPACE_SM))
                             .text_size(px(12.0))
                             .text_color(theme.text_faint)
-                            .child(SharedString::from("No active sessions"))
+                            .child(SharedString::from("No sessions yet"))
                             .into_any_element()
                     }),
             )
@@ -2431,9 +2431,9 @@ impl Shell {
         };
 
         let status = self.render_status_strip(cx);
-        // The session tab strip replaces the old chat header entirely: it
-        // carries the titlebar duties (drag region, animated window-controls
-        // inset) plus every session of the space as a tab.
+        // The session tab strip is the chat header: it carries the titlebar
+        // duties (drag region, animated window-controls inset) plus every
+        // session of the space as a tab.
         let header: AnyElement = self.render_session_tab_strip(cx);
         // File dropzone over the ENTIRE conversation column (transcript +
         // composer, not just the pill): dragging OS files anywhere across the
@@ -3480,12 +3480,28 @@ impl Render for Shell {
                 // App.tsx `<div key={phase} className="animate-in h-full">`):
                 // arriving from the splash or any gate fades the page in; the
                 // splash-out crossfades over it on boot.
+                // The sidebar resize handle FLOATS over the sidebar/card seam
+                // (zero layout width, same idiom as the changes-pane grabber)
+                // so the sidebar's right gutter stays exactly as wide as its
+                // left one — a 5px flex child here read as lopsided spacing.
+                let sidebar_seam = div()
+                    .w(px(0.0))
+                    .h_full()
+                    .flex_none()
+                    .relative()
+                    .child(
+                        sidebar_handle
+                            .absolute()
+                            .top_0()
+                            .bottom_0()
+                            .left(px(-2.0)),
+                    );
                 let page = div()
                     .size_full()
                     .flex()
                     .flex_row()
                     .child(sidebar)
-                    .child(sidebar_handle.into_any_element())
+                    .child(sidebar_seam)
                     .child(card)
                     .child(self.render_titlebar_cluster(cx))
                     .children(overlays);

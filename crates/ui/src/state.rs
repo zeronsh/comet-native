@@ -686,14 +686,14 @@ impl AppState {
         display_status(chat, self.session_for(&chat.id), now)
     }
 
-    /// The sidebar's Active list: every non-archived chat of a LIVE space, on
-    /// any device, whose status isn't Idle — attention-sorted.
-    pub fn active_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
+    /// The sidebar's Sessions list: every non-archived chat of a LIVE space,
+    /// on any device — idle included — attention-sorted (awaiting > errored >
+    /// working > completed > idle, recency within each bucket).
+    pub fn overview_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
         let mut rows: Vec<(ChatIndicator, &Chat)> = self
             .visible_chats()
             .filter(|c| c.space_id.as_deref().is_some_and(|id| self.space_row(id).is_some()))
             .map(|c| (display_status(c, self.session_for(&c.id), now), c))
-            .filter(|(status, _)| *status != ChatIndicator::Idle)
             .collect();
         sort_active(&mut rows);
         rows
@@ -1304,14 +1304,15 @@ mod tests {
             .map(|c| c.id.as_str())
             .collect();
         assert_eq!(ids, ["old", "new"]);
-        // Active list hides chats of unknown spaces and idle chats.
+        // The overview shows every live-space chat (idle included) — chats of
+        // unknown spaces stay hidden. Completed ("old") outranks idle ("new").
         let now = Utc::now();
-        let active: Vec<&str> = state
-            .active_chats(now)
+        let overview: Vec<&str> = state
+            .overview_chats(now)
             .iter()
             .map(|(_, c)| c.id.as_str())
             .collect();
-        assert_eq!(active, ["old"], "only the live-space unseen chat shows");
+        assert_eq!(overview, ["old", "new"]);
     }
 
     #[test]
