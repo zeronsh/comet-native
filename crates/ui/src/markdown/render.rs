@@ -671,6 +671,16 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
                     ));
                 }
             }
+            // Register this element into the frame's document-ordered
+            // registry (paint order IS document order), then the frame's
+            // mouse listeners.
+            REGISTRY.with(|r| {
+                r.borrow_mut().push(RegEntry {
+                    key: sel_key.clone(),
+                    text: flat_text.clone(),
+                    layout: layout.clone(),
+                })
+            });
             register_selection_listeners(window, &sel_key, &flat_text, &layout);
         },
     )
@@ -688,6 +698,80 @@ fn selection_wash() -> Hsla {
     crate::theme::oklch(0.673, 0.182, 276.935).opacity(0.35) // indigo-400
 }
 
+/// One painted text element, registered per frame in document order — the
+/// continuity model that lets a drag span paragraphs/list items (Zed gets
+/// this for free from its single-element markdown; our tree rebuilds it).
+struct RegEntry {
+    key: std::sync::Arc<str>,
+    text: SharedString,
+    layout: gpui::TextLayout,
+}
+
+thread_local! {
+    static REGISTRY: RefCell<Vec<RegEntry>> = const { RefCell::new(Vec::new()) };
+}
+
+/// A zero-size canvas that clears the selection registry — paint it FIRST in
+/// the transcript root (before any markdown), so each frame's registry holds
+/// exactly that frame's visible text elements in paint order.
+pub fn selection_frame_reset() -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        |_, _, _, _| REGISTRY.with(|r| r.borrow_mut().clear()),
+    )
+    .absolute()
+    .w(px(0.0))
+    .h(px(0.0))
+}
+
+/// `(element index, byte offset)` for a window position: the registered
+/// element whose vertical band contains it, else the nearest by vertical
+/// distance (a drag past the gutter or between blocks clamps sensibly).
+fn registry_point(position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize)> {
+    REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let mut best: Option<(usize, f32)> = None;
+        for (ei, entry) in reg.iter().enumerate() {
+            let b = entry.layout.bounds();
+            let dy = if position.y < b.top() {
+                f32::from(b.top() - position.y)
+            } else if position.y > b.bottom() {
+                f32::from(position.y - b.bottom())
+            } else {
+                0.0
+            };
+            if best.is_none_or(|(_, d)| dy < d) {
+                best = Some((ei, dy));
+            }
+            if dy == 0.0 {
+                break;
+            }
+        }
+        let (ei, _) = best?;
+        let ix = match reg[ei].layout.index_for_position(position) {
+            Ok(ix) | Err(ix) => ix,
+        };
+        Some((ei, ix))
+    })
+}
+
+/// Resolve the anchor + head into document-ordered spans over the frame's
+/// registry and store them; true if the selection changed.
+fn resolve_drag(anchor_key: &str, anchor_ix: usize, head: (usize, usize)) -> bool {
+    REGISTRY.with(|r| {
+        let reg = r.borrow();
+        let Some(anchor_ei) = reg.iter().position(|e| e.key.as_ref() == anchor_key) else {
+            return false; // anchor scrolled out of the frame — keep spans
+        };
+        let elements: Vec<(&str, &str)> = reg
+            .iter()
+            .map(|e| (e.key.as_ref(), e.text.as_ref()))
+            .collect();
+        let spans = super::selection::resolve_spans(&elements, (anchor_ei, anchor_ix), head);
+        super::selection::update_spans(spans)
+    })
+}
+
 /// Register this frame's window-level mouse listeners for one text element's
 /// selection (Zed-markdown mechanics: window-level so a drag keeps tracking
 /// outside the element's bounds; frame-scoped, so paint re-registers).
@@ -698,9 +782,6 @@ fn register_selection_listeners(
     layout: &gpui::TextLayout,
 ) {
     use gpui::{DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
-    let clamp = |layout: &gpui::TextLayout, position| match layout.index_for_position(position) {
-        Ok(ix) | Err(ix) => ix,
-    };
     {
         let (key, text, layout) = (key.clone(), text.clone(), layout.clone());
         window.on_mouse_event(move |e: &MouseDownEvent, phase, window, _cx| {
@@ -708,16 +789,18 @@ fn register_selection_listeners(
                 return;
             }
             if layout.bounds().contains(&e.position) {
-                let ix = clamp(&layout, e.position);
+                let ix = match layout.index_for_position(e.position) {
+                    Ok(ix) | Err(ix) => ix,
+                };
                 match e.click_count {
                     2 => {
                         let range = super::selection::word_range(&text, ix);
-                        super::selection::begin(&key, &text, range.clone(), range.start);
+                        super::selection::begin_with_span(&key, &text, range);
                     }
                     n if n >= 3 => {
-                        super::selection::begin(&key, &text, 0..text.len(), 0);
+                        super::selection::begin_with_span(&key, &text, 0..text.len());
                     }
-                    _ => super::selection::begin(&key, &text, ix..ix, ix),
+                    _ => super::selection::begin(&key, ix),
                 }
                 window.refresh();
             } else if super::selection::clear_if_owner(&key) {
@@ -726,12 +809,19 @@ fn register_selection_listeners(
         });
     }
     {
-        let (key, layout) = (key.clone(), layout.clone());
+        let key = key.clone();
         window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, _cx| {
             if phase != DispatchPhase::Bubble || !e.dragging() {
                 return;
             }
-            if super::selection::drag_to(&key, clamp(&layout, e.position)) {
+            // Only the anchor element's listener drives the drag.
+            let Some(anchor_ix) = super::selection::drag_anchor(&key) else {
+                return;
+            };
+            let Some(head) = registry_point(e.position) else {
+                return;
+            };
+            if resolve_drag(&key, anchor_ix, head) {
                 window.refresh();
             }
         });

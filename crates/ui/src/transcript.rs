@@ -2236,6 +2236,10 @@ impl Render for Transcript {
             .relative()
             .size_full()
             .min_h_0()
+            // FIRST child ⇒ paints first: clears the frame's markdown text-
+            // selection registry before any row's text elements re-register
+            // (document paint order = selection order; see markdown/render.rs).
+            .child(crate::markdown::render::selection_frame_reset())
             .child(
                 list(self.list.clone(), cx.processor(Self::render_row))
                     .size_full()
