@@ -199,13 +199,26 @@ pub fn render_block(
             let (size, line) = heading_metrics(*level);
             text_element(runs, size, line, true, top_ix, ix, opts, theme)
         }
-        Block::CodeBlock { language, code } => {
-            render_code_block(language.as_deref(), code, top_ix, ix, opts, theme, highlight)
-        }
+        Block::CodeBlock { language, code } => render_code_block(
+            language.as_deref(),
+            code,
+            top_ix,
+            ix,
+            opts,
+            theme,
+            highlight,
+        ),
         Block::BlockQuote { children } => div()
+            // Accent-tinted quote: indigo rail + a whisper of the same hue
+            // behind it (the inline-code treatment, dialed down).
             .border_l_2()
-            .border_color(theme.border_strong)
-            .pl(px(10.0))
+            .border_color(theme.accent.opacity(0.6))
+            .bg(theme.accent.opacity(0.05))
+            .rounded_tr(px(6.0))
+            .rounded_br(px(6.0))
+            .pl(px(12.0))
+            .pr(px(10.0))
+            .py(px(6.0))
             .flex()
             .flex_col()
             .gap(px(8.0))
@@ -222,42 +235,54 @@ pub fn render_block(
             .flex_col()
             .gap(px(4.0))
             .children(items.iter().enumerate().map(|(item_ix, item)| {
-                let marker: SharedString = match ordered_start {
-                    Some(start) => format!("{}.", start + item_ix as u64).into(),
-                    None => "•".into(),
+                // Accent markers (the inline-code hue): ordered numbers as
+                // tinted text, unordered as a REAL 5px disc — the glyph "•"
+                // reads too small at 14px.
+                let marker: gpui::AnyElement = match ordered_start {
+                    Some(start) => div()
+                        .flex_none()
+                        .min_w(px(18.0))
+                        .text_size(px(MD_TEXT_SIZE))
+                        .line_height(px(MD_LINE_HEIGHT))
+                        .text_color(theme.accent.opacity(0.85))
+                        .child(SharedString::from(format!("{}.", start + item_ix as u64)))
+                        .into_any_element(),
+                    None => div()
+                        .flex_none()
+                        .min_w(px(18.0))
+                        // Center the disc on the first text line's cap band.
+                        .h(px(MD_LINE_HEIGHT))
+                        .flex()
+                        .items_center()
+                        .child(
+                            div()
+                                .ml(px(1.0))
+                                .w(px(5.0))
+                                .h(px(5.0))
+                                .rounded_full()
+                                .bg(theme.accent.opacity(0.85)),
+                        )
+                        .into_any_element(),
                 };
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap(px(8.0))
-                    .child(
-                        div()
-                            .flex_none()
-                            .min_w(px(18.0))
-                            .text_size(px(MD_TEXT_SIZE))
-                            .line_height(px(MD_LINE_HEIGHT))
-                            .text_color(theme.text_muted)
-                            .child(marker),
-                    )
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(px(4.0))
-                            .children(item.iter().enumerate().map(|(ci, child)| {
-                                render_block(
-                                    child,
-                                    top_ix,
-                                    ix * 100 + item_ix * 10 + ci,
-                                    opts,
-                                    theme,
-                                    window,
-                                    None,
-                                )
-                            })),
-                    )
+                div().flex().flex_row().gap(px(8.0)).child(marker).child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(4.0))
+                        .children(item.iter().enumerate().map(|(ci, child)| {
+                            render_block(
+                                child,
+                                top_ix,
+                                ix * 100 + item_ix * 10 + ci,
+                                opts,
+                                theme,
+                                window,
+                                None,
+                            )
+                        })),
+                )
             }))
             .into_any_element(),
         Block::Table {
@@ -610,19 +635,20 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
             })
             .into_any_element()
     };
-    if flat.code_ranges.is_empty() {
-        return text_el;
-    }
-    // Rounded inline-code washes: a canvas sibling painted BEFORE the text
-    // (earlier sibling ⇒ underneath), reading glyph geometry from the text's
-    // own layout handle. Pure paint — the wash never participates in layout.
-    let ranges = flat.code_ranges.clone();
+    // Underlay canvas: inline-code washes + the selection wash, painted
+    // BEFORE the text (earlier sibling ⇒ underneath), reading glyph geometry
+    // from the text's own layout handle. Pure paint — never in layout. The
+    // same paint pass re-registers the frame-scoped window mouse listeners
+    // that drive text selection (round 18; see markdown/selection.rs).
+    let sel_key: std::sync::Arc<str> = format!("{}:{ix}", opts.row_key).into();
+    let code_ranges = flat.code_ranges.clone();
+    let flat_text = flat.text.clone();
     let underlay = canvas(
         |_, _, _| (),
         move |_, _, window, _| {
             let wash = inline_code_wash();
-            for range in &ranges {
-                for rect in code_wash_rects(&layout, range) {
+            for range in &code_ranges {
+                for rect in range_rects(&layout, range, INLINE_CODE_PAD_X, INLINE_CODE_INSET_Y) {
                     window.paint_quad(quad(
                         rect,
                         px(INLINE_CODE_RADIUS),
@@ -633,6 +659,19 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
                     ));
                 }
             }
+            if let Some(range) = super::selection::wash_range(&sel_key) {
+                for rect in range_rects(&layout, &range, 0.0, 0.0) {
+                    window.paint_quad(quad(
+                        rect,
+                        px(0.0),
+                        selection_wash(),
+                        px(0.0),
+                        gpui::transparent_black(),
+                        BorderStyle::default(),
+                    ));
+                }
+            }
+            register_selection_listeners(window, &sel_key, &flat_text, &layout);
         },
     )
     .absolute()
@@ -644,17 +683,92 @@ fn flat_text_element(flat: &FlatText, ix: usize, opts: &RenderOptions) -> AnyEle
         .into_any_element()
 }
 
-/// The rounded-wash boxes for one inline-code byte range: one slightly inset,
-/// 2px-overhanging box per visual line the range covers (soft wraps split it).
-/// Window coordinates, from the laid-out text's own geometry.
-fn code_wash_rects(layout: &gpui::TextLayout, range: &Range<usize>) -> Vec<Bounds<gpui::Pixels>> {
+/// Selection tint: the accent hue under the glyphs, dark-panel strength.
+fn selection_wash() -> Hsla {
+    crate::theme::oklch(0.673, 0.182, 276.935).opacity(0.35) // indigo-400
+}
+
+/// Register this frame's window-level mouse listeners for one text element's
+/// selection (Zed-markdown mechanics: window-level so a drag keeps tracking
+/// outside the element's bounds; frame-scoped, so paint re-registers).
+fn register_selection_listeners(
+    window: &mut Window,
+    key: &std::sync::Arc<str>,
+    text: &SharedString,
+    layout: &gpui::TextLayout,
+) {
+    use gpui::{DispatchPhase, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent};
+    let clamp = |layout: &gpui::TextLayout, position| match layout.index_for_position(position) {
+        Ok(ix) | Err(ix) => ix,
+    };
+    {
+        let (key, text, layout) = (key.clone(), text.clone(), layout.clone());
+        window.on_mouse_event(move |e: &MouseDownEvent, phase, window, _cx| {
+            if phase != DispatchPhase::Bubble || e.button != MouseButton::Left {
+                return;
+            }
+            if layout.bounds().contains(&e.position) {
+                let ix = clamp(&layout, e.position);
+                match e.click_count {
+                    2 => {
+                        let range = super::selection::word_range(&text, ix);
+                        super::selection::begin(&key, &text, range.clone(), range.start);
+                    }
+                    n if n >= 3 => {
+                        super::selection::begin(&key, &text, 0..text.len(), 0);
+                    }
+                    _ => super::selection::begin(&key, &text, ix..ix, ix),
+                }
+                window.refresh();
+            } else if super::selection::clear_if_owner(&key) {
+                window.refresh();
+            }
+        });
+    }
+    {
+        let (key, layout) = (key.clone(), layout.clone());
+        window.on_mouse_event(move |e: &MouseMoveEvent, phase, window, _cx| {
+            if phase != DispatchPhase::Bubble || !e.dragging() {
+                return;
+            }
+            if super::selection::drag_to(&key, clamp(&layout, e.position)) {
+                window.refresh();
+            }
+        });
+    }
+    {
+        let key = key.clone();
+        window.on_mouse_event(move |_: &MouseUpEvent, phase, _window, _cx| {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            if let Some(_text) = super::selection::end_drag(&key) {
+                // X11 middle-click paste parity (Zed does the same).
+                #[cfg(any(target_os = "linux", target_os = "freebsd"))]
+                _cx.write_to_primary(gpui::ClipboardItem::new_string(_text));
+            }
+        });
+    }
+}
+
+/// The wash boxes for one byte range: one box per visual line the range
+/// covers (soft wraps split it), in window coordinates from the laid-out
+/// text's own geometry. `pad_x` overhangs the box horizontally (inline code);
+/// `inset_y` shrinks it vertically — both 0 for a selection wash, which wants
+/// full-line-height boxes that tile seamlessly across wrapped rows.
+fn range_rects(
+    layout: &gpui::TextLayout,
+    range: &Range<usize>,
+    pad_x: f32,
+    inset_y: f32,
+) -> Vec<Bounds<gpui::Pixels>> {
     let mut rects = Vec::new();
     let line_height = layout.line_height();
     let mut cur = range.start;
     // Walk the range one visual row at a time: find the furthest index that
     // still sits on the current row (binary search over glyph positions).
     let mut guard = 0;
-    while cur < range.end && guard < 64 {
+    while cur < range.end && guard < 256 {
         guard += 1;
         let Some(p1) = layout.position_for_index(cur) else {
             break;
@@ -682,13 +796,10 @@ fn code_wash_rects(layout: &gpui::TextLayout, range: &Range<usize>) -> Vec<Bound
             && p2.x > p1.x
         {
             rects.push(Bounds::new(
-                point(
-                    p1.x - px(INLINE_CODE_PAD_X),
-                    p1.y + px(INLINE_CODE_INSET_Y),
-                ),
+                point(p1.x - px(pad_x), p1.y + px(inset_y)),
                 size(
-                    p2.x - p1.x + px(2.0 * INLINE_CODE_PAD_X),
-                    line_height - px(2.0 * INLINE_CODE_INSET_Y),
+                    p2.x - p1.x + px(2.0 * pad_x),
+                    line_height - px(2.0 * inset_y),
                 ),
             ));
         }
@@ -987,7 +1098,13 @@ mod tests {
             style: InlineStyle::default(),
         };
         let flat = flatten_runs(
-            &[plain("use "), code("foo"), code("()"), plain(" and "), code("bar")],
+            &[
+                plain("use "),
+                code("foo"),
+                code("()"),
+                plain(" and "),
+                code("bar"),
+            ],
             &theme,
             false,
         );

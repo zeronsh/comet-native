@@ -890,6 +890,10 @@ impl ComposerInput {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
+        } else if let Some(text) = crate::markdown::selection::selected_text() {
+            // The composer keeps focus while the user reads the transcript —
+            // Cmd+C with no input selection copies the markdown selection.
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
         }
     }
 
