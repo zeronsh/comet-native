@@ -112,10 +112,11 @@ impl Shell {
 
     /// The "Spaces" section: tracked header + add button, then a row per space.
     pub(super) fn render_spaces_section(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let (spaces, selected, device_names, attention): (
+        let (spaces, selected, device_names, offline_devices, attention): (
             Vec<Space>,
             Option<String>,
             std::collections::HashMap<String, String>,
+            std::collections::HashSet<String>,
             std::collections::HashMap<String, ChatIndicator>,
         ) = {
             let now = Utc::now();
@@ -132,6 +133,13 @@ impl Shell {
                             .to_string(),
                     )
                 })
+                .collect();
+            // Host-presence (the revived "Remote" signal): a remote space whose
+            // device heartbeat lapsed shows offline — a host outage, not slow sync.
+            let offline_devices = spaces
+                .iter()
+                .map(|s| s.device_id.clone())
+                .filter(|id| !state.device_online(id, now))
                 .collect();
             // Spaces with a live/awaiting session get an aggregate dot (the
             // most urgent member status wins) so the attention signal survives
@@ -160,7 +168,13 @@ impl Shell {
                     })
                     .or_insert(status);
             }
-            (spaces, state.selected_space.clone(), device_names, attention)
+            (
+                spaces,
+                state.selected_space.clone(),
+                device_names,
+                offline_devices,
+                attention,
+            )
         };
 
         let header = div()
@@ -243,9 +257,18 @@ impl Shell {
                         .get(&space.device_id)
                         .cloned()
                         .unwrap_or_else(|| "Unknown device".to_string());
+                    let host_offline = offline_devices.contains(&space.device_id);
                     let is_selected = selected.as_deref() == Some(space.id.as_str());
                     let attention = attention.get(&space.id).copied();
-                    self.render_space_row(space, device_name, is_selected, attention, theme, cx)
+                    self.render_space_row(
+                        space,
+                        device_name,
+                        host_offline,
+                        is_selected,
+                        attention,
+                        theme,
+                        cx,
+                    )
                 }),
             ));
         }
@@ -253,10 +276,12 @@ impl Shell {
     }
 
     /// One space row: folder icon + folder name, device name subline.
+    /// `host_offline` marks a remote host whose presence heartbeat lapsed.
     fn render_space_row(
         &self,
         space: Space,
         device_name: String,
+        host_offline: bool,
         selected: bool,
         attention: Option<ChatIndicator>,
         theme: &Theme,
@@ -338,8 +363,16 @@ impl Shell {
                     .truncate()
                     .text_size(px(12.0))
                     .line_height(px(17.0))
-                    .text_color(theme.text_muted.opacity(0.6))
-                    .child(SharedString::from(format!("@ {device_name}"))),
+                    .text_color(if host_offline {
+                        theme.warning.opacity(0.8)
+                    } else {
+                        theme.text_muted.opacity(0.6)
+                    })
+                    .child(SharedString::from(if host_offline {
+                        format!("@ {device_name} · offline")
+                    } else {
+                        format!("@ {device_name}")
+                    })),
             )
             .into_any_element()
     }
@@ -364,10 +397,17 @@ impl Shell {
                         .unwrap_or_else(|| "?".to_string());
                     let device = space
                         .map(|s| {
-                            state
+                            let name = state
                                 .device_name(&s.device_id)
                                 .unwrap_or("Unknown device")
-                                .to_string()
+                                .to_string();
+                            // Host-presence: a lapsed heartbeat = host outage,
+                            // not slow sync — say so where the session lives.
+                            if state.device_online(&s.device_id, now) {
+                                name
+                            } else {
+                                format!("{name} (offline)")
+                            }
                         })
                         .unwrap_or_default();
                     let mut location = format!("{folder} · {device}");

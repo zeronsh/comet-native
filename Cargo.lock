@@ -1175,6 +1175,7 @@ dependencies = [
  "comet-rpc",
  "comet-sync",
  "futures",
+ "libc",
  "loro",
  "notify",
  "portable-pty",

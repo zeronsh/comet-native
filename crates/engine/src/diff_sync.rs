@@ -368,10 +368,15 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
                 published_at: chrono::Utc::now().timestamp_millis(),
             };
             let url = format!("{}/diff/{}", edge.url.trim_end_matches('/'), chat.id);
+            // Fresh bearer per request — never the boot-time snapshot.
+            let Some(bearer) = edge.bearer().await else {
+                tracing::debug!(chat = %chat.id, "diff-sync: sidecar skipped (signed out)");
+                continue;
+            };
             let result = inner
                 .http
                 .post(&url)
-                .bearer_auth(&edge.token)
+                .bearer_auth(&bearer)
                 .json(&sidecar)
                 .send()
                 .await;

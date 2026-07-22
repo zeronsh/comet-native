@@ -55,6 +55,12 @@ const EPHEMERAL_TIMEOUT_MS: i64 = 30_000;
 /// Text `"ping"` keepalive interval — answered by the DO's hibernation-safe
 /// auto-response pair without waking it.
 const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// Silence lease: every ping elicits an auto-pong, so a healthy socket sees
+/// inbound traffic at least once per `PING_INTERVAL`. No inbound frame for a
+/// full interval plus grace = the socket is dead (half-open TCP after a NAT
+/// timeout or sleep/wake) — drop it and let the reconnect loop take over
+/// instead of waiting minutes for a TCP write failure.
+const SILENCE_LEASE: Duration = Duration::from_secs(45);
 const BACKOFF_BASE: Duration = Duration::from_millis(250);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// Stop resubmitting after this many InvalidUpdate-triggered rejoins in one
@@ -73,8 +79,29 @@ pub enum SyncError {
     JoinRefused(String),
     #[error("loro: {0}")]
     Loro(String),
+    #[error("auth: {0}")]
+    Auth(String),
     #[error("client is shut down")]
     Closed,
+}
+
+/// Per-dial WebSocket URL provider — consulted before EVERY connection attempt,
+/// including background reconnects, so a short-lived auth token embedded in the
+/// URL (`?token=…`) is re-read fresh rather than frozen at first connect.
+/// Return [`SyncError::Auth`] when no valid credential is available (signed
+/// out); the reconnect loop backs off and retries.
+pub trait UrlProvider: Send + Sync + 'static {
+    fn url(&self) -> BoxFuture<'static, Result<String, SyncError>>;
+}
+
+/// Fixed URL (dev bearers and tests — tokens that never expire).
+pub struct StaticUrl(pub String);
+
+impl UrlProvider for StaticUrl {
+    fn url(&self) -> BoxFuture<'static, Result<String, SyncError>> {
+        let url = self.0.clone();
+        Box::pin(async move { Ok(url) })
+    }
 }
 
 /// Connection/sync lifecycle notifications (best-effort broadcast; receivers
@@ -107,13 +134,16 @@ pub(crate) trait Connector: Send + Sync + 'static {
 }
 
 struct WsConnector {
-    url: String,
+    url: Arc<dyn UrlProvider>,
 }
 
 impl Connector for WsConnector {
     fn connect(&self) -> BoxFuture<'static, Result<Pipe, SyncError>> {
-        let url = self.url.clone();
+        let provider = self.url.clone();
         Box::pin(async move {
+            // Fresh URL (and therefore fresh `?token=`) on every attempt — an
+            // expired access token is never reused across a reconnect.
+            let url = provider.url().await?;
             let (ws, _) = tokio_tungstenite::connect_async(&url)
                 .await
                 .map_err(|e| SyncError::WebSocket(e.to_string()))?;
@@ -140,6 +170,7 @@ async fn pump(
     let mut ping = tokio::time::interval(PING_INTERVAL);
     ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     ping.tick().await; // consume the immediate first tick
+    let mut last_rx = tokio::time::Instant::now();
     loop {
         tokio::select! {
             frame = out_rx.recv() => match frame {
@@ -156,17 +187,25 @@ async fn pump(
             },
             frame = stream.next() => match frame {
                 Some(Ok(WsMessage::Binary(bytes))) => {
+                    last_rx = tokio::time::Instant::now();
                     if in_tx.send(bytes).await.is_err() {
                         break;
                     }
                 }
-                Some(Ok(_)) => {} // text "pong" / control frames
+                Some(Ok(_)) => {
+                    // Text "pong" / control frames: proof of life for the lease.
+                    last_rx = tokio::time::Instant::now();
+                }
                 Some(Err(_)) | None => break,
             },
             _ = ping.tick() => {
                 if sink.send(WsMessage::Text("ping".into())).await.is_err() {
                     break;
                 }
+            }
+            _ = tokio::time::sleep_until(last_rx + SILENCE_LEASE) => {
+                tracing::warn!("room socket silent past lease; treating as dead");
+                break;
             }
         }
     }
@@ -204,9 +243,18 @@ impl RoomClient {
     /// (unreachable edge, `JoinError`) is returned as `Err`; only after a
     /// successful join does the client keep reconnecting in the background.
     pub async fn connect(url: &str, room_id: &str, doc: LoroDoc) -> Result<Self, SyncError> {
-        let connector = Arc::new(WsConnector {
-            url: url.to_string(),
-        });
+        Self::connect_via(Arc::new(StaticUrl(url.to_string())), room_id, doc).await
+    }
+
+    /// Like [`Self::connect`], but the WebSocket URL is re-fetched from
+    /// `provider` before every dial (initial and reconnects) — the seam for
+    /// expiring bearer tokens carried as `?token=`.
+    pub async fn connect_via(
+        provider: Arc<dyn UrlProvider>,
+        room_id: &str,
+        doc: LoroDoc,
+    ) -> Result<Self, SyncError> {
+        let connector = Arc::new(WsConnector { url: provider });
         Self::connect_with(connector, room_id, doc).await
     }
 

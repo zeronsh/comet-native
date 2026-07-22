@@ -37,12 +37,74 @@ use crate::{EngineError, new_id, now_ms};
 /// Debounce window for local snapshot saves after a doc change.
 const SNAPSHOT_DEBOUNCE_MS: u64 = 1_000;
 
-#[derive(Debug, Clone)]
+/// Edge connection config. The bearer is a **provider**, never a snapshot:
+/// every room (re)connect and HTTP request re-reads it, so WorkOS access-token
+/// refreshes (~1h expiry) take effect without an engine restart. Dev bearers
+/// (which never expire) ride the same seam as a [`comet_rpc::StaticToken`].
+#[derive(Clone)]
 pub struct EdgeConfig {
     /// Edge base URL (`http(s)://…`); rewritten to `ws(s)` for the room socket.
     pub url: String,
-    /// Bearer token, carried as `?token=` on the room URL.
-    pub token: String,
+    /// Fresh-bearer provider (the relay's `TokenSource`), consulted per
+    /// connect/request. `None` from the provider = signed out.
+    pub token: Arc<dyn comet_rpc::TokenSource>,
+}
+
+impl std::fmt::Debug for EdgeConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EdgeConfig")
+            .field("url", &self.url)
+            .field("token", &"<provider>")
+            .finish()
+    }
+}
+
+impl EdgeConfig {
+    pub fn new(url: impl Into<String>, token: Arc<dyn comet_rpc::TokenSource>) -> Self {
+        Self {
+            url: url.into(),
+            token,
+        }
+    }
+
+    /// Fixed bearer — dev mode and tests, where tokens never expire.
+    pub fn with_static_token(url: impl Into<String>, token: impl Into<String>) -> Self {
+        Self::new(url, Arc::new(comet_rpc::StaticToken(token.into())))
+    }
+
+    /// The current bearer, refreshed by the provider if stale. `None` = signed out.
+    pub async fn bearer(&self) -> Option<String> {
+        self.token.token().await
+    }
+
+    /// A per-dial room URL provider for `path` (e.g. `/session/{chatId}/ws`):
+    /// the bearer is re-fetched before every connect, so reconnects after a
+    /// token expiry present a fresh `?token=` instead of the boot-time one.
+    pub fn room_url(&self, path: impl Into<String>) -> Arc<dyn comet_sync::UrlProvider> {
+        let ws_base = self.url.replacen("http", "ws", 1);
+        Arc::new(EdgeRoomUrl {
+            base: format!("{}{}", ws_base.trim_end_matches('/'), path.into()),
+            token: self.token.clone(),
+        })
+    }
+}
+
+struct EdgeRoomUrl {
+    base: String,
+    token: Arc<dyn comet_rpc::TokenSource>,
+}
+
+impl comet_sync::UrlProvider for EdgeRoomUrl {
+    fn url(&self) -> futures::future::BoxFuture<'static, Result<String, comet_sync::SyncError>> {
+        let token = self.token.clone();
+        let base = self.base.clone();
+        Box::pin(async move {
+            let token = token.token().await.ok_or_else(|| {
+                comet_sync::SyncError::Auth("no access token (signed out)".into())
+            })?;
+            Ok(format!("{base}?token={token}"))
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -243,13 +305,12 @@ impl DocHost {
 
         // Edge room join — offline-tolerant: a failed join logs and stays local-first.
         if let Some(edge) = &self.inner.config.edge {
-            let ws_base = edge.url.replacen("http", "ws", 1);
-            let url = format!("{}/session/{}/ws?token={}", ws_base, chat_id, edge.token);
+            let url = edge.room_url(format!("/session/{chat_id}/ws"));
             let room_doc = doc.doc().clone();
             let chat = chat_id.to_string();
             let weak = Arc::downgrade(&handle);
             tokio::spawn(async move {
-                match RoomClient::connect(&url, &chat, room_doc).await {
+                match RoomClient::connect_via(url, &chat, room_doc).await {
                     Ok(client) => {
                         if let Some(handle) = weak.upgrade() {
                             *lock(&handle.room) = Some(client);
@@ -329,9 +390,14 @@ impl DocHost {
         );
         let chat = chat_id.to_string();
         runtime.spawn(async move {
+            // Fresh bearer per request — never the boot-time snapshot.
+            let Some(bearer) = edge.bearer().await else {
+                tracing::warn!(chat = %chat, "nudge skipped: signed out");
+                return;
+            };
             let send = reqwest::Client::new()
                 .post(&url)
-                .bearer_auth(&edge.token)
+                .bearer_auth(&bearer)
                 .json(&serde_json::json!({ "chatId": chat }))
                 .timeout(std::time::Duration::from_secs(10))
                 .send()

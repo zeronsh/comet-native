@@ -137,10 +137,10 @@ impl EngineHandle {
         }
 
         tracing::info!(data_dir = %config.data_dir.display(), "no daemon on port; embedding engine");
-        let edge = config.edge_token.clone().map(|token| EdgeConfig {
-            url: config.edge_url.clone(),
-            token,
-        });
+        let edge = config
+            .edge_token
+            .clone()
+            .map(|token| EdgeConfig::with_static_token(config.edge_url.clone(), token));
         let core = tokio::task::spawn_blocking(move || {
             EngineCore::assemble(
                 &config.data_dir,
@@ -673,6 +673,20 @@ impl AppState {
             .iter()
             .find(|d| d.id == device_id)
             .map(|d| d.name.as_str())
+    }
+
+    /// Host-presence check: is this device's 15s presence heartbeat fresh?
+    /// Distinguishes "host offline" (its queued work syncs when it returns)
+    /// from slow sync. The local device is trivially online; unknown devices
+    /// get the benefit of the doubt (no evidence — don't cry wolf).
+    pub fn device_online(&self, device_id: &str, now: DateTime<Utc>) -> bool {
+        if self.local_device_id.as_deref() == Some(device_id) {
+            return true;
+        }
+        match self.devices.iter().find(|d| d.id == device_id) {
+            Some(d) => crate::settings::devices::device_online(d.last_seen_at, now),
+            None => true,
+        }
     }
 
     /// Does the selected space's folder have git? Drives the branch picker and

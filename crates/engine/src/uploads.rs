@@ -268,9 +268,14 @@ impl Uploads {
         let url = format!("{}/attachments/{sha}", edge.url.trim_end_matches('/'));
         let http = self.inner.http.clone();
         tokio::spawn(async move {
+            // Fresh bearer per request — never the boot-time snapshot.
+            let Some(bearer) = edge.bearer().await else {
+                tracing::warn!(sha = %sha, "attachment mirror skipped: signed out");
+                return;
+            };
             let sent = http
                 .put(&url)
-                .bearer_auth(&edge.token)
+                .bearer_auth(&bearer)
                 .header("content-type", mime)
                 .body(bytes)
                 .send()

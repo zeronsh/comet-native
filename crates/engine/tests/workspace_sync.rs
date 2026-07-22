@@ -461,10 +461,10 @@ async fn two_engines_converge_through_a_real_workspace_room() {
         std::fs::create_dir_all(dir).expect("create data dir");
         std::fs::write(dir.join("device-id"), device_id).expect("write device id");
         // Dev-mode bearer `user@org` carries the org claim the workspace route checks.
-        let edge = Some(EdgeConfig {
-            url: base.clone(),
-            token: format!("{user}@{org}"),
-        });
+        let edge = Some(EdgeConfig::with_static_token(
+            base.clone(),
+            format!("{user}@{org}"),
+        ));
         EngineCore::assemble_with_org(dir, registry(), HarnessId::Mock, edge, &org)
             .expect("engine core assembles")
     };

@@ -16,6 +16,7 @@ pub mod agent_accounts;
 pub mod auth;
 pub mod diff_sync;
 pub mod doc_host;
+pub mod instance_lock;
 pub mod registry;
 pub mod repos;
 pub mod rpc;
@@ -31,6 +32,7 @@ pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
 pub use auth::{Auth, AuthConfig, AuthState, AuthUser, OrgMembership};
 pub use diff_sync::{CheckoutDiffSync, DiffSidecar, DiffSnapshot, capture_diff};
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
+pub use instance_lock::InstanceLock;
 pub use registry::{HarnessDescriptor, HarnessRegistry, default_registry};
 pub use repos::{CheckoutIdentity, Repos, worktree_branch_from_title};
 pub use rpc::EngineRpc;
@@ -103,6 +105,8 @@ pub struct EngineCore {
     auth: std::sync::Mutex<Option<Auth>>,
     /// Peer link cache for `targetDeviceId` routing (attached when edge+auth are ready).
     links: std::sync::Mutex<Option<Arc<comet_rpc::LinkCache>>>,
+    /// Exclusive data-dir lock — held for the engine's lifetime (single-instance).
+    _instance_lock: InstanceLock,
 }
 
 impl EngineCore {
@@ -130,9 +134,17 @@ impl EngineCore {
         org_id: &str,
     ) -> Result<Self, EngineError> {
         std::fs::create_dir_all(data_dir)?;
+        // Single-instance guard: two engines on one data dir would race the
+        // SQLite snapshots + journals. Taken before any store opens or the IPC
+        // port binds; held (and kernel-released on crash) for the engine's life.
+        let lock = InstanceLock::acquire(data_dir)?;
         let device_id = load_or_create_device_id(data_dir)?;
-        let store = Arc::new(DocsStore::open(data_dir)?);
-        let journal = Arc::new(RunJournal::open(data_dir.join("journals"))?);
+        // Identity-scoped storage: snapshots, the command ledger, and run
+        // journals live under `orgs/{orgId}/` so switching accounts/orgs on one
+        // machine never reuses another identity's cached docs.
+        let org_dir = data_dir.join("orgs").join(sanitize_path_id(org_id));
+        let store = Arc::new(DocsStore::open(&org_dir)?);
+        let journal = Arc::new(RunJournal::open(org_dir.join("journals"))?);
         let sessions = SessionsEngine::new(device_id.clone(), journal, registry.clone());
         let doc_host = DocHost::new(
             store.clone(),
@@ -185,6 +197,7 @@ impl EngineCore {
             device_id,
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
+            _instance_lock: lock,
         })
     }
 
@@ -333,16 +346,14 @@ impl Engine {
             wait_for_sign_in(&auth).await;
         }
 
-        // Edge sync token: WorkOS access token, or the configured dev bearer. `None`
-        // runs fully offline (no rooms, no relay) — M2 behavior preserved.
-        let edge_token = auth
-            .access_token()
-            .await
-            .filter(|_| auth.workos_enabled() || config.edge_token.is_some());
-        let edge = edge_token.map(|token| EdgeConfig {
-            url: config.edge_url.clone(),
-            token,
-        });
+        // Edge sync: enabled when signed in (WorkOS) or a dev bearer is configured;
+        // `None` runs fully offline (no rooms, no relay) — M2 behavior preserved.
+        // The config carries `Auth` as a token PROVIDER, not a snapshot: every room
+        // (re)connect and edge request re-reads the (refreshed) access token, so an
+        // expired WorkOS token is never presented after a socket drop.
+        let online = (auth.workos_enabled() || config.edge_token.is_some())
+            && auth.access_token().await.is_some();
+        let edge = online.then(|| EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())));
 
         // Workspace org: the session's org claim (WorkOS) beats the configured one.
         let org_id = auth
@@ -376,6 +387,14 @@ impl Engine {
                 edge.url.clone(),
                 Arc::new(auth.clone()),
             ));
+            // Data-driven cooldown reset: a peer whose workspace presence
+            // heartbeat is fresh is reachable — clear its dial backoff so
+            // interactive remote control recovers immediately after a blip.
+            let links_for_presence = links.clone();
+            core.workspace
+                .set_peer_alive_hook(Arc::new(move |device_id: &str| {
+                    links_for_presence.reset_cooldown(device_id);
+                }));
             core.set_links(links);
             core.start_host_relay(&edge.url)
         });
@@ -462,6 +481,19 @@ fn local_device_name() -> String {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "unknown-device".to_string())
+}
+
+/// Filesystem-safe form of an org id (path segment for `orgs/{orgId}/`).
+fn sanitize_path_id(id: &str) -> String {
+    id.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 /// Stable per-installation device id, persisted at `{data_dir}/device-id`.

@@ -45,6 +45,15 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Text `"ping"` keepalive — answered by the DO's hibernation-safe auto-response
+/// pair (`edge/src/device-room.ts`) without waking it.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// Silence lease: every ping elicits an auto-pong, so a healthy socket sees
+/// inbound traffic at least once per `PING_INTERVAL`. No inbound frame for a
+/// full interval plus grace = dead socket (half-open TCP after NAT timeout or
+/// sleep/wake) — drop it and reconnect instead of waiting on a TCP write error.
+const SILENCE_LEASE: Duration = Duration::from_secs(45);
+
 // ---------------------------------------------------------------------------
 // Frame codec
 // ---------------------------------------------------------------------------
@@ -318,6 +327,10 @@ async fn host_session(
     // All writers (per-conn pumps) funnel through one outbound queue → one socket writer.
     let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(256);
     let mut conns: HashMap<String, VirtualConn> = HashMap::new();
+    let mut ping = tokio::time::interval(PING_INTERVAL);
+    ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    ping.tick().await; // consume the immediate first tick
+    let mut last_rx = tokio::time::Instant::now();
 
     loop {
         tokio::select! {
@@ -331,6 +344,7 @@ async fn host_session(
             },
             message = stream.next() => match message {
                 Some(Ok(WsMessage::Binary(bytes))) => {
+                    last_rx = tokio::time::Instant::now();
                     handle_host_frame(&bytes, &mut conns, service, &out_tx, on_nudge).await;
                 }
                 Some(Ok(WsMessage::Close(frame))) => {
@@ -341,8 +355,18 @@ async fn host_session(
                     break;
                 }
                 Some(Err(_)) | None => break,
-                Some(Ok(_)) => {} // text ping/pong — ignored
+                // Text "pong" / control frames: proof of life for the lease.
+                Some(Ok(_)) => last_rx = tokio::time::Instant::now(),
             },
+            _ = ping.tick() => {
+                if sink.send(WsMessage::Text("ping".into())).await.is_err() {
+                    break;
+                }
+            }
+            _ = tokio::time::sleep_until(last_rx + SILENCE_LEASE) => {
+                tracing::warn!("device-room: host socket silent past lease; reconnecting");
+                break;
+            }
         }
     }
     // Dropping the conns aborts every per-client dispatch loop (terminals etc. reaped).
@@ -429,6 +453,10 @@ impl DeviceLink {
         let (closed_tx, closed_rx) = watch::channel::<Option<String>>(None);
 
         let pump = tokio::spawn(async move {
+            let mut ping = tokio::time::interval(PING_INTERVAL);
+            ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ping.tick().await; // consume the immediate first tick
+            let mut last_rx = tokio::time::Instant::now();
             let reason = loop {
                 tokio::select! {
                     frame = out_rx.recv() => match frame {
@@ -451,30 +479,42 @@ impl DeviceLink {
                         }
                     },
                     message = stream.next() => match message {
-                        Some(Ok(WsMessage::Binary(bytes))) => match decode_device_frame(&bytes) {
-                            Ok((header, payload)) if header.k == RELAY_KIND => {
-                                // host_offline / host_closed: surface as link-down.
-                                let code = relay_error_code(&payload)
-                                    .unwrap_or_else(|| "relay error".into());
-                                tracing::info!(%code, "device-room: link down");
-                                break code;
-                            }
-                            Ok((header, payload)) if header.k == RPC_KIND => {
-                                let text = String::from_utf8_lossy(&payload).into_owned();
-                                if in_tx.send(text).await.is_err() {
-                                    break "client dropped".to_string();
+                        Some(Ok(WsMessage::Binary(bytes))) => {
+                            last_rx = tokio::time::Instant::now();
+                            match decode_device_frame(&bytes) {
+                                Ok((header, payload)) if header.k == RELAY_KIND => {
+                                    // host_offline / host_closed: surface as link-down.
+                                    let code = relay_error_code(&payload)
+                                        .unwrap_or_else(|| "relay error".into());
+                                    tracing::info!(%code, "device-room: link down");
+                                    break code;
+                                }
+                                Ok((header, payload)) if header.k == RPC_KIND => {
+                                    let text = String::from_utf8_lossy(&payload).into_owned();
+                                    if in_tx.send(text).await.is_err() {
+                                        break "client dropped".to_string();
+                                    }
+                                }
+                                Ok(_) => {}
+                                Err(err) => {
+                                    tracing::warn!(error = %err, "device-room: malformed frame");
                                 }
                             }
-                            Ok(_) => {}
-                            Err(err) => {
-                                tracing::warn!(error = %err, "device-room: malformed frame");
-                            }
-                        },
+                        }
                         Some(Ok(WsMessage::Close(_))) | Some(Err(_)) | None => {
                             break "connection lost".to_string();
                         }
-                        Some(Ok(_)) => {}
+                        // Text "pong" / control frames: proof of life for the lease.
+                        Some(Ok(_)) => last_rx = tokio::time::Instant::now(),
                     },
+                    _ = ping.tick() => {
+                        if sink.send(WsMessage::Text("ping".into())).await.is_err() {
+                            break "connection lost".to_string();
+                        }
+                    }
+                    _ = tokio::time::sleep_until(last_rx + SILENCE_LEASE) => {
+                        break "silent past lease".to_string();
+                    }
                 }
             };
             // Dropping in_tx ends the RpcClient reader → pending calls fail Closed.
@@ -526,19 +566,30 @@ pub struct LinkCacheConfig {
 
 impl LinkCacheConfig {
     pub fn new(edge_url: impl Into<String>, token: Arc<dyn TokenSource>) -> Self {
+        // Interactive remote control (remote folders, terminals, accounts) rides
+        // this cache: one blip must cost seconds, not minutes. The old comet
+        // 15s→5min curve punished a single failed dial with a 5-minute refusal;
+        // here the first failure backs off 5s and even a dead peer is re-probed
+        // within a minute. A generous probe budget keeps a slow-waking laptop
+        // (radio up, engine still thawing) from counting as a failure.
         Self {
             edge_url: edge_url.into(),
             token,
-            cooldown_base: Duration::from_secs(15),
-            cooldown_max: Duration::from_secs(300),
-            probe_timeout: Duration::from_secs(3),
+            cooldown_base: Duration::from_secs(5),
+            cooldown_max: Duration::from_secs(60),
+            probe_timeout: Duration::from_secs(10),
         }
     }
 }
 
+/// Consecutive failures older than this decay to zero — a blip an hour ago must
+/// not escalate today's first retry up the backoff curve.
+const FAILURE_DECAY: Duration = Duration::from_secs(600);
+
 #[derive(Default)]
 struct DialState {
     failures: u32,
+    last_failure: Option<Instant>,
     cooldown_until: Option<Instant>,
 }
 
@@ -602,6 +653,15 @@ impl LinkCache {
         lock(&self.links).remove(device_id);
     }
 
+    /// Data-driven cooldown reset: called when out-of-band evidence says the
+    /// peer is alive again (fresh workspace presence heartbeat). The next call
+    /// dials immediately instead of waiting out the backoff window.
+    pub fn reset_cooldown(&self, device_id: &str) {
+        if lock(&self.dial_state).remove(device_id).is_some() {
+            tracing::info!(device = %device_id, "peer: cooldown cleared (peer is alive)");
+        }
+    }
+
     fn cached(&self, device_id: &str) -> Option<Arc<DeviceLink>> {
         let mut links = lock(&self.links);
         match links.get(device_id) {
@@ -632,6 +692,14 @@ impl LinkCache {
     fn note_failure(&self, device_id: &str) {
         let mut state = lock(&self.dial_state);
         let entry = state.entry(device_id.to_string()).or_default();
+        // Stale streaks restart the curve rather than escalating it.
+        if entry
+            .last_failure
+            .is_some_and(|at| at.elapsed() > FAILURE_DECAY)
+        {
+            entry.failures = 0;
+        }
+        entry.last_failure = Some(Instant::now());
         entry.failures += 1;
         let backoff = self
             .config

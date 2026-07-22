@@ -515,6 +515,23 @@ async fn shutdown_sends_leave() {
     wait_until(|| edge.leaves.load(Ordering::SeqCst) >= 1).await;
 }
 
+/// The per-dial URL provider seam: a signed-out provider fails the connect
+/// fast with `SyncError::Auth` (no socket is ever attempted).
+#[tokio::test]
+async fn connect_via_surfaces_url_provider_auth_error() {
+    struct SignedOut;
+    impl UrlProvider for SignedOut {
+        fn url(&self) -> BoxFuture<'static, Result<String, SyncError>> {
+            Box::pin(async { Err(SyncError::Auth("signed out".into())) })
+        }
+    }
+    let result = RoomClient::connect_via(Arc::new(SignedOut), "room-1", LoroDoc::new()).await;
+    match result {
+        Ok(_) => panic!("connect must fail"),
+        Err(err) => assert!(matches!(err, SyncError::Auth(_)), "got: {err}"),
+    }
+}
+
 #[tokio::test]
 async fn first_connect_failure_is_returned() {
     struct FailingConnector;

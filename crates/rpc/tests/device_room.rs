@@ -435,6 +435,43 @@ async fn host_offline_fails_fast_and_cools_down() {
     );
 }
 
+/// The data-driven cooldown reset (fresh workspace presence → peer is alive):
+/// with a long backoff engaged, `reset_cooldown` lets the next call dial
+/// immediately instead of waiting the window out.
+#[tokio::test]
+async fn presence_reset_clears_cooldown_immediately() {
+    let relay = FakeRelay::start().await;
+    let mut config =
+        LinkCacheConfig::new(relay.edge_url(), Arc::new(StaticToken("test-user".into())));
+    // Long enough that only a reset (never elapsed time) can explain success.
+    config.cooldown_base = Duration::from_secs(120);
+    config.cooldown_max = Duration::from_secs(120);
+    config.probe_timeout = Duration::from_millis(1_500);
+    let links = LinkCache::new(config);
+
+    // No host: the dial fails and the two-minute cooldown engages.
+    assert!(links.client("dev-a").await.is_err(), "no host: dial fails");
+    let Err(err) = links.client("dev-a").await else {
+        panic!("must fail fast while cooling")
+    };
+    assert!(err.to_string().contains("backing off"), "got: {err}");
+
+    // Host comes up and its presence heartbeat clears the backoff — the next
+    // call dials immediately.
+    let service = TestService::new("host-a");
+    let _host = HostRelay::spawn(relay_config(&relay.edge_url(), 100), service, noop_nudge());
+    relay.wait_host_connected().await;
+    links.reset_cooldown("dev-a");
+    let client = links.client("dev-a").await.expect("dials after reset");
+    assert_eq!(
+        client
+            .call("Echo", serde_json::json!({}))
+            .await
+            .expect("echo")["host"],
+        "host-a"
+    );
+}
+
 #[tokio::test]
 async fn host_supersede_drops_old_links_and_recovers() {
     let relay = FakeRelay::start().await;

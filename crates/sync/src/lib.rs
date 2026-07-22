@@ -12,5 +12,5 @@
 mod room;
 mod store;
 
-pub use room::{RoomClient, RoomEvent, SyncError};
+pub use room::{RoomClient, RoomEvent, StaticUrl, SyncError, UrlProvider};
 pub use store::{DocsStore, StoreError};
