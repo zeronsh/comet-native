@@ -19,7 +19,7 @@ echo "▸ building (first run takes a few minutes)…"
 cargo build -p comet -q
 
 echo "▸ starting engine daemon on :$IPC"
-COMET_DATA_DIR="$DAEMON_DIR" COMET_IPC_PORT=$IPC COMET_HARNESS=mock \
+env COMET_DATA_DIR="$DAEMON_DIR" COMET_IPC_PORT=$IPC COMET_HARNESS=mock \
   ${DELAY:+COMET_MOCK_DELAY_MS=$DELAY} RUST_LOG=warn \
   ./target/debug/comet headless &
 DAEMON_PID=$!
@@ -34,9 +34,17 @@ probe() { cargo run -q -p comet-rpc --example rpc_probe -- "ws://127.0.0.1:$IPC"
 if [[ ! -f "$DAEMON_DIR/.demo-seeded" ]]; then
   echo "▸ seeding demo chats"
   DEV=$(probe LocalDevice '{}' | python3 -c 'import json,sys;print(json.load(sys.stdin)["deviceId"])')
+  # One space per demo folder, created up-front (chats join by space id).
+  declare -A SPACES=()
+  for project in comet-native soccertcg comet aether; do
+    sid=$(uuidgen | tr 'A-Z' 'a-z')
+    probe Mutate "{\"op\":\"createSpace\",\"spaceId\":\"$sid\",\"deviceId\":\"$DEV\",\"path\":\"$HOME/github/$project\"}" >/dev/null
+    SPACES[$project]="$sid"
+  done
   seed() { # title project branch age_hours run
     local id; id=$(uuidgen | tr 'A-Z' 'a-z')
-    probe Mutate "{\"op\":\"createChat\",\"chatId\":\"$id\",\"deviceId\":\"$DEV\",\"cwd\":\"$HOME/github/$2\",\"config\":{\"harness\":\"mock\",\"model\":\"fable-5\",\"reasoning\":null,\"sandbox\":\"workspace-write\"}}" >/dev/null
+    local sid="${SPACES[$2]}"
+    probe Mutate "{\"op\":\"createChat\",\"chatId\":\"$id\",\"spaceId\":\"$sid\",\"config\":{\"harness\":\"mock\",\"model\":\"fable-5\",\"reasoning\":null,\"sandbox\":\"workspace-write\"}}" >/dev/null
     probe Mutate "{\"op\":\"renameChat\",\"chatId\":\"$id\",\"title\":\"$1\"}" >/dev/null
     probe Mutate "{\"op\":\"setChatBranch\",\"chatId\":\"$id\",\"branch\":\"$3\"}" >/dev/null
     if [[ "$5" == run ]]; then

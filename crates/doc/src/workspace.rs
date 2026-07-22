@@ -6,11 +6,14 @@
 //! map-of-maps means concurrent writers to *different* rows never conflict while writes
 //! to the *same* row settle field-by-field LWW (exactly right for renames/archives):
 //! - `devices`: LoroMap keyed by deviceId → row map {id, name, platform, lastSeenAt}
+//! - `spaces`: LoroMap keyed by spaceId → row map {id, deviceId, path, name?,
+//!   gitDetected, gitCheckedAt?, checkoutId?, createdAt}
 //! - `chats`: LoroMap keyed by chatId → row map {id, deviceId, title?, archived, cwd?,
 //!   branch?, checkoutId?, config?(json), lastMessagePreview?, lastMessageAt?, createdAt,
-//!   harnessSessionId?, harnessSessionCwd?}
+//!   harnessSessionId?, harnessSessionCwd?, spaceId?, lastSeenAt?}
 //! - `sessions`: LoroMap keyed by chatId → row map {chatId, deviceId, status, startedAt?,
 //!   updatedAt}
+//! - `meta`: LoroMap {schemaVersion} — in-band detection for future destructive changes
 //!
 //! Writer discipline (ARCHITECTURE §2.2): each device writes its own device row, its
 //! own session rows, and rows for chats it hosts; title/archived renames are LWW map
@@ -25,9 +28,14 @@ use chrono::{DateTime, Utc};
 use loro::{ExportMode, LoroDoc, LoroMap, LoroValue, ToJson};
 use serde::{Deserialize, Serialize};
 
-use comet_proto::{Chat, ChatConfig, Device, Session, SessionStatus};
+use comet_proto::{Chat, ChatConfig, Device, Session, SessionStatus, Space};
 
 use crate::schema::DocError;
+
+/// Workspace doc schema version. v2 = the spaces overhaul (spaces container,
+/// chat spaceId/lastSeenAt) — a destructive break shipped via a fresh doc/room
+/// (`workspace2` / `ws2/{orgId}`), so no v1 reader exists.
+pub const WORKSPACE_SCHEMA_VERSION: i64 = 2;
 
 /// Ephemeral presence key for a device (`presence/{deviceId}` → online timestamp).
 pub fn presence_key(device_id: &str) -> String {
@@ -39,8 +47,17 @@ pub fn presence_key(device_id: &str) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceState {
     pub devices: Vec<Device>,
+    pub spaces: Vec<Space>,
     pub chats: Vec<Chat>,
     pub sessions: Vec<Session>,
+}
+
+/// Result of a `delete_space` cascade — the chat ids removed alongside the
+/// space so the engine can drop local run state / doc-host handles.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DeletedSpace {
+    pub existed: bool,
+    pub chat_ids: Vec<String>,
 }
 
 /// A workspace doc handle: typed access over a LoroDoc with the schema above.
@@ -127,6 +144,93 @@ impl WorkspaceDoc {
         Ok(devices)
     }
 
+    // ── spaces ──────────────────────────────────────────────────────────────
+
+    /// Upsert a full space row (creation from any device; owner-only fields are
+    /// enforced one layer up, in the engine).
+    pub fn upsert_space(&self, space: &Space) -> Result<(), DocError> {
+        let row = self.row("spaces", &space.id)?;
+        row.insert("id", space.id.as_str())?;
+        row.insert("deviceId", space.device_id.as_str())?;
+        row.insert("path", space.path.as_str())?;
+        set_opt_str(&row, "name", space.name.as_deref())?;
+        row.insert("gitDetected", space.git_detected)?;
+        set_opt_ms(&row, "gitCheckedAt", space.git_checked_at)?;
+        set_opt_str(&row, "checkoutId", space.checkout_id.as_deref())?;
+        row.insert("createdAt", space.created_at.timestamp_millis())?;
+        self.doc.commit();
+        Ok(())
+    }
+
+    pub fn space(&self, space_id: &str) -> Result<Option<Space>, DocError> {
+        Ok(self.read_spaces()?.into_iter().find(|s| s.id == space_id))
+    }
+
+    pub fn read_spaces(&self) -> Result<Vec<Space>, DocError> {
+        let mut spaces: Vec<Space> = self
+            .read_rows::<RawSpace>("spaces")?
+            .into_iter()
+            .map(Space::from)
+            .collect();
+        spaces.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(spaces)
+    }
+
+    /// LWW display-name set from any device; `None` clears back to the derived
+    /// name (basename of path). `false` when no such row.
+    pub fn rename_space(&self, space_id: &str, name: Option<&str>) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("spaces", space_id) else {
+            return Ok(false);
+        };
+        set_opt_str(&row, "name", name)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Owner-stamped git presence for the space folder (SpacesSync; ownership is
+    /// asserted by the engine layer, this is mechanism only). `false` when no
+    /// such row.
+    pub fn set_space_git(
+        &self,
+        space_id: &str,
+        detected: bool,
+        checkout_id: Option<&str>,
+        checked_at: DateTime<Utc>,
+    ) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("spaces", space_id) else {
+            return Ok(false);
+        };
+        row.insert("gitDetected", detected)?;
+        set_opt_str(&row, "checkoutId", checkout_id)?;
+        row.insert("gitCheckedAt", checked_at.timestamp_millis())?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Hard-delete a space and cascade to its chats: tombstone every chat row
+    /// (and session-status row) whose `spaceId` matches, then the space row —
+    /// one commit. Per-chat transcript docs remain (orphaned, accepted).
+    /// Returns the removed chat ids so the engine can drop local state.
+    pub fn delete_space(&self, space_id: &str) -> Result<DeletedSpace, DocError> {
+        let spaces = self.doc.get_map("spaces");
+        let existed = spaces.get(space_id).is_some();
+        let chat_ids: Vec<String> = self
+            .read_chats()?
+            .into_iter()
+            .filter(|c| c.space_id.as_deref() == Some(space_id))
+            .map(|c| c.id)
+            .collect();
+        let chats = self.doc.get_map("chats");
+        let sessions = self.doc.get_map("sessions");
+        for chat_id in &chat_ids {
+            chats.delete(chat_id)?;
+            sessions.delete(chat_id)?;
+        }
+        spaces.delete(space_id)?;
+        self.doc.commit();
+        Ok(DeletedSpace { existed, chat_ids })
+    }
+
     // ── chats ───────────────────────────────────────────────────────────────
 
     /// Upsert a full chat row (host device, or CreateChat targeting a device).
@@ -158,8 +262,29 @@ impl WorkspaceDoc {
             "harnessSessionCwd",
             chat.harness_session_cwd.as_deref(),
         )?;
+        set_opt_str(&row, "spaceId", chat.space_id.as_deref())?;
+        set_opt_ms(&row, "lastSeenAt", chat.last_seen_at)?;
         self.doc.commit();
         Ok(())
+    }
+
+    /// Synced seen marker (LWW) with a monotonic guard: no oplog write when the
+    /// stored stamp is already >= `at` (idempotence backstop — the UI also
+    /// guards on "currently unseen" before calling). `false` when no such row.
+    pub fn set_chat_seen(&self, chat_id: &str, at: DateTime<Utc>) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        let current = match row.get("lastSeenAt") {
+            Some(loro::ValueOrContainer::Value(LoroValue::I64(ms))) => Some(ms),
+            _ => None,
+        };
+        if current.is_some_and(|ms| ms >= at.timestamp_millis()) {
+            return Ok(true);
+        }
+        row.insert("lastSeenAt", at.timestamp_millis())?;
+        self.doc.commit();
+        Ok(true)
     }
 
     pub fn chat(&self, chat_id: &str) -> Result<Option<Chat>, DocError> {
@@ -306,9 +431,30 @@ impl WorkspaceDoc {
     pub fn read_all(&self) -> Result<WorkspaceState, DocError> {
         Ok(WorkspaceState {
             devices: self.read_devices()?,
+            spaces: self.read_spaces()?,
             chats: self.read_chats()?,
             sessions: self.read_sessions()?,
         })
+    }
+
+    // ── meta ────────────────────────────────────────────────────────────────
+
+    /// Stamp `meta.schemaVersion` when absent or lower (idempotent — steady
+    /// state adds nothing to the oplog). Returns the version now in the doc.
+    pub fn ensure_schema_version(&self) -> Result<i64, DocError> {
+        let meta = self.doc.get_map("meta");
+        let current = match meta.get("schemaVersion") {
+            Some(loro::ValueOrContainer::Value(LoroValue::I64(v))) => Some(v),
+            _ => None,
+        };
+        match current {
+            Some(v) if v >= WORKSPACE_SCHEMA_VERSION => Ok(v),
+            _ => {
+                meta.insert("schemaVersion", WORKSPACE_SCHEMA_VERSION)?;
+                self.doc.commit();
+                Ok(WORKSPACE_SCHEMA_VERSION)
+            }
+        }
     }
 
     // ── row plumbing ────────────────────────────────────────────────────────
@@ -410,6 +556,39 @@ impl From<RawDevice> for Device {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RawSpace {
+    id: String,
+    device_id: String,
+    path: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    git_detected: bool,
+    #[serde(default)]
+    git_checked_at: Option<i64>,
+    #[serde(default)]
+    checkout_id: Option<String>,
+    #[serde(default)]
+    created_at: i64,
+}
+
+impl From<RawSpace> for Space {
+    fn from(raw: RawSpace) -> Self {
+        Space {
+            id: raw.id,
+            device_id: raw.device_id,
+            path: raw.path,
+            name: raw.name,
+            git_detected: raw.git_detected,
+            git_checked_at: raw.git_checked_at.map(dt),
+            checkout_id: raw.checkout_id,
+            created_at: dt(raw.created_at),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawChat {
     id: String,
     device_id: String,
@@ -435,6 +614,10 @@ struct RawChat {
     harness_session_id: Option<String>,
     #[serde(default)]
     harness_session_cwd: Option<String>,
+    #[serde(default)]
+    space_id: Option<String>,
+    #[serde(default)]
+    last_seen_at: Option<i64>,
 }
 
 impl From<RawChat> for Chat {
@@ -453,6 +636,8 @@ impl From<RawChat> for Chat {
             created_at: dt(raw.created_at),
             harness_session_id: raw.harness_session_id,
             harness_session_cwd: raw.harness_session_cwd,
+            space_id: raw.space_id,
+            last_seen_at: raw.last_seen_at.map(dt),
         }
     }
 }
@@ -521,6 +706,21 @@ mod tests {
             created_at: ts(2_000),
             harness_session_id: None,
             harness_session_cwd: None,
+            space_id: None,
+            last_seen_at: None,
+        }
+    }
+
+    fn space(id: &str, device_id: &str, path: &str) -> Space {
+        Space {
+            id: id.into(),
+            device_id: device_id.into(),
+            path: path.into(),
+            name: None,
+            git_detected: false,
+            git_checked_at: None,
+            checkout_id: None,
+            created_at: ts(1_500),
         }
     }
 
@@ -676,6 +876,123 @@ mod tests {
             vec!["chat-a", "chat-b"]
         );
         assert_eq!(sa.sessions.len(), 1);
+    }
+
+    #[test]
+    fn spaces_round_trip_and_mutate() {
+        let ws = WorkspaceDoc::new();
+        ws.upsert_space(&space("sp-1", "dev-a", "/home/u/project"))
+            .unwrap();
+        let row = ws.space("sp-1").unwrap().expect("row exists");
+        assert_eq!(row.display_name(), "project");
+        assert!(!row.git_detected);
+
+        assert!(ws.rename_space("sp-1", Some("My Project")).unwrap());
+        assert_eq!(
+            ws.space("sp-1").unwrap().unwrap().display_name(),
+            "My Project"
+        );
+        assert!(ws.rename_space("sp-1", None).unwrap());
+        assert_eq!(ws.space("sp-1").unwrap().unwrap().display_name(), "project");
+
+        assert!(
+            ws.set_space_git("sp-1", true, Some("checkout-abc"), ts(4_000))
+                .unwrap()
+        );
+        let row = ws.space("sp-1").unwrap().unwrap();
+        assert!(row.git_detected);
+        assert_eq!(row.checkout_id.as_deref(), Some("checkout-abc"));
+        assert_eq!(row.git_checked_at, Some(ts(4_000)));
+
+        // Unknown rows report false, never invent rows.
+        assert!(!ws.rename_space("nope", Some("x")).unwrap());
+        assert!(!ws.set_space_git("nope", true, None, ts(1)).unwrap());
+    }
+
+    #[test]
+    fn delete_space_cascades_and_converges_across_peers() {
+        let a = WorkspaceDoc::new();
+        a.upsert_space(&space("sp-1", "dev-a", "/tmp/one")).unwrap();
+        a.upsert_space(&space("sp-2", "dev-a", "/tmp/two")).unwrap();
+        let mut in_space = chat("chat-1", "dev-a");
+        in_space.space_id = Some("sp-1".into());
+        let mut other = chat("chat-2", "dev-a");
+        other.space_id = Some("sp-2".into());
+        a.upsert_chat(&in_space).unwrap();
+        a.upsert_chat(&other).unwrap();
+        a.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))
+            .unwrap();
+
+        let b = WorkspaceDoc::from_doc({
+            let d = LoroDoc::new();
+            d.import(&a.export_snapshot().unwrap()).unwrap();
+            d
+        });
+
+        let deleted = a.delete_space("sp-1").unwrap();
+        assert!(deleted.existed);
+        assert_eq!(deleted.chat_ids, vec!["chat-1".to_string()]);
+        cross_sync(&a, &b);
+
+        for ws in [&a, &b] {
+            let state = ws.read_all().unwrap();
+            assert_eq!(
+                state.spaces.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+                vec!["sp-2"]
+            );
+            assert_eq!(
+                state.chats.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+                vec!["chat-2"]
+            );
+            assert!(state.sessions.is_empty());
+        }
+        // Idempotent on a gone space.
+        let again = b.delete_space("sp-1").unwrap();
+        assert!(!again.existed);
+        assert!(again.chat_ids.is_empty());
+    }
+
+    #[test]
+    fn chat_seen_is_monotonic_and_settles_lww() {
+        let a = WorkspaceDoc::new();
+        a.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+        assert!(a.set_chat_seen("chat-1", ts(5_000)).unwrap());
+        assert_eq!(
+            a.chat("chat-1").unwrap().unwrap().last_seen_at,
+            Some(ts(5_000))
+        );
+        // Monotonic guard: older stamps are ignored without an oplog write.
+        let before = a.doc().oplog_vv();
+        assert!(a.set_chat_seen("chat-1", ts(4_000)).unwrap());
+        assert_eq!(a.doc().oplog_vv(), before);
+        assert_eq!(
+            a.chat("chat-1").unwrap().unwrap().last_seen_at,
+            Some(ts(5_000))
+        );
+        assert!(!a.set_chat_seen("nope", ts(1)).unwrap());
+
+        // Concurrent marks from two peers settle on the same winner.
+        let b = WorkspaceDoc::from_doc({
+            let d = LoroDoc::new();
+            d.import(&a.export_snapshot().unwrap()).unwrap();
+            d
+        });
+        a.set_chat_seen("chat-1", ts(9_000)).unwrap();
+        b.set_chat_seen("chat-1", ts(9_001)).unwrap();
+        cross_sync(&a, &b);
+        let seen_a = a.chat("chat-1").unwrap().unwrap().last_seen_at;
+        let seen_b = b.chat("chat-1").unwrap().unwrap().last_seen_at;
+        assert_eq!(seen_a, seen_b);
+        assert!(matches!(seen_a, Some(t) if t == ts(9_000) || t == ts(9_001)));
+    }
+
+    #[test]
+    fn schema_version_stamp_is_idempotent() {
+        let ws = WorkspaceDoc::new();
+        assert_eq!(ws.ensure_schema_version().unwrap(), WORKSPACE_SCHEMA_VERSION);
+        let before = ws.doc().oplog_vv();
+        assert_eq!(ws.ensure_schema_version().unwrap(), WORKSPACE_SCHEMA_VERSION);
+        assert_eq!(ws.doc().oplog_vv(), before);
     }
 
     #[test]

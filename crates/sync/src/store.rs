@@ -79,6 +79,16 @@ impl DocsStore {
         Ok(())
     }
 
+    /// Delete the snapshot row for `doc_id` (destructive schema breaks: the
+    /// legacy `workspace` row is dropped on open). Missing rows are a no-op.
+    pub fn delete_snapshot(&self, doc_id: &str) -> Result<(), StoreError> {
+        self.conn().execute(
+            "DELETE FROM snapshots WHERE doc_id = ?1",
+            params![doc_id],
+        )?;
+        Ok(())
+    }
+
     /// Whether `command_id` has already been claimed for execution.
     pub fn is_processed(&self, command_id: &str) -> Result<bool, StoreError> {
         let hit = self

@@ -21,6 +21,53 @@ pub struct Device {
     pub created_at: Option<DateTime<Utc>>,
 }
 
+/// A synced (device, folder) pair — the unit of organization in the sidebar.
+/// Sessions belong to exactly one space; the space fixes their host device and
+/// base cwd. Folders need not be git repos: `git_detected` is stamped by the
+/// owning device (SpacesSync) and gates branch pickers / the diff sidebar on
+/// every device without an RPC.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Space {
+    pub id: String,
+    /// Owning device — fixed at create, immutable.
+    pub device_id: String,
+    /// Absolute folder path on the owning device.
+    pub path: String,
+    /// User rename; absent ⇒ display = basename(path).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Owner-stamped: is `path` inside a git work tree?
+    #[serde(default)]
+    pub git_detected: bool,
+    /// Owner-stamped freshness timestamp of the last git check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_checked_at: Option<DateTime<Utc>>,
+    /// Owner-stamped when git: canonical checkout identity of the space root
+    /// (sha256(deviceId ‖ NUL ‖ git_dir)) — diff grouping key for root sessions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+}
+
+impl Space {
+    /// Name override, else basename(path), else the path itself.
+    /// Lives here (proto) so UI and engine agree on the derivation.
+    pub fn display_name(&self) -> &str {
+        if let Some(name) = self.name.as_deref()
+            && !name.trim().is_empty()
+        {
+            return name;
+        }
+        let trimmed = self.path.trim_end_matches(['/', '\\']);
+        trimmed
+            .rsplit(['/', '\\'])
+            .next()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&self.path)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChatConfig {
@@ -59,6 +106,52 @@ pub struct Chat {
     /// is only injected when the next run launches from the same cwd.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub harness_session_cwd: Option<String>,
+    /// The space this chat belongs to. Invariant: `Some` for every UI-created
+    /// chat; rows with a missing/dangling space id are not rendered (the host
+    /// device's repair sweep deletes its own danglers).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+    /// Synced LWW seen marker — compared against `last_message_at` to derive
+    /// the "completed (finished but unseen)" indicator. Reading a chat on any
+    /// device clears the badge everywhere.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at: Option<DateTime<Utc>>,
+}
+
+impl Chat {
+    /// True when the chat has activity the user hasn't seen on any device.
+    pub fn unseen(&self) -> bool {
+        match (self.last_message_at, self.last_seen_at) {
+            (Some(msg), Some(seen)) => msg > seen,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
+    }
+}
+
+/// Display status for a chat row/tab: the four user-facing states plus a
+/// distinct Errored. Derived — never stored.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ChatIndicator {
+    Working,
+    AwaitingInput,
+    Errored,
+    /// Finished running (or errored out) but not seen yet on any device.
+    Completed,
+    Idle,
+}
+
+/// Derive the display status. `live` must already be staleness-gated by the
+/// caller (the UI's 45s window) — pass `None` for a stale/absent session row.
+pub fn chat_indicator(chat: &Chat, live: Option<&Session>) -> ChatIndicator {
+    match live.map(|s| s.status) {
+        Some(SessionStatus::Working) => ChatIndicator::Working,
+        Some(SessionStatus::AwaitingInput) => ChatIndicator::AwaitingInput,
+        Some(SessionStatus::Errored) if chat.unseen() => ChatIndicator::Errored,
+        _ if chat.unseen() => ChatIndicator::Completed,
+        _ => ChatIndicator::Idle,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

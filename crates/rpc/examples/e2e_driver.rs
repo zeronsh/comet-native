@@ -108,15 +108,27 @@ async fn main() {
     }
     pass(&format!("devices distinct (A={a_dev} B={b_dev})"));
 
-    // 2. Create the chat on A, hosted by A, with the mock harness.
+    // 2. Create a space + chat on A, hosted by A, with the mock harness (the
+    //    space fixes device + cwd — the chat row derives both from it).
+    let space_id = uuid::Uuid::new_v4().to_string();
+    a.call(
+        methods::MUTATE,
+        serde_json::json!({
+            "op": "createSpace",
+            "spaceId": space_id,
+            "deviceId": a_dev,
+            "path": "/tmp",
+        }),
+    )
+    .await
+    .unwrap_or_else(|err| fail(&format!("createSpace on A: {err}")));
     let chat_id = uuid::Uuid::new_v4().to_string();
     a.call(
         methods::MUTATE,
         serde_json::json!({
             "op": "createChat",
             "chatId": chat_id,
-            "deviceId": a_dev,
-            "cwd": "/tmp",
+            "spaceId": space_id,
             "config": {
                 "harness": "mock",
                 "model": null,
@@ -127,7 +139,28 @@ async fn main() {
     )
     .await
     .unwrap_or_else(|err| fail(&format!("createChat on A: {err}")));
-    pass(&format!("chat created on A ({chat_id})"));
+    pass(&format!("space + chat created on A ({chat_id})"));
+
+    // 2b. Space row syncs A → edge → B (WatchSpaces).
+    let space_device = wait_stream(
+        &b,
+        methods::WATCH_SPACES,
+        serde_json::json!({}),
+        "space row visible on B",
+        |item| {
+            item.as_array()?
+                .iter()
+                .find(|space| space.get("id").and_then(|v| v.as_str()) == Some(space_id.as_str()))
+                .and_then(|space| space.get("deviceId")?.as_str().map(str::to_string))
+        },
+    )
+    .await;
+    if space_device != a_dev {
+        fail(&format!(
+            "space synced to B but owned by {space_device}, expected {a_dev}"
+        ));
+    }
+    pass("space row synced A -> edge -> B (owner = A)");
 
     // 3. Workspace sync A → edge → B: the chat row appears in B's WatchChats.
     let hosted_by = wait_stream(

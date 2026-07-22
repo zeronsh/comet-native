@@ -16,15 +16,19 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError, Weak};
 use chrono::Utc;
 use tokio::sync::watch;
 
-use comet_doc::{WorkspaceDoc, presence_key};
-use comet_proto::{Chat, ChatConfig, Device, Session};
+use comet_doc::{DeletedSpace, WorkspaceDoc, presence_key};
+use comet_proto::{Chat, ChatConfig, Device, Session, Space};
 use comet_sync::{DocsStore, RoomClient};
 
 use crate::doc_host::EdgeConfig;
 use crate::{EngineError, now_ms};
 
 /// Snapshot row id in the local `DocsStore` (chat ids never collide with it).
-pub const WORKSPACE_DOC_ID: &str = "workspace";
+/// `workspace2` = the spaces-overhaul destructive break: the legacy `workspace`
+/// row is simply never read again (fresh doc, fresh `ws2/{orgId}` room).
+pub const WORKSPACE_DOC_ID: &str = "workspace2";
+/// Legacy (pre-spaces) snapshot row — best-effort deleted on open.
+const LEGACY_WORKSPACE_DOC_ID: &str = "workspace";
 /// Org used when none is configured (matches the edge's dev-mode `user@org` bearers).
 pub const DEFAULT_ORG_ID: &str = "dev-org";
 /// Ephemeral presence refresh cadence.
@@ -52,6 +56,7 @@ struct WorkspaceHostInner {
     chats_tx: watch::Sender<Vec<Chat>>,
     devices_tx: watch::Sender<Vec<Device>>,
     sessions_tx: watch::Sender<Vec<Session>>,
+    spaces_tx: watch::Sender<Vec<Space>>,
     room: Mutex<Option<RoomClient>>,
     /// Doc subscription (drop = unsubscribe) — bumps the change watch on every commit.
     _sub: loro::Subscription,
@@ -81,6 +86,10 @@ impl WorkspaceHost {
             None => WorkspaceDoc::new(),
         };
         let doc = Arc::new(doc);
+        // Destructive-break hygiene: drop the unreachable legacy snapshot row and
+        // stamp the in-band schema version for the NEXT break to detect.
+        store.delete_snapshot(LEGACY_WORKSPACE_DOC_ID).ok();
+        doc.ensure_schema_version()?;
 
         // Boot: upsert our own device row. A user-set name (RenameDevice is LWW from
         // any device) survives restarts — only a missing row gets the hostname.
@@ -111,6 +120,7 @@ impl WorkspaceHost {
         let (chats_tx, _) = watch::channel(state.chats);
         let (devices_tx, _) = watch::channel(state.devices);
         let (sessions_tx, _) = watch::channel(state.sessions);
+        let (spaces_tx, _) = watch::channel(state.spaces);
 
         let host = Self {
             inner: Arc::new(WorkspaceHostInner {
@@ -120,6 +130,7 @@ impl WorkspaceHost {
                 chats_tx,
                 devices_tx,
                 sessions_tx,
+                spaces_tx,
                 room: Mutex::new(None),
                 _sub: sub,
             }),
@@ -137,7 +148,8 @@ impl WorkspaceHost {
         let ws_base = edge.url.replacen("http", "ws", 1);
         let org_id = self.inner.config.org_id.clone();
         let url = format!("{}/workspace/{}/ws?token={}", ws_base, org_id, edge.token);
-        let room_id = format!("ws/{org_id}");
+        // `ws2` = the spaces-overhaul fresh room (must match the edge's join id).
+        let room_id = format!("ws2/{org_id}");
         let room_doc = self.inner.doc.doc().clone();
         let device_id = self.inner.config.device_id.clone();
         let weak = Arc::downgrade(&self.inner);
@@ -188,6 +200,10 @@ impl WorkspaceHost {
         self.inner.sessions_tx.subscribe()
     }
 
+    pub fn watch_spaces(&self) -> watch::Receiver<Vec<Space>> {
+        self.inner.spaces_tx.subscribe()
+    }
+
     /// WatchSessions source: remote devices' rows from the workspace doc merged with
     /// this engine's live status watch (the local view is fresher for our own runs).
     pub fn merged_sessions_watch(
@@ -234,10 +250,22 @@ impl WorkspaceHost {
 
     /// Claim-on-first-command: create the chat row under OUR device id when a run
     /// command arrives for a chat with no row yet. No-op when the row exists.
+    ///
+    /// Spaces invariant: every chat belongs to a space, so the claim resolves an
+    /// own-device space matching `cwd` — or auto-creates one (gitDetected false;
+    /// SpacesSync corrects on its next pass). A cwd-less claim (e.g. note_message
+    /// racing ahead of the run command) leaves `spaceId` unset; the row is
+    /// invisible to the UI until a spaced claim/create lands. NOTE: a worktree
+    /// cwd claims a space *at the worktree path*, not the repo root — acceptable
+    /// for tooling-only (raw doc command) traffic.
     pub fn claim_chat(&self, chat_id: &str, cwd: Option<&str>) -> Result<(), EngineError> {
         if self.inner.doc.chat(chat_id)?.is_some() {
             return Ok(());
         }
+        let space_id = match cwd {
+            Some(cwd) => Some(self.space_for_path(cwd)?),
+            None => None,
+        };
         self.inner.doc.upsert_chat(&Chat {
             id: chat_id.to_string(),
             device_id: self.inner.config.device_id.clone(),
@@ -252,8 +280,36 @@ impl WorkspaceHost {
             created_at: Utc::now(),
             harness_session_id: None,
             harness_session_cwd: None,
+            space_id,
+            last_seen_at: None,
         })?;
         Ok(())
+    }
+
+    /// An own-device space whose path matches, else a freshly created one.
+    fn space_for_path(&self, path: &str) -> Result<String, EngineError> {
+        let device_id = &self.inner.config.device_id;
+        if let Some(space) = self
+            .inner
+            .doc
+            .read_spaces()?
+            .into_iter()
+            .find(|s| s.device_id == *device_id && s.path == path)
+        {
+            return Ok(space.id);
+        }
+        let space = Space {
+            id: crate::new_id(),
+            device_id: device_id.clone(),
+            path: path.to_string(),
+            name: None,
+            git_detected: false,
+            git_checked_at: None,
+            checkout_id: None,
+            created_at: Utc::now(),
+        };
+        self.inner.doc.upsert_space(&space)?;
+        Ok(space.id)
     }
 
     /// The chat's configured harness/model row, when present (RunRequest harness
@@ -326,22 +382,28 @@ impl WorkspaceHost {
 
     // ── Mutate surface (LWW writes accepted from any device) ────────────────
 
+    /// Create a chat *in a space*: the space fixes the host device and base cwd
+    /// (`cwd` override = an isolated-worktree path). Fails when the space row is
+    /// missing — the UI always creates chats from a picked space.
     pub fn create_chat(
         &self,
         chat_id: &str,
-        device_id: &str,
+        space_id: &str,
         config: Option<ChatConfig>,
         cwd: Option<String>,
     ) -> Result<(), EngineError> {
         if self.inner.doc.chat(chat_id)?.is_some() {
             return Ok(()); // idempotent: optimistic client retries never duplicate
         }
+        let Some(space) = self.inner.doc.space(space_id)? else {
+            return Err(EngineError::Other(format!("no such space: {space_id}")));
+        };
         self.inner.doc.upsert_chat(&Chat {
             id: chat_id.to_string(),
-            device_id: device_id.to_string(),
+            device_id: space.device_id.clone(),
             title: None,
             archived: false,
-            cwd,
+            cwd: Some(cwd.unwrap_or_else(|| space.path.clone())),
             branch: None,
             checkout_id: None,
             config,
@@ -350,8 +412,86 @@ impl WorkspaceHost {
             created_at: Utc::now(),
             harness_session_id: None,
             harness_session_cwd: None,
+            space_id: Some(space.id),
+            last_seen_at: None,
         })?;
         Ok(())
+    }
+
+    // ── spaces (Mutate surface + owner stamps) ──────────────────────────────
+
+    /// Create a space (any device). Idempotent by id; a live duplicate of the
+    /// same `(deviceId, path)` is a no-op backstop (the UI reuses via
+    /// WatchSpaces). `git_detected` is seeded from the picker's FolderEntry;
+    /// the owning device's SpacesSync re-verifies.
+    pub fn create_space(
+        &self,
+        space_id: &str,
+        device_id: &str,
+        path: &str,
+        name: Option<String>,
+        git_detected: bool,
+    ) -> Result<(), EngineError> {
+        let spaces = self.inner.doc.read_spaces()?;
+        if spaces
+            .iter()
+            .any(|s| s.id == space_id || (s.device_id == device_id && s.path == path))
+        {
+            return Ok(());
+        }
+        self.inner.doc.upsert_space(&Space {
+            id: space_id.to_string(),
+            device_id: device_id.to_string(),
+            path: path.to_string(),
+            name,
+            git_detected,
+            git_checked_at: None,
+            checkout_id: None,
+            created_at: Utc::now(),
+        })?;
+        Ok(())
+    }
+
+    pub fn rename_space(&self, space_id: &str, name: Option<&str>) -> Result<bool, EngineError> {
+        Ok(self.inner.doc.rename_space(space_id, name)?)
+    }
+
+    /// Hard-delete a space and its chats (doc cascade). The caller (rpc layer)
+    /// tears down live runs / doc-host handles for the returned chat ids.
+    pub fn delete_space(&self, space_id: &str) -> Result<DeletedSpace, EngineError> {
+        Ok(self.inner.doc.delete_space(space_id)?)
+    }
+
+    /// Synced seen marker (any device; LWW + monotonic guard in the doc layer).
+    pub fn mark_chat_seen(&self, chat_id: &str, at: chrono::DateTime<Utc>) -> Result<bool, EngineError> {
+        Ok(self.inner.doc.set_chat_seen(chat_id, at)?)
+    }
+
+    /// Owner-only git stamp (SpacesSync). Refuses rows owned by another device.
+    pub fn set_space_git(
+        &self,
+        space_id: &str,
+        detected: bool,
+        checkout_id: Option<&str>,
+    ) -> Result<bool, EngineError> {
+        match self.inner.doc.space(space_id)? {
+            Some(space) if space.device_id == self.inner.config.device_id => Ok(self
+                .inner
+                .doc
+                .set_space_git(space_id, detected, checkout_id, Utc::now())?),
+            Some(space) => {
+                tracing::warn!(
+                    space = %space_id, owner = %space.device_id,
+                    "refusing git stamp on space owned by another device"
+                );
+                Ok(false)
+            }
+            None => Ok(false),
+        }
+    }
+
+    pub fn read_spaces(&self) -> Result<Vec<Space>, EngineError> {
+        Ok(self.inner.doc.read_spaces()?)
     }
 
     pub fn rename_chat(&self, chat_id: &str, title: &str) -> Result<bool, EngineError> {
@@ -459,6 +599,7 @@ impl WorkspaceHostInner {
                 self.chats_tx.send_replace(state.chats);
                 self.devices_tx.send_replace(state.devices);
                 self.sessions_tx.send_replace(state.sessions);
+                self.spaces_tx.send_replace(state.spaces);
             }
             Err(err) => {
                 tracing::warn!(error = %err, "workspace read failed");

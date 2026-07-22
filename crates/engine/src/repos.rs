@@ -170,7 +170,8 @@ impl Repos {
         )
     }
 
-    async fn is_repo(&self, path: &Path) -> bool {
+    /// Is `path` inside a git work tree? (Also the SpacesSync git-presence probe.)
+    pub async fn is_repo(&self, path: &Path) -> bool {
         matches!(
             self.git(&["rev-parse", "--is-inside-work-tree"], Some(path)).await,
             Ok(out) if out == "true"

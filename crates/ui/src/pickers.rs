@@ -22,7 +22,7 @@ use gpui::{
 
 use comet_engine::registry::HarnessDescriptor;
 use comet_proto::{
-    Chat, ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, Repo, SandboxLevel,
+    ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, SandboxLevel,
 };
 use comet_rpc::methods;
 
@@ -37,7 +37,9 @@ use crate::theme::Theme;
 // Draft config (what the pickers accumulate)
 // ---------------------------------------------------------------------------
 
-/// Everything a new chat is configured with before the first send.
+/// Everything a new chat is configured with before the first send. The folder
+/// and device come from the selected SPACE — the draft only carries the git
+/// extras (branch + worktree toggle) and the run config.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DraftConfig {
     pub harness: Option<HarnessId>,
@@ -45,7 +47,6 @@ pub struct DraftConfig {
     pub reasoning: Option<ReasoningLevel>,
     /// option id → choice id (only non-defaults are meaningful).
     pub model_options: serde_json::Map<String, serde_json::Value>,
-    pub repo: Option<Repo>,
     pub branch: Option<String>,
     /// Run in an isolated worktree (`CreateWorktree` on send).
     pub isolated_worktree: bool,
@@ -165,44 +166,7 @@ pub fn traits_summary(
 }
 
 // ---------------------------------------------------------------------------
-// Pure: repo ordering
-// ---------------------------------------------------------------------------
-
-/// Cwds of recent chats, most recent first, deduped — the RepoPicker "recents".
-pub fn recent_cwds(chats: &[Chat]) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
-    for chat in chats {
-        if let Some(cwd) = chat.cwd.as_deref()
-            && !cwd.is_empty()
-            && !out.iter().any(|c| c == cwd)
-        {
-            out.push(cwd.to_string());
-        }
-    }
-    out
-}
-
-/// Recents-first repo ordering: repos whose path appears in `recents` (already
-/// most-recent-first) lead in that order; the rest follow alphabetically.
-pub fn order_repos(mut repos: Vec<Repo>, recents: &[String]) -> Vec<Repo> {
-    repos.sort_by(|a, b| {
-        a.name
-            .to_lowercase()
-            .cmp(&b.name.to_lowercase())
-            .then_with(|| a.path.cmp(&b.path))
-    });
-    let mut out: Vec<Repo> = Vec::new();
-    for cwd in recents {
-        if let Some(at) = repos.iter().position(|r| &r.path == cwd) {
-            out.push(repos.remove(at));
-        }
-    }
-    out.extend(repos);
-    out
-}
-
-// ---------------------------------------------------------------------------
-// Pure: folder-browser navigation
+// Pure: folder-browser navigation (used by the shell's add-space flow)
 // ---------------------------------------------------------------------------
 
 /// Parent of an absolute path; `None` at the filesystem root.
@@ -239,30 +203,9 @@ pub fn breadcrumbs(path: &str) -> Vec<(String, String)> {
     out
 }
 
-/// What Enter does on the active browser row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BrowseEnter {
-    /// Descend into a plain directory.
-    Descend(String),
-    /// The entry is a git repo — pick it (AddRepo).
-    Pick(String),
-}
-
 /// Directory rows of a listing (files never render in the browser).
 pub fn browser_rows(listing: &FolderListing) -> Vec<&comet_proto::FolderEntry> {
     listing.entries.iter().filter(|e| e.is_dir).collect()
-}
-
-/// Resolve Enter on row `active` of a listing.
-pub fn browse_enter(listing: &FolderListing, active: usize) -> Option<BrowseEnter> {
-    let rows = browser_rows(listing);
-    let entry = rows.get(active)?;
-    let full = child_path(&listing.path, &entry.name);
-    if entry.is_repo {
-        Some(BrowseEnter::Pick(full))
-    } else {
-        Some(BrowseEnter::Descend(full))
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -272,19 +215,9 @@ pub fn browse_enter(listing: &FolderListing, active: usize) -> Option<BrowseEnte
 /// Which picker popover is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
-    Repo,
     Branch,
     HarnessModel,
     Traits,
-}
-
-/// Sub-view of the repo popover.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RepoPane {
-    List,
-    Browser,
-    CloneUrl,
-    CreateName,
 }
 
 pub struct Pickers {
@@ -299,23 +232,18 @@ pub struct Pickers {
     /// Selection the draft picks belong to — switching chats drops them so a
     /// pick made in one chat never leaks into another.
     draft_owner: Option<String>,
+    /// Space the branch draft/cache belong to (see the state observer).
+    space_owner: Option<String>,
     open: Option<PickerKind>,
-    repo_pane: RepoPane,
     harnesses: Loadable<Vec<HarnessDescriptor>>,
     models: HashMap<HarnessId, Loadable<Vec<Model>>>,
-    repos: Loadable<Vec<Repo>>,
     branches: Loadable<Vec<String>>,
-    /// Repo path the `branches` slot belongs to.
-    branches_repo: Option<String>,
-    browser: Loadable<FolderListing>,
-    /// Requested browser path (`None` = server default, i.e. home).
-    browser_path: Option<String>,
+    /// Space id the `branches` slot belongs to (invalidated on space change).
+    branches_space: Option<String>,
     /// Highlighted row in the open list (keyboard nav).
     active: usize,
     /// Shared search / URL / name input, reused across popovers.
     search: Entity<ComposerInput>,
-    form_busy: bool,
-    form_error: Option<SharedString>,
     focus: FocusHandle,
     /// Re-open suppression after outside-click dismissal (the dismiss and the
     /// trigger click would otherwise toggle twice).
@@ -325,7 +253,6 @@ pub struct Pickers {
     /// no synthetic pointer, but synthetic keys do arrive).
     boot_focus_pending: bool,
     load_task: Option<Task<()>>,
-    form_task: Option<Task<()>>,
     mutate_task: Option<Task<()>>,
     _search_events: Subscription,
     _state_observe: Subscription,
@@ -355,6 +282,16 @@ impl Pickers {
                 this.config.reasoning = None;
                 this.config.model_options.clear();
             }
+            // A space switch invalidates the branch draft + cache — the folder
+            // (and possibly the device) changed under them.
+            let space = state.read(cx).selected_space.clone();
+            if space != this.space_owner {
+                this.space_owner = space;
+                this.config.branch = None;
+                this.config.isolated_worktree = false;
+                this.branches = Loadable::Idle;
+                this.branches_space = None;
+            }
             cx.notify();
         });
         // Dev/testing knob: `COMET_OPEN_PICKER=model|traits|repo|branch` boots
@@ -363,7 +300,6 @@ impl Pickers {
         let open = match std::env::var("COMET_OPEN_PICKER").ok().as_deref() {
             Some("model") => Some(PickerKind::HarnessModel),
             Some("traits") => Some(PickerKind::Traits),
-            Some("repo") => Some(PickerKind::Repo),
             Some("branch") => Some(PickerKind::Branch),
             _ => None,
         };
@@ -375,30 +311,25 @@ impl Pickers {
             .map(ComposerDefaults::load)
             .unwrap_or_default();
         let draft_owner = state.read(cx).selected_chat.clone();
+        let space_owner = state.read(cx).selected_space.clone();
         Self {
             state,
+            space_owner,
             config: DraftConfig::default(),
             defaults,
             data_dir,
             draft_owner,
             open,
-            repo_pane: RepoPane::List,
             harnesses: Loadable::Idle,
             models: HashMap::new(),
-            repos: Loadable::Idle,
             branches: Loadable::Idle,
-            branches_repo: None,
-            browser: Loadable::Idle,
-            browser_path: None,
+            branches_space: None,
             active: 0,
             search,
-            form_busy: false,
-            form_error: None,
             focus: cx.focus_handle(),
             suppressed: None,
             boot_focus_pending: open.is_some(),
             load_task: None,
-            form_task: None,
             mutate_task: None,
             _search_events: search_events,
             _state_observe: state_observe,
@@ -543,8 +474,6 @@ impl Pickers {
         if let Some(kind) = self.open.take() {
             self.suppressed = Some((kind, Instant::now()));
         }
-        self.form_error = None;
-        self.form_busy = false;
         cx.notify();
     }
 
@@ -563,9 +492,7 @@ impl Pickers {
             return;
         }
         self.open = Some(kind);
-        self.repo_pane = RepoPane::List;
         self.active = 0;
-        self.form_error = None;
         self.search.update(cx, |input, cx| {
             input.set_placeholder("Search…", cx);
             input.set_text("", cx);
@@ -574,14 +501,13 @@ impl Pickers {
         // so the frame's key handler still sees arrows/Enter); the rest focus
         // the frame itself for pure keyboard nav.
         match kind {
-            PickerKind::Repo | PickerKind::Branch => {
+            PickerKind::Branch => {
                 let handle = self.search.read(cx).focus_handle(cx);
                 window.focus(&handle, cx);
             }
             _ => window.focus(&self.focus, cx),
         }
         match kind {
-            PickerKind::Repo => self.ensure_repos(false, cx),
             PickerKind::Branch => self.ensure_branches(false, cx),
             PickerKind::HarnessModel | PickerKind::Traits => {
                 self.ensure_harnesses(cx);
@@ -655,49 +581,41 @@ impl Pickers {
         .detach();
     }
 
-    fn ensure_repos(&mut self, force: bool, cx: &mut Context<Self>) {
-        if !force && matches!(self.repos, Loadable::Ready(_) | Loadable::Loading) {
+    /// ListBranches for the selected SPACE's folder — targeted at the space's
+    /// device (relay-forwarded when remote), keyed/invalidated by space id.
+    fn ensure_branches(&mut self, force: bool, cx: &mut Context<Self>) {
+        let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
+            return;
+        };
+        if !space.git_detected {
             return;
         }
-        let Some(engine) = self.engine(cx) else {
-            return;
-        };
-        self.repos = Loadable::Loading;
-        self.load_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::LIST_REPOS, serde_json::json!({}))
-                .await;
-            this.update(cx, |pickers, cx| {
-                pickers.repos = match result {
-                    Ok(value) => match serde_json::from_value::<Vec<Repo>>(value) {
-                        Ok(repos) => Loadable::Ready(repos),
-                        Err(err) => Loadable::Error(err.to_string()),
-                    },
-                    Err(err) => Loadable::Error(err.to_string()),
-                };
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    fn ensure_branches(&mut self, force: bool, cx: &mut Context<Self>) {
-        let Some(repo) = self.config.repo.clone() else {
-            return;
-        };
-        let fresh = self.branches_repo.as_deref() == Some(repo.path.as_str());
+        let fresh = self.branches_space.as_deref() == Some(space.id.as_str());
         if !force && fresh && matches!(self.branches, Loadable::Ready(_) | Loadable::Loading) {
             return;
         }
         let Some(engine) = self.engine(cx) else {
             return;
         };
+        let local = self.state.read(cx).local_device_id.clone();
         self.branches = Loadable::Loading;
-        self.branches_repo = Some(repo.path.clone());
+        self.branches_space = Some(space.id.clone());
         self.load_task = Some(cx.spawn(async move |this, cx| {
-            let params = serde_json::json!({ "repoPath": repo.path });
-            let result = engine.client().call(methods::LIST_BRANCHES, params).await;
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "repoPath".into(),
+                serde_json::Value::String(space.path.clone()),
+            );
+            if local.as_deref() != Some(space.device_id.as_str()) {
+                params.insert(
+                    "targetDeviceId".into(),
+                    serde_json::Value::String(space.device_id.clone()),
+                );
+            }
+            let result = engine
+                .client()
+                .call(methods::LIST_BRANCHES, serde_json::Value::Object(params))
+                .await;
             this.update(cx, |pickers, cx| {
                 pickers.branches = match result {
                     Ok(value) => match serde_json::from_value::<Vec<String>>(value) {
@@ -712,121 +630,7 @@ impl Pickers {
         }));
     }
 
-    fn load_folders(&mut self, path: Option<String>, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else {
-            return;
-        };
-        self.browser_path = path.clone();
-        self.browser = Loadable::Loading;
-        self.active = 0;
-        self.load_task = Some(cx.spawn(async move |this, cx| {
-            let params = match &path {
-                Some(p) => serde_json::json!({ "path": p }),
-                None => serde_json::json!({}),
-            };
-            let result = engine.client().call(methods::LIST_FOLDERS, params).await;
-            this.update(cx, |pickers, cx| {
-                pickers.browser = match result {
-                    Ok(value) => match serde_json::from_value::<FolderListing>(value) {
-                        Ok(listing) => Loadable::Ready(listing),
-                        Err(err) => Loadable::Error(err.to_string()),
-                    },
-                    Err(err) => Loadable::Error(err.to_string()),
-                };
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
     // ---- selections ----
-
-    fn pick_repo(&mut self, repo: Repo, cx: &mut Context<Self>) {
-        if self.config.repo.as_ref().map(|r| &r.path) != Some(&repo.path) {
-            self.config.branch = None;
-            self.branches = Loadable::Idle;
-            self.branches_repo = None;
-        }
-        self.config.repo = Some(repo);
-        self.open = None;
-        cx.notify();
-    }
-
-    /// AddRepo for a browsed folder, then select the resulting repo.
-    fn add_repo_path(&mut self, path: String, cx: &mut Context<Self>) {
-        let Some(engine) = self.engine(cx) else {
-            return;
-        };
-        self.form_busy = true;
-        self.form_error = None;
-        cx.notify();
-        self.form_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(methods::ADD_REPO, serde_json::json!({ "path": path }))
-                .await
-                .and_then(|value| {
-                    serde_json::from_value::<Repo>(value)
-                        .map_err(|e| comet_rpc::RpcError::Failed(e.to_string()))
-                });
-            this.update(cx, |pickers, cx| {
-                pickers.form_busy = false;
-                match result {
-                    Ok(repo) => {
-                        pickers.ensure_repos(true, cx);
-                        pickers.pick_repo(repo, cx);
-                    }
-                    Err(err) => pickers.form_error = Some(format!("{err}").into()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
-
-    /// CloneRepo / CreateRepo from the inline forms.
-    fn submit_repo_form(&mut self, cx: &mut Context<Self>) {
-        let text = self.search.read(cx).text().trim().to_string();
-        if text.is_empty() || self.form_busy {
-            return;
-        }
-        let (method, params) = match self.repo_pane {
-            RepoPane::CloneUrl => (methods::CLONE_REPO, serde_json::json!({ "url": text })),
-            RepoPane::CreateName => (methods::CREATE_REPO, serde_json::json!({ "name": text })),
-            _ => return,
-        };
-        let Some(engine) = self.engine(cx) else {
-            return;
-        };
-        self.form_busy = true;
-        self.form_error = None;
-        cx.notify();
-        self.form_task = Some(cx.spawn(async move |this, cx| {
-            let result = engine
-                .client()
-                .call(method, params)
-                .await
-                .and_then(|value| {
-                    serde_json::from_value::<Repo>(value)
-                        .map_err(|e| comet_rpc::RpcError::Failed(e.to_string()))
-                });
-            this.update(cx, |pickers, cx| {
-                pickers.form_busy = false;
-                match result {
-                    Ok(repo) => {
-                        pickers.ensure_repos(true, cx);
-                        pickers
-                            .search
-                            .update(cx, |input, cx| input.set_text("", cx));
-                        pickers.pick_repo(repo, cx);
-                    }
-                    Err(err) => pickers.form_error = Some(format!("{err}").into()),
-                }
-                cx.notify();
-            })
-            .ok();
-        }));
-    }
 
     fn pick_branch(&mut self, branch: String, cx: &mut Context<Self>) {
         self.config.branch = Some(branch);
@@ -1054,20 +858,6 @@ impl Pickers {
         self.pick_model(id, cx);
     }
 
-    fn filtered_repo_rows(&self, cx: &App) -> Vec<Repo> {
-        let Some(repos) = self.repos.ready() else {
-            return Vec::new();
-        };
-        let recents = recent_cwds(&self.state.read(cx).chats);
-        let ordered = order_repos(repos.clone(), &recents);
-        let query = self.search.read(cx).text().to_string();
-        let labels: Vec<&str> = ordered.iter().map(|r| r.name.as_str()).collect();
-        popover::filter_indices(&query, &labels)
-            .into_iter()
-            .map(|ix| ordered[ix].clone())
-            .collect()
-    }
-
     fn filtered_branch_rows(&self, cx: &App) -> Vec<String> {
         let Some(branches) = self.branches.ready() else {
             return Vec::new();
@@ -1080,21 +870,10 @@ impl Pickers {
     }
 
     fn on_search_submit(&mut self, cx: &mut Context<Self>) {
-        match (self.open, self.repo_pane) {
-            (Some(PickerKind::Repo), RepoPane::CloneUrl | RepoPane::CreateName) => {
-                self.submit_repo_form(cx)
-            }
-            (Some(PickerKind::Repo), RepoPane::List) => {
-                if let Some(repo) = self.filtered_repo_rows(cx).into_iter().nth(self.active) {
-                    self.pick_repo(repo, cx);
-                }
-            }
-            (Some(PickerKind::Branch), _) => {
-                if let Some(branch) = self.filtered_branch_rows(cx).into_iter().nth(self.active) {
-                    self.pick_branch(branch, cx);
-                }
-            }
-            _ => {}
+        if self.open == Some(PickerKind::Branch)
+            && let Some(branch) = self.filtered_branch_rows(cx).into_iter().nth(self.active)
+        {
+            self.pick_branch(branch, cx);
         }
     }
 
@@ -1105,40 +884,24 @@ impl Pickers {
             event.keystroke.modifiers.control,
         );
         let search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);
-        let search_empty = self.search.read(cx).is_empty();
         match key {
             MenuKey::Escape => {
-                if self.open == Some(PickerKind::Repo) && self.repo_pane != RepoPane::List {
-                    self.repo_pane = RepoPane::List;
-                    self.form_error = None;
-                    self.active = 0;
-                    cx.notify();
-                } else {
-                    self.open = None;
-                    cx.notify();
-                }
+                self.open = None;
+                cx.notify();
             }
             MenuKey::Up | MenuKey::Down => {
                 let delta = if key == MenuKey::Up { -1 } else { 1 };
-                let count = match (self.open, self.repo_pane) {
-                    (Some(PickerKind::Repo), RepoPane::List) => self.filtered_repo_rows(cx).len(),
-                    (Some(PickerKind::Repo), RepoPane::Browser) => self
-                        .browser
-                        .ready()
-                        .map(|l| browser_rows(l).len())
-                        .unwrap_or(0),
-                    (Some(PickerKind::Branch), _) => self.filtered_branch_rows(cx).len(),
-                    (Some(PickerKind::HarnessModel), _) => self.model_rows_len(cx),
-                    (Some(PickerKind::Traits), _) => self.trait_rows_len(cx),
-                    _ => 0,
+                let count = match self.open {
+                    Some(PickerKind::Branch) => self.filtered_branch_rows(cx).len(),
+                    Some(PickerKind::HarnessModel) => self.model_rows_len(cx),
+                    Some(PickerKind::Traits) => self.trait_rows_len(cx),
+                    None => 0,
                 };
                 self.active = popover::menu_step(Some(self.active), count, delta).unwrap_or(0);
                 cx.notify();
             }
             MenuKey::Enter if !search_focused => {
-                if self.open == Some(PickerKind::Repo) && self.repo_pane == RepoPane::Browser {
-                    self.browser_activate(cx);
-                } else if self.open == Some(PickerKind::HarnessModel) {
+                if self.open == Some(PickerKind::HarnessModel) {
                     self.activate_model_row(cx);
                 } else if self.open == Some(PickerKind::Traits) {
                     self.activate_trait_row(cx);
@@ -1146,37 +909,7 @@ impl Pickers {
                     self.on_search_submit(cx);
                 }
             }
-            MenuKey::ModEnter => {
-                // Browser accelerator: pick the *current* folder as the repo.
-                if self.open == Some(PickerKind::Repo)
-                    && self.repo_pane == RepoPane::Browser
-                    && let Some(listing) = self.browser.ready()
-                {
-                    let path = listing.path.clone();
-                    self.add_repo_path(path, cx);
-                }
-            }
-            MenuKey::Backspace if !search_focused || search_empty => {
-                if self.open == Some(PickerKind::Repo)
-                    && self.repo_pane == RepoPane::Browser
-                    && let Some(listing) = self.browser.ready()
-                    && let Some(parent) = parent_path(&listing.path)
-                {
-                    self.load_folders(Some(parent), cx);
-                }
-            }
             _ => {}
-        }
-    }
-
-    fn browser_activate(&mut self, cx: &mut Context<Self>) {
-        let Some(listing) = self.browser.ready() else {
-            return;
-        };
-        match browse_enter(listing, self.active) {
-            Some(BrowseEnter::Descend(path)) => self.load_folders(Some(path), cx),
-            Some(BrowseEnter::Pick(path)) => self.add_repo_path(path, cx),
-            None => {}
         }
     }
 
@@ -1192,7 +925,6 @@ impl Pickers {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
         let id: &'static str = match kind {
-            PickerKind::Repo => "picker-repo",
             PickerKind::Branch => "picker-branch",
             PickerKind::HarnessModel => "picker-model",
             PickerKind::Traits => "picker-traits",
@@ -1308,14 +1040,6 @@ impl Pickers {
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.element_hover))
                     .on_click(cx.listener(move |this, _, _, cx| match kind {
-                        PickerKind::Repo => {
-                            if this.repo_pane == RepoPane::Browser {
-                                let path = this.browser_path.clone();
-                                this.load_folders(path, cx);
-                            } else {
-                                this.ensure_repos(true, cx);
-                            }
-                        }
                         PickerKind::Branch => this.ensure_branches(true, cx),
                         PickerKind::HarnessModel | PickerKind::Traits => {
                             this.harnesses = Loadable::Idle;
@@ -1327,413 +1051,16 @@ impl Pickers {
             .into_any_element()
     }
 
-    fn render_repo_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = Theme::of(cx).clone();
-        match self.repo_pane {
-            RepoPane::List => {
-                let rows = self.filtered_repo_rows(cx);
-                let body: AnyElement = match &self.repos {
-                    Loadable::Loading | Loadable::Idle => {
-                        popover::skeleton_rows("repo-skeleton", &theme, 4)
-                    }
-                    Loadable::Error(message) => {
-                        let message = message.clone();
-                        self.retry_row("repo-retry", &message, PickerKind::Repo, &theme, cx)
-                    }
-                    Loadable::Ready(_) if rows.is_empty() => div()
-                        .p(px(Theme::SPACE_SM))
-                        .text_size(px(12.0))
-                        .text_color(theme.text_faint)
-                        .child(SharedString::from("No repositories"))
-                        .into_any_element(),
-                    Loadable::Ready(_) => {
-                        let active = self.active;
-                        let selected_path = self.config.repo.as_ref().map(|r| r.path.clone());
-                        div()
-                            .id("repo-list")
-                            .flex()
-                            .flex_col()
-                            .gap(px(2.0))
-                            .max_h(px(224.0))
-                            .overflow_y_scroll()
-                            .children(rows.into_iter().enumerate().map(|(ix, repo)| {
-                                let name: SharedString = repo.name.clone().into();
-                                let path: SharedString = repo.path.clone().into();
-                                let is_selected =
-                                    selected_path.as_deref() == Some(repo.path.as_str());
-                                popover::menu_row_nav(
-                                    &theme,
-                                    is_selected,
-                                    ix == active,
-                                    format!("repo-row-{ix}"),
-                                )
-                                .id(("repo-row", ix))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.pick_repo(repo.clone(), cx);
-                                }))
-                                .child(
-                                    // Two-line row (comet repo-picker.tsx):
-                                    // name over the mono path.
-                                    div()
-                                        .flex_1()
-                                        .min_w_0()
-                                        .flex()
-                                        .flex_col()
-                                        .child(div().truncate().child(name))
-                                        .child(
-                                            div()
-                                                .truncate()
-                                                .font_family(theme.font_mono.clone())
-                                                .text_size(px(11.0))
-                                                .text_color(theme.text_muted.opacity(0.7))
-                                                .child(path),
-                                        ),
-                                )
-                            }))
-                            .into_any_element()
-                    }
-                };
-                let action = |id: &'static str,
-                              label: &'static str,
-                              icon_path: &'static str,
-                              pane: RepoPane| {
-                    popover::menu_row(&theme, false, id)
-                        .id(id)
-                        .child(
-                            crate::icons::icon(icon_path)
-                                .size(px(16.0))
-                                .text_color(theme.text_muted),
-                        )
-                        .on_click(cx.listener(move |this, _, window, cx| {
-                            this.repo_pane = pane;
-                            this.active = 0;
-                            this.form_error = None;
-                            let placeholder = match pane {
-                                RepoPane::CloneUrl => "https://github.com/owner/repo.git",
-                                RepoPane::CreateName => "New repo name",
-                                _ => "Search…",
-                            };
-                            this.search.update(cx, |input, cx| {
-                                input.set_placeholder(placeholder, cx);
-                                input.set_text("", cx);
-                            });
-                            if pane == RepoPane::Browser {
-                                // The browser is keyboard-driven off the frame.
-                                window.focus(&this.focus, cx);
-                                if this.browser.ready().is_none() {
-                                    this.load_folders(None, cx);
-                                }
-                            } else {
-                                let handle = this.search.read(cx).focus_handle(cx);
-                                window.focus(&handle, cx);
-                            }
-                            cx.notify();
-                        }))
-                        .child(SharedString::from(label))
-                };
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(self.search_box(&theme))
-                    .child(body)
-                    // Action group under a full-width hairline (comet
-                    // repo-picker.tsx `mt-1 … border-t border-white/[0.06] pt-1`).
-                    .child(
-                        popover::menu_section()
-                            .child(action(
-                                "repo-open-folder",
-                                "Open folder…",
-                                crate::icons::FOLDER,
-                                RepoPane::Browser,
-                            ))
-                            .child(action(
-                                "repo-clone",
-                                "Clone from URL…",
-                                crate::icons::GLOBAL,
-                                RepoPane::CloneUrl,
-                            ))
-                            .child(action(
-                                "repo-create",
-                                "Create new repo…",
-                                crate::icons::PLUS,
-                                RepoPane::CreateName,
-                            )),
-                    )
-                    .into_any_element()
-            }
-            RepoPane::Browser => self.render_browser(&theme, cx),
-            RepoPane::CloneUrl | RepoPane::CreateName => {
-                let (title, submit_label) = if self.repo_pane == RepoPane::CloneUrl {
-                    ("Clone from URL", "Clone")
-                } else {
-                    ("Create new repo", "Create")
-                };
-                let busy = self.form_busy;
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(px(2.0))
-                    .child(popover::menu_heading(&theme, title))
-                    .child(self.search_box(&theme))
-                    .when_some(self.form_error.clone(), |el, message| {
-                        el.child(
-                            div()
-                                .px(px(8.0))
-                                .text_size(px(11.0))
-                                .text_color(theme.danger)
-                                .child(message),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .justify_between()
-                            .items_center()
-                            .px(px(4.0))
-                            .pb(px(2.0))
-                            .pt(px(4.0))
-                            .child(
-                                popover::btn_ghost(&theme, "Back", "repo-form-back")
-                                    .id("repo-form-back")
-                                    .px(px(8.0))
-                                    .py(px(4.0))
-                                    .text_size(px(12.0))
-                                    .on_click(cx.listener(|this, _, _, cx| {
-                                        this.repo_pane = RepoPane::List;
-                                        this.form_error = None;
-                                        this.search.update(cx, |input, cx| {
-                                            input.set_placeholder("Search…", cx);
-                                            input.set_text("", cx);
-                                        });
-                                        cx.notify();
-                                    })),
-                            )
-                            .child(
-                                popover::btn_primary(
-                                    &theme,
-                                    if busy { "Working…" } else { submit_label },
-                                )
-                                .id("repo-form-submit")
-                                .px(px(10.0))
-                                .py(px(4.0))
-                                .text_size(px(12.0))
-                                .when(busy, |el| el.opacity(0.6))
-                                .on_click(cx.listener(|this, _, _, cx| this.submit_repo_form(cx))),
-                            ),
-                    )
-                    .into_any_element()
-            }
-        }
-    }
-
-    /// The in-app folder browser: breadcrumbs + arrow/Enter/Cmd+Enter/Backspace
-    /// keys + skeleton rows + truncation notice + Retry (§1.7).
-    fn render_browser(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let crumbs: AnyElement = match self.browser.ready() {
-            Some(listing) => {
-                let segments = breadcrumbs(&listing.path);
-                let last = segments.len().saturating_sub(1);
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(2.0))
-                    .px(px(6.0))
-                    .pt(px(4.0))
-                    .text_size(px(11.0))
-                    .children(segments.into_iter().enumerate().map(|(ix, (label, full))| {
-                        let color = if ix == last {
-                            theme.text
-                        } else {
-                            theme.text_faint
-                        };
-                        div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(2.0))
-                            .when(ix > 0, |el| {
-                                el.child(
-                                    div()
-                                        .text_color(theme.text_faint)
-                                        .child(SharedString::from("/")),
-                                )
-                            })
-                            .child(
-                                div()
-                                    .id(("crumb", ix))
-                                    .px(px(2.0))
-                                    .rounded(px(3.0))
-                                    .text_color(color)
-                                    .cursor_pointer()
-                                    .hover(|s| s.bg(theme.element_hover))
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.load_folders(Some(full.clone()), cx);
-                                    }))
-                                    .child(SharedString::from(label)),
-                            )
-                    }))
-                    .into_any_element()
-            }
-            None => gpui::Empty.into_any_element(),
-        };
-
-        let body: AnyElement = match &self.browser {
-            Loadable::Loading | Loadable::Idle => {
-                popover::skeleton_rows("browser-skeleton", theme, 6)
-            }
-            Loadable::Error(message) => {
-                let message = message.clone();
-                self.retry_row("browser-retry", &message, PickerKind::Repo, theme, cx)
-            }
-            Loadable::Ready(listing) => {
-                let listing = listing.clone();
-                let rows = browser_rows(&listing);
-                let active = self.active;
-                let truncated = listing.truncated;
-                let list = div()
-                    .id("browser-list")
-                    .flex()
-                    .flex_col()
-                    .max_h(px(220.0))
-                    .overflow_y_scroll()
-                    .children(rows.iter().enumerate().map(|(ix, entry)| {
-                        let name: SharedString = entry.name.clone().into();
-                        let is_repo = entry.is_repo;
-                        popover::menu_row_nav(
-                            theme,
-                            false,
-                            ix == active,
-                            format!("browser-row-{ix}"),
-                        )
-                        .id(("browser-row", ix))
-                        .on_click(cx.listener(move |this, _, _, cx| {
-                            this.active = ix;
-                            this.browser_activate(cx);
-                        }))
-                        .child(
-                            div()
-                                .flex_none()
-                                .text_color(if is_repo {
-                                    theme.accent
-                                } else {
-                                    theme.text_faint
-                                })
-                                .child(SharedString::from(if is_repo { "◆" } else { "▸" })),
-                        )
-                        .child(div().flex_1().min_w_0().truncate().child(name))
-                        .when(is_repo, |el| {
-                            el.child(
-                                div()
-                                    .text_size(px(10.0))
-                                    .text_color(theme.text_faint)
-                                    .child(SharedString::from("repo")),
-                            )
-                        })
-                    }));
-                div()
-                    .flex()
-                    .flex_col()
-                    .child(list)
-                    .when(rows.is_empty(), |el| {
-                        el.child(
-                            div()
-                                .p(px(Theme::SPACE_SM))
-                                .text_size(px(12.0))
-                                .text_color(theme.text_faint)
-                                .child(SharedString::from("No folders here")),
-                        )
-                    })
-                    .when(truncated, |el| {
-                        el.child(
-                            div()
-                                .px(px(Theme::SPACE_SM))
-                                .py(px(4.0))
-                                .text_size(px(11.0))
-                                .text_color(theme.warning)
-                                .child(SharedString::from("Listing truncated — narrow down")),
-                        )
-                    })
-                    .into_any_element()
-            }
-        };
-
-        let use_this = self.browser.ready().map(|l| l.path.clone());
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(2.0))
-            .child(popover::menu_heading(theme, "Open folder"))
-            .child(crumbs)
-            .child(body)
-            .when_some(self.form_error.clone(), |el, message| {
-                el.child(
-                    div()
-                        .px(px(6.0))
-                        .text_size(px(11.0))
-                        .text_color(theme.danger)
-                        .child(message),
-                )
-            })
-            .child(
-                // comet's browse footer: `mt-1.5 flex gap-1`, no hairline.
-                div()
-                    .mt(px(6.0))
-                    .flex()
-                    .flex_row()
-                    .justify_between()
-                    .items_center()
-                    .px(px(4.0))
-                    .pb(px(2.0))
-                    .child(
-                        popover::btn_ghost(theme, "Back", "browser-back")
-                            .id("browser-back")
-                            .px(px(8.0))
-                            .py(px(4.0))
-                            .text_size(px(12.0))
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.repo_pane = RepoPane::List;
-                                cx.notify();
-                            })),
-                    )
-                    .when_some(use_this, |el, path| {
-                        el.child(
-                            div()
-                                .id("browser-use-current")
-                                .flex()
-                                .flex_row()
-                                .items_center()
-                                .gap(px(6.0))
-                                .px(px(8.0))
-                                .py(px(4.0))
-                                .rounded(px(8.0))
-                                .text_size(px(12.0))
-                                .text_color(theme.text)
-                                .cursor_pointer()
-                                .hover(|s| s.bg(crate::theme::white_alpha(0.08)))
-                                .on_click(cx.listener(move |this, _, _, cx| {
-                                    this.add_repo_path(path.clone(), cx);
-                                }))
-                                .child(SharedString::from("Use this folder"))
-                                .child(popover::kbd_hint(theme, "⌘↵")),
-                        )
-                    }),
-            )
-            .into_any_element()
-    }
-
     fn render_branch_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        if self.config.repo.is_none() {
+        let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
             return div()
                 .p(px(Theme::SPACE_SM))
                 .text_size(px(12.0))
                 .text_color(theme.text_faint)
-                .child(SharedString::from("Pick a repository first"))
+                .child(SharedString::from("No space selected"))
                 .into_any_element();
-        }
+        };
         let rows = self.filtered_branch_rows(cx);
         let body: AnyElement = match &self.branches {
             Loadable::Loading | Loadable::Idle => {
@@ -1779,12 +1106,7 @@ impl Pickers {
             }
         };
         let isolated = self.config.isolated_worktree;
-        let repo_name = self
-            .config
-            .repo
-            .as_ref()
-            .map(|r| r.name.clone())
-            .unwrap_or_else(|| "<repo>".into());
+        let repo_name = space.display_name().to_string();
         div()
             .flex()
             .flex_col()
@@ -2185,7 +1507,7 @@ impl Pickers {
 /// Brand mark + optional tint for a harness (the Claude mark keeps its brand
 /// orange even on the monochrome surface; the mock harness scripts
 /// Claude-flavoured runs, so it wears the Claude mark).
-fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gpui::Hsla>) {
+pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gpui::Hsla>) {
     match harness {
         HarnessId::ClaudeCode | HarnessId::Mock => (
             crate::icons::CLAUDE_MARK,
@@ -2282,7 +1604,7 @@ impl Render for Pickers {
         // first-paint fallback focuses the composer after our first render).
         if self.boot_focus_pending {
             match self.open {
-                Some(PickerKind::Repo | PickerKind::Branch) => {
+                Some(PickerKind::Branch) => {
                     let handle = self.search.read(cx).focus_handle(cx);
                     if handle.is_focused(window) {
                         self.boot_focus_pending = false;
@@ -2309,22 +1631,13 @@ impl Render for Pickers {
         }
         // A popover opened data-side (COMET_OPEN_PICKER) never went through
         // `toggle`, so kick its loads here (all ensure_* are idempotent).
-        match self.open {
-            Some(PickerKind::Repo) if matches!(self.repos, Loadable::Idle) => {
-                self.ensure_repos(false, cx)
-            }
-            Some(PickerKind::Branch) if matches!(self.branches, Loadable::Idle) => {
-                self.ensure_branches(false, cx)
-            }
-            _ => {}
+        if self.open == Some(PickerKind::Branch) && matches!(self.branches, Loadable::Idle) {
+            self.ensure_branches(false, cx);
         }
 
-        let repo_label: SharedString = self
-            .config
-            .repo
-            .as_ref()
-            .map(|r| SharedString::from(r.name.clone()))
-            .unwrap_or_else(|| SharedString::from("Repo"));
+        // Branch (+ worktree) only makes sense in a git space — the space is
+        // owner-stamped and synced, so this needs no RPC.
+        let space_git = self.state.read(cx).selected_space_git();
         let branch_label: SharedString = self
             .config
             .branch
@@ -2373,11 +1686,6 @@ impl Render for Pickers {
 
         // Render the open popover's body first (mutable borrow), then the chips.
         let mut overlay: Option<(PickerKind, AnyElement)> = match self.open {
-            Some(PickerKind::Repo) => {
-                // comet repo-picker.tsx `w-72`.
-                let content = self.render_repo_popover(cx);
-                Some((PickerKind::Repo, self.popover_frame(288.0, content, cx)))
-            }
             Some(PickerKind::Branch) => {
                 // comet branch-picker.tsx `w-72`.
                 let content = self.render_branch_popover(cx);
@@ -2397,8 +1705,9 @@ impl Render for Pickers {
             None => None,
         };
 
-        // Left cluster: repo/branch (new chats only). Right cluster: agent+model
-        // and traits — the composer appends attach + send after this element
+        // Left cluster: the branch chip (new chats in git spaces only — the
+        // space itself fixes device + folder). Right cluster: agent+model and
+        // traits — the composer appends attach + send after this element
         // (comet composer-actions.tsx arrangement).
         let mut left = div()
             .flex()
@@ -2406,21 +1715,7 @@ impl Render for Pickers {
             .items_center()
             .min_w_0()
             .gap(px(4.0));
-        if new_chat {
-            let repo_chip = self.trigger_chip(
-                PickerKind::Repo,
-                repo_label,
-                self.config.repo.is_some(),
-                Some((crate::icons::FOLDER, None)),
-                &theme,
-                cx,
-            );
-            left = left.child(attach_overlay(
-                repo_chip,
-                &mut overlay,
-                PickerKind::Repo,
-                "repo-popover",
-            ));
+        if new_chat && space_git {
             let branch_chip = self.trigger_chip(
                 PickerKind::Branch,
                 branch_label,
@@ -2487,65 +1782,6 @@ impl Render for Pickers {
 mod tests {
     use super::*;
     use comet_proto::{FolderEntry, Model, ModelOption, ModelOptionChoice};
-
-    fn repo(name: &str, path: &str) -> Repo {
-        Repo {
-            path: path.into(),
-            name: name.into(),
-            default_branch: Some("main".into()),
-        }
-    }
-
-    #[test]
-    fn repos_order_recents_first_then_alphabetical() {
-        let repos = vec![
-            repo("zebra", "/r/zebra"),
-            repo("Alpha", "/r/alpha"),
-            repo("mango", "/r/mango"),
-        ];
-        let recents = vec!["/r/mango".to_string(), "/r/missing".to_string()];
-        let ordered = order_repos(repos, &recents);
-        let names: Vec<&str> = ordered.iter().map(|r| r.name.as_str()).collect();
-        assert_eq!(names, ["mango", "Alpha", "zebra"]);
-        // No recents → purely alphabetical (case-insensitive).
-        let ordered = order_repos(vec![repo("b", "/b"), repo("A", "/a")], &[]);
-        assert_eq!(ordered[0].name, "A");
-    }
-
-    #[test]
-    fn recent_cwds_dedupe_in_recency_order() {
-        use chrono::TimeDelta;
-        let base = chrono::DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z")
-            .unwrap()
-            .to_utc();
-        let chat = |id: &str, cwd: Option<&str>, min: i64| Chat {
-            id: id.into(),
-            device_id: "d".into(),
-            title: None,
-            archived: false,
-            cwd: cwd.map(str::to_string),
-            branch: None,
-            checkout_id: None,
-            config: None,
-            last_message_preview: None,
-            last_message_at: None,
-            created_at: base + TimeDelta::minutes(min),
-            harness_session_id: None,
-            harness_session_cwd: None,
-        };
-        // Input is already sidebar-sorted; recent_cwds just walks it.
-        let chats = vec![
-            chat("a", Some("/dev/comet"), 3),
-            chat("b", Some("/dev/zed"), 2),
-            chat("c", Some("/dev/comet"), 1),
-            chat("d", None, 0),
-            chat("e", Some(""), 0),
-        ];
-        assert_eq!(
-            recent_cwds(&chats),
-            vec!["/dev/comet".to_string(), "/dev/zed".to_string()]
-        );
-    }
 
     #[test]
     fn traits_summary_formats_non_defaults() {
@@ -2655,17 +1891,7 @@ mod tests {
         };
         // Files never show as rows.
         assert_eq!(browser_rows(&listing).len(), 2);
-        // Enter on a plain dir descends; on a repo picks.
-        assert_eq!(
-            browse_enter(&listing, 0),
-            Some(BrowseEnter::Descend("/home/w/dev".into()))
-        );
-        assert_eq!(
-            browse_enter(&listing, 1),
-            Some(BrowseEnter::Pick("/home/w/comet".into()))
-        );
-        // Out-of-range → None.
-        assert_eq!(browse_enter(&listing, 5), None);
+        assert_eq!(browser_rows(&listing)[1].name, "comet");
     }
 
     #[test]

@@ -193,7 +193,10 @@ fn stored_harness_session(core: &EngineCore) -> Option<(String, Option<String>)>
 /// of the recorded request log.
 fn pre_title(core: &EngineCore) {
     core.workspace
-        .create_chat(CHAT, &core.device_id, None, Some("/tmp".into()))
+        .create_space("space-restart", &core.device_id, "/tmp", None, false)
+        .expect("create space row");
+    core.workspace
+        .create_chat(CHAT, "space-restart", None, None)
         .expect("create chat row");
     core.workspace
         .rename_chat(CHAT, "Pre-titled")

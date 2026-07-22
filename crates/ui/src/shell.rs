@@ -39,12 +39,17 @@ use crate::settings::{
     SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, TERMINAL_DEFAULT_HEIGHT, UiSettings, platform_combo,
 };
 use crate::state::{
-    AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, OrgRow, chat_location,
-    format_time_ago, group_chats, org_name_valid, parse_orgs, sort_memberships,
+    AppState, ConnectionStatus, EngineBootConfig, GatePhase, Indicator, OrgRow, format_time_ago,
+    org_name_valid, parse_orgs, sort_memberships,
 };
 use crate::terminal::panel::{TerminalPanel, ToggleTerminal, clamp_terminal_height};
 use crate::theme::Theme;
 use crate::transcript::{self, Transcript};
+
+mod spaces;
+mod tabs;
+
+use spaces::{AddSpaceFlow, RenameSpaceDialog};
 
 actions!(shell, [ToggleSidebar, ToggleChanges]);
 
@@ -315,12 +320,10 @@ pub fn resort_offsets(
     offsets
 }
 
-/// Estimated sidebar row heights for the resort diff (title line 17px inside
-/// 6px vertical padding; the location subline adds its 14px line + 2px gap).
-const CHAT_ROW_HEIGHT: f32 = 29.0;
+/// Estimated sidebar row height for the resort diff (title line 17px inside
+/// 6px vertical padding + the location subline's 14px line + 2px gap — Active
+/// rows always carry the folder · device subline).
 const CHAT_ROW_WITH_LOCATION_HEIGHT: f32 = 45.0;
-/// Group header: 12px top + 4px bottom padding around an 11px label line.
-const GROUP_HEADER_HEIGHT: f32 = 32.0;
 /// Flex gap between sidebar list items.
 const SIDEBAR_LIST_GAP: f32 = 2.0;
 
@@ -415,6 +418,20 @@ pub struct Shell {
     rename_dialog: Option<RenameChatDialog>,
     /// Chat id awaiting delete confirmation.
     delete_confirm: Option<String>,
+    /// Space-row context menu: (space id, window position).
+    space_menu: Option<(String, Point<Pixels>)>,
+    rename_space_dialog: Option<RenameSpaceDialog>,
+    /// Space id awaiting delete confirmation (hard delete + session cascade).
+    delete_space_confirm: Option<String>,
+    /// The add-space picker flow (device → folder), `Some` while open.
+    add_space: Option<AddSpaceFlow>,
+    /// Last selected chat per space (in-memory, like [`SessionPanels`]) — a
+    /// space switch lands back on the tab you left.
+    space_last_chat: std::collections::HashMap<String, String>,
+    /// Session tab currently hovered (close button appears on hover).
+    tab_hover: Option<String>,
+    /// `settings.last_space_id` applied once after the first spaces frame.
+    space_boot_applied: bool,
     user_menu_open: bool,
     /// Outside-click dismissal instant — suppresses the trigger click that
     /// follows the same mouse-down from instantly reopening the menu.
@@ -580,6 +597,13 @@ impl Shell {
             chat_menu: None,
             rename_dialog: None,
             delete_confirm: None,
+            space_menu: None,
+            rename_space_dialog: None,
+            delete_space_confirm: None,
+            add_space: None,
+            space_last_chat: std::collections::HashMap::new(),
+            tab_hover: None,
+            space_boot_applied: false,
             user_menu_open: false,
             user_menu_dismissed_at: None,
             sidebar_notice: None,
@@ -632,6 +656,36 @@ impl Shell {
                     self.delete_confirm = Some(first);
                 }
                 _ => {}
+            }
+        }
+        // Boot: restore the last selected space once the first spaces frame
+        // lands (a still-existing row wins over the auto-selected first one;
+        // the boot-auto-selected chat's own space wins over both — selecting a
+        // chat implies its space, which `select_chat` already applied).
+        if !self.space_boot_applied && !state.read(cx).spaces.is_empty() {
+            self.space_boot_applied = true;
+            if state.read(cx).selected_chat.is_none()
+                && let Some(last) = self.settings.last_space_id.clone()
+                && state.read(cx).space_row(&last).is_some()
+            {
+                state.update(cx, |s, cx| s.select_space(Some(last), cx));
+            }
+        }
+        // Track the per-space last chat + persist the selected space.
+        {
+            let (selected_space, selected_chat, chat_space) = {
+                let s = state.read(cx);
+                let chat_space = s
+                    .selected_chat_row()
+                    .and_then(|c| c.space_id.clone());
+                (s.selected_space.clone(), s.selected_chat.clone(), chat_space)
+            };
+            if let (Some(space), Some(chat)) = (chat_space, selected_chat) {
+                self.space_last_chat.insert(space, chat);
+            }
+            if selected_space != self.settings.last_space_id && selected_space.is_some() {
+                self.settings.last_space_id = selected_space;
+                self.schedule_save(cx);
             }
         }
         // Chat switch: restore THAT chat's panel state (per-session open flags;
@@ -695,9 +749,17 @@ impl Shell {
         }
     }
 
-    /// The current chat's changes-pane flag (per-session, in-memory).
-    fn right_pane_open(&self) -> bool {
-        self.panels.get(&self.active_chat).changes_open
+    /// Does the selected space's folder have git? Owner-stamped and synced —
+    /// gates the Changes pane, its toggle, and Cmd-B with zero RPCs.
+    fn space_git_detected(&self, cx: &App) -> bool {
+        self.state.read(cx).selected_space_git()
+    }
+
+    /// The current chat's changes-pane flag (per-session, in-memory), gated on
+    /// the space having git at all: a stale per-chat open flag must not reopen
+    /// the pane after switching into a non-git space.
+    fn right_pane_open(&self, cx: &App) -> bool {
+        self.panels.get(&self.active_chat).changes_open && self.space_git_detected(cx)
     }
 
     /// The current chat's terminal flag (per-session, in-memory).
@@ -705,8 +767,8 @@ impl Shell {
         self.panels.get(&self.active_chat).terminal_open
     }
 
-    fn right_target(&self) -> f32 {
-        if self.right_pane_open() {
+    fn right_target(&self, cx: &App) -> f32 {
+        if self.right_pane_open(cx) {
             self.settings.right_pane_width
         } else {
             0.0
@@ -744,10 +806,14 @@ impl Shell {
     }
 
     fn toggle_right_pane(&mut self, cx: &mut Context<Self>) {
-        let from = self.right_target();
+        // No git in this space → no diff pane, Cmd-B goes dead.
+        if !self.space_git_detected(cx) {
+            return;
+        }
+        let from = self.right_target(cx);
         let key = self.active_chat.clone();
         let open = self.panels.toggle_changes(&key);
-        self.right_tween = Some(WidthTween::new(from, self.right_target()));
+        self.right_tween = Some(WidthTween::new(from, self.right_target(cx)));
         if open {
             // Lazy: the Changes entity (and its WatchCheckoutDiffs) exists only
             // once the pane has been opened.
@@ -1030,12 +1096,6 @@ impl Shell {
                 .ok();
             }
         }));
-    }
-
-    fn toggle_grouped(&mut self, cx: &mut Context<Self>) {
-        self.settings.sidebar_grouped = !self.settings.sidebar_grouped;
-        self.schedule_save(cx);
-        cx.notify();
     }
 
     fn open_rename_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
@@ -1626,7 +1686,7 @@ impl Shell {
     }
 
     /// One session row (comet session-row.tsx): status dot on the left rail,
-    /// title + relative time on the first line, "project · branch" underneath
+    /// title + relative time on the first line, "folder · device" underneath
     /// aligned to the title. Click selects; right-click opens the context menu.
     #[allow(clippy::too_many_arguments)]
     fn render_chat_row(
@@ -1635,21 +1695,16 @@ impl Shell {
         title: SharedString,
         time_ago: SharedString,
         location: Option<SharedString>,
-        indicator: Indicator,
+        status: comet_proto::ChatIndicator,
         selected: bool,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        // Status is a dot, not a word (comet session-row.tsx): always present as
-        // a left rail — grey at rest, amber while working / awaiting input, red
-        // when errored — so rows align and state changes read in place.
-        let dot_color = match indicator {
-            Indicator::Working | Indicator::AwaitingInput => {
-                crate::theme::oklch(0.879, 0.169, 91.605).opacity(0.8) // amber-300
-            }
-            Indicator::Errored => theme.danger,
-            Indicator::None => crate::theme::white_alpha(0.14),
-        };
+        // Status is a dot, not a word (comet session-row.tsx): always present
+        // as a left rail — amber while working / awaiting input, red when
+        // errored, bright when completed-unseen — so rows align and state
+        // changes read in place.
+        let dot_color = spaces::status_dot_color(status, theme);
         let (hover, text) = (theme.element_hover, theme.text);
         let selected_wash = crate::theme::white_alpha(0.08);
         let subline = theme.text_muted.opacity(0.5);
@@ -1727,151 +1782,16 @@ impl Shell {
             .into_any_element()
     }
 
-    /// The sidebar's list-mode segmented control (comet group-toggle.tsx):
-    /// flat list vs grouped by project.
-    fn render_group_toggle(&self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let grouped = self.settings.sidebar_grouped;
-        let option = |id: &'static str, active: bool, icon_path: &'static str, theme: &Theme| {
-            div()
-                .id(id)
-                .size(px(20.0))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(5.0))
-                .when(active, |el| el.bg(crate::theme::white_alpha(0.10)))
-                .when(!active, |el| {
-                    el.hover(|el| el.bg(crate::theme::white_alpha(0.06)))
-                })
-                .cursor_pointer()
-                .child(icon(icon_path).size(px(14.0)).text_color(if active {
-                    theme.text
-                } else {
-                    theme.text_muted.opacity(0.45)
-                }))
-        };
-        div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(2.0))
-            .rounded(px(7.0))
-            .border_1()
-            .border_color(crate::theme::white_alpha(0.06))
-            .bg(gpui::black().opacity(0.25))
-            .p(px(2.0))
-            .child(
-                option("sidebar-flat-toggle", !grouped, icons::LIST, theme).on_click(cx.listener(
-                    |this, _, _, cx| {
-                        if this.settings.sidebar_grouped {
-                            this.toggle_grouped(cx);
-                        }
-                    },
-                )),
-            )
-            .child(
-                option(
-                    "sidebar-group-toggle",
-                    grouped,
-                    icons::FOLDER_WITH_FILES,
-                    theme,
-                )
-                .on_click(cx.listener(|this, _, _, cx| {
-                    if !this.settings.sidebar_grouped {
-                        this.toggle_grouped(cx);
-                    }
-                })),
-            )
-            .into_any_element()
-    }
-
-    /// Chat-mode sidebar (comet sidebar.tsx): window-control strip, device
-    /// switcher row, "New session", the session list (flat or grouped by
-    /// project), the notice strip, and the UserMenu (§1.6).
+    /// Chat-mode sidebar (spaces overhaul): window-control strip, the Spaces
+    /// section (folder + device rows, add-space), the global Active sessions
+    /// list, the notice strip, and the UserMenu (§1.6).
     fn render_chat_sidebar(&mut self, theme: &Theme, cx: &mut Context<Self>) -> AnyElement {
-        let now = Utc::now();
-        let (chats, meta, user, device) = {
-            let state = self.state.read(cx);
-            let chats: Vec<comet_proto::Chat> = state.visible_chats().cloned().collect();
-            let meta: std::collections::HashMap<String, (Indicator, bool)> = chats
-                .iter()
-                .map(|c| {
-                    (
-                        c.id.clone(),
-                        (
-                            state.indicator_for(&c.id, now),
-                            state.selected_chat.as_deref() == Some(c.id.as_str()),
-                        ),
-                    )
-                })
-                .collect();
-            let device = state
-                .local_device_id
-                .as_deref()
-                .and_then(|id| state.devices.iter().find(|d| d.id == id))
-                .cloned();
-            (chats, meta, state.auth_user().cloned(), device)
-        };
-        let grouped = self.settings.sidebar_grouped;
+        let user = self.state.read(cx).auth_user().cloned();
 
         // Keyed rows: (stable key, estimated height, element) — the key + height
-        // list drives the §1.6 resort FLIP diff below.
-        let mut keyed: Vec<(String, f32, AnyElement)> = Vec::new();
-        let row_for = |shell: &Self, chat: &comet_proto::Chat, cx: &mut Context<Self>| {
-            let (indicator, selected) = meta
-                .get(&chat.id)
-                .copied()
-                .unwrap_or((Indicator::None, false));
-            let time_ago: SharedString =
-                format_time_ago(chat.last_message_at.unwrap_or(chat.created_at), now).into();
-            let location = chat_location(chat).map(SharedString::from);
-            let height = if location.is_some() {
-                CHAT_ROW_WITH_LOCATION_HEIGHT
-            } else {
-                CHAT_ROW_HEIGHT
-            };
-            let element = shell.render_chat_row(
-                chat.id.clone(),
-                // Titles are model-generated (auto-rename): one-line surface.
-                transcript::single_line(
-                    &chat.title.clone().unwrap_or_else(|| "New session".into()),
-                )
-                .into(),
-                time_ago,
-                location,
-                indicator,
-                selected,
-                theme,
-                cx,
-            );
-            (format!("c:{}", chat.id), height, element)
-        };
-        if grouped {
-            for group in group_chats(chats.iter()) {
-                // Quiet lowercase project header (comet session-group.tsx).
-                keyed.push((
-                    format!("g:{}", group.label),
-                    GROUP_HEADER_HEIGHT,
-                    div()
-                        .px(px(Theme::SPACE_SM))
-                        .pt(px(12.0))
-                        .pb(px(4.0))
-                        .truncate()
-                        .text_size(px(11.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(theme.text_muted.opacity(0.6))
-                        .child(SharedString::from(group.label.clone()))
-                        .into_any_element(),
-                ));
-                for chat in group.chats {
-                    keyed.push(row_for(self, chat, cx));
-                }
-            }
-        } else {
-            for chat in &chats {
-                keyed.push(row_for(self, chat, cx));
-            }
-        }
+        // list drives the §1.6 resort FLIP diff below (attention-bucket
+        // promotions glide; cleared rows just go).
+        let keyed: Vec<(String, f32, AnyElement)> = self.render_active_rows(theme, cx);
 
         // Resort glide (§1.6 View Transitions parity): when the ORDER of a live
         // list changes (new activity resort, grouping flip), surviving rows
@@ -1930,7 +1850,7 @@ impl Shell {
         let user_email: Option<SharedString> = user.as_ref().map(|u| u.email.clone().into());
         let user_menu = self.render_user_menu(user_line.clone(), user_email.clone(), theme, cx);
 
-        let device_row = self.render_device_row(&device, theme);
+        let spaces_section = self.render_spaces_section(theme, cx);
 
         div()
             .w(px(self.settings.sidebar_width))
@@ -1949,89 +1869,44 @@ impl Shell {
                     .items_center();
                 self.titlebar_drag_region("sidebar-titlebar", strip, cx)
             })
-            // Device switcher + "New session" (comet sidebar.tsx px-2 block).
+            // Spaces + the global Active list share one scroll region.
             .child(
                 div()
-                    .px(px(Theme::SPACE_SM))
-                    .pb(px(4.0))
-                    .flex()
-                    .flex_col()
-                    .child(device_row)
-                    .child(
-                        div()
-                            .id("new-session")
-                            .mt(px(2.0))
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .gap(px(Theme::SPACE_SM))
-                            .rounded(px(8.0))
-                            .px(px(Theme::SPACE_SM))
-                            .py(px(6.0))
-                            .text_size(px(13.0))
-                            // comet sidebar.tsx: `transition-colors` — the wash
-                            // and text brighten fade in, not snap.
-                            .text_color(motion::hover_blend(
-                                "new-session",
-                                theme.text_muted,
-                                Theme::dark().text,
-                            ))
-                            .bg(motion::hover_blend(
-                                "new-session",
-                                gpui::transparent_black(),
-                                Theme::dark().element_hover,
-                            ))
-                            .on_hover(motion::hover_listener("new-session"))
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.route = Route::Chat;
-                                this.state.update(cx, |s, cx| s.select_chat(None, cx));
-                                cx.notify();
-                            }))
-                            .child(
-                                icon(icons::PEN_NEW_SQUARE)
-                                    .size(px(16.0))
-                                    .text_color(theme.text_muted),
-                            )
-                            .child(SharedString::from("New session")),
-                    ),
-            )
-            // Section label + list/group toggle, then the session list.
-            .child(
-                div()
-                    .id("chat-list")
+                    .id("sidebar-lists")
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
                     .px(px(Theme::SPACE_SM))
                     .flex()
                     .flex_col()
+                    .child(spaces_section)
                     .child(
                         div()
-                            .flex()
-                            .flex_row()
-                            .items_center()
-                            .justify_between()
                             .px(px(Theme::SPACE_SM))
                             .pt(px(12.0))
                             .pb(px(4.0))
-                            .child(
-                                div()
-                                    .text_size(px(11.0))
-                                    .font_weight(gpui::FontWeight::MEDIUM)
-                                    .text_color(theme.text_muted.opacity(0.6))
-                                    .child(SharedString::from("Sessions")),
-                            )
-                            .child(self.render_group_toggle(theme, cx)),
+                            .text_size(px(11.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from("Active")),
                     )
-                    .child(
+                    .child(if !list_items.is_empty() {
                         div()
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
                             .pb(px(Theme::SPACE_SM))
-                            .children(list_items),
-                    ),
+                            .children(list_items)
+                            .into_any_element()
+                    } else {
+                        div()
+                            .px(px(Theme::SPACE_SM))
+                            .pb(px(Theme::SPACE_SM))
+                            .text_size(px(12.0))
+                            .text_color(theme.text_faint)
+                            .child(SharedString::from("No active sessions"))
+                            .into_any_element()
+                    }),
             )
             // Inline mutation-failure notice.
             .when_some(self.sidebar_notice.clone(), |el, notice| {
@@ -2320,6 +2195,11 @@ impl Shell {
             overlays.push(popover::modal("rename-chat-dialog", viewport, card));
         }
 
+        overlays.extend(self.render_space_overlays(viewport, window, cx));
+        if let Some(overlay) = self.render_add_space_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+
         if let Some(chat_id) = self.delete_confirm.clone() {
             let title = transcript::single_line(
                 &self
@@ -2446,35 +2326,81 @@ impl Shell {
                 .into_any_element();
         }
 
-        let (title, is_remote): (SharedString, bool) = {
-            let state = self.state.read(cx);
-            // Model-generated title on the one-line header.
-            let title = transcript::single_line(
-                &state
-                    .selected_chat_row()
-                    .and_then(|c| c.title.clone())
-                    .unwrap_or_else(|| "comet".into()),
-            )
-            .into();
-            // Working on another machine's session — worth knowing before
-            // running anything (comet __root.tsx "Remote" pill).
-            let is_remote = match (state.selected_chat_row(), state.local_device_id.as_deref()) {
-                (Some(chat), Some(local)) => chat.device_id != local,
-                _ => false,
-            };
-            (title, is_remote)
-        };
+        let _ = (text, border);
         let has_selection = self.state.read(cx).selected_chat.is_some();
+        let has_spaces = !self.state.read(cx).spaces.is_empty();
+        let space_name: SharedString = self
+            .state
+            .read(cx)
+            .selected_space_row()
+            .map(|s| s.display_name().to_string())
+            .unwrap_or_default()
+            .into();
 
         // Content outlet: selected chat → transcript; nothing selected → the
-        // "Send a message to start" canvas with a watermark. The composer sits
-        // below either (new-chat mode mints the chat id on first send).
+        // "Send a message to start" canvas with a watermark; no spaces at all
+        // → the onboarding card. The composer sits below the first two
+        // (new-chat mode mints the chat id on first send).
         let outlet: AnyElement = if has_selection {
             self.transcript.clone().into_any_element()
+        } else if !has_spaces {
+            // Onboarding (first boot / after the destructive wipe): no folders
+            // to work in yet — one clear affordance.
+            let _ = faint;
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .child(motion::fade_in(
+                    "no-spaces-canvas",
+                    div()
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .child(
+                            icon(icons::COMET_LOGO)
+                                .w(px(41.9))
+                                .h(px(48.0))
+                                .text_color(theme.text.opacity(0.09)),
+                        )
+                        .child(
+                            div()
+                                .mt(px(24.0))
+                                .text_size(px(16.0))
+                                .font_weight(gpui::FontWeight::MEDIUM)
+                                .text_color(theme.text)
+                                .child(SharedString::from("Add a space to get started")),
+                        )
+                        .child(
+                            div()
+                                .mt(px(6.0))
+                                .text_size(px(13.0))
+                                .text_color(theme.text_muted.opacity(0.7))
+                                .child(SharedString::from(
+                                    "A space is a folder on one of your devices.",
+                                )),
+                        )
+                        .child(
+                            popover::btn_primary(&theme_owned, "Add a space")
+                                .id("onboarding-add-space")
+                                .mt(px(20.0))
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.open_add_space(window, cx)
+                                })),
+                        ),
+                ))
+                .into_any_element()
         } else {
             // New-chat canvas (comet index.tsx): the dim comet mark watermark
-            // (`h-12 text-foreground/[0.09]`) over the centered helper line.
-            let _ = faint;
+            // (`h-12 text-foreground/[0.09]`) over the centered helper line —
+            // now naming the space the session will start in.
+            let helper: SharedString = if space_name.is_empty() {
+                "Send a message to start a new session.".into()
+            } else {
+                format!("Send a message to start a session in {space_name}.").into()
+            };
             div()
                 .size_full()
                 .flex()
@@ -2498,87 +2424,17 @@ impl Shell {
                                 .mt(px(24.0))
                                 .text_size(px(14.0))
                                 .text_color(theme.text_muted.opacity(0.6))
-                                .child(SharedString::from(
-                                    "Send a message to start a new session.",
-                                )),
+                                .child(helper),
                         ),
                 ))
                 .into_any_element()
         };
 
         let status = self.render_status_strip(cx);
-        // Header variants (comet __root.tsx): a chat shows title + "Remote"
-        // pill + the changes toggle (only while the pane is closed — the open
-        // pane carries its own collapse button); the new-chat canvas shows a
-        // bare h-11 strip with no border and no chrome.
-        let header: AnyElement = if has_selection {
-            // One persistent header row (comet __root.tsx `key="header-chat"`):
-            // chat switches swap the title text instantly; sidebar toggles
-            // glide the whole row via the animated left inset
-            // (`transition-[padding-left] duration-200 ease-out`).
-            let inner = div()
-                .size_full()
-                .flex()
-                .items_center()
-                .gap(px(10.0))
-                .pr(px(Theme::SPACE_LG))
-                .child(
-                    div()
-                        .min_w_0()
-                        .truncate()
-                        .text_size(px(13.0))
-                        .font_weight(gpui::FontWeight::MEDIUM)
-                        .text_color(text)
-                        .child(title),
-                )
-                .when(is_remote, |el| {
-                    el.child(
-                        div()
-                            .flex_none()
-                            .px(px(8.0))
-                            .py(px(2.0))
-                            .rounded_full()
-                            .border_1()
-                            .border_color(border)
-                            .text_size(px(10.5))
-                            .text_color(theme.text_muted)
-                            .child(SharedString::from("Remote")),
-                    )
-                })
-                .child(div().flex_1())
-                .when(!self.right_pane_open(), |el| {
-                    el.child(header_icon_button(
-                        "toggle-changes",
-                        icons::SIDEBAR_MINIMALISTIC,
-                        theme,
-                        cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
-                    ))
-                });
-            let bar = div()
-                .h(px(Theme::HEADER_HEIGHT))
-                .flex_none()
-                .border_b_1()
-                .border_color(border)
-                .child(self.header_inset_container(inner));
-            self.titlebar_drag_region("chat-header-titlebar", bar, cx)
-                .into_any_element()
-        } else {
-            let bar = div()
-                .h(px(Theme::HEADER_HEIGHT))
-                .flex_none()
-                .flex()
-                .items_center()
-                .px(px(10.0))
-                .when(self.settings.sidebar_collapsed, |el| {
-                    el.child(div().flex_none().w(px(cluster_clearance(
-                        cfg!(target_os = "macos"),
-                        self.fullscreen.unwrap_or(false),
-                        10.0,
-                    ))))
-                });
-            self.titlebar_drag_region("empty-header-titlebar", bar, cx)
-                .into_any_element()
-        };
+        // The session tab strip replaces the old chat header entirely: it
+        // carries the titlebar duties (drag region, animated window-controls
+        // inset) plus every session of the space as a tab.
+        let header: AnyElement = self.render_session_tab_strip(cx);
         // File dropzone over the ENTIRE conversation column (transcript +
         // composer, not just the pill): dragging OS files anywhere across the
         // chat area shows the "Drop images to attach" veil; a drop stages the
@@ -2639,7 +2495,7 @@ impl Shell {
             // conversation region, ABOVE the terminal dock (comet __root.tsx:
             // the terminal panel sits below the whole conversation column).
             .child(status)
-            .child(self.composer.clone())
+            .when(has_spaces, |el| el.child(self.composer.clone()))
             .child(self.render_terminal_container(cx))
             .when(file_drag_active, |el| {
                 el.child(
@@ -2868,7 +2724,7 @@ impl Shell {
     fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx);
         let bg = theme.bg;
-        let content: AnyElement = if self.right_pane_open() {
+        let content: AnyElement = if self.right_pane_open(cx) {
             let changes = self.changes_pane(cx);
             // Idempotent — also covers a persisted-open pane on boot.
             changes.update(cx, |changes, cx| changes.ensure_watch(cx));
@@ -2880,7 +2736,7 @@ impl Shell {
             .w(px(self.settings.right_pane_width))
             .h_full()
             .child(content);
-        let target = self.right_target();
+        let target = self.right_target(cx);
         // No chrome of its own: the pane is a plain column inside the window
         // card — the divider hairline between it and the conversation is drawn
         // by the card row (render, `right_divider`).
@@ -3521,7 +3377,7 @@ impl Render for Shell {
             GatePhase::Ready => {
                 // MessageRail width gate: hide below 48rem of main-panel width.
                 let viewport = f32::from(window.viewport_size().width);
-                let main_width = viewport - self.sidebar_target() - self.right_target() - 10.0;
+                let main_width = viewport - self.sidebar_target() - self.right_target(cx) - 10.0;
                 self.transcript.update(cx, |t, cx| {
                     t.set_rail_enabled(rail::rail_visible(main_width), cx)
                 });
@@ -3539,7 +3395,7 @@ impl Render for Shell {
                 // around the diff column) — the per-session open flags stay
                 // intact for the return trip.
                 let on_chat = matches!(self.route, Route::Chat);
-                let right_open = on_chat && self.right_pane_open();
+                let right_open = on_chat && self.right_pane_open(cx);
                 // The conversation/pane divider: a single full-height hairline
                 // inside the card (the reference chrome), with the 5px resize
                 // grabber floating OVER it (absolute) so the hit area consumes

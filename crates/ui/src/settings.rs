@@ -45,8 +45,12 @@ const FILE_NAME: &str = "ui-settings.json";
 pub struct UiSettings {
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
-    /// Sidebar grouped-by-project mode (feature-inventory §1.6).
+    /// Legacy: the grouped-by-project toggle predates spaces (which group by
+    /// folder inherently). Kept for file compatibility; no longer read.
     pub sidebar_grouped: bool,
+    /// The last selected space — restored on boot when the row still exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_space_id: Option<String>,
     pub right_pane_width: f32,
     /// Legacy: panel *open* flags are session-scoped in-memory state now
     /// (`shell::SessionPanels`, comet `sessionPanels` parity). Kept for file
@@ -65,6 +69,7 @@ impl Default for UiSettings {
             sidebar_width: SIDEBAR_DEFAULT,
             sidebar_collapsed: false,
             sidebar_grouped: false,
+            last_space_id: None,
             right_pane_width: RIGHT_PANE_DEFAULT,
             right_pane_open: false,
             terminal_height: TERMINAL_DEFAULT_HEIGHT,
@@ -313,6 +318,7 @@ mod tests {
             sidebar_width: 300.0,
             sidebar_collapsed: true,
             sidebar_grouped: true,
+            last_space_id: Some("space-1".into()),
             right_pane_width: 700.0,
             right_pane_open: true,
             terminal_height: 320.0,

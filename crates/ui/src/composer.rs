@@ -1959,24 +1959,47 @@ impl Composer {
             .read(cx)
             .selected_chat_row()
             .and_then(|c| c.cwd.clone());
-        let device_id = {
-            let state = self.state.read(cx);
-            state
-                .local_device_id
-                .clone()
-                .or_else(|| state.devices.first().map(|d| d.id.clone()))
+        // The SPACE fixes the new chat's device + base folder — this is the
+        // behavioral core of spaces: sessions are minted onto the space's
+        // device, not necessarily this one.
+        let space = self.state.read(cx).selected_space_row().cloned();
+        if is_new && space.is_none() {
+            self.failure = Some("Add a space first".into());
+            cx.notify();
+            return;
+        }
+        let local_device_id = self.state.read(cx).local_device_id.clone();
+        let device_id = if is_new {
+            space
+                .as_ref()
+                .map(|s| s.device_id.clone())
+                .unwrap_or_else(|| "local".to_string())
+        } else {
+            self.state
+                .read(cx)
+                .selected_chat_row()
+                .map(|c| c.device_id.clone())
+                .or_else(|| local_device_id.clone())
                 .unwrap_or_else(|| "local".to_string())
         };
         // Uploads/read-backs target the chat's HOST device (forwardable RPCs);
-        // a new chat is created on this device, so no explicit target needed.
+        // for a new chat that's the space's device (None when it's local).
         let host_device_id = if is_new {
-            None
+            space
+                .as_ref()
+                .map(|s| s.device_id.clone())
+                .filter(|id| local_device_id.as_deref() != Some(id.as_str()))
         } else {
             self.state
                 .read(cx)
                 .selected_chat_row()
                 .map(|c| c.device_id.clone())
         };
+        let space_id = space.as_ref().map(|s| s.id.clone());
+        let space_path = space.as_ref().map(|s| s.path.clone());
+        let space_remote = space
+            .as_ref()
+            .is_some_and(|s| local_device_id.as_deref() != Some(s.device_id.as_str()));
         // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
         // strip empties the instant you hit send; a failure hands the files
         // back into the chat's stash.
@@ -2034,22 +2057,32 @@ impl Composer {
         self.send_task = Some(cx.spawn(async move |this, cx| {
             let result: Result<(), String> = async {
                 // Resolve the working directory: existing chats keep theirs;
-                // new chats use the picked repo — via a fresh isolated worktree
-                // when the toggle is on (CreateWorktree on send).
+                // new chats run in the space's folder — via a fresh isolated
+                // worktree when the toggle is on (CreateWorktree on send,
+                // targeted at the space's device; the RPC relay-forwards).
                 let mut cwd = if is_new {
-                    draft.repo.as_ref().map(|r| r.path.clone())
+                    space_path.clone()
                 } else {
                     existing_cwd
                 }
                 .unwrap_or_else(|| ".".to_string());
+                let mut worktree_cwd: Option<String> = None;
                 if is_new
                     && draft.isolated_worktree
-                    && let (Some(repo), Some(branch)) = (&draft.repo, &draft.branch)
+                    && let (Some(repo_path), Some(branch)) = (&space_path, &draft.branch)
                 {
-                    let params = serde_json::json!({
-                        "repoPath": repo.path,
+                    let mut params = serde_json::json!({
+                        "repoPath": repo_path,
                         "branch": branch,
                     });
+                    if space_remote
+                        && let Some(object) = params.as_object_mut()
+                    {
+                        object.insert(
+                            "targetDeviceId".into(),
+                            serde_json::Value::String(device_id.clone()),
+                        );
+                    }
                     let value = engine
                         .client()
                         .call(methods::CREATE_WORKTREE, params)
@@ -2057,24 +2090,32 @@ impl Composer {
                         .map_err(|e| format!("Worktree failed: {e}"))?;
                     let worktree: comet_proto::Worktree = serde_json::from_value(value)
                         .map_err(|e| format!("Worktree reply malformed: {e}"))?;
-                    cwd = worktree.path;
+                    cwd = worktree.path.clone();
+                    worktree_cwd = Some(worktree.path);
                 }
 
-                // Best-effort Mutate createChat with the picked config
-                // (idempotent engine-side; the doc host would materialize the
-                // chat on first command anyway, so failures are non-fatal).
-                if is_new {
+                // Best-effort Mutate createChat with the picked config: the
+                // engine resolves device + cwd from the SPACE row (idempotent;
+                // the doc host would materialize the chat on first command
+                // anyway, so failures are non-fatal).
+                if is_new && let Some(space_id) = &space_id {
                     let mut mutate = serde_json::json!({
                         "op": "createChat",
                         "chatId": chat_id,
-                        "deviceId": device_id,
-                        "cwd": cwd,
+                        "spaceId": space_id,
                     });
-                    if let (Some(config), Some(object)) =
-                        (resolved.chat_config(), mutate.as_object_mut())
-                        && let Ok(config) = serde_json::to_value(&config)
-                    {
-                        object.insert("config".into(), config);
+                    if let Some(object) = mutate.as_object_mut() {
+                        if let Some(worktree_cwd) = &worktree_cwd {
+                            object.insert(
+                                "cwd".into(),
+                                serde_json::Value::String(worktree_cwd.clone()),
+                            );
+                        }
+                        if let Some(config) = resolved.chat_config()
+                            && let Ok(config) = serde_json::to_value(&config)
+                        {
+                            object.insert("config".into(), config);
+                        }
                     }
                     if let Err(err) = engine.client().call(methods::MUTATE, mutate).await {
                         tracing::debug!(error = %err, "CreateChat mutate unavailable; doc host will materialize the chat");

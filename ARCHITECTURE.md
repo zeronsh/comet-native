@@ -25,7 +25,10 @@ gpui UI ─ in-proc/localhost RPC ─ engine A ══ DeviceRoom DO relay ══
 - **Engine = backend** (was `@comet/backend`): runs agents, owns auth, terminals, repos/worktrees,
   diff sync, doc hosting. Pure Rust daemon, fully functional headless.
 - **UI = viewport** (was Electron): gpui app rendering engine state. Talks the same typed RPC
-  whether the engine is in-process or a separate daemon.
+  whether the engine is in-process or a separate daemon. Organized around **spaces** — synced
+  (device, folder) pairs: the sidebar lists spaces plus a global attention-sorted Active list;
+  the main area shows the selected space's sessions as horizontal tabs (closing a tab archives);
+  new sessions are minted onto the space's device via relay-forwardable RPCs.
 - **Edge (TypeScript, ported from comet `apps/edge`)**: Worker + SessionRoom DO (per chat) +
   DeviceRoom DO (per device) + R2 attachments + WorkOS JWKS auth. Absorbs the old `apps/server`
   responsibilities (WorkOS code exchange/refresh, orgs) so **Postgres, Orbit, the Hono server, and
@@ -54,14 +57,20 @@ thin hand-rolled client over `loro` 1.13.x — verify interop early, M1 exit cri
    run journal), tail/diff sidecars. Constants carried over (`STREAM_COMMIT_MS=120`,
    `DO_FLUSH_MS=5s`, compaction at 8MB, retain 30d, tail 64).
 
-2. **Workspace doc** (per org — NEW; replaces comet's residual Orbit entity sync) — chats index
-   (id, deviceId, title, archived, branch, checkoutId, lastMessagePreview/At, config), devices
-   registry (id, name, platform, lastSeenAt), session status rows (Working indicator; staleness-
-   checked client-side so a crashed backend never shows eternal "Working"), checkout-diff summary
-   pointers. Lives in its own DO room (same SessionRoom DO class, doc id `ws/{orgId}`), with
-   presence via Loro `EphemeralStore` (replaces the 15s heartbeat writes). Writer discipline:
-   each device writes only its own device/session/chat rows; renames/archives are LWW map sets —
-   fine for this data.
+2. **Workspace doc** (per org — NEW; replaces comet's residual Orbit entity sync) — **spaces**
+   registry (id, deviceId, path, name?, gitDetected, checkoutId — a space is a synced
+   device+folder pair, the app's unit of organization; the owning device's SpacesSync stamps git
+   presence so branch pickers / the diff sidebar gate on a synced bool, no RPC), chats index
+   (id, deviceId, title, archived, cwd, branch, checkoutId, spaceId, lastSeenAt,
+   lastMessagePreview/At, config), devices registry (id, name, platform, lastSeenAt), session
+   status rows (Working indicator; staleness-checked client-side so a crashed backend never shows
+   eternal "Working"), checkout-diff summary pointers. `lastSeenAt` is the synced LWW seen marker
+   behind the "completed (unseen)" indicator. Lives in its own DO room (same SessionRoom DO
+   class, doc id `ws2/{orgId}` — the `2` is the spaces-overhaul destructive break), with presence
+   via Loro `EphemeralStore` (replaces the 15s heartbeat writes). Writer discipline: each device
+   writes only its own device/session/chat rows and the git stamps of spaces it owns;
+   creates/renames/archives/seen-marks are LWW map sets from any device. `deleteSpace` cascades:
+   the space row and every chat/session row in it tombstone in one commit.
 
    *Why a workspace doc and not N tiny docs:* the sidebar needs one subscription for the whole
    list (grouping, resort animations, unseen markers); one doc = one room connection + one mirror.

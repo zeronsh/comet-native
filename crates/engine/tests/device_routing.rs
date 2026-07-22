@@ -323,16 +323,22 @@ async fn terminal_stream_proxies_over_the_relay() {
     let cwd = dirs.path().join("work");
     std::fs::create_dir_all(&cwd).expect("cwd");
 
-    // Engine B hosts its device room; its chat row pins the terminal cwd.
+    // Engine B hosts its device room; its chat row (via its space) pins the
+    // terminal cwd.
     let core_b = assemble(&dirs.path().join("b"), "device-b");
     core_b
         .workspace
-        .create_chat(
-            "chat-term",
+        .create_space(
+            "space-term",
             "device-b",
+            &cwd.to_string_lossy(),
             None,
-            Some(cwd.to_string_lossy().into()),
+            false,
         )
+        .expect("space row on B");
+    core_b
+        .workspace
+        .create_chat("chat-term", "space-term", None, None)
         .expect("chat row on B");
     let _host = core_b.start_host_relay(&relay_url);
 

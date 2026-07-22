@@ -123,7 +123,10 @@ export default {
     if (parts[0] === "workspace" && parts[1] && ID_RE.test(parts[1])) {
       const orgId = parts[1];
       if (auth.orgId !== orgId) return json({ error: "forbidden" }, 403);
-      const room = `ws/${orgId}`;
+      // `ws2` = the spaces-overhaul destructive break: a fresh DO instance with
+      // an empty doc; the legacy `ws/{orgId}` room is orphaned (hibernated,
+      // ~zero cost). URL path stays `/workspace/:orgId/*`.
+      const room = `ws2/${orgId}`;
       if (parts[2] === "ws") {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
           return json({ error: "expected websocket" }, 426);

@@ -29,7 +29,7 @@ use serde::de::DeserializeOwned;
 
 use comet_doc::SessionMessageEntry;
 use comet_engine::{EngineCore, default_registry, doc_host::EdgeConfig};
-use comet_proto::{AuthState, Chat, Device, HarnessId, Session, SessionStatus};
+use comet_proto::{AuthState, Chat, ChatIndicator, Device, HarnessId, Session, SessionStatus, Space};
 use comet_rpc::{RpcClient, connect_ws, memory_client, methods};
 
 // ---------------------------------------------------------------------------
@@ -216,6 +216,51 @@ pub fn effective_indicator(session: Option<&Session>, now: DateTime<Utc>) -> Ind
             }
         }
     }
+}
+
+/// The full display status for a chat row / tab dot: live states win, then the
+/// synced seen marker decides completed-vs-idle. Staleness gating rides on
+/// [`effective_indicator`]; the derivation itself is `comet_proto::chat_indicator`.
+pub fn display_status(chat: &Chat, session: Option<&Session>, now: DateTime<Utc>) -> ChatIndicator {
+    let live = session.filter(|s| effective_indicator(Some(s), now) != Indicator::None);
+    comet_proto::chat_indicator(chat, live)
+}
+
+/// Attention bucket for the sidebar's Active list — lower is more urgent.
+pub fn attention_rank(status: ChatIndicator) -> u8 {
+    match status {
+        ChatIndicator::AwaitingInput => 0,
+        ChatIndicator::Errored => 1,
+        ChatIndicator::Working => 2,
+        ChatIndicator::Completed => 3,
+        ChatIndicator::Idle => 4,
+    }
+}
+
+/// Active-list order: attention buckets (awaiting > errored > working >
+/// completed), recency (`last_message_at` desc, `created_at` fallback) within a
+/// bucket, id tiebreak so the sort is total. Pure.
+pub fn sort_active(rows: &mut Vec<(ChatIndicator, &Chat)>) {
+    rows.sort_by(|(sa, a), (sb, b)| {
+        let ka = a.last_message_at.unwrap_or(a.created_at);
+        let kb = b.last_message_at.unwrap_or(b.created_at);
+        attention_rank(*sa)
+            .cmp(&attention_rank(*sb))
+            .then_with(|| kb.cmp(&ka))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+}
+
+/// Session-tab order for a space: creation order (activity never reorders
+/// tabs), id tiebreak. Pure.
+pub fn sort_tabs(chats: &mut [&Chat]) {
+    chats.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+}
+
+/// Spaces list order: creation order, id tiebreak — total and stable across
+/// devices. Pure.
+pub fn sort_spaces(spaces: &mut [Space]) {
+    spaces.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
 }
 
 /// Sidebar order: `last_message_at` desc, falling back to `created_at`; ties
@@ -433,9 +478,14 @@ pub struct AppState {
     /// Auth stream value; `None` until the engine reports one (M4).
     pub auth: Option<AuthState>,
     pub devices: Vec<Device>,
+    /// Sorted (see [`sort_spaces`]).
+    pub spaces: Vec<Space>,
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
     pub chats: Vec<Chat>,
     pub sessions: Vec<Session>,
+    /// The space whose tabs fill the main area. Healed by [`Self::apply_spaces`]
+    /// when the row vanishes; selecting a chat implies its space.
+    pub selected_space: Option<String>,
     pub selected_chat: Option<String>,
     /// Boot auto-select happened (or a manual selection superseded it).
     pub auto_selected: bool,
@@ -467,8 +517,10 @@ impl AppState {
             connection: ConnectionStatus::Connecting,
             auth: None,
             devices: Vec::new(),
+            spaces: Vec::new(),
             chats: Vec::new(),
             sessions: Vec::new(),
+            selected_space: None,
             selected_chat: None,
             transcript: Vec::new(),
             echoes: HashMap::new(),
@@ -498,6 +550,24 @@ impl AppState {
 
     pub fn apply_sessions(&mut self, sessions: Vec<Session>) {
         self.sessions = sessions;
+    }
+
+    pub fn apply_spaces(&mut self, mut spaces: Vec<Space>) {
+        sort_spaces(&mut spaces);
+        self.spaces = spaces;
+        // Heal a vanished selection (space deleted elsewhere): fall back to the
+        // first space; its chats died with it, so a matching chat selection is
+        // healed by the accompanying chats frame (`apply_chats`).
+        if let Some(selected) = &self.selected_space
+            && !self.spaces.iter().any(|s| &s.id == selected)
+        {
+            self.selected_space = self.spaces.first().map(|s| s.id.clone());
+        }
+        // First frame with no selection yet: pick the first space so the shell
+        // never renders an empty main area while spaces exist.
+        if self.selected_space.is_none() {
+            self.selected_space = self.spaces.first().map(|s| s.id.clone());
+        }
     }
 
     /// Optimistic local echo of a `setChatConfig` mutate: stamp the row now so
@@ -572,6 +642,61 @@ impl AppState {
     /// Non-archived chats in sidebar order.
     pub fn visible_chats(&self) -> impl Iterator<Item = &Chat> {
         self.chats.iter().filter(|c| !c.archived)
+    }
+
+    pub fn selected_space_row(&self) -> Option<&Space> {
+        let id = self.selected_space.as_deref()?;
+        self.spaces.iter().find(|s| s.id == id)
+    }
+
+    pub fn space_row(&self, space_id: &str) -> Option<&Space> {
+        self.spaces.iter().find(|s| s.id == space_id)
+    }
+
+    pub fn space_for_chat(&self, chat: &Chat) -> Option<&Space> {
+        self.space_row(chat.space_id.as_deref()?)
+    }
+
+    /// Non-archived chats of a space in tab (creation) order. Chats with a
+    /// dangling/missing `space_id` are invisible by construction.
+    pub fn chats_in_space(&self, space_id: &str) -> Vec<&Chat> {
+        let mut chats: Vec<&Chat> = self
+            .visible_chats()
+            .filter(|c| c.space_id.as_deref() == Some(space_id))
+            .collect();
+        sort_tabs(&mut chats);
+        chats
+    }
+
+    pub fn device_name(&self, device_id: &str) -> Option<&str> {
+        self.devices
+            .iter()
+            .find(|d| d.id == device_id)
+            .map(|d| d.name.as_str())
+    }
+
+    /// Does the selected space's folder have git? Drives the branch picker and
+    /// the diff sidebar (owner-stamped, synced — no RPC).
+    pub fn selected_space_git(&self) -> bool {
+        self.selected_space_row().is_some_and(|s| s.git_detected)
+    }
+
+    /// Full display status for a chat (tab dots, Active list).
+    pub fn display_status_for(&self, chat: &Chat, now: DateTime<Utc>) -> ChatIndicator {
+        display_status(chat, self.session_for(&chat.id), now)
+    }
+
+    /// The sidebar's Active list: every non-archived chat of a LIVE space, on
+    /// any device, whose status isn't Idle — attention-sorted.
+    pub fn active_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
+        let mut rows: Vec<(ChatIndicator, &Chat)> = self
+            .visible_chats()
+            .filter(|c| c.space_id.as_deref().is_some_and(|id| self.space_row(id).is_some()))
+            .map(|c| (display_status(c, self.session_for(&c.id), now), c))
+            .filter(|(status, _)| *status != ChatIndicator::Idle)
+            .collect();
+        sort_active(&mut rows);
+        rows
     }
 
     pub fn session_for(&self, chat_id: &str) -> Option<&Session> {
@@ -649,6 +774,12 @@ impl AppState {
                 methods::WATCH_DEVICES,
                 AppState::apply_devices,
             ),
+            spawn_watch(
+                cx,
+                handle.clone(),
+                methods::WATCH_SPACES,
+                AppState::apply_spaces,
+            ),
             // Auth frames parse tolerantly — engine and proto tags differ today.
             spawn_watch(
                 cx,
@@ -667,19 +798,71 @@ impl AppState {
 
     /// Select a chat (or clear). Swaps the per-chat doc-transcript subscription:
     /// dropping the old task drops its stream receiver, which cancels the doc
-    /// watch server-side.
+    /// watch server-side. Selecting a chat also lands in its space and marks it
+    /// seen (a global-list click must switch the tab strip too).
     pub fn select_chat(&mut self, chat_id: Option<String>, cx: &mut Context<Self>) {
         if self.selected_chat == chat_id {
+            // Re-selecting still clears a fresh "completed" badge.
+            if let Some(id) = chat_id {
+                self.mark_chat_seen(&id, cx);
+            }
             return;
         }
         self.selected_chat = chat_id.clone();
         self.auto_selected = true;
         self.transcript.clear();
         self.transcript_task = None;
+        if let Some(id) = chat_id.as_deref() {
+            // A chat implies its space; `select_chat(None)` (the new-session
+            // canvas) stays within the current space.
+            if let Some(space_id) = self
+                .chats
+                .iter()
+                .find(|c| c.id == id)
+                .and_then(|c| c.space_id.clone())
+            {
+                self.selected_space = Some(space_id);
+            }
+            self.mark_chat_seen(id, cx);
+        }
         if let (Some(chat_id), Some(handle)) = (chat_id, self.engine.clone()) {
             self.transcript_task = Some(spawn_transcript_watch(cx, handle, chat_id));
         }
         cx.notify();
+    }
+
+    /// Select a space; the caller (shell) decides which chat to land on.
+    pub fn select_space(&mut self, space_id: Option<String>, cx: &mut Context<Self>) {
+        if self.selected_space == space_id {
+            return;
+        }
+        self.selected_space = space_id;
+        cx.notify();
+    }
+
+    /// Synced seen marker: only fires when the chat is currently unseen
+    /// (idempotence — no mutate spam), stamps the local row optimistically so
+    /// the LWW round-trip is invisible, and fire-and-forgets the mutate.
+    pub fn mark_chat_seen(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let Some(chat) = self.chats.iter_mut().find(|c| c.id == chat_id) else {
+            return;
+        };
+        if !chat.unseen() {
+            return;
+        }
+        chat.last_seen_at = Some(Utc::now());
+        cx.notify();
+        let Some(handle) = self.engine.clone() else {
+            return;
+        };
+        let chat_id = chat_id.to_string();
+        cx.spawn(async move |_, _| {
+            let params = serde_json::json!({ "op": "markChatSeen", "chatId": chat_id });
+            if let Err(err) = handle.client().call(methods::MUTATE, params).await {
+                tracing::warn!(chat = %chat_id, error = %err, "markChatSeen failed");
+            }
+        })
+        .detach();
     }
 }
 
@@ -923,6 +1106,24 @@ mod tests {
             created_at: base + TimeDelta::minutes(created_min),
             harness_session_id: None,
             harness_session_cwd: None,
+            space_id: None,
+            last_seen_at: None,
+        }
+    }
+
+    fn space(id: &str, device_id: &str, path: &str, created_min: i64) -> Space {
+        let base = DateTime::parse_from_rfc3339("2026-07-19T12:00:00Z")
+            .unwrap()
+            .to_utc();
+        Space {
+            id: id.into(),
+            device_id: device_id.into(),
+            path: path.into(),
+            name: None,
+            git_detected: false,
+            git_checked_at: None,
+            checkout_id: None,
+            created_at: base + TimeDelta::minutes(created_min),
         }
     }
 
@@ -997,6 +1198,120 @@ mod tests {
             effective_indicator(Some(&awaiting_stale), now),
             Indicator::None
         );
+    }
+
+    #[test]
+    fn display_status_derivation() {
+        let now = Utc::now();
+        let mut c = chat("c", 0, Some(10));
+        // Live states win regardless of seen.
+        let working = session("c", SessionStatus::Working, 5, now);
+        assert_eq!(
+            display_status(&c, Some(&working), now),
+            ChatIndicator::Working
+        );
+        let awaiting = session("c", SessionStatus::AwaitingInput, 5, now);
+        assert_eq!(
+            display_status(&c, Some(&awaiting), now),
+            ChatIndicator::AwaitingInput
+        );
+        // Finished + unseen = Completed (no session row at all).
+        assert_eq!(display_status(&c, None, now), ChatIndicator::Completed);
+        // Idle session + unseen = Completed.
+        let idle = session("c", SessionStatus::Idle, 5, now);
+        assert_eq!(display_status(&c, Some(&idle), now), ChatIndicator::Completed);
+        // Stale working session falls back to the seen check.
+        let stale = session("c", SessionStatus::Working, 300, now);
+        assert_eq!(display_status(&c, Some(&stale), now), ChatIndicator::Completed);
+        // Seen after the last message = Idle.
+        c.last_seen_at = c.last_message_at.map(|t| t + TimeDelta::minutes(1));
+        assert_eq!(display_status(&c, Some(&idle), now), ChatIndicator::Idle);
+        // Errored + unseen = Errored; seen clears it to Idle.
+        let errored = session("c", SessionStatus::Errored, 600, now);
+        assert_eq!(display_status(&c, Some(&errored), now), ChatIndicator::Idle);
+        c.last_seen_at = None;
+        assert_eq!(display_status(&c, Some(&errored), now), ChatIndicator::Errored);
+        // No messages at all: nothing to see — Idle.
+        let fresh = chat("f", 0, None);
+        assert_eq!(display_status(&fresh, None, now), ChatIndicator::Idle);
+    }
+
+    #[test]
+    fn active_list_sorts_by_attention_then_recency() {
+        let a = chat("a", 0, Some(10)); // Completed (older)
+        let b = chat("b", 0, Some(20)); // Completed (newer)
+        let c = chat("c", 0, Some(5)); // AwaitingInput
+        let d = chat("d", 0, Some(1)); // Working
+        let mut rows = vec![
+            (ChatIndicator::Completed, &a),
+            (ChatIndicator::Completed, &b),
+            (ChatIndicator::AwaitingInput, &c),
+            (ChatIndicator::Working, &d),
+        ];
+        sort_active(&mut rows);
+        let order: Vec<&str> = rows.iter().map(|(_, c)| c.id.as_str()).collect();
+        assert_eq!(order, ["c", "d", "b", "a"]);
+    }
+
+    #[test]
+    fn tabs_order_by_creation_not_activity() {
+        let a = chat("a", 5, Some(100)); // created later, very active
+        let b = chat("b", 1, Some(2));
+        let mut tabs = vec![&a, &b];
+        sort_tabs(&mut tabs);
+        let order: Vec<&str> = tabs.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(order, ["b", "a"]);
+    }
+
+    #[test]
+    fn apply_spaces_sorts_and_heals_selection() {
+        let mut state = AppState::new();
+        state.apply_spaces(vec![
+            space("s2", "dev", "/b", 2),
+            space("s1", "dev", "/a", 1),
+        ]);
+        let ids: Vec<&str> = state.spaces.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["s1", "s2"]);
+        // First frame auto-selects the first space.
+        assert_eq!(state.selected_space.as_deref(), Some("s1"));
+        state.selected_space = Some("s2".into());
+        // Vanished selection heals to the first space.
+        state.apply_spaces(vec![space("s1", "dev", "/a", 1)]);
+        assert_eq!(state.selected_space.as_deref(), Some("s1"));
+        // No spaces at all: selection clears.
+        state.apply_spaces(vec![]);
+        assert_eq!(state.selected_space, None);
+    }
+
+    #[test]
+    fn chats_in_space_filters_and_orders() {
+        let mut state = AppState::new();
+        state.apply_spaces(vec![space("s1", "dev", "/a", 1)]);
+        let mut in_space_new = chat("new", 5, None);
+        in_space_new.space_id = Some("s1".into());
+        let mut in_space_old = chat("old", 1, Some(50)); // active but created first
+        in_space_old.space_id = Some("s1".into());
+        let mut other = chat("other", 2, None);
+        other.space_id = Some("s2".into());
+        let mut archived = chat("gone", 0, None);
+        archived.space_id = Some("s1".into());
+        archived.archived = true;
+        let dangling = chat("dangling", 3, None); // no space id
+        state.apply_chats(vec![in_space_new, in_space_old, other, archived, dangling]);
+        let ids: Vec<&str> = state
+            .chats_in_space("s1")
+            .iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(ids, ["old", "new"]);
+        // Active list hides chats of unknown spaces and idle chats.
+        let now = Utc::now();
+        let active: Vec<&str> = state
+            .active_chats(now)
+            .iter()
+            .map(|(_, c)| c.id.as_str())
+            .collect();
+        assert_eq!(active, ["old"], "only the live-space unseen chat shows");
     }
 
     #[test]
