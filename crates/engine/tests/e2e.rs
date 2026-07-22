@@ -1702,3 +1702,77 @@ where
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Liveness heartbeats: empty reasoning deltas keep the session fresh but
+// never reach the journal (redacted thinking + tool-input-generation noise).
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn empty_reasoning_deltas_are_heartbeats_not_journal_noise() {
+    let mut script = vec![AgentEvent::SessionStarted {
+        harness: HarnessId::Mock,
+        model: "mock-1".into(),
+        tools: vec![],
+        cwd: "/tmp".into(),
+        session_id: "hs-hb".into(),
+        assistant_message_id: "a-hb".into(),
+    }];
+    // A long "silent" stretch: redacted thinking / input_json_delta windows
+    // stream as empty reasoning deltas.
+    for _ in 0..40 {
+        script.push(AgentEvent::ReasoningDelta {
+            text: String::new(),
+        });
+    }
+    script.push(AgentEvent::ReasoningDelta {
+        text: "planning".into(),
+    });
+    script.push(AgentEvent::TextDelta {
+        text: "done".into(),
+    });
+    script.push(AgentEvent::Done {
+        status: DoneStatus::Completed,
+        result: Some("done".into()),
+        error: None,
+        session_id: None,
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(dir.path(), Arc::new(MockHarness { script }));
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "cmd-hb-1",
+        SessionCommandPayload::Run {
+            request: run_request("hb"),
+            message_id: "msg-hb-1".into(),
+        },
+    );
+    wait_for(
+        || {
+            entries(&core)
+                .iter()
+                .any(|e| e.status == Some(MessageStatus::Complete))
+        },
+        "run completes",
+    )
+    .await;
+    // Journal replay: the 40 empties were filtered; real content survived.
+    let replay = core.sessions.subscribe(CHAT, 0).unwrap().0;
+    let empties = replay
+        .iter()
+        .filter(|j| matches!(&j.event, AgentEvent::ReasoningDelta { text } if text.is_empty()))
+        .count();
+    let nonempty = replay
+        .iter()
+        .filter(|j| matches!(&j.event, AgentEvent::ReasoningDelta { text } if !text.is_empty()))
+        .count();
+    assert_eq!(empties, 0, "empty reasoning deltas never reach the journal");
+    assert_eq!(nonempty, 1, "real reasoning text is preserved");
+    assert!(
+        replay
+            .iter()
+            .any(|j| matches!(&j.event, AgentEvent::TextDelta { text } if text == "done")),
+        "text deltas unaffected"
+    );
+}

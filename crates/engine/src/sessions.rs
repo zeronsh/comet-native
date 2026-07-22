@@ -493,6 +493,37 @@ impl Inner {
         seq
     }
 
+    /// Bump the session's freshness on stream activity WITHOUT a status
+    /// transition. Long silent-LOOKING stretches (thinking heartbeats, a big
+    /// tool input being generated) still carry events — the UI's 45s
+    /// staleness gate must not flip "Working" off mid-run. Throttled: a
+    /// workspace-doc mirror per delta would be far too chatty.
+    fn touch_session(&self, chat_id: &str) {
+        const TOUCH_THROTTLE_MS: i64 = 10_000;
+        let now = Utc::now();
+        let session = {
+            let mut statuses = lock(&self.statuses);
+            let Some(entry) = statuses.get_mut(chat_id) else {
+                return;
+            };
+            let age = now
+                .signed_duration_since(entry.updated_at)
+                .num_milliseconds();
+            if age < TOUCH_THROTTLE_MS {
+                return;
+            }
+            entry.updated_at = now;
+            let session = entry.clone();
+            let mut list: Vec<Session> = statuses.values().cloned().collect();
+            list.sort_by(|a, b| a.chat_id.cmp(&b.chat_id));
+            self.sessions_tx.send_replace(list);
+            session
+        };
+        if let Some(ws) = self.workspace() {
+            ws.record_session(&session);
+        }
+    }
+
     fn set_status(&self, chat_id: &str, status: SessionStatus, fresh_start: bool) {
         let now = Utc::now();
         let session = {
@@ -843,6 +874,17 @@ async fn drive_run(
                 continue;
             }
         };
+
+        // Any stream activity proves the run is alive — keep the session's
+        // freshness inside the UI's 45s staleness window (throttled).
+        inner.touch_session(&chat_id);
+        // Empty reasoning deltas are PURE heartbeats: redacted thinking and
+        // tool-input-generation windows stream them with no text. They fold
+        // to nothing, so journaling/publishing them is only noise (hundreds
+        // per long turn observed) — the touch above already did their job.
+        if matches!(&event, AgentEvent::ReasoningDelta { text } if text.is_empty()) {
+            continue;
+        }
 
         // Failed-resume fallback: an engine-injected `--resume` naming a session
         // the harness no longer knows dies before ever starting (claude exits

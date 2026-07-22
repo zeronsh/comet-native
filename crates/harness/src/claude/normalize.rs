@@ -199,6 +199,14 @@ impl Normalizer {
                     "thinking_delta" => vec![AgentEvent::ReasoningDelta {
                         text: f.event.delta.thinking,
                     }],
+                    // A big tool input (a 90-line Write) streams as a long run
+                    // of input_json_delta frames with nothing else — minutes of
+                    // apparent silence that reads as a stalled run. Surface
+                    // them as empty reasoning deltas: the engine treats those
+                    // as pure liveness heartbeats (never journaled/rendered).
+                    "input_json_delta" => vec![AgentEvent::ReasoningDelta {
+                        text: String::new(),
+                    }],
                     _ => Vec::new(),
                 }
             }
@@ -395,6 +403,47 @@ mod tests {
         let events = Normalizer::new().normalize(frame, false);
         assert_eq!(events.len(), 2, "usage + done");
         events.into_iter().nth(1).expect("done event")
+    }
+
+    #[test]
+    fn stream_deltas_map_to_text_reasoning_and_heartbeats() {
+        let normalize = |raw: &str| {
+            let frame = crate::claude::wire::parse_frame(raw).expect("frame parses");
+            Normalizer::new().normalize(frame, false)
+        };
+        // Real thinking text streams as a reasoning delta.
+        let ev = normalize(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}}"#,
+        );
+        assert_eq!(ev, vec![AgentEvent::ReasoningDelta { text: "hmm".into() }]);
+        // Redacted thinking (estimated_tokens only) yields the empty
+        // heartbeat shape the engine filters.
+        let ev = normalize(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"","estimated_tokens":50}}}"#,
+        );
+        assert_eq!(
+            ev,
+            vec![AgentEvent::ReasoningDelta {
+                text: String::new()
+            }]
+        );
+        // A tool input being generated (input_json_delta) is a liveness
+        // heartbeat, not silence — minutes of a big Write must not read as
+        // a stalled run.
+        let ev = normalize(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"input_json_delta","partial_json":"{\"file_"}}}"#,
+        );
+        assert_eq!(
+            ev,
+            vec![AgentEvent::ReasoningDelta {
+                text: String::new()
+            }]
+        );
+        // Signature deltas stay dropped.
+        let ev = normalize(
+            r#"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"signature_delta","signature":"abc"}}}"#,
+        );
+        assert!(ev.is_empty());
     }
 
     #[test]
