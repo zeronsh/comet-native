@@ -954,6 +954,12 @@ pub struct Transcript {
     folds: HashMap<SharedString, FoldState>,
     /// Streaming fade veils, one per live markdown row (dropped on completion).
     veils: HashMap<SharedString, Rc<RefCell<RowVeil>>>,
+    /// Live rows present in the FIRST sync after (re)attaching to a chat:
+    /// their veils are created pre-seeded, so text that was already streamed
+    /// before the switch never fades in — only appends after it do (mugen's
+    /// `FadePainter.attach` baseline; user report: switching back to a
+    /// streaming session dissolved the entire reply).
+    veil_baseline: std::collections::HashSet<SharedString>,
     /// Cross-frame flatten/shape-input cache (see [`RenderCache`]): fade
     /// frames reuse settled blocks' text+runs; the incremental parser's stable
     /// boundary invalidates only the live tail per commit.
@@ -1025,6 +1031,7 @@ impl Transcript {
             tree_cache: HashMap::new(),
             folds: HashMap::new(),
             veils: HashMap::new(),
+            veil_baseline: std::collections::HashSet::new(),
             render_cache: Rc::new(RefCell::new(RenderCache::default())),
             highlights: HighlightStore::default(),
             show_jump_button: false,
@@ -1268,7 +1275,8 @@ impl Transcript {
             )
         };
 
-        if selected != self.chat_id {
+        let attached = selected != self.chat_id;
+        if attached {
             self.chat_id = selected;
             self.rows.clear();
             self.row_cache.clear();
@@ -1295,10 +1303,26 @@ impl Transcript {
             new_rows.extend(self.rows_for(echo, true));
         }
 
+        // Text already streamed before this (re)attach is the veil BASELINE:
+        // its rows' veils seed instead of fading (render creates them from
+        // this set), so only post-switch appends animate.
+        if attached {
+            self.veil_baseline = new_rows
+                .iter()
+                .filter(|r| matches!(r.kind, RowKind::LiveMarkdown { .. }))
+                .map(|r| r.id.clone())
+                .collect();
+        }
+
         // Veils live exactly as long as their live row — drop them on the
         // live→complete flip (any mid-fade chunk snaps to full, matching the
         // row's version splice).
         self.veils.retain(|id, _| {
+            new_rows
+                .iter()
+                .any(|r| &r.id == id && matches!(r.kind, RowKind::LiveMarkdown { .. }))
+        });
+        self.veil_baseline.retain(|id| {
             new_rows
                 .iter()
                 .any(|r| &r.id == id && matches!(r.kind, RowKind::LiveMarkdown { .. }))
@@ -1661,8 +1685,21 @@ impl Transcript {
             RowKind::LiveMarkdown { tree, block_ix } => {
                 // Per-appended-chunk fade veil (opacity only — layout commits
                 // instantly). Reduced motion renders with no veil at all.
-                let veil = (!motion::reduced_motion(cx))
-                    .then(|| self.veils.entry(row.id.clone()).or_default().clone());
+                // Baseline rows (text already streamed when the transcript
+                // attached) start seeded: the existing reply must not fade in
+                // on a session switch — only fresh appends animate.
+                let veil = (!motion::reduced_motion(cx)).then(|| {
+                    self.veils
+                        .entry(row.id.clone())
+                        .or_insert_with(|| {
+                            if self.veil_baseline.contains(&row.id) {
+                                Rc::new(RefCell::new(RowVeil::seeded()))
+                            } else {
+                                Rc::default()
+                            }
+                        })
+                        .clone()
+                });
                 let opts = RenderOptions {
                     row_key: row.id.clone(),
                     veil: veil.clone(),
@@ -1689,6 +1726,12 @@ impl Transcript {
                 );
                 if let Some(start) = timer {
                     record_live_frame_us(start.elapsed().as_micros() as u64);
+                }
+                // The attach pass for this row is done (every element rendered
+                // above seeded its baseline synchronously): elements appearing
+                // from the NEXT pass on are newly streamed and fade normally.
+                if let Some(veil) = &veil {
+                    veil.borrow_mut().finish_seeding();
                 }
                 // Drive the veil clock: while any chunk is still dissolving,
                 // repaint next frame (self-limiting — one callback per frame).

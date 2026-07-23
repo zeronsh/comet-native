@@ -113,6 +113,15 @@ fn common_prefix(a: &str, b: &str) -> usize {
 }
 
 impl ElemVeil {
+    /// Adopt `text` as the committed baseline without fading it — the attach
+    /// semantics of mugen's `FadePainter.attach` (`length =
+    /// chromeFreeLength(content)`): content already on screen when the painter
+    /// attaches never animates; only later appends do.
+    fn seed(&mut self, text: &str) {
+        self.prev.clear();
+        self.prev.push_str(text);
+    }
+
     /// Advance to `text` at `now`: registers a fading chunk for newly appended
     /// bytes, prunes settled chunks, and returns the active spans. Idempotent
     /// for unchanged text — safe to call once per frame (or twice, when a row
@@ -172,10 +181,36 @@ impl ElemVeil {
 #[derive(Debug, Default)]
 pub struct RowVeil {
     elems: HashMap<usize, ElemVeil>,
+    /// Attach pass in progress: elements first seen while seeding adopt their
+    /// current text as the committed baseline instead of fading it in. Set for
+    /// rows that already carried text when the transcript (re)attached to the
+    /// chat — switching back to a streaming session must not dissolve the
+    /// whole existing reply (user report; mugen's `FadePainter.attach` baseline).
+    seeding: bool,
 }
 
 impl RowVeil {
+    /// A veil whose first render pass seeds baselines instead of fading.
+    pub fn seeded() -> Self {
+        Self {
+            elems: HashMap::new(),
+            seeding: true,
+        }
+    }
+
+    /// The attach pass is over — elements that appear from here on are newly
+    /// streamed content and fade normally.
+    pub fn finish_seeding(&mut self) {
+        self.seeding = false;
+    }
+
     pub fn advance(&mut self, elem: usize, text: &str, now: Instant) -> Vec<VeilSpan> {
+        if self.seeding && !self.elems.contains_key(&elem) {
+            let mut baseline = ElemVeil::default();
+            baseline.seed(text);
+            self.elems.insert(elem, baseline);
+            return Vec::new();
+        }
         self.elems.entry(elem).or_default().advance(text, now)
     }
 
@@ -311,6 +346,34 @@ mod tests {
         assert_eq!(veil_boost(2), 1.0);
         assert!((veil_boost(3) - 1.3).abs() < 1e-6);
         assert!((veil_boost(5) - 1.9).abs() < 1e-6);
+    }
+
+    #[test]
+    fn seeded_row_adopts_existing_text_without_fading() {
+        // Switching back to a streaming session: the text already on screen is
+        // the attach BASELINE (mugen FadePainter.attach) — no full-reply fade.
+        let t0 = Instant::now();
+        let mut row = RowVeil::seeded();
+        assert!(row.advance(0, "already streamed text", t0).is_empty());
+        assert!(row.advance(1, "second block", t0).is_empty());
+        assert!(!row.is_fading());
+        // Appends AFTER the attach fade normally — only the new suffix.
+        let spans = row.advance(0, "already streamed text plus", at(t0, 100));
+        assert_eq!(spans, vec![(21..26, 0.0)]);
+        // The attach pass ends after the first render: elements first seen
+        // later are newly streamed content and fade from empty.
+        row.finish_seeding();
+        let spans = row.advance(2, "new block", at(t0, 200));
+        assert_eq!(spans, vec![(0..9, 0.0)]);
+    }
+
+    #[test]
+    fn default_row_veil_fades_first_text() {
+        // Mid-stream new rows keep the old behavior: their first chunk fades.
+        let t0 = Instant::now();
+        let mut row = RowVeil::default();
+        let spans = row.advance(0, "fresh", t0);
+        assert_eq!(spans, vec![(0..5, 0.0)]);
     }
 
     #[test]
