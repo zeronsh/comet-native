@@ -56,6 +56,9 @@ icon_assets![
     (LIST, "list"),
     (FOLDER_WITH_FILES, "folder-with-files"),
     (FOLDER, "folder"),
+    // Hand-drawn git-branch glyph in the Solar Linear style (like the
+    // terminal/plus/return ports) — the set has no branch icon.
+    (GIT_BRANCH, "git-branch"),
     (SIDEBAR_MINIMALISTIC, "sidebar-minimalistic"),
     // Mirrored variant (comet window-controls.tsx `-scale-x-100`): the LEFT
     // sidebar toggle shows the panel line on the left; gpui divs have no

@@ -22,9 +22,14 @@ use gpui::{
 
 use comet_engine::registry::HarnessDescriptor;
 use comet_proto::{
-    ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, SandboxLevel,
+    ChatConfig, FolderListing, HarnessId, Model, ReasoningLevel, RepoRef, SandboxLevel,
 };
 use comet_rpc::methods;
+
+/// Display cap for the ref list (t3code shows pages of 100 with a status
+/// footer; a flat cap + "Showing X of Y refs" reads the same without
+/// pagination plumbing).
+const MAX_REF_ROWS: usize = 300;
 
 use crate::composer::{ComposerInput, ComposerInputEvent};
 use crate::motion;
@@ -39,7 +44,7 @@ use crate::theme::Theme;
 
 /// Everything a new chat is configured with before the first send. The folder
 /// and device come from the selected SPACE — the draft only carries the git
-/// extras (branch + worktree toggle) and the run config.
+/// extras (ref + checkout kind) and the run config.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct DraftConfig {
     pub harness: Option<HarnessId>,
@@ -47,9 +52,37 @@ pub struct DraftConfig {
     pub reasoning: Option<ReasoningLevel>,
     /// option id → choice id (only non-defaults are meaningful).
     pub model_options: serde_json::Map<String, serde_json::Value>,
+    /// The picked ref (base branch in NewWorktree mode; a worktree's branch
+    /// when reusing one). `None` = the repo's current branch.
     pub branch: Option<String>,
-    /// Run in an isolated worktree (`CreateWorktree` on send).
-    pub isolated_worktree: bool,
+    /// Where the new session runs (the t3code env-mode).
+    pub checkout: CheckoutKind,
+}
+
+/// Where a new session runs (t3code's env-mode: `local | worktree`). "Current
+/// worktree" is NOT a third mode — it's `Local` when the picked ref is already
+/// materialized as a worktree (the session reuses that checkout's path).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CheckoutKind {
+    /// The space's own folder — or the picked ref's existing worktree.
+    #[default]
+    Local,
+    /// A fresh isolated worktree created off the picked base ref on send.
+    NewWorktree,
+}
+
+/// The resolved on-send checkout action (composer consumes this — see
+/// [`Pickers::checkout_plan`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum CheckoutPlan {
+    /// Run in the space folder as-is.
+    CurrentCheckout,
+    /// Reuse the picked ref's existing worktree (a cwd override; no git).
+    ReuseWorktree { path: String },
+    /// `CreateWorktree` off `base` on send (comet mints a `comet/<name>`
+    /// branch). `base: None` = refs never loaded — send falls back to the
+    /// space folder rather than failing.
+    NewWorktree { base: Option<String> },
 }
 
 /// The fully-resolved run configuration the composer sends: concrete harness,
@@ -216,6 +249,9 @@ pub fn browser_rows(listing: &FolderListing) -> Vec<&comet_proto::FolderEntry> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerKind {
     Branch,
+    /// The checkout-kind dropdown in the composer footer (Current
+    /// checkout/worktree | New worktree).
+    Checkout,
     HarnessModel,
     Traits,
 }
@@ -237,9 +273,9 @@ pub struct Pickers {
     open: Option<PickerKind>,
     harnesses: Loadable<Vec<HarnessDescriptor>>,
     models: HashMap<HarnessId, Loadable<Vec<Model>>>,
-    branches: Loadable<Vec<String>>,
-    /// Space id the `branches` slot belongs to (invalidated on space change).
-    branches_space: Option<String>,
+    refs: Loadable<Vec<RepoRef>>,
+    /// Space id the `refs` slot belongs to (invalidated on space change).
+    refs_space: Option<String>,
     /// Highlighted row in the open list (keyboard nav).
     active: usize,
     /// Shared search / URL / name input, reused across popovers.
@@ -253,6 +289,9 @@ pub struct Pickers {
     /// no synthetic pointer, but synthetic keys do arrive).
     boot_focus_pending: bool,
     load_task: Option<Task<()>>,
+    /// Own slot: the refs load runs concurrently with the eager
+    /// harness/model loads — sharing `load_task` would abort one mid-flight.
+    refs_task: Option<Task<()>>,
     mutate_task: Option<Task<()>>,
     _search_events: Subscription,
     _state_observe: Subscription,
@@ -288,9 +327,9 @@ impl Pickers {
             if space != this.space_owner {
                 this.space_owner = space;
                 this.config.branch = None;
-                this.config.isolated_worktree = false;
-                this.branches = Loadable::Idle;
-                this.branches_space = None;
+                this.config.checkout = CheckoutKind::default();
+                this.refs = Loadable::Idle;
+                this.refs_space = None;
             }
             cx.notify();
         });
@@ -301,6 +340,7 @@ impl Pickers {
             Some("model") => Some(PickerKind::HarnessModel),
             Some("traits") => Some(PickerKind::Traits),
             Some("branch") => Some(PickerKind::Branch),
+            Some("checkout") => Some(PickerKind::Checkout),
             _ => None,
         };
         // Sticky last-used picks: loaded synchronously so the very first frame
@@ -322,14 +362,15 @@ impl Pickers {
             open,
             harnesses: Loadable::Idle,
             models: HashMap::new(),
-            branches: Loadable::Idle,
-            branches_space: None,
+            refs: Loadable::Idle,
+            refs_space: None,
             active: 0,
             search,
             focus: cx.focus_handle(),
             suppressed: None,
             boot_focus_pending: open.is_some(),
             load_task: None,
+            refs_task: None,
             mutate_task: None,
             _search_events: search_events,
             _state_observe: state_observe,
@@ -503,12 +544,15 @@ impl Pickers {
         match kind {
             PickerKind::Branch => {
                 let handle = self.search.read(cx).focus_handle(cx);
+                self.search.update(cx, |input, cx| {
+                    input.set_placeholder("Search refs…", cx);
+                });
                 window.focus(&handle, cx);
             }
             _ => window.focus(&self.focus, cx),
         }
         match kind {
-            PickerKind::Branch => self.ensure_branches(false, cx),
+            PickerKind::Branch | PickerKind::Checkout => self.ensure_refs(false, cx),
             PickerKind::HarnessModel | PickerKind::Traits => {
                 self.ensure_harnesses(cx);
                 if let Some(harness) = self.effective_harness(cx) {
@@ -581,26 +625,28 @@ impl Pickers {
         .detach();
     }
 
-    /// ListBranches for the selected SPACE's folder — targeted at the space's
+    /// ListRefs for the selected SPACE's folder — targeted at the space's
     /// device (relay-forwarded when remote), keyed/invalidated by space id.
-    fn ensure_branches(&mut self, force: bool, cx: &mut Context<Self>) {
+    /// Rows carry checkout state (`current`, `worktreePath`) so the picker can
+    /// tag refs and the checkout-kind selector can offer worktree reuse.
+    fn ensure_refs(&mut self, force: bool, cx: &mut Context<Self>) {
         let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
             return;
         };
         if !space.git_detected {
             return;
         }
-        let fresh = self.branches_space.as_deref() == Some(space.id.as_str());
-        if !force && fresh && matches!(self.branches, Loadable::Ready(_) | Loadable::Loading) {
+        let fresh = self.refs_space.as_deref() == Some(space.id.as_str());
+        if !force && fresh && matches!(self.refs, Loadable::Ready(_) | Loadable::Loading) {
             return;
         }
         let Some(engine) = self.engine(cx) else {
             return;
         };
         let local = self.state.read(cx).local_device_id.clone();
-        self.branches = Loadable::Loading;
-        self.branches_space = Some(space.id.clone());
-        self.load_task = Some(cx.spawn(async move |this, cx| {
+        self.refs = Loadable::Loading;
+        self.refs_space = Some(space.id.clone());
+        self.refs_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
             params.insert(
                 "repoPath".into(),
@@ -614,12 +660,12 @@ impl Pickers {
             }
             let result = engine
                 .client()
-                .call(methods::LIST_BRANCHES, serde_json::Value::Object(params))
+                .call(methods::LIST_REFS, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |pickers, cx| {
-                pickers.branches = match result {
-                    Ok(value) => match serde_json::from_value::<Vec<String>>(value) {
-                        Ok(branches) => Loadable::Ready(branches),
+                pickers.refs = match result {
+                    Ok(value) => match serde_json::from_value::<Vec<RepoRef>>(value) {
+                        Ok(refs) => Loadable::Ready(refs),
                         Err(err) => Loadable::Error(err.to_string()),
                     },
                     Err(err) => Loadable::Error(err.to_string()),
@@ -632,8 +678,34 @@ impl Pickers {
 
     // ---- selections ----
 
-    fn pick_branch(&mut self, branch: String, cx: &mut Context<Self>) {
-        self.config.branch = Some(branch);
+    fn pick_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
+        self.config.branch = Some(row.name.clone());
+        if row.worktree_path.is_some() {
+            // Reuse the ref's existing worktree ("Current worktree") — the
+            // t3code `reuseExistingWorktree` path.
+            self.config.checkout = CheckoutKind::Local;
+        } else if !row.current && self.config.checkout == CheckoutKind::Local {
+            // Deliberate t3code divergence: we never `git checkout` the main
+            // folder under the user. A non-current plain ref is reachable
+            // only as the base of a new worktree, so the kind follows.
+            self.config.checkout = CheckoutKind::NewWorktree;
+        }
+        self.open = None;
+        cx.notify();
+    }
+
+    fn pick_checkout(&mut self, kind: CheckoutKind, cx: &mut Context<Self>) {
+        if kind == CheckoutKind::Local
+            && self.config.checkout == CheckoutKind::NewWorktree
+            && self.selected_ref_worktree().is_none()
+            && self.selected_ref().is_some_and(|r| !r.current)
+        {
+            // Back to "Current checkout" with a non-current plain ref picked:
+            // drop the pick (we don't checkout the main folder) — the current
+            // branch takes over.
+            self.config.branch = None;
+        }
+        self.config.checkout = kind;
         self.open = None;
         cx.notify();
     }
@@ -858,22 +930,85 @@ impl Pickers {
         self.pick_model(id, cx);
     }
 
-    fn filtered_branch_rows(&self, cx: &App) -> Vec<String> {
-        let Some(branches) = self.branches.ready() else {
+    fn filtered_ref_rows(&self, cx: &App) -> Vec<RepoRef> {
+        let Some(refs) = self.refs.ready() else {
             return Vec::new();
         };
+        let names: Vec<String> = refs.iter().map(|r| r.name.clone()).collect();
         let query = self.search.read(cx).text().to_string();
-        popover::filter_indices(&query, branches)
+        popover::filter_indices(&query, &names)
             .into_iter()
-            .map(|ix| branches[ix].clone())
+            .map(|ix| refs[ix].clone())
             .collect()
+    }
+
+    // ---- checkout resolution (the t3code env-mode semantics) ----
+
+    /// The picked ref's row, else the repo's current branch's row.
+    fn selected_ref(&self) -> Option<&RepoRef> {
+        let refs = self.refs.ready()?;
+        match self.config.branch.as_deref() {
+            Some(name) => refs.iter().find(|r| r.name == name),
+            None => refs.iter().find(|r| r.current),
+        }
+    }
+
+    /// The picked (or current) ref's name.
+    fn effective_ref_name(&self) -> Option<String> {
+        self.config
+            .branch
+            .clone()
+            .or_else(|| self.selected_ref().map(|r| r.name.clone()))
+    }
+
+    /// The existing worktree the picked ref is materialized in, if any.
+    fn selected_ref_worktree(&self) -> Option<String> {
+        self.selected_ref().and_then(|r| r.worktree_path.clone())
+    }
+
+    /// The resolved on-send checkout action for a new session.
+    pub fn checkout_plan(&self) -> CheckoutPlan {
+        match self.config.checkout {
+            CheckoutKind::NewWorktree => CheckoutPlan::NewWorktree {
+                base: self.effective_ref_name(),
+            },
+            CheckoutKind::Local => match self.selected_ref_worktree() {
+                Some(path) => CheckoutPlan::ReuseWorktree { path },
+                None => CheckoutPlan::CurrentCheckout,
+            },
+        }
+    }
+
+    /// Label of the checkout-kind trigger (t3code `resolveEnvModeLabel` /
+    /// `resolveCurrentWorkspaceLabel`).
+    fn checkout_label(&self) -> &'static str {
+        match self.config.checkout {
+            CheckoutKind::NewWorktree => "New worktree",
+            CheckoutKind::Local => {
+                if self.selected_ref_worktree().is_some() {
+                    "Current worktree"
+                } else {
+                    "Current checkout"
+                }
+            }
+        }
+    }
+
+    /// Label of the ref trigger: `From <ref>` only when a NEW worktree will be
+    /// created off it (t3code `getBranchTriggerLabel`); the bare name otherwise.
+    fn ref_label(&self) -> SharedString {
+        match (self.config.checkout, self.effective_ref_name()) {
+            (_, None) => SharedString::from("Select ref"),
+            (CheckoutKind::NewWorktree, Some(name)) => SharedString::from(format!("From {name}")),
+            (CheckoutKind::Local, Some(name)) => SharedString::from(name),
+        }
     }
 
     fn on_search_submit(&mut self, cx: &mut Context<Self>) {
         if self.open == Some(PickerKind::Branch)
-            && let Some(branch) = self.filtered_branch_rows(cx).into_iter().nth(self.active)
+            && let Some(row) = self.filtered_ref_rows(cx).into_iter().nth(self.active)
         {
-            self.pick_branch(branch, cx);
+            self.pick_ref(row, cx);
         }
     }
 
@@ -892,7 +1027,8 @@ impl Pickers {
             MenuKey::Up | MenuKey::Down => {
                 let delta = if key == MenuKey::Up { -1 } else { 1 };
                 let count = match self.open {
-                    Some(PickerKind::Branch) => self.filtered_branch_rows(cx).len(),
+                    Some(PickerKind::Branch) => self.filtered_ref_rows(cx).len().min(MAX_REF_ROWS),
+                    Some(PickerKind::Checkout) => 2,
                     Some(PickerKind::HarnessModel) => self.model_rows_len(cx),
                     Some(PickerKind::Traits) => self.trait_rows_len(cx),
                     None => 0,
@@ -905,6 +1041,13 @@ impl Pickers {
                     self.activate_model_row(cx);
                 } else if self.open == Some(PickerKind::Traits) {
                     self.activate_trait_row(cx);
+                } else if self.open == Some(PickerKind::Checkout) {
+                    let kind = if self.active == 0 {
+                        CheckoutKind::Local
+                    } else {
+                        CheckoutKind::NewWorktree
+                    };
+                    self.pick_checkout(kind, cx);
                 } else {
                     self.on_search_submit(cx);
                 }
@@ -926,6 +1069,7 @@ impl Pickers {
     ) -> gpui::Stateful<gpui::Div> {
         let id: &'static str = match kind {
             PickerKind::Branch => "picker-branch",
+            PickerKind::Checkout => "picker-checkout",
             PickerKind::HarnessModel => "picker-model",
             PickerKind::Traits => "picker-traits",
         };
@@ -972,6 +1116,194 @@ impl Pickers {
                 )
             })
             .child(div().min_w_0().truncate().child(label))
+    }
+
+    /// A footer-row trigger (t3code ghost `Button size="xs"`): leading icon,
+    /// truncating label, trailing chevron — smaller and quieter than the
+    /// in-pill chips.
+    fn footer_chip(
+        &self,
+        kind: PickerKind,
+        id: &'static str,
+        icon_path: &'static str,
+        label: SharedString,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<gpui::Div> {
+        let open = self.open == Some(kind);
+        div()
+            .id(id)
+            .h(px(20.0))
+            .max_w(px(280.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .rounded(px(6.0))
+            .text_size(px(12.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(motion::hover_blend(
+                id,
+                theme.text_muted.opacity(0.7),
+                theme.text.opacity(0.8),
+            ))
+            .bg(if open {
+                theme.element_hover
+            } else {
+                motion::hover_blend(id, gpui::transparent_black(), theme.element_hover)
+            })
+            .on_hover(motion::hover_listener(id))
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, window, cx| this.toggle(kind, window, cx)))
+            .child(
+                crate::icons::icon(icon_path)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted.opacity(0.7)),
+            )
+            .child(div().min_w_0().truncate().child(label))
+            .child(
+                crate::icons::icon(crate::icons::ALT_ARROW_DOWN)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted.opacity(0.5)),
+            )
+    }
+
+    /// A read-only footer label (locked sessions — t3code's
+    /// `resolveLockedWorkspaceLabel` span).
+    fn footer_label(
+        icon_path: &'static str,
+        label: SharedString,
+        theme: &Theme,
+    ) -> gpui::Div {
+        div()
+            .h(px(20.0))
+            .max_w(px(280.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(6.0))
+            .px(px(8.0))
+            .text_size(px(12.0))
+            .font_weight(gpui::FontWeight::MEDIUM)
+            .text_color(theme.text_muted.opacity(0.6))
+            .child(
+                crate::icons::icon(icon_path)
+                    .size(px(12.0))
+                    .text_color(theme.text_muted.opacity(0.6)),
+            )
+            .child(div().min_w_0().truncate().child(label))
+    }
+
+    /// The composer footer row (t3code BranchToolbar): checkout-kind on the
+    /// left, the ref selector right-aligned. `None` for non-git spaces. On an
+    /// existing session both sides are read-only labels ("Worktree" /
+    /// "Local checkout" + the chat's branch).
+    pub fn render_footer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let theme = Theme::of(cx).clone();
+        let (space, new_chat, chat_cwd, chat_branch) = {
+            let state = self.state.read(cx);
+            let space = state.selected_space_row().cloned()?;
+            let new_chat = state.selected_chat.is_none();
+            let chat = state.selected_chat_row();
+            (
+                space,
+                new_chat,
+                chat.and_then(|c| c.cwd.clone()),
+                chat.and_then(|c| c.branch.clone()),
+            )
+        };
+        if !space.git_detected {
+            return None;
+        }
+
+        // Symmetric: the container's 8px gap sits above the toolbar; bleeding
+        // 8 of the container's 16px bottom padding (mb -8) leaves 8 below —
+        // equal air on both sides of the row.
+        let row = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(8.0))
+            .px(px(10.0))
+            .mb(px(-8.0));
+
+        if !new_chat {
+            // Locked: the session's checkout was fixed at creation. A cwd
+            // other than the space folder = a worktree.
+            let is_worktree = chat_cwd.as_deref().is_some_and(|cwd| cwd != space.path);
+            let (icon_path, label) = if is_worktree {
+                (crate::icons::FOLDER_WITH_FILES, "Worktree")
+            } else {
+                (crate::icons::FOLDER, "Local checkout")
+            };
+            let left = Self::footer_label(icon_path, SharedString::from(label), &theme);
+            let right = chat_branch.map(|branch| {
+                Self::footer_label(
+                    crate::icons::GIT_BRANCH,
+                    SharedString::from(branch),
+                    &theme,
+                )
+            });
+            return Some(
+                row.child(left)
+                    .children(right)
+                    .into_any_element(),
+            );
+        }
+
+        // New session: live controls. Refs load eagerly so the labels resolve
+        // before either popover opens (idempotent).
+        self.ensure_refs(false, cx);
+
+        let mut overlay: Option<(PickerKind, AnyElement)> = match self.open {
+            Some(PickerKind::Branch) => {
+                let content = self.render_branch_popover(cx);
+                Some((PickerKind::Branch, self.popover_frame(320.0, content, cx)))
+            }
+            Some(PickerKind::Checkout) => {
+                let content = self.render_checkout_popover(cx);
+                Some((PickerKind::Checkout, self.popover_frame(224.0, content, cx)))
+            }
+            _ => None,
+        };
+
+        let kind_icon = match (self.config.checkout, self.selected_ref_worktree().is_some()) {
+            (CheckoutKind::Local, false) => crate::icons::FOLDER,
+            _ => crate::icons::FOLDER_WITH_FILES,
+        };
+        let kind_chip = self.footer_chip(
+            PickerKind::Checkout,
+            "picker-checkout",
+            kind_icon,
+            SharedString::from(self.checkout_label()),
+            &theme,
+            cx,
+        );
+        let ref_chip = self.footer_chip(
+            PickerKind::Branch,
+            "picker-branch",
+            crate::icons::GIT_BRANCH,
+            self.ref_label(),
+            &theme,
+            cx,
+        );
+        Some(
+            row.child(attach_overlay(
+                kind_chip,
+                &mut overlay,
+                PickerKind::Checkout,
+                "checkout-popover",
+            ))
+            .child(attach_overlay(
+                ref_chip,
+                &mut overlay,
+                PickerKind::Branch,
+                "branch-popover",
+            ))
+            .into_any_element(),
+        )
     }
 
     fn popover_frame(&self, width: f32, content: AnyElement, cx: &mut Context<Self>) -> AnyElement {
@@ -1040,7 +1372,7 @@ impl Pickers {
                     .cursor_pointer()
                     .hover(|s| s.bg(theme.element_hover))
                     .on_click(cx.listener(move |this, _, _, cx| match kind {
-                        PickerKind::Branch => this.ensure_branches(true, cx),
+                        PickerKind::Branch | PickerKind::Checkout => this.ensure_refs(true, cx),
                         PickerKind::HarnessModel | PickerKind::Traits => {
                             this.harnesses = Loadable::Idle;
                             this.ensure_harnesses(cx);
@@ -1051,18 +1383,23 @@ impl Pickers {
             .into_any_element()
     }
 
+    /// The ref picker (t3code BranchToolbarBranchSelector): search on top,
+    /// rows with right-aligned muted `current`/`worktree` tags, and a
+    /// "Showing X of Y refs" footer when the list is capped.
     fn render_branch_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
-        let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
+        if self.state.read(cx).selected_space_row().is_none() {
             return div()
                 .p(px(Theme::SPACE_SM))
                 .text_size(px(12.0))
                 .text_color(theme.text_faint)
                 .child(SharedString::from("No space selected"))
                 .into_any_element();
-        };
-        let rows = self.filtered_branch_rows(cx);
-        let body: AnyElement = match &self.branches {
+        }
+        let rows = self.filtered_ref_rows(cx);
+        let total = rows.len();
+        let shown = total.min(MAX_REF_ROWS);
+        let body: AnyElement = match &self.refs {
             Loadable::Loading | Loadable::Idle => {
                 popover::skeleton_rows("branch-skeleton", &theme, 4)
             }
@@ -1074,7 +1411,7 @@ impl Pickers {
                 .p(px(Theme::SPACE_SM))
                 .text_size(px(12.0))
                 .text_color(theme.text_faint)
-                .child(SharedString::from("No branches match"))
+                .child(SharedString::from("No refs found."))
                 .into_any_element(),
             Loadable::Ready(_) => {
                 let active = self.active;
@@ -1084,70 +1421,128 @@ impl Pickers {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .max_h(px(176.0))
+                    .max_h(px(224.0))
                     .overflow_y_scroll()
-                    .children(rows.into_iter().enumerate().map(|(ix, branch)| {
-                        let label: SharedString = branch.clone().into();
-                        let is_selected = selected.as_deref() == Some(branch.as_str());
+                    .children(rows.into_iter().take(MAX_REF_ROWS).enumerate().map(
+                        |(ix, row)| {
+                            let label: SharedString = row.name.clone().into();
+                            let is_selected = selected.as_deref() == Some(row.name.as_str());
+                            // Right-aligned muted tag (t3code `text-[10px]
+                            // text-muted-foreground/45`): current beats worktree.
+                            let tag: Option<&'static str> = if row.current {
+                                Some("current")
+                            } else if row.worktree_path.is_some() {
+                                Some("worktree")
+                            } else {
+                                None
+                            };
+                            popover::menu_row_nav(
+                                &theme,
+                                is_selected,
+                                ix == active,
+                                format!("branch-row-{ix}"),
+                            )
+                            .id(("branch-row", ix))
+                            .on_click(cx.listener(move |this, _, _, cx| {
+                                this.pick_ref(row.clone(), cx);
+                            }))
+                            .child(div().flex_1().min_w_0().truncate().child(label))
+                            .when_some(tag, |el, tag| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(10.0))
+                                        .text_color(theme.text_muted.opacity(0.45))
+                                        .child(SharedString::from(tag)),
+                                )
+                            })
+                            .when(is_selected, |el| el.child(popover::menu_check(&theme)))
+                        },
+                    ))
+                    .into_any_element()
+            }
+        };
+        let mut popover = div()
+            .flex()
+            .flex_col()
+            .child(self.search_box(&theme))
+            .child(body);
+        if total > shown {
+            popover = popover.child(
+                popover::menu_section().child(
+                    div()
+                        .px(px(Theme::SPACE_SM))
+                        .py(px(4.0))
+                        .text_size(px(11.0))
+                        .text_color(theme.text_faint)
+                        .child(SharedString::from(format!(
+                            "Showing {shown} of {total} refs"
+                        ))),
+                ),
+            );
+        }
+        popover.into_any_element()
+    }
+
+    /// The checkout-kind dropdown (t3code BranchToolbarEnvModeSelector): two
+    /// rows — "Current checkout"/"Current worktree" (local) and "New worktree".
+    fn render_checkout_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::of(cx).clone();
+        let has_worktree = self.selected_ref_worktree().is_some();
+        let local_label: &'static str = if has_worktree {
+            "Current worktree"
+        } else {
+            "Current checkout"
+        };
+        let local_icon = if has_worktree {
+            crate::icons::FOLDER_WITH_FILES
+        } else {
+            crate::icons::FOLDER
+        };
+        let options: [(CheckoutKind, &'static str, &'static str); 2] = [
+            (CheckoutKind::Local, local_label, local_icon),
+            (
+                CheckoutKind::NewWorktree,
+                "New worktree",
+                crate::icons::FOLDER_WITH_FILES,
+            ),
+        ];
+        let active = self.active;
+        let current = self.config.checkout;
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(2.0))
+            .children(
+                options
+                    .into_iter()
+                    .enumerate()
+                    .map(|(ix, (kind, label, icon_path))| {
+                        let is_selected = current == kind;
                         popover::menu_row_nav(
                             &theme,
                             is_selected,
                             ix == active,
-                            format!("branch-row-{ix}"),
+                            format!("checkout-row-{ix}"),
                         )
-                        .id(("branch-row", ix))
+                        .id(("checkout-row", ix))
                         .on_click(cx.listener(move |this, _, _, cx| {
-                            this.pick_branch(branch.clone(), cx);
+                            this.pick_checkout(kind, cx);
                         }))
-                        .child(div().flex_1().min_w_0().truncate().child(label))
-                        .when(is_selected, |el| el.child(popover::menu_check(&theme)))
-                    }))
-                    .into_any_element()
-            }
-        };
-        let isolated = self.config.isolated_worktree;
-        let repo_name = space.display_name().to_string();
-        div()
-            .flex()
-            .flex_col()
-            .child(popover::menu_heading(&theme, "Base branch"))
-            .child(self.search_box(&theme))
-            .child(body)
-            // Isolated-worktree toggle row with a display-only switch under a
-            // full-width hairline (comet branch-picker.tsx `mt-1 border-t
-            // border-white/[0.06] pt-1`).
-            .child(
-                popover::menu_section().child(
-                    popover::menu_row(&theme, false, "branch-isolated")
-                        .id("branch-isolated")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.config.isolated_worktree = !this.config.isolated_worktree;
-                            cx.notify();
-                        }))
+                        .child(
+                            crate::icons::icon(icon_path)
+                                .size(px(14.0))
+                                .text_color(theme.text_muted),
+                        )
                         .child(
                             div()
                                 .flex_1()
                                 .min_w_0()
-                                .flex()
-                                .flex_col()
-                                .child(
-                                    div()
-                                        .text_color(theme.text)
-                                        .child(SharedString::from("Isolated worktree")),
-                                )
-                                .child(
-                                    div()
-                                        .truncate()
-                                        .font_family(theme.font_mono.clone())
-                                        .text_size(px(11.0))
-                                        .text_color(theme.text_muted.opacity(0.7))
-                                        .child(SharedString::from(format!(
-                                            "~/.comet/worktrees/{repo_name}/<name>"
-                                        ))),
-                                ),
+                                .truncate()
+                                .child(SharedString::from(label)),
                         )
-                        .child(toggle_switch(&theme, isolated)),
-                ),
+                        .when(is_selected, |el| el.child(popover::menu_check(&theme)))
+                    }),
             )
             .into_any_element()
     }
@@ -1521,6 +1916,7 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
 /// Display-only toggle switch (comet branch-picker.tsx `Toggle`): an 18×32
 /// pill whose knob slides right and track flips white when on. State is owned
 /// by the parent row.
+#[allow(dead_code)]
 fn toggle_switch(theme: &Theme, on: bool) -> gpui::Div {
     div()
         .flex_none()
@@ -1597,14 +1993,15 @@ fn attach_overlay(
 impl Render for Pickers {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        let new_chat = self.state.read(cx).selected_chat.is_none();
-
         // A COMET_OPEN_PICKER popover never went through `toggle`, so claim
         // its keyboard focus here (re-claim until it sticks — the shell's
         // first-paint fallback focuses the composer after our first render).
         if self.boot_focus_pending {
             match self.open {
                 Some(PickerKind::Branch) => {
+                    self.search.update(cx, |input, cx| {
+                        input.set_placeholder("Search refs…", cx);
+                    });
                     let handle = self.search.read(cx).focus_handle(cx);
                     if handle.is_focused(window) {
                         self.boot_focus_pending = false;
@@ -1631,19 +2028,11 @@ impl Render for Pickers {
         }
         // A popover opened data-side (COMET_OPEN_PICKER) never went through
         // `toggle`, so kick its loads here (all ensure_* are idempotent).
-        if self.open == Some(PickerKind::Branch) && matches!(self.branches, Loadable::Idle) {
-            self.ensure_branches(false, cx);
+        if matches!(self.open, Some(PickerKind::Branch) | Some(PickerKind::Checkout))
+            && matches!(self.refs, Loadable::Idle)
+        {
+            self.ensure_refs(false, cx);
         }
-
-        // Branch (+ worktree) only makes sense in a git space — the space is
-        // owner-stamped and synced, so this needs no RPC.
-        let space_git = self.state.read(cx).selected_space_git();
-        let branch_label: SharedString = self
-            .config
-            .branch
-            .clone()
-            .map(SharedString::from)
-            .unwrap_or_else(|| SharedString::from("Branch"));
         // Chip shows the model's display name alone (comet `modelText`); the
         // harness reads from the brand mark beside it. Never "Default model":
         // before the catalog lands the remembered label (or the configured id)
@@ -1684,13 +2073,11 @@ impl Render for Pickers {
             .map(SharedString::from)
             .unwrap_or_else(|| SharedString::from("Traits"));
 
-        // Render the open popover's body first (mutable borrow), then the chips.
+        // Render the open popover's body first (mutable borrow), then the
+        // chips. Branch/Checkout render in the composer FOOTER row (see
+        // `render_footer`), not here.
         let mut overlay: Option<(PickerKind, AnyElement)> = match self.open {
-            Some(PickerKind::Branch) => {
-                // comet branch-picker.tsx `w-72`.
-                let content = self.render_branch_popover(cx);
-                Some((PickerKind::Branch, self.popover_frame(288.0, content, cx)))
-            }
+            Some(PickerKind::Branch) | Some(PickerKind::Checkout) => None,
             Some(PickerKind::HarnessModel) => {
                 let content = self.render_harness_model_popover(cx);
                 Some((
@@ -1705,32 +2092,16 @@ impl Render for Pickers {
             None => None,
         };
 
-        // Left cluster: the branch chip (new chats in git spaces only — the
-        // space itself fixes device + folder). Right cluster: agent+model and
-        // traits — the composer appends attach + send after this element
-        // (comet composer-actions.tsx arrangement).
-        let mut left = div()
+        // Left cluster (the branch chip moved to the composer FOOTER row).
+        // Right cluster: agent+model and traits — the composer appends
+        // attach + send after this element (comet composer-actions.tsx
+        // arrangement).
+        let left = div()
             .flex()
             .flex_row()
             .items_center()
             .min_w_0()
             .gap(px(4.0));
-        if new_chat && space_git {
-            let branch_chip = self.trigger_chip(
-                PickerKind::Branch,
-                branch_label,
-                self.config.branch.is_some(),
-                None,
-                &theme,
-                cx,
-            );
-            left = left.child(attach_overlay(
-                branch_chip,
-                &mut overlay,
-                PickerKind::Branch,
-                "branch-popover",
-            ));
-        }
         let model_chip = self.trigger_chip(
             PickerKind::HarnessModel,
             model_label,

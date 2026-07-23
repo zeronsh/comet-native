@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use sha2::{Digest, Sha256};
 
-use comet_proto::{FolderEntry, FolderListing, Repo, Worktree};
+use comet_proto::{FolderEntry, FolderListing, Repo, RepoRef, Worktree};
 
 use crate::EngineError;
 
@@ -384,6 +384,46 @@ impl Repos {
             names.insert(0, head);
         }
         Ok(names)
+    }
+
+    /// [`Self::branches`] enriched with checkout state: which branch the MAIN
+    /// folder has checked out (`current`) and which branches are materialized
+    /// as linked worktrees (`worktree_path`). Feeds the composer's ref picker
+    /// and its checkout-kind selector.
+    pub async fn refs(&self, repo_path: &Path) -> Result<Vec<RepoRef>, EngineError> {
+        let names = self.branches(repo_path).await?;
+        let current = self.current_branch(repo_path).await.ok();
+        // `git worktree list --porcelain`: stanzas of `worktree <path>` /
+        // `HEAD <sha>` / `branch refs/heads/<name>`. The first stanza is the
+        // main checkout — excluded (it's `current`, not a linked worktree).
+        let mut worktrees: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
+        if let Ok(out) = self
+            .git(&["worktree", "list", "--porcelain"], Some(repo_path))
+            .await
+        {
+            let mut stanza = 0usize;
+            let mut path: Option<String> = None;
+            for line in out.lines().map(str::trim) {
+                if let Some(p) = line.strip_prefix("worktree ") {
+                    stanza += 1;
+                    // The first stanza is the main checkout, not a linked tree.
+                    path = (stanza > 1).then(|| p.to_string());
+                } else if let Some(branch) = line.strip_prefix("branch refs/heads/")
+                    && let Some(path) = path.take()
+                {
+                    worktrees.insert(branch.to_string(), path);
+                }
+            }
+        }
+        Ok(names
+            .into_iter()
+            .map(|name| RepoRef {
+                current: current.as_deref() == Some(name.as_str()),
+                worktree_path: worktrees.get(&name).cloned(),
+                name,
+            })
+            .collect())
     }
 
     // ── worktrees ───────────────────────────────────────────────────────────

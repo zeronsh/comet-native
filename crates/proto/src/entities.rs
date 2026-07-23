@@ -184,6 +184,22 @@ pub struct Repo {
     pub default_branch: Option<String>,
 }
 
+/// One row of `ListRefs`: a branch plus its checkout state — whether it is
+/// the repo's current (main-checkout) branch and whether it is materialized
+/// as a linked worktree. Drives the composer's ref picker (`current` /
+/// `worktree` tags) and the checkout-kind selector.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoRef {
+    pub name: String,
+    /// Checked out in the repo's MAIN folder right now.
+    #[serde(default)]
+    pub current: bool,
+    /// Path of the linked worktree this branch is checked out in, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Worktree {

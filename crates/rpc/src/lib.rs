@@ -64,6 +64,7 @@ pub mod methods {
     pub const CLONE_REPO: &str = "CloneRepo";
     pub const CREATE_REPO: &str = "CreateRepo";
     pub const LIST_BRANCHES: &str = "ListBranches";
+    pub const LIST_REFS: &str = "ListRefs";
     pub const LIST_FOLDERS: &str = "ListFolders";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";

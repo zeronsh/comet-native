@@ -151,6 +151,20 @@ async fn repos_round_trip_add_branches_worktrees() {
         .expect("branches after worktree");
     assert!(branches.contains(&worktree.branch));
 
+    // Refs carry checkout state: `main` is current (main folder), the
+    // worktree's comet/<name> branch maps to its linked-checkout path, and
+    // a plain branch has neither.
+    let refs = repos.refs(&repo_dir).await.expect("refs");
+    let by_name = |name: &str| refs.iter().find(|r| r.name == name).expect("ref row");
+    assert!(by_name("main").current, "main is the main checkout: {refs:?}");
+    assert_eq!(
+        by_name(&worktree.branch).worktree_path.as_deref(),
+        Some(worktree.path.as_str()),
+        "worktree branch maps to its path: {refs:?}"
+    );
+    let plain_ref = by_name("feature/x");
+    assert!(!plain_ref.current && plain_ref.worktree_path.is_none());
+
     // Worktree checkout identity differs from the main checkout's.
     let main_identity = repos
         .checkout_identity(&repo_dir)

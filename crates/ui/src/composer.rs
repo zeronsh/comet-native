@@ -1623,6 +1623,7 @@ pub struct Composer {
     /// SNAP instead of morphing (see [`ROUTE_SNAP_MS`]).
     route_snap_until: Option<Instant>,
     _observe: Subscription,
+    _pickers_observe: Subscription,
     _input_events: Subscription,
 }
 
@@ -1632,6 +1633,10 @@ impl Composer {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| ComposerInput::new("Do anything…", cx));
         let pickers = cx.new(|cx| Pickers::new(state.clone(), cx));
+        // The footer toolbar (checkout kind + ref picker) is rendered INLINE
+        // by the composer from picker state — a pickers-side notify (refs
+        // loaded, popover toggled, pick made) must repaint the composer too.
+        let pickers_observe = cx.observe(&pickers, |_, _, cx| cx.notify());
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.on_state_changed(cx));
         let input_events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.on_submit(cx),
@@ -1674,6 +1679,7 @@ impl Composer {
             morph_clock: Instant::now(),
             route_snap_until: None,
             _observe: observe,
+            _pickers_observe: pickers_observe,
             _input_events: input_events,
         };
         // Dev knob: pre-stage attachments (drop/paste can't be synthesized on
@@ -1986,7 +1992,10 @@ impl Composer {
             Some(id) => (id, false),
             None => (uuid::Uuid::new_v4().to_string(), true),
         };
-        let draft = self.pickers.read(cx).draft().clone();
+        // Where the new session runs (Current checkout / reuse an existing
+        // worktree / fresh worktree off the picked base) — resolved NOW so
+        // the async block needs no picker access.
+        let plan = self.pickers.read(cx).checkout_plan();
         // Fully-resolved model/reasoning/options — concrete values (chat config
         // or defaults), so the engine never has to guess a "default".
         let resolved = self.pickers.read(cx).resolved(cx);
@@ -2093,9 +2102,12 @@ impl Composer {
         self.send_task = Some(cx.spawn(async move |this, cx| {
             let result: Result<(), String> = async {
                 // Resolve the working directory: existing chats keep theirs;
-                // new chats run in the space's folder — via a fresh isolated
-                // worktree when the toggle is on (CreateWorktree on send,
-                // targeted at the space's device; the RPC relay-forwards).
+                // new chats run per the checkout plan (t3code env-mode): the
+                // space's folder as-is, an EXISTING worktree of the picked ref
+                // (a plain cwd override — multiple sessions share one
+                // worktree), or a fresh isolated worktree created off the
+                // picked base ref (CreateWorktree on send, targeted at the
+                // space's device; the RPC relay-forwards).
                 let mut cwd = if is_new {
                     space_path.clone()
                 } else {
@@ -2103,31 +2115,39 @@ impl Composer {
                 }
                 .unwrap_or_else(|| ".".to_string());
                 let mut worktree_cwd: Option<String> = None;
-                if is_new
-                    && draft.isolated_worktree
-                    && let (Some(repo_path), Some(branch)) = (&space_path, &draft.branch)
-                {
-                    let mut params = serde_json::json!({
-                        "repoPath": repo_path,
-                        "branch": branch,
-                    });
-                    if space_remote
-                        && let Some(object) = params.as_object_mut()
-                    {
-                        object.insert(
-                            "targetDeviceId".into(),
-                            serde_json::Value::String(device_id.clone()),
-                        );
+                if is_new {
+                    match &plan {
+                        crate::pickers::CheckoutPlan::CurrentCheckout => {}
+                        crate::pickers::CheckoutPlan::ReuseWorktree { path } => {
+                            cwd = path.clone();
+                            worktree_cwd = Some(path.clone());
+                        }
+                        crate::pickers::CheckoutPlan::NewWorktree { base } => {
+                            if let (Some(repo_path), Some(base)) = (&space_path, base) {
+                                let mut params = serde_json::json!({
+                                    "repoPath": repo_path,
+                                    "branch": base,
+                                });
+                                if space_remote
+                                    && let Some(object) = params.as_object_mut()
+                                {
+                                    object.insert(
+                                        "targetDeviceId".into(),
+                                        serde_json::Value::String(device_id.clone()),
+                                    );
+                                }
+                                let value = engine
+                                    .client()
+                                    .call(methods::CREATE_WORKTREE, params)
+                                    .await
+                                    .map_err(|e| format!("Worktree failed: {e}"))?;
+                                let worktree: comet_proto::Worktree = serde_json::from_value(value)
+                                    .map_err(|e| format!("Worktree reply malformed: {e}"))?;
+                                cwd = worktree.path.clone();
+                                worktree_cwd = Some(worktree.path);
+                            }
+                        }
                     }
-                    let value = engine
-                        .client()
-                        .call(methods::CREATE_WORKTREE, params)
-                        .await
-                        .map_err(|e| format!("Worktree failed: {e}"))?;
-                    let worktree: comet_proto::Worktree = serde_json::from_value(value)
-                        .map_err(|e| format!("Worktree reply malformed: {e}"))?;
-                    cwd = worktree.path.clone();
-                    worktree_cwd = Some(worktree.path);
                 }
 
                 // Best-effort Mutate createChat with the picked config: the
@@ -3081,6 +3101,16 @@ impl Render for Composer {
         // not just the pill — shell.rs `chat-dropzone`); drops land back here
         // via `add_paths`.
         let container = container.child(motion::fade_quick("composer-input", body));
+        // Branch/worktree toolbar under the pill (t3code BranchToolbar): the
+        // checkout-kind selector + ref picker for new sessions, read-only
+        // labels once the session exists. Git spaces only.
+        let footer = self
+            .pickers
+            .update(cx, |pickers, cx| pickers.render_footer(cx));
+        let container = match footer {
+            Some(footer) => container.child(footer),
+            None => container,
+        };
         // Full-size preview of a staged thumbnail (AttachmentPreviewDialog).
         if let Some(preview) = self.preview.clone() {
             let weak = cx.weak_entity();
