@@ -2708,8 +2708,13 @@ impl Shell {
                 .child(SharedString::from("Run failed"))
                 .into_any_element(),
             Indicator::None if sending => strip
-                .text_color(theme.text_muted)
-                .child(SharedString::from("Sending…"))
+                .child(loaders::gradient_spinner("sending-indicator", &theme, 2.5))
+                .child(
+                    div()
+                        .text_size(px(12.0))
+                        .text_color(theme.text_muted)
+                        .child(SharedString::from("Sending…")),
+                )
                 .into_any_element(),
             Indicator::None => strip.into_any_element(),
         }
