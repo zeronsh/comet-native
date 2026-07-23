@@ -78,7 +78,7 @@ pub enum CheckoutPlan {
     /// Run in the space folder as-is.
     CurrentCheckout,
     /// Reuse the picked ref's existing worktree (a cwd override; no git).
-    ReuseWorktree { path: String },
+    ReuseWorktree { path: String, branch: String },
     /// `CreateWorktree` off `base` on send (comet mints a `comet/<name>`
     /// branch). `base: None` = refs never loaded — send falls back to the
     /// space folder rather than failing.
@@ -336,6 +336,10 @@ impl Pickers {
                 this.config.checkout = CheckoutKind::default();
                 this.refs = Loadable::Idle;
                 this.refs_space = None;
+                // Catalogs are per-DEVICE (fetched from the space's host):
+                // a space switch may land on another device, so refetch.
+                this.harnesses = Loadable::Idle;
+                this.models.clear();
             }
             cx.notify();
         });
@@ -406,6 +410,17 @@ impl Pickers {
 
     fn engine(&self, cx: &App) -> Option<EngineHandle> {
         self.state.read(cx).engine().cloned()
+    }
+
+    /// The selected space's device when it differs from the connected
+    /// engine's own — harness/model catalogs come from the device that RUNS
+    /// the agents (the CLIs live there; the viewer may have neither claude
+    /// nor codex installed — user report: "can't load codex models/traits
+    /// anywhere" from a Mac without codex).
+    fn space_target(&self, cx: &App) -> Option<String> {
+        let state = self.state.read(cx);
+        let device = state.selected_space_row()?.device_id.clone();
+        (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
     }
 
     /// Effective harness: picked, or the chat's config, or the first listed.
@@ -597,11 +612,19 @@ impl Pickers {
         let Some(engine) = self.engine(cx) else {
             return;
         };
+        let target = self.space_target(cx);
         self.harnesses = Loadable::Loading;
         self.load_task = Some(cx.spawn(async move |this, cx| {
+            let mut params = serde_json::Map::new();
+            if let Some(target) = &target {
+                params.insert(
+                    "targetDeviceId".into(),
+                    serde_json::Value::String(target.clone()),
+                );
+            }
             let result = engine
                 .client()
-                .call(methods::LIST_HARNESSES, serde_json::json!({}))
+                .call(methods::LIST_HARNESSES, serde_json::Value::Object(params))
                 .await;
             this.update(cx, |pickers, cx| {
                 pickers.harnesses = match result {
@@ -633,9 +656,16 @@ impl Pickers {
         let Some(engine) = self.engine(cx) else {
             return;
         };
+        let target = self.space_target(cx);
         self.models.insert(harness, Loadable::Loading);
         cx.spawn(async move |this, cx| {
-            let params = serde_json::json!({ "harness": harness });
+            let mut params = serde_json::json!({ "harness": harness });
+            if let (Some(target), Some(object)) = (&target, params.as_object_mut()) {
+                object.insert(
+                    "targetDeviceId".into(),
+                    serde_json::Value::String(target.clone()),
+                );
+            }
             let result = engine.client().call(methods::LIST_MODELS, params).await;
             this.update(cx, |pickers, cx| {
                 let loaded = match result {
@@ -1195,7 +1225,10 @@ impl Pickers {
                 base: self.effective_ref_name(),
             },
             CheckoutKind::Local => match self.selected_ref_worktree() {
-                Some(path) => CheckoutPlan::ReuseWorktree { path },
+                Some(path) => CheckoutPlan::ReuseWorktree {
+                    path,
+                    branch: self.effective_ref_name().unwrap_or_default(),
+                },
                 None => CheckoutPlan::CurrentCheckout,
             },
         }
