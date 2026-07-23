@@ -82,6 +82,34 @@ fn resolve_codex_executable() -> Option<PathBuf> {
     candidates.into_iter().find(|p| p.exists())
 }
 
+/// True when `cwd` is a LINKED git worktree whose checked-out branch name
+/// contains '/' — the exact shape that trips codex's sandbox worktree-mount
+/// derivation (see the escalation in [`CodexHarness::run`]). Pure filesystem
+/// reads: the worktree's `.git` pointer FILE names the admin dir, whose HEAD
+/// symref carries the branch.
+fn worktree_on_slashed_branch(cwd: &str) -> bool {
+    if cwd.is_empty() {
+        return false;
+    }
+    let dot_git = std::path::Path::new(cwd).join(".git");
+    let is_pointer_file = std::fs::metadata(&dot_git).is_ok_and(|m| m.is_file());
+    if !is_pointer_file {
+        return false; // main checkout (`.git` dir) — codex handles it fine
+    }
+    let Ok(pointer) = std::fs::read_to_string(&dot_git) else {
+        return false;
+    };
+    let Some(gitdir) = pointer.strip_prefix("gitdir:").map(str::trim) else {
+        return false;
+    };
+    let Ok(head) = std::fs::read_to_string(std::path::Path::new(gitdir).join("HEAD")) else {
+        return false;
+    };
+    head.trim()
+        .strip_prefix("ref: refs/heads/")
+        .is_some_and(|branch| branch.contains('/'))
+}
+
 /// The Codex harness. Construct with [`CodexHarness::new`]; tests point it at a
 /// fake app server with [`CodexHarness::with_executable`].
 pub struct CodexHarness {
@@ -168,10 +196,28 @@ impl Harness for CodexHarness {
 
     async fn run(
         &self,
-        request: RunRequest,
+        mut request: RunRequest,
         controls: RunControls,
     ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
         let exe = self.resolve_executable()?;
+        // Codex ≤0.144.x: the workspace-write sandbox derives a MALFORMED
+        // worktree mount when the checked-out branch name contains '/'
+        // (verified against the real CLI: `wing/x` in a linked worktree kills
+        // every command before it starts; `wing-x` is fine; explicit
+        // writableRoots don't suppress the broken derivation; full access
+        // works). Escalate that exact shape instead of shipping a session
+        // where nothing can run — parity note: the Claude adapter effectively
+        // grants full access anyway (auto-approved can_use_tool).
+        if request.sandbox == comet_proto::SandboxLevel::WorkspaceWrite
+            && worktree_on_slashed_branch(&request.cwd)
+        {
+            tracing::warn!(
+                cwd = %request.cwd,
+                "codex sandbox escalated to danger-full-access: linked worktree on a \
+                 slash-named branch trips codex's worktree-mount derivation"
+            );
+            request.sandbox = comet_proto::SandboxLevel::DangerFullAccess;
+        }
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
         if !request.cwd.is_empty() {
@@ -1079,6 +1125,36 @@ fn send_signal(_pid: u32, _signal: Signal) {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn slashed_branch_worktrees_are_detected_for_sandbox_escalation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let make = |name: &str, branch: &str| {
+            let wt = tmp.path().join(name);
+            let admin = tmp.path().join(format!("{name}-admin"));
+            std::fs::create_dir_all(&wt).unwrap();
+            std::fs::create_dir_all(&admin).unwrap();
+            std::fs::write(wt.join(".git"), format!("gitdir: {}\n", admin.display())).unwrap();
+            std::fs::write(admin.join("HEAD"), format!("ref: refs/heads/{branch}\n")).unwrap();
+            wt.display().to_string()
+        };
+        assert!(worktree_on_slashed_branch(&make("slashed", "wing/prd-5645")));
+        assert!(!worktree_on_slashed_branch(&make("plain", "brave-ember")));
+        // A main checkout (`.git` DIRECTORY) never escalates.
+        let main = tmp.path().join("main");
+        std::fs::create_dir_all(main.join(".git")).unwrap();
+        assert!(!worktree_on_slashed_branch(&main.display().to_string()));
+        // Detached HEAD (raw sha) never escalates.
+        let detached = make("detached", "x");
+        std::fs::write(
+            tmp.path().join("detached-admin").join("HEAD"),
+            "0ba950848abc\n",
+        )
+        .unwrap();
+        assert!(!worktree_on_slashed_branch(&detached));
+        assert!(!worktree_on_slashed_branch(""));
+        assert!(!worktree_on_slashed_branch("/nonexistent/path"));
+    }
 
     #[test]
     fn approval_questions_are_yes_no() {
