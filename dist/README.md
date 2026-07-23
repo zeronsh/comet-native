@@ -11,7 +11,8 @@ Produces `target/package/comet-<version>-linux-<arch>.tar.gz` containing:
 
 - `comet` — the binary (headed by default; `comet headless` runs the engine alone)
 - `comet.desktop` — XDG desktop entry
-- `comet.png` — 256×256 placeholder icon (replace before shipping)
+- `comet.png` — 1024×1024 app icon (the comet mark from the original app;
+  vector source `comet.svg`)
 - `install.sh` — installs into `~/.local/{bin,share/applications,share/icons}`
 
 The release profile in the root `Cargo.toml` sets `lto = "thin"` and

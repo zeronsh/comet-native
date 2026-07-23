@@ -24,11 +24,14 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 755 "$ROOT/target/release/comet" "$APP/Contents/MacOS/comet"
 sed "s/__VERSION__/$VERSION/" "$ROOT/dist/macos/Info.plist" >"$APP/Contents/Info.plist"
 
-# Icon: iconset from the placeholder png (replace dist/comet.png to rebrand).
+# Icon: iconset from dist/comet.png — the comet mark from the original app
+# (apps/desktop/resources/icon.png in the comet repo; source dist/comet.svg).
 ICONSET="$OUT_DIR/comet.iconset"
 rm -rf "$ICONSET" && mkdir -p "$ICONSET"
 for size in 16 32 128 256 512; do
   sips -z "$size" "$size" "$ROOT/dist/comet.png" --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  retina=$((size * 2))
+  sips -z "$retina" "$retina" "$ROOT/dist/comet.png" --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
 done
 iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/comet.icns"
 rm -rf "$ICONSET"

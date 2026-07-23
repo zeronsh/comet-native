@@ -40,7 +40,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 install -Dm755 "$HERE/comet" "$HOME/.local/bin/comet"
 install -Dm644 "$HERE/comet.desktop" "$HOME/.local/share/applications/comet.desktop"
-install -Dm644 "$HERE/comet.png" "$HOME/.local/share/icons/hicolor/256x256/apps/comet.png"
+install -Dm644 "$HERE/comet.png" "$HOME/.local/share/icons/hicolor/1024x1024/apps/comet.png"
 command -v update-desktop-database >/dev/null 2>&1 \
   && update-desktop-database "$HOME/.local/share/applications" || true
 echo "Installed. Make sure ~/.local/bin is on your PATH."
