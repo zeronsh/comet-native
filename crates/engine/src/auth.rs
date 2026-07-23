@@ -360,6 +360,7 @@ impl Auth {
                 return;
             }
             let mut state_rx = auth.watch_state();
+            let mut wake = comet_sync::wake::subscribe();
             loop {
                 if !state_rx.borrow().is_signed_in() {
                     if state_rx.changed().await.is_err() {
@@ -380,12 +381,17 @@ impl Auth {
                     // duration again before noticing the (wall-expired) token.
                     let wait = wait.min(Duration::from_secs(60));
                     tokio::select! {
-                        _ = tokio::time::sleep(wait) => {}
+                        _ = tokio::time::sleep(wait) => { continue; }
                         changed = state_rx.changed() => {
                             if changed.is_err() { return; }
+                            continue;
                         }
+                        // Wake: the cached token is almost certainly
+                        // wall-expired — refresh NOW so the reconnecting
+                        // rooms/relays dial with live credentials instead of
+                        // discovering staleness one 401 at a time.
+                        _ = wake.recv() => {}
                     }
-                    continue;
                 }
                 if let Err(err) = auth.refresh(None).await {
                     tracing::warn!(error = %err, "auth: background refresh failed");

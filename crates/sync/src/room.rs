@@ -380,12 +380,16 @@ impl RoomActor {
     async fn run(mut self, ready: oneshot::Sender<Result<(), SyncError>>) {
         let mut ready = Some(ready);
         let mut backoff = BACKOFF_BASE;
+        // System wake is an EVENT: it ends the (half-open) session immediately
+        // and cancels any pending backoff, so the room is redialing within a
+        // second of the lid opening instead of waiting out a silence lease.
+        let mut wake = crate::wake::subscribe();
         loop {
             if *self.shutdown.borrow() {
                 return;
             }
             let (end, joined) = match self.connector.connect().await {
-                Ok(pipe) => self.run_session(pipe, &mut ready).await,
+                Ok(pipe) => self.run_session(pipe, &mut wake, &mut ready).await,
                 Err(err) => (SessionEnd::Lost(err), false),
             };
             match end {
@@ -415,6 +419,10 @@ impl RoomActor {
             }
             tokio::select! {
                 _ = tokio::time::sleep(backoff) => {}
+                _ = wake.recv() => {
+                    backoff = BACKOFF_BASE; // redial NOW with fresh credentials
+                    continue;
+                }
                 _ = self.shutdown.changed() => return,
             }
             backoff = (backoff * 2).min(BACKOFF_CAP);
@@ -426,6 +434,7 @@ impl RoomActor {
     async fn run_session(
         &mut self,
         mut pipe: Pipe,
+        wake: &mut broadcast::Receiver<()>,
         ready: &mut Option<oneshot::Sender<Result<(), SyncError>>>,
     ) -> (SessionEnd, bool) {
         // Local updates queued while disconnected are already in the doc; the
@@ -455,6 +464,15 @@ impl RoomActor {
 
         let end = loop {
             tokio::select! {
+                // Post-suspend the socket is almost certainly half-open (NAT
+                // state gone); ending the session redials immediately with a
+                // freshly-provided URL/token instead of waiting out the
+                // silence lease. A false positive costs one cheap rejoin.
+                _ = wake.recv() => {
+                    break SessionEnd::Lost(SyncError::WebSocket(
+                        "system woke from suspend; reconnecting".into(),
+                    ));
+                }
                 _ = self.shutdown.changed() => {
                     let _ = sess
                         .send(&ProtocolMessage::Leave {

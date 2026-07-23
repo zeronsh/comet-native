@@ -1228,6 +1228,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "comet-proto",
+ "comet-sync",
  "futures",
  "serde",
  "serde_json",

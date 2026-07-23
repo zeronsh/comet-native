@@ -238,6 +238,14 @@ impl HostRelay {
         on_nudge: NudgeHandler,
     ) -> Self {
         let task = tokio::spawn(async move {
+            let mut wake = comet_sync::wake::subscribe();
+            // Fast-rejoin bookkeeping: the edge DO periodically ends healthy
+            // host sessions (hibernation/deploys). Every second the host is
+            // away, client dials bounce with "readiness check failed" (user
+            // report) — so a session that ENDED CLEANLY after a healthy
+            // stretch rejoins near-instantly, and only rapid consecutive
+            // failures walk the backoff.
+            let mut delay = HOST_REJOIN_MIN;
             loop {
                 if let Some(token) = config.token.token().await {
                     let url = device_room_ws_url(
@@ -247,16 +255,32 @@ impl HostRelay {
                         None,
                         &token,
                     );
-                    match host_session(&url, &service, &on_nudge).await {
+                    let started = tokio::time::Instant::now();
+                    let outcome = host_session(&url, &service, &on_nudge).await;
+                    let healthy = started.elapsed() >= HOST_HEALTHY_SESSION;
+                    match outcome {
                         Ok(()) => {
-                            tracing::info!("device-room: host session ended; reconnecting")
+                            tracing::info!("device-room: host session ended; reconnecting");
+                            delay = HOST_REJOIN_MIN;
                         }
                         Err(err) => {
-                            tracing::warn!(error = %err, "device-room: host session failed")
+                            tracing::warn!(error = %err, "device-room: host session failed");
+                            delay = if healthy {
+                                HOST_REJOIN_MIN
+                            } else {
+                                (delay * 2).min(config.retry)
+                            };
                         }
                     }
+                } else {
+                    // Signed out: poll for credentials at the configured pace.
+                    delay = config.retry;
                 }
-                tokio::time::sleep(config.retry + jitter()).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(delay + jitter()) => {}
+                    // Wake = redial NOW (the old socket died with the suspend).
+                    _ = wake.recv() => { delay = HOST_REJOIN_MIN; }
+                }
             }
         });
         Self { task }
@@ -268,6 +292,18 @@ impl Drop for HostRelay {
         self.task.abort();
     }
 }
+
+/// Floor for host-relay rejoins after a clean/healthy session end — the DO
+/// evicting an idle host must not leave a multi-second unreachable window.
+const HOST_REJOIN_MIN: Duration = Duration::from_millis(250);
+/// In-call dial retries (see [`LinkCache::client`]): total attempts, and the
+/// spacing multiplier between them (1.5s, then 3s — ~4.5s of cover, several
+/// times the host's post-eviction rejoin window).
+const DIAL_ATTEMPTS: u32 = 3;
+const DIAL_RETRY_SPACING: Duration = Duration::from_millis(1500);
+/// A session that lasted at least this long counts as healthy: its end is the
+/// DO's lifecycle, not our failure, so the rejoin does not escalate.
+const HOST_HEALTHY_SESSION: Duration = Duration::from_secs(30);
 
 fn jitter() -> Duration {
     // Cheap decorrelation without a rand dependency.
@@ -607,15 +643,37 @@ pub struct LinkCache {
 
 impl LinkCache {
     pub fn new(config: LinkCacheConfig) -> Arc<Self> {
-        Arc::new(Self {
+        let cache = Arc::new(Self {
             config,
             links: Mutex::new(HashMap::new()),
             dial_state: Mutex::new(HashMap::new()),
             dial_locks: Mutex::new(HashMap::new()),
-        })
+        });
+        // Wake = every cached link is half-open and every cooldown is moot
+        // (the failures belonged to the pre-suspend network). Drop them so the
+        // next call redials immediately with fresh credentials. Skipped
+        // outside a runtime (sync unit tests).
+        if tokio::runtime::Handle::try_current().is_ok() {
+            let weak = Arc::downgrade(&cache);
+            tokio::spawn(async move {
+                let mut wake = comet_sync::wake::subscribe();
+                while wake.recv().await.is_ok() {
+                    let Some(cache) = weak.upgrade() else { return };
+                    lock(&cache.links).clear();
+                    lock(&cache.dial_state).clear();
+                    tracing::info!("peer: links + cooldowns cleared after wake");
+                }
+            });
+        }
+        cache
     }
 
     /// A live `RpcClient` to `device_id`'s engine (dialed + cached on first use).
+    /// Transient dial failures retry in place a couple of times before
+    /// surfacing: the host relay's DO periodically ends its session and
+    /// rejoins within ~a second, and a user-facing call landing in that
+    /// window should ride over it, not error (user report: refs/folders
+    /// "unstable" vs the old app).
     pub async fn client(self: &Arc<Self>, device_id: &str) -> Result<Arc<RpcClient>, RpcError> {
         // Fast path outside any lock.
         if let Some(link) = self.cached(device_id) {
@@ -633,19 +691,29 @@ impl LinkCache {
         if let Some(message) = self.cooling(device_id) {
             return Err(RpcError::Transport(message));
         }
-        match self.dial(device_id).await {
-            Ok(link) => {
-                lock(&self.dial_state).remove(device_id);
-                lock(&self.links).insert(device_id.to_string(), link.clone());
-                self.spawn_evictor(device_id.to_string(), &link);
-                tracing::info!(device = %device_id, "peer: connected via device room");
-                Ok(link.client())
+        let mut last_err = None;
+        for attempt in 0..DIAL_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(DIAL_RETRY_SPACING * attempt).await;
             }
-            Err(err) => {
-                self.note_failure(device_id);
-                Err(err)
+            match self.dial(device_id).await {
+                Ok(link) => {
+                    lock(&self.dial_state).remove(device_id);
+                    lock(&self.links).insert(device_id.to_string(), link.clone());
+                    self.spawn_evictor(device_id.to_string(), &link);
+                    tracing::info!(device = %device_id, "peer: connected via device room");
+                    return Ok(link.client());
+                }
+                Err(err) => {
+                    tracing::debug!(device = %device_id, attempt, error = %err, "peer: dial attempt failed");
+                    last_err = Some(err);
+                }
             }
         }
+        // Only the exhausted sequence counts as ONE failure on the cooldown
+        // curve — the in-call retries must not escalate it by themselves.
+        self.note_failure(device_id);
+        Err(last_err.unwrap_or(RpcError::Closed))
     }
 
     /// Drop a cached link after a failed RPC so the next call re-dials.
