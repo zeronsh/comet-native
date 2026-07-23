@@ -12,9 +12,10 @@
 //!   on an ephemeral port; headless devices use the paste-code flow (the redirect is the
 //!   edge's hosted `/auth/cli/callback` page, which shows `state.code` to paste back via
 //!   stdin or the `CompleteSignIn` RPC). The refresh token is persisted 0600 in the data
-//!   dir; access tokens are cached with monotonic expiry and refreshed on demand plus by
-//!   a background loop, so the device-room relay and room clients always dial with a live
-//!   `?token=`. Org onboarding: an org-less session is `NeedsOrganization`; `SelectOrg`
+//!   dir; access tokens are cached with dual-clock expiry (monotonic AND wall, whichever
+//!   aged more — see [`AccessEntry`]) and refreshed on demand plus by a background loop,
+//!   so the device-room relay and room clients always dial with a live `?token=`, even
+//!   on the first redial after a laptop wakes from sleep. Org onboarding: an org-less session is `NeedsOrganization`; `SelectOrg`
 //!   runs an org-scoped refresh and the state follows the returned token's `org_id`.
 
 use std::collections::HashMap;
@@ -160,13 +161,20 @@ struct StoredSession {
     org_id: Option<String>,
 }
 
-/// Access-token cache. Expiry is tracked MONOTONICALLY (lifetime from the token's own
-/// `exp - iat`, aged by `Instant`), never by comparing `exp` to the local wall clock —
-/// a device with a slow clock would otherwise present an expired token forever.
+/// Access-token cache. Expiry ages the token's own lifetime (`exp - iat`) by
+/// BOTH clocks, pessimistically. Monotonic alone (`Instant`) freezes across
+/// system sleep (macOS `mach_absolute_time` and Linux `CLOCK_MONOTONIC` both
+/// exclude suspend), so a laptop waking from hours of sleep presented a
+/// wall-expired token that still read "fresh" — every room/relay redial got a
+/// 401 with the same stale bearer and sync never recovered (user report).
+/// Wall clock alone breaks under skewed device clocks (`exp` vs local time);
+/// the elapsed-since-issue reading is skew-immune, and a BACKWARD wall step
+/// (NTP correction) degrades harmlessly to the monotonic reading.
 struct AccessEntry {
     token: String,
     ttl: Duration,
     got_at: Instant,
+    got_wall: std::time::SystemTime,
 }
 
 impl AccessEntry {
@@ -183,11 +191,16 @@ impl AccessEntry {
             token,
             ttl,
             got_at: Instant::now(),
+            got_wall: std::time::SystemTime::now(),
         }
     }
 
     fn remaining(&self) -> Duration {
-        self.ttl.saturating_sub(self.got_at.elapsed())
+        let monotonic = self.got_at.elapsed();
+        let wall = std::time::SystemTime::now()
+            .duration_since(self.got_wall)
+            .unwrap_or(Duration::ZERO);
+        self.ttl.saturating_sub(monotonic.max(wall))
     }
 }
 
@@ -360,13 +373,19 @@ impl Auth {
                     .unwrap_or(Duration::ZERO);
                 let wait = remaining.saturating_sub(Duration::from_secs(60));
                 if wait > Duration::ZERO {
+                    // Re-evaluate at least once a minute rather than parking
+                    // on one long timer: tokio timers ride the monotonic
+                    // clock, which excludes system suspend — a laptop waking
+                    // from sleep would otherwise wait the WHOLE original
+                    // duration again before noticing the (wall-expired) token.
+                    let wait = wait.min(Duration::from_secs(60));
                     tokio::select! {
                         _ = tokio::time::sleep(wait) => {}
                         changed = state_rx.changed() => {
                             if changed.is_err() { return; }
-                            continue;
                         }
                     }
+                    continue;
                 }
                 if let Err(err) = auth.refresh(None).await {
                     tracing::warn!(error = %err, "auth: background refresh failed");
