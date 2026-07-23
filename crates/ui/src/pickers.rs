@@ -723,18 +723,76 @@ impl Pickers {
             self.switch_session_ref(row, cx);
             return;
         }
-        self.config.branch = Some(row.name.clone());
         if row.worktree_path.is_some() {
             // Reuse the ref's existing worktree ("Current worktree") — the
             // t3code `reuseExistingWorktree` path.
+            self.config.branch = Some(row.name.clone());
             self.config.checkout = CheckoutKind::Local;
-        } else if !row.current && self.config.checkout == CheckoutKind::Local {
-            // Deliberate t3code divergence: we never `git checkout` the main
-            // folder under the user. A non-current plain ref is reachable
-            // only as the base of a new worktree, so the kind follows.
-            self.config.checkout = CheckoutKind::NewWorktree;
+        } else if self.config.checkout == CheckoutKind::NewWorktree || row.current {
+            // Base pick for a new worktree, or the already-current ref.
+            self.config.branch = Some(row.name.clone());
+        } else {
+            // Local mode + a plain non-current ref: CHECK OUT the space
+            // folder (full t3code `switchRef` — picking `main` means "put my
+            // local checkout on main", it must never flip the mode).
+            self.switch_draft_ref(row, cx);
+            return;
         }
         self.open = None;
+        cx.notify();
+    }
+
+    /// Draft-mode checkout switch: `git checkout` in the SPACE's folder
+    /// (relay-forwarded for remote spaces). Success records the pick and
+    /// refreshes tags; failure keeps the popover open with git's message.
+    fn switch_draft_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
+        if self.switching.is_some() {
+            return; // one switch at a time
+        }
+        let Some(space) = self.state.read(cx).selected_space_row().cloned() else {
+            return;
+        };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
+        let local = self.state.read(cx).local_device_id.clone();
+        self.switch_error = None;
+        self.switching = Some(row.name.clone());
+        let ref_name = row.name.clone();
+        self.switch_task = Some(cx.spawn(async move |this, cx| {
+            let mut params = serde_json::Map::new();
+            params.insert(
+                "repoPath".into(),
+                serde_json::Value::String(space.path.clone()),
+            );
+            params.insert(
+                "refName".into(),
+                serde_json::Value::String(ref_name.clone()),
+            );
+            if local.as_deref() != Some(space.device_id.as_str()) {
+                params.insert(
+                    "targetDeviceId".into(),
+                    serde_json::Value::String(space.device_id.clone()),
+                );
+            }
+            let result = engine
+                .client()
+                .call(methods::SWITCH_REF, serde_json::Value::Object(params))
+                .await;
+            this.update(cx, |pickers, cx| {
+                pickers.switching = None;
+                match result {
+                    Ok(_) => {
+                        pickers.config.branch = Some(ref_name);
+                        pickers.open = None;
+                        pickers.ensure_refs(true, cx);
+                    }
+                    Err(err) => pickers.switch_error = Some(err.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
         cx.notify();
     }
 
@@ -1418,7 +1476,8 @@ impl Pickers {
             &theme,
             cx,
         );
-        let ref_side = attach_overlay(ref_chip, &mut overlay, PickerKind::Branch, "branch-popover");
+        let ref_side =
+            attach_overlay_end(ref_chip, &mut overlay, PickerKind::Branch, "branch-popover");
 
         if let Some(chat) = &session {
             // The checkout KIND is fixed at creation (harness resume is
@@ -2169,6 +2228,24 @@ fn attach_overlay(
         && let Some((_, element)) = overlay.take()
     {
         return chip.child(popover::anchored_menu_above(id, element));
+    }
+    chip
+}
+
+/// [`attach_overlay`] with the menu RIGHT-ALIGNED to the trigger (t3code
+/// `align="end"` — right-edge triggers like the ref picker open leftward).
+fn attach_overlay_end(
+    chip: gpui::Stateful<gpui::Div>,
+    overlay: &mut Option<(PickerKind, AnyElement)>,
+    kind: PickerKind,
+    id: &'static str,
+) -> gpui::Stateful<gpui::Div> {
+    if overlay.as_ref().is_some_and(|(k, _)| *k == kind)
+        && let Some((_, element)) = overlay.take()
+    {
+        return chip
+            .relative()
+            .child(popover::anchored_menu_above_end(id, element));
     }
     chip
 }

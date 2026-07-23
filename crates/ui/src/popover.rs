@@ -208,6 +208,28 @@ pub fn anchored_menu_above(id: impl Into<ElementId>, content: AnyElement) -> Any
     )
 }
 
+/// [`anchored_menu_above`] right-aligned to the trigger's right edge (t3code
+/// ComboboxPopup `align="end"` — right-side triggers like the composer's ref
+/// picker open leftward instead of running off the window).
+pub fn anchored_menu_above_end(id: impl Into<ElementId>, content: AnyElement) -> AnyElement {
+    div()
+        .absolute()
+        .top_0()
+        .right_0()
+        .size_0()
+        .child(
+            gpui::deferred(
+                gpui::anchored()
+                    .anchor(Anchor::BottomRight)
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(motion::menu_in(id, div().pb(px(6.0)).child(content))),
+            )
+            .priority(1)
+            .into_any_element(),
+        )
+        .into_any_element()
+}
+
 /// A floating menu at an explicit window position (context menus).
 pub fn menu_at(
     id: impl Into<ElementId>,
