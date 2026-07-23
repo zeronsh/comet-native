@@ -967,12 +967,19 @@ pub struct Transcript {
     folds: HashMap<SharedString, FoldState>,
     /// Streaming fade veils, one per live markdown row (dropped on completion).
     veils: HashMap<SharedString, Rc<RefCell<RowVeil>>>,
-    /// Live rows present in the FIRST sync after (re)attaching to a chat:
-    /// their veils are created pre-seeded, so text that was already streamed
-    /// before the switch never fades in — only appends after it do (mugen's
-    /// `FadePainter.attach` baseline; user report: switching back to a
-    /// streaming session dissolved the entire reply).
+    /// Live rows present in the transcript's REPLAY after (re)attaching to a
+    /// chat: their veils are created pre-seeded, so text that was already
+    /// streamed before the switch never fades in — only appends after it do
+    /// (mugen's `FadePainter.attach` baseline; user report: switching back to
+    /// a streaming session dissolved the entire reply).
     veil_baseline: std::collections::HashSet<SharedString>,
+    /// Armed at attach, disarmed on the first sync whose transcript is
+    /// non-empty: the baseline must be captured from the doc REPLAY frame,
+    /// not the attach-time sync — selection clears the transcript and the
+    /// replay lands async, so capturing at attach seeded nothing and the
+    /// still-streaming reply faded in whole on every session switch (user
+    /// report, round 2).
+    veil_attach_pending: bool,
     /// Cross-frame flatten/shape-input cache (see [`RenderCache`]): fade
     /// frames reuse settled blocks' text+runs; the incremental parser's stable
     /// boundary invalidates only the live tail per commit.
@@ -1045,6 +1052,7 @@ impl Transcript {
             folds: HashMap::new(),
             veils: HashMap::new(),
             veil_baseline: std::collections::HashSet::new(),
+            veil_attach_pending: true,
             render_cache: Rc::new(RefCell::new(RenderCache::default())),
             highlights: HighlightStore::default(),
             show_jump_button: false,
@@ -1318,8 +1326,16 @@ impl Transcript {
 
         // Text already streamed before this (re)attach is the veil BASELINE:
         // its rows' veils seed instead of fading (render creates them from
-        // this set), so only post-switch appends animate.
+        // this set), so only post-switch appends animate. Captured from the
+        // first NON-EMPTY transcript after attach — the replay frame — never
+        // the attach-time sync, whose transcript is still empty (selection
+        // clears it; the doc watch refills it async).
         if attached {
+            self.veil_baseline.clear();
+            self.veil_attach_pending = true;
+        }
+        if self.veil_attach_pending && !entries.is_empty() {
+            self.veil_attach_pending = false;
             self.veil_baseline = new_rows
                 .iter()
                 .filter(|r| matches!(r.kind, RowKind::LiveMarkdown { .. }))
