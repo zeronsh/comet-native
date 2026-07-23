@@ -224,6 +224,11 @@ pub enum RowKind {
         /// chip shows it; unresolved shows "Awaiting your answer…").
         header: SharedString,
         resolved: bool,
+        /// Unresolved on a run that is no longer streaming (aborted/errored —
+        /// e.g. an engine restart reaping the blocked run): there is nothing
+        /// left to answer, so the chip must not promise "Awaiting your
+        /// answer…" forever (user report).
+        expired: bool,
     },
     ErrorChip {
         message: SharedString,
@@ -433,13 +438,17 @@ pub fn rows_for_entry(
                                 .unwrap_or_else(|| "Question".to_string()),
                         )
                         .into();
+                        let expired = !*resolved && !streaming;
                         rows.push(Row {
                             id: format!("{}#{}", entry.id, part_id).into(),
-                            version: fnv1a(header.as_bytes()) << 1 | *resolved as u64,
+                            version: fnv1a(header.as_bytes()) << 2
+                                | (*resolved as u64) << 1
+                                | expired as u64,
                             turn_start: false,
                             kind: RowKind::InputChip {
                                 header,
                                 resolved: *resolved,
+                                expired,
                             },
                             entry_id: entry_id.clone(),
                             timestamp: None,
@@ -1744,9 +1753,11 @@ impl Transcript {
             RowKind::ToolGroup { tools, auto_open } => {
                 self.render_tool_group(&row.id, tools, *auto_open, &theme, cx)
             }
-            RowKind::InputChip { header, resolved } => {
-                input_chip(header.clone(), *resolved, &theme)
-            }
+            RowKind::InputChip {
+                header,
+                resolved,
+                expired,
+            } => input_chip(header.clone(), *resolved, *expired, &theme),
             RowKind::ErrorChip { message } => error_chip(message.clone(), &theme),
         };
 
@@ -2066,8 +2077,11 @@ fn error_chip(message: SharedString, theme: &Theme) -> AnyElement {
 /// ChatRoundLine, the medium "Question" label, then the truncating value —
 /// the first question's header once resolved, "Awaiting your answer…" while
 /// pending. Neutral tones throughout; resolution never recolors the chip.
-fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement {
-    let value: SharedString = if resolved {
+fn input_chip(header: SharedString, resolved: bool, expired: bool, theme: &Theme) -> AnyElement {
+    // Expired (run ended with the question unanswered): show the header like
+    // a resolved chip — "Awaiting your answer…" would promise an answerable
+    // panel that no longer exists — with a muted "unanswered" tag.
+    let value: SharedString = if resolved || expired {
         header
     } else {
         "Awaiting your answer…".into()
@@ -2118,7 +2132,16 @@ fn input_chip(header: SharedString, resolved: bool, theme: &Theme) -> AnyElement
                         .truncate()
                         .text_color(theme.text.opacity(0.9))
                         .child(value),
-                ),
+                )
+                .when(expired, |el| {
+                    el.child(
+                        div()
+                            .flex_none()
+                            .text_size(px(10.0))
+                            .text_color(theme.text_muted.opacity(0.6))
+                            .child(SharedString::from("unanswered")),
+                    )
+                }),
         )
         .into_any_element()
 }
