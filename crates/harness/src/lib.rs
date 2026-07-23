@@ -68,5 +68,74 @@ pub mod claude;
 pub mod codex;
 pub mod mock;
 
+/// Rolling tail of a child's stderr, shared between the reader task and the
+/// crash-message composer: an unexpected exit surfaces "<name> exited
+/// unexpectedly (<status>): <last stderr lines>" instead of a bare shrug —
+/// the proper background-crash message old comet showed (user requirement).
+#[derive(Clone, Default)]
+pub(crate) struct StderrTail(
+    std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<String>>>,
+);
+
+impl StderrTail {
+    const KEEP_LINES: usize = 6;
+    const KEEP_BYTES: usize = 700;
+
+    pub(crate) fn push(&self, line: &str) {
+        let line = line.trim();
+        if line.is_empty() {
+            return;
+        }
+        let mut tail = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        tail.push_back(line.chars().take(Self::KEEP_BYTES).collect());
+        while tail.len() > Self::KEEP_LINES {
+            tail.pop_front();
+        }
+    }
+
+    /// The captured tail as one display string, `None` when nothing arrived.
+    pub(crate) fn snapshot(&self) -> Option<String> {
+        let tail = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if tail.is_empty() {
+            return None;
+        }
+        let mut joined = tail.iter().cloned().collect::<Vec<_>>().join("\n");
+        joined.truncate(Self::KEEP_BYTES * 2);
+        Some(joined)
+    }
+}
+
+/// "exit code 137" / "signal 9 (killed)" / "unknown" — the status half of a
+/// crash message, from a `try_wait` result after the stream ended.
+pub(crate) fn describe_exit(status: Option<std::process::ExitStatus>) -> String {
+    let Some(status) = status else {
+        return "still running".into();
+    };
+    if let Some(code) = status.code() {
+        return format!("exit code {code}");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return format!("killed by signal {signal}");
+        }
+    }
+    "unknown exit".into()
+}
+
+/// The full crash message: status plus the stderr tail when there is one.
+pub(crate) fn crash_message(
+    name: &str,
+    status: Option<std::process::ExitStatus>,
+    stderr: &StderrTail,
+) -> String {
+    let status = describe_exit(status);
+    match stderr.snapshot() {
+        Some(tail) => format!("{name} exited unexpectedly ({status}): {tail}"),
+        None => format!("{name} exited unexpectedly ({status})"),
+    }
+}
+
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;

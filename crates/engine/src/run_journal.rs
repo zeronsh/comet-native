@@ -68,6 +68,34 @@ impl RunJournal {
         self.dir.join(format!("{}.jsonl", sanitize_id(chat_id)))
     }
 
+    fn attempts_path(&self, chat_id: &str) -> PathBuf {
+        self.dir.join(format!("{}.resume", sanitize_id(chat_id)))
+    }
+
+    /// Auto-resume revival budget (comet `resumeAttempt`/`MAX_AUTO_RESUME`):
+    /// persisted beside the journal so a run that CRASHES THE ENGINE cannot
+    /// revive itself in an infinite boot loop.
+    pub fn resume_attempts(&self, chat_id: &str) -> u32 {
+        std::fs::read_to_string(self.attempts_path(chat_id))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    pub fn note_resume_attempt(&self, chat_id: &str) -> u32 {
+        let next = self.resume_attempts(chat_id) + 1;
+        if let Err(err) = std::fs::write(self.attempts_path(chat_id), next.to_string()) {
+            tracing::warn!(chat = %chat_id, error = %err, "resume-attempt ledger write failed");
+        }
+        next
+    }
+
+    /// A cleanly completed turn resets the budget — only consecutive
+    /// crash-revive-crash cycles exhaust it.
+    pub fn clear_resume_attempts(&self, chat_id: &str) {
+        let _ = std::fs::remove_file(self.attempts_path(chat_id));
+    }
+
     /// Append one event; returns its journal seq.
     pub fn append(&self, chat_id: &str, event: &AgentEvent) -> Result<u64, JournalError> {
         let mut files = self.lock();

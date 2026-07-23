@@ -192,10 +192,13 @@ impl ChatDocHandle {
         })
     }
 
-    /// Recovery sweep: stamp this device's abandoned `streaming` assistant entries
-    /// `aborted` so a crashed turn's partial output settles on every device.
-    pub fn mark_abandoned_streams(&self) -> Result<usize, DocError> {
-        let mut stamped = 0usize;
+    /// Recovery sweep: stamp this device's abandoned `streaming` entries `aborted`, appending
+    /// `note` as a visible error part so the transcript says WHY the turn
+    /// ended (comet folded "Run interrupted by backend restart" the same
+    /// way). Returns the stamped entries' `(id, created_at)` — recovery uses
+    /// them for the resume-freshness check.
+    pub fn mark_abandoned_streams(&self, note: &str) -> Result<Vec<(String, i64)>, DocError> {
+        let mut stamped = Vec::new();
         for entry in self.doc.read_entries()? {
             if entry.role == MessageRole::Assistant
                 && entry.status == Some(MessageStatus::Streaming)
@@ -204,8 +207,15 @@ impl ChatDocHandle {
                     .doc
                     .set_message_status(&entry.id, MessageStatus::Aborted)?
             {
-                stamped += 1;
+                let part_id = format!("{}-recovery", entry.id);
+                if let Err(err) = self.doc.append_error_part(&entry.id, &part_id, note) {
+                    tracing::warn!(chat = %self.chat_id, error = %err, "recovery note append failed");
+                }
+                stamped.push((entry.id.clone(), entry.created_at));
             }
+        }
+        if !stamped.is_empty() {
+            self.publish_messages();
         }
         Ok(stamped)
     }
@@ -424,7 +434,7 @@ impl DocHost {
     }
 
     /// Chat-config harness when the workspace row carries one, else the default.
-    fn harness_for(&self, chat_id: &str) -> HarnessId {
+    pub(crate) fn harness_for(&self, chat_id: &str) -> HarnessId {
         self.workspace()
             .and_then(|ws| ws.chat_config(chat_id))
             .map(|config| config.harness)
@@ -666,7 +676,7 @@ impl DocHost {
     /// row — cwd from the row, model/reasoning/options/sandbox from its config
     /// (composer defaults otherwise). `None` without a workspace host or row.
     // (Also the RespondInput dead-run fallback's config source.)
-    fn request_from_chat_row(
+    pub(crate) fn request_from_chat_row(
         &self,
         chat_id: &str,
         prompt: &str,

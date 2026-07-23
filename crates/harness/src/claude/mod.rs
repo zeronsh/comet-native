@@ -256,11 +256,14 @@ impl Harness for ClaudeHarness {
             .stdout
             .take()
             .ok_or_else(|| HarnessError::Protocol("claude child has no stdout".into()))?;
+        let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
             tokio::spawn(async move {
                 let mut lines = BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(target: "comet_harness::claude", "stderr: {line}");
+                    tail.push(&line);
                 }
             });
         }
@@ -291,6 +294,7 @@ impl Harness for ClaudeHarness {
             reasoning: request.reasoning,
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
+            stderr_tail,
         }));
 
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
@@ -413,6 +417,8 @@ struct Session {
     reasoning: Option<ReasoningLevel>,
     interrupt_grace: Duration,
     kill_grace: Duration,
+    /// Rolling stderr tail for the crash message on an unexpected exit.
+    stderr_tail: crate::StderrTail,
 }
 
 /// The per-run event loop: one task multiplexing stdout frames, the steering
@@ -427,6 +433,7 @@ async fn run_session(session: Session) {
         reasoning,
         interrupt_grace,
         kill_grace,
+        stderr_tail,
     } = session;
     let RunControls {
         request_input,
@@ -541,11 +548,12 @@ async fn run_session(session: Session) {
                 }))
                 .await;
         } else if !interrupted && !any_done {
+            let status = child.try_wait().ok().flatten();
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
-                    error: Some("claude exited unexpectedly".into()),
+                    error: Some(crate::crash_message("claude", status, &stderr_tail)),
                     session_id: norm.session_id.clone(),
                 }))
                 .await;

@@ -197,11 +197,14 @@ impl Harness for CodexHarness {
             .stdout
             .take()
             .ok_or_else(|| HarnessError::Protocol("codex child has no stdout".into()))?;
+        let stderr_tail = crate::StderrTail::default();
         if let Some(stderr) = child.stderr.take() {
+            let tail = stderr_tail.clone();
             tokio::spawn(async move {
                 let mut lines = tokio::io::BufReader::new(stderr).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     tracing::debug!(target: "comet_harness::codex", "stderr: {line}");
+                    tail.push(&line);
                 }
             });
         }
@@ -217,6 +220,7 @@ impl Harness for CodexHarness {
             request,
             interrupt_grace: self.interrupt_grace,
             kill_grace: self.kill_grace,
+            stderr_tail,
         }));
 
         Ok(futures::stream::unfold(event_rx, |mut rx| async move {
@@ -239,6 +243,8 @@ struct Session {
     request: RunRequest,
     interrupt_grace: Duration,
     kill_grace: Duration,
+    /// Rolling stderr tail for the crash message on an unexpected exit.
+    stderr_tail: crate::StderrTail,
 }
 
 /// Turn-routing state (port of codex.ts's activeTurnId/completedTurnIds): the
@@ -327,6 +333,7 @@ async fn run_session(session: Session) {
         request,
         interrupt_grace,
         kill_grace,
+        stderr_tail,
     } = session;
     let RunControls {
         request_input,
@@ -854,11 +861,16 @@ async fn run_session(session: Session) {
             // A child KILLED mid-turn (OS memory pressure, `killall codex`)
             // must not read as a silent success — codex.ts's signal-death
             // handling, reduced to the turn-in-flight case.
+            let status = child.try_wait().ok().flatten();
             let _ = event_tx
                 .send(Ok(AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
-                    error: Some("codex app-server exited unexpectedly".into()),
+                    error: Some(crate::crash_message(
+                        "codex app-server",
+                        status,
+                        &stderr_tail,
+                    )),
                     session_id: Some(thread_id.clone()),
                 }))
                 .await;

@@ -10,8 +10,12 @@
 //! - a `Steered` event splits the assistant entry at the exact boundary;
 //! - recovery (interrupt or a stale journal at boot) stamps the streaming entry `aborted`.
 //!
-//! M2 scope notes: sessions are keyed by chat id (one live run per chat); the idle reaper
-//! and 10-minute stall watchdog from comet land with the persistent-session work in M3+.
+//! Scope notes: sessions are keyed by chat id (one live run per chat). Comet's pulse
+//! loop is ported as the 15s liveness heartbeat in `drive_run`; its stall watchdog is
+//! deliberately NOT ported (rejected in review — agents may legitimately wait on
+//! something for far longer than any timeout, and a live child IS the working signal).
+//! Every dying path must instead carry its own visible error (child crash with stderr,
+//! spawn failure, stream error, engine-restart recovery).
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
@@ -21,8 +25,8 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use comet_doc::{
-    DocError, MessagePart, MessageStatus, STREAM_COMMIT_MS, SegmentWriter, SessionDoc,
-    fold_event_into_parts, sanitize_tool_call,
+    DocError, MessagePart, MessageRole, MessageStatus, STREAM_COMMIT_MS, SegmentWriter,
+    SessionDoc, fold_event_into_parts, sanitize_tool_call,
 };
 use comet_harness::{CancellationToken, Harness, RunControls, SteerMessage};
 use comet_proto::{
@@ -420,35 +424,129 @@ impl SessionsEngine {
     }
 
     /// Boot recovery: for every journal whose last event is not `Done` (a run died
-    /// mid-stream), stamp this device's abandoned `streaming` doc entries `aborted`,
-    /// close the journal with a synthetic `Done{interrupted}`, and settle the status.
+    /// mid-stream), stamp this device's abandoned `streaming` doc entries `aborted`
+    /// with a VISIBLE "Run interrupted by engine restart" error part, close the
+    /// journal with a synthetic `Done{interrupted}` — and then PICK THE RUN BACK
+    /// UP: a fresh crashed turn with revival budget left is re-dispatched against
+    /// the remembered harness session (comet: "not just eulogized";
+    /// `MAX_AUTO_RESUME` = 3 consecutive revivals, fresh = crashed < 12h ago).
     pub fn recover_stale(&self) -> Result<usize, EngineError> {
+        const MAX_AUTO_RESUME: u32 = 3;
+        const RESUME_FRESH_MS: i64 = 12 * 60 * 60 * 1000;
+
         let stale = self.inner.journal.stale_sessions()?;
         let mut recovered = 0usize;
         for chat_id in stale {
             if lock(&self.inner.runs).contains_key(&chat_id) {
                 continue; // a live run owns this journal
             }
-            let done = AgentEvent::Done {
-                status: DoneStatus::Interrupted,
-                result: None,
-                error: Some("Run interrupted by engine restart".into()),
-                session_id: None,
-            };
-            self.inner.publish(&chat_id, &done);
             let handle = self.doc_handle(&chat_id)?;
-            let stamped = handle.mark_abandoned_streams()?;
-            // The crashed run's harness session is only in the journal (the
-            // debounced workspace-row write may never have landed) — stamp it
-            // onto the chat row so the next run resumes the conversation
-            // (comet recoverDraft did the same: sessions.ts:538-539).
+            // Harness continuity first: the crashed run's session id may only
+            // exist in the journal (the debounced workspace-row write may
+            // never have landed) — remember it so the revived run resumes the
+            // same harness conversation (comet recoverDraft, sessions.ts:538).
             if let Some((session_id, cwd)) = self.inner.journal_harness_session(&chat_id) {
                 self.inner
                     .remember_harness_session(&chat_id, &session_id, &cwd);
             }
+            // The revival prompt: the last user message (idempotent re-dispatch
+            // under the SAME id — `write_user_message` dedupes by id, so the
+            // transcript never shows a duplicate).
+            let prompt = handle.doc().read_entries().ok().and_then(|entries| {
+                entries
+                    .iter()
+                    .rev()
+                    .find(|e| e.role == MessageRole::User)
+                    .and_then(|e| {
+                        e.parts.iter().find_map(|p| match p {
+                            MessagePart::Text { text, .. } => {
+                                Some((e.id.clone(), text.clone()))
+                            }
+                            _ => None,
+                        })
+                    })
+            });
+            let attempts = self.inner.journal.resume_attempts(&chat_id);
+            let fresh = handle
+                .doc()
+                .read_entries()
+                .ok()
+                .and_then(|entries| {
+                    entries
+                        .iter()
+                        .rev()
+                        .find(|e| e.status == Some(MessageStatus::Streaming))
+                        .map(|e| now_ms() - e.created_at < RESUME_FRESH_MS)
+                })
+                .unwrap_or(false);
+            let will_resume = fresh && prompt.is_some() && attempts < MAX_AUTO_RESUME;
+
+            let note = if will_resume {
+                "Run interrupted by engine restart — resuming"
+            } else {
+                "Run interrupted by engine restart"
+            };
+            let done = AgentEvent::Done {
+                status: DoneStatus::Interrupted,
+                result: None,
+                error: Some(note.into()),
+                session_id: None,
+            };
+            self.inner.publish(&chat_id, &done);
+            let stamped = handle.mark_abandoned_streams(note)?.len();
             self.set_status(&chat_id, SessionStatus::Idle, false);
-            tracing::info!(chat = %chat_id, stamped, "recovered stale session journal");
+            tracing::info!(chat = %chat_id, stamped, will_resume, attempts, "recovered stale session journal");
             recovered += 1;
+
+            if !will_resume {
+                continue;
+            }
+            let attempt = self.inner.journal.note_resume_attempt(&chat_id);
+            let (user_id, prompt_text) = prompt.expect("gated by will_resume");
+            let sessions = self.clone();
+            tokio::spawn(async move {
+                let Some(host) = sessions.inner.doc_host.get().cloned() else {
+                    return;
+                };
+                let request = sessions
+                    .last_request(&chat_id)
+                    .or_else(|| host.request_from_chat_row(&chat_id, &prompt_text))
+                    // Last resort: the journal's own cwd (comet's draft config)
+                    // — a crash can predate the debounced workspace-row write.
+                    .or_else(|| {
+                        let (_, cwd) = sessions.inner.journal_harness_session(&chat_id)?;
+                        Some(RunRequest {
+                            prompt: String::new(),
+                            model: None,
+                            reasoning: None,
+                            model_options: Default::default(),
+                            cwd,
+                            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+                            auto_approve: false,
+                            attachments: Vec::new(),
+                            resume: None,
+                        })
+                    });
+                let Some(mut request) = request else {
+                    tracing::warn!(chat = %chat_id, "auto-resume skipped: no run config");
+                    return;
+                };
+                request.prompt = prompt_text;
+                request.resume = None; // dispatch re-injects the remembered session
+                request.attachments = Vec::new();
+                let harness_id = host.harness_for(&chat_id);
+                match sessions
+                    .dispatch(&chat_id, harness_id, request, Some(user_id))
+                    .await
+                {
+                    Ok(_) => {
+                        tracing::info!(chat = %chat_id, attempt, "auto-resumed crashed run")
+                    }
+                    Err(err) => {
+                        tracing::warn!(chat = %chat_id, error = %err, "auto-resume dispatch failed")
+                    }
+                }
+            });
         }
         Ok(recovered)
     }
@@ -821,14 +919,27 @@ async fn drive_run(
     let mut interrupt_deadline: Option<tokio::time::Instant> = None;
     let mut interrupted = false;
     let mut saw_session_started = false;
-    // While the run is parked on a question the harness streams NOTHING — the
-    // user may think for minutes. Without a heartbeat the session row goes
-    // stale and the UI's 45s gate flips AwaitingInput off (dot + question
-    // panel vanish mid-question — user-reported). Ticks are cheap: they only
-    // touch when an input request is actually pending, and touch_session
-    // throttles at 10s.
-    let mut input_heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
-    input_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // Liveness heartbeat: this loop RUNNING is proof the harness stream is
+    // open, so freshness must not depend on events arriving. Silent stretches
+    // are normal and UNBOUNDED — a long tool call, redacted thinking, an
+    // agent waiting on an external process, a question parked for an hour —
+    // and each starved the UI's 45s staleness gate in turn (working strip /
+    // AwaitingInput dot vanishing mid-run, both user-reported). No stall
+    // timeout here by design (a first port was rejected — agents may
+    // legitimately be quiet for >10min): a live child means Working, dying
+    // paths each carry their own error, and engine death stops these ticks
+    // so the gate still catches real crashes. touch_session throttles at 10s.
+    let mut live_heartbeat = tokio::time::interval(std::time::Duration::from_secs(15));
+    live_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // PERSISTENT SESSION (comet runsBySession): a completed turn on a
+    // steerable harness parks here instead of ending the run — the child and
+    // its steering mailbox stay warm, and the next user message (dispatch
+    // routes into a live run) starts the next turn with zero respawn/resume
+    // latency. `Some(when)` = idle since then; the 30-min reaper below ends
+    // a session nobody comes back to (comet SESSION_IDLE_MS).
+    const SESSION_IDLE: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+    let mut idle_since: Option<tokio::time::Instant> = None;
+    let steerable = harness.supports_steering();
 
     let final_status = loop {
         let event: AgentEvent = tokio::select! {
@@ -849,15 +960,25 @@ async fn drive_run(
                 error: None,
                 session_id: None,
             },
-            _ = input_heartbeat.tick() => {
-                let awaiting = lock(&inner.runs)
-                    .get(&chat_id)
-                    .map(|h| h.pending_inputs.clone())
-                    .is_some_and(|p| !lock(&p).is_empty());
-                if awaiting {
-                    inner.touch_session(&chat_id);
-                }
+            _ = live_heartbeat.tick() => {
+                inner.touch_session(&chat_id);
                 continue;
+            }
+            // Idle reaper (comet SESSION_IDLE_MS): a parked persistent session
+            // nobody returned to in 30 minutes releases its child. The turn
+            // was finalized at Done, so this end is clean — no aborted stamp.
+            _ = tokio::time::sleep_until(
+                idle_since.map(|at| at + SESSION_IDLE).unwrap_or_else(tokio::time::Instant::now)
+            ), if idle_since.is_some() => {
+                tracing::info!(chat = %chat_id, "reaping idle persistent session");
+                if let Some(token) = lock(&inner.runs)
+                    .get(&chat_id)
+                    .filter(|h| h.run_id == run_id)
+                    .map(|h| h.interrupt_token.clone())
+                {
+                    token.cancel();
+                }
+                break SessionStatus::Idle;
             }
             Some(event) = engine_rx.recv() => event,
             next = stream.next() => match next {
@@ -874,6 +995,11 @@ async fn drive_run(
                     error: None,
                     session_id: None,
                 },
+                // Stream end while PARKED idle: a per-turn adapter closing
+                // after its final Done — a clean end, not a crash (the turn
+                // was already finalized). Persistent adapters keep the
+                // stream open and never hit this.
+                None if idle_since.is_some() => break SessionStatus::Idle,
                 None => AgentEvent::Done {
                     status: DoneStatus::Errored,
                     result: None,
@@ -896,6 +1022,11 @@ async fn drive_run(
         // Any stream activity proves the run is alive — keep the session's
         // freshness inside the UI's 45s staleness window (throttled).
         inner.touch_session(&chat_id);
+        // First event after parking idle = the next turn beginning (a routed
+        // dispatch steered in): the session is Working again.
+        if idle_since.take().is_some() {
+            inner.set_status(&chat_id, SessionStatus::Working, true);
+        }
         // Empty reasoning deltas are PURE heartbeats: redacted thinking and
         // tool-input-generation windows stream them with no text. They fold
         // to nothing, so journaling/publishing them is only noise (hundreds
@@ -1040,24 +1171,49 @@ async fn drive_run(
                     *resolved = true;
                 }
             }
-            if let Err(err) = finish_segment(
-                doc_ref,
-                writer.take(),
-                &entry_id,
-                &device_id,
-                segment_started,
-                &folded,
-                message_status,
-            ) {
-                tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
+            // A Done landing on a PARKED session with nothing streamed (the
+            // idle reaper's or an interrupt's own teardown) has no entry to
+            // finalize — writing one would leave an empty aborted stub.
+            let nothing_streamed = writer.is_none() && folded.is_empty();
+            if !nothing_streamed {
+                if let Err(err) = finish_segment(
+                    doc_ref,
+                    writer.take(),
+                    &entry_id,
+                    &device_id,
+                    segment_started,
+                    &folded,
+                    message_status,
+                ) {
+                    tracing::warn!(chat = %chat_id, error = %err, "final segment finish failed");
+                }
+                inner.note_message(&chat_id, &folded_text(&folded));
             }
-            inner.note_message(&chat_id, &folded_text(&folded));
+            if *status == DoneStatus::Completed {
+                // A cleanly completed turn resets the auto-resume revival
+                // budget: only consecutive crash-revive-crash cycles spend it.
+                inner.journal.clear_resume_attempts(&chat_id);
+            }
             // Exchange completed on an untitled chat → name it (fire-and-forget;
             // interrupted/errored turns never trigger naming).
             if *status == DoneStatus::Completed
                 && let Some(titles) = inner.titles.get()
             {
                 titles.maybe_generate(&chat_id, harness_id, &user_prompt, &run_cwd);
+            }
+            // PERSISTENT SESSION: a cleanly completed turn on a steerable
+            // harness PARKS instead of ending — child + mailbox stay warm for
+            // the next routed dispatch; per-turn state resets for it.
+            if *status == DoneStatus::Completed && steerable && !interrupted {
+                folded.clear();
+                dirty = false;
+                entry_id = new_id();
+                segment_started = now_ms();
+                // Resume-retry is strictly a first-turn concern.
+                saw_session_started = true;
+                idle_since = Some(tokio::time::Instant::now());
+                inner.set_status(&chat_id, SessionStatus::Idle, false);
+                continue;
             }
             break match status {
                 DoneStatus::Errored => SessionStatus::Errored,

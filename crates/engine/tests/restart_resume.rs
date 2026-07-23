@@ -415,6 +415,263 @@ async fn kill_crash_recovers_resume_from_journal_and_stamps_aborted() {
     core.shutdown().await;
 }
 
+/// A harness whose stream stays OPEN after each turn's Done, serving follow-up
+/// turns from the steering mailbox — the persistent-session shape (codex; and
+/// claude's stream-json stdin). Counts `run()` calls to prove the engine
+/// reuses one child across turns instead of respawning.
+struct PersistentHarness {
+    runs_started: Arc<Mutex<usize>>,
+}
+
+#[async_trait]
+impl Harness for PersistentHarness {
+    fn id(&self) -> HarnessId {
+        HarnessId::Mock
+    }
+    fn display_name(&self) -> &str {
+        "Persistent"
+    }
+    fn supports_steering(&self) -> bool {
+        true
+    }
+    fn steering_mode(&self) -> SteeringMode {
+        SteeringMode::StepBoundary
+    }
+    fn reasoning_levels(&self) -> &[ReasoningLevel] {
+        &[ReasoningLevel::Medium]
+    }
+    async fn models(&self) -> Result<Vec<Model>, HarnessError> {
+        Ok(vec![])
+    }
+    async fn run(
+        &self,
+        request: RunRequest,
+        controls: RunControls,
+    ) -> Result<BoxStream<'static, Result<AgentEvent, HarnessError>>, HarnessError> {
+        *self.runs_started.lock().unwrap() += 1;
+        let (tx, rx) = tokio::sync::mpsc::channel::<Result<AgentEvent, HarnessError>>(32);
+        let mut steering = controls.steering;
+        tokio::spawn(async move {
+            let turn = |n: usize, prompt: &str| {
+                vec![
+                    AgentEvent::TextDelta {
+                        text: format!("turn {n} ack: {prompt}"),
+                    },
+                    AgentEvent::Done {
+                        status: DoneStatus::Completed,
+                        result: None,
+                        error: None,
+                        session_id: Some("hs-persist".into()),
+                    },
+                ]
+            };
+            let first = vec![AgentEvent::SessionStarted {
+                harness: HarnessId::Mock,
+                model: "mock-1".into(),
+                tools: vec![],
+                cwd: "/tmp".into(),
+                session_id: "hs-persist".into(),
+                assistant_message_id: "a-1".into(),
+            }];
+            for ev in first.into_iter().chain(turn(1, "first")) {
+                if tx.send(Ok(ev)).await.is_err() {
+                    return;
+                }
+            }
+            // Parked: serve follow-up turns from the mailbox until the
+            // engine hangs up (idle reap / interrupt / shutdown).
+            let mut n = 1usize;
+            while let Some(steer) = steering.recv().await {
+                n += 1;
+                let boundary = AgentEvent::Steered {
+                    assistant_message_id: None,
+                    next_assistant_message_id: steer.message_id.map(|id| format!("a-{id}")),
+                };
+                if tx.send(Ok(boundary)).await.is_err() {
+                    return;
+                }
+                for ev in turn(n, &steer.prompt) {
+                    if tx.send(Ok(ev)).await.is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+        Ok(futures::stream::unfold(rx, |mut rx| async move {
+            rx.recv().await.map(|ev| (ev, rx))
+        })
+        .boxed())
+    }
+}
+
+#[tokio::test]
+async fn persistent_session_serves_multiple_turns_on_one_child() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    let runs_started = Arc::new(Mutex::new(0usize));
+    let registry = HarnessRegistry::new();
+    registry.register(Arc::new(PersistentHarness {
+        runs_started: runs_started.clone(),
+    }));
+    let core = EngineCore::assemble(&dir, Arc::new(registry), HarnessId::Mock, None)
+        .expect("engine core assembles");
+    pre_title(&core);
+
+    queue_run(&core, "first", "/tmp", "msg-user-1");
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "first turn to complete",
+    )
+    .await;
+
+    // The session PARKS (comet runsBySession): the second message routes into
+    // the live child instead of spawning a new one.
+    queue_run(&core, "second", "/tmp", "msg-user-2");
+    wait_for(
+        || complete_assistant_count(&core) == 2,
+        "second turn to complete on the same child",
+    )
+    .await;
+
+    assert_eq!(
+        *runs_started.lock().unwrap(),
+        1,
+        "one harness child must serve both turns"
+    );
+    let entries = entries_now(&core);
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.role == MessageRole::User)
+            .count(),
+        2
+    );
+    core.shutdown().await;
+}
+
+#[tokio::test]
+async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("data");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("device-id"), "dev-crash").unwrap();
+
+    // Same manufactured kill -9 state as above, but FRESH: the streaming entry
+    // crashed moments ago, inside the 12h revival window.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    {
+        let store = DocsStore::open(dir.join("orgs/dev-org/dev-user")).unwrap();
+        let doc = SessionDoc::init(CHAT).unwrap();
+        doc.push_message(&SessionMessageEntry {
+            id: "msg-user-1".into(),
+            role: MessageRole::User,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "long task".into(),
+            }],
+            created_at: now - 60_000,
+            device_id: "dev-crash".into(),
+            status: Some(MessageStatus::Complete),
+            continuation_of: None,
+        })
+        .unwrap();
+        doc.push_message(&SessionMessageEntry {
+            id: "msg-assistant-1".into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Text {
+                id: "t0".into(),
+                text: "partial…".into(),
+            }],
+            created_at: now - 30_000,
+            device_id: "dev-crash".into(),
+            status: Some(MessageStatus::Streaming),
+            continuation_of: None,
+        })
+        .unwrap();
+        store
+            .save_snapshot(CHAT, &doc.export_snapshot().unwrap())
+            .unwrap();
+
+        let journal = RunJournal::open(dir.join("orgs/dev-org/dev-user/journals")).unwrap();
+        journal
+            .append(
+                CHAT,
+                &AgentEvent::SessionStarted {
+                    harness: HarnessId::Mock,
+                    model: "mock-1".into(),
+                    tools: vec![],
+                    cwd: "/tmp".into(),
+                    session_id: "hs-crash".into(),
+                    assistant_message_id: "msg-assistant-1".into(),
+                },
+            )
+            .unwrap();
+        journal
+            .append(
+                CHAT,
+                &AgentEvent::TextDelta {
+                    text: "partial…".into(),
+                },
+            )
+            .unwrap();
+    }
+
+    let requests: RequestLog = Arc::new(Mutex::new(Vec::new()));
+    let core = assemble(
+        &dir,
+        RecordingHarness {
+            requests: requests.clone(),
+            session_id: "hs-after-crash".into(),
+            fail_on_resume: false,
+        },
+    );
+
+    // The run is PICKED BACK UP without any user action (comet: "not just
+    // eulogized"): recovery re-dispatches the crashed prompt itself.
+    wait_for(
+        || complete_assistant_count(&core) == 1,
+        "auto-resumed turn to complete",
+    )
+    .await;
+
+    let entries = entries_now(&core);
+    // The aborted entry SAYS why it ended — and that the run is resuming.
+    let aborted = entries
+        .iter()
+        .find(|e| e.status == Some(MessageStatus::Aborted))
+        .expect("crashed entry stays, stamped aborted");
+    assert!(
+        aborted.parts.iter().any(|p| matches!(
+            p,
+            MessagePart::Error { message, .. }
+                if message.contains("engine restart") && message.contains("resuming")
+        )),
+        "aborted entry carries the visible interruption note"
+    );
+    // Re-dispatch reuses the original user message id — never a duplicate.
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|e| e.role == MessageRole::User)
+            .count(),
+        1
+    );
+    // The revived run continues the journal-recovered harness conversation.
+    let first = requests.lock().unwrap()[0].clone();
+    assert_eq!(first.prompt, "long task");
+    assert_eq!(
+        first.resume.as_deref(),
+        Some("hs-crash"),
+        "auto-resume must reattach the crashed harness session"
+    );
+    core.shutdown().await;
+}
+
 #[tokio::test]
 async fn resume_is_cwd_scoped() {
     let tmp = tempfile::tempdir().unwrap();

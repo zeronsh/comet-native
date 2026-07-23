@@ -319,6 +319,59 @@ impl SessionDoc {
         Ok(false)
     }
 
+    /// Append an error part to an existing entry (crash recovery: the aborted
+    /// entry must SAY why it ended — "Run interrupted by engine restart…" —
+    /// not just truncate silently). Returns `false` when no entry matches.
+    pub fn append_error_part(
+        &self,
+        message_id: &str,
+        part_id: &str,
+        message: &str,
+    ) -> Result<bool, DocError> {
+        let messages = self.doc.get_list("messages");
+        for i in 0..messages.len() {
+            let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
+                messages.get(i)
+            else {
+                continue;
+            };
+            let id_matches = matches!(
+                entry.get("id"),
+                Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == message_id
+            );
+            if !id_matches {
+                continue;
+            }
+            let Some(loro::ValueOrContainer::Container(loro::Container::List(parts))) =
+                entry.get("parts")
+            else {
+                continue;
+            };
+            // Idempotent per part id (recovery may re-run on a crash loop).
+            for j in 0..parts.len() {
+                if let Some(loro::ValueOrContainer::Container(loro::Container::Map(part))) =
+                    parts.get(j)
+                    && matches!(
+                        part.get("id"),
+                        Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == part_id
+                    )
+                {
+                    return Ok(true);
+                }
+            }
+            push_part(
+                &parts,
+                &MessagePart::Error {
+                    id: part_id.to_string(),
+                    message: message.to_string(),
+                },
+            )?;
+            self.doc.commit();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     /// Mark the input part carrying `request_id` resolved, wherever it lives
     /// (input parts store the request id as their part id). The live-run path
     /// resolves through the entry fold; this direct write is for answers to a
