@@ -434,6 +434,23 @@ struct FileFold {
     epoch: usize,
     from: f32,
     to: f32,
+    /// When the toggle happened: the tweens are armed only briefly after the
+    /// click — gpui replays an element's animation on remount, and in the
+    /// virtualized list a row scrolling back into view is a remount (the
+    /// transcript's tool groups had the same flash; user report).
+    toggled_at: Option<std::time::Instant>,
+}
+
+/// Tween arming window after a fold toggle (COLLAPSE's 180ms plus margin).
+const FOLD_TWEEN_WINDOW: Duration = Duration::from_millis(400);
+
+impl FileFold {
+    fn animating(&self) -> bool {
+        self.epoch > 0
+            && self
+                .toggled_at
+                .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW)
+    }
 }
 
 struct HighlightSlot {
@@ -675,6 +692,7 @@ impl Changes {
         };
         fold.collapsed = !currently_collapsed;
         fold.epoch += 1;
+        fold.toggled_at = Some(std::time::Instant::now());
     }
 
     /// Tokens for a file's diff lines (paint-only). Kicks a time-sliced
@@ -763,9 +781,10 @@ impl Changes {
         let header = self.render_file_header(ix, file, &fold, expanded_height, &theme, cx);
         let body = render_file_body(file, highlight, &theme);
 
-        // Collapse: 180 ms committed-height tween on toggle; steady states
-        // paint at the target height directly.
-        let body: AnyElement = if fold.epoch > 0 {
+        // Collapse: 180 ms committed-height tween on toggle (windowed — see
+        // FileFold::animating); steady states paint at the target height
+        // directly.
+        let body: AnyElement = if fold.animating() {
             let (from, to) = (fold.from, fold.to);
             div()
                 .overflow_hidden()
@@ -823,7 +842,7 @@ impl Changes {
                 .size(px(13.0))
                 .text_color(theme.text_muted.opacity(0.7)),
         );
-        let chevron: AnyElement = if fold.epoch > 0 {
+        let chevron: AnyElement = if fold.animating() {
             chevron
                 .with_animation(
                     SharedString::from(format!("chev-{path}-{}", fold.epoch)),

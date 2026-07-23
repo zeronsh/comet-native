@@ -70,6 +70,10 @@ pub const CHIP_HEIGHT: f32 = 38.0;
 pub const CHIP_GAP: f32 = 0.0;
 pub const CHIP_CARD_HEIGHT: f32 = 30.0;
 const CHIPS_TOP_PAD: f32 = 2.0;
+/// How long a user fold toggle keeps its height tween armed: the RESIZE
+/// spec's 200ms plus margin. Past this the fold renders statically — an armed
+/// tween replays on remount, i.e. on every scroll-back-into-view.
+const FOLD_TWEEN_WINDOW: std::time::Duration = std::time::Duration::from_millis(400);
 /// User-bubble attachment thumbnails (user-attachments.tsx): 112×80 thumbs in
 /// a FIXED-height strip (load-state flips never shift the virtualizer).
 pub const ATT_THUMB_W: f32 = 112.0;
@@ -944,6 +948,12 @@ struct FoldState {
     /// is always the *current* target height, so content growth after a toggle
     /// snaps instead of replaying a stale tween.
     from: f32,
+    /// When the toggle happened. The tween is armed only for a short window
+    /// after the click: gpui replays an element's animation on REMOUNT, and a
+    /// virtualized row scrolling back into view is a remount — an armed-forever
+    /// tween made every once-collapsed group flash open→closed on each
+    /// reappearance (user report).
+    toggled_at: Option<Instant>,
 }
 
 pub struct Transcript {
@@ -1408,6 +1418,7 @@ impl Transcript {
         };
         entry.open = Some(!currently_open);
         entry.epoch += 1;
+        entry.toggled_at = Some(Instant::now());
     }
 
     // ---- attachment read-back (user-attachments.tsx + transcript cache) ----
@@ -1969,12 +1980,17 @@ impl Transcript {
             .gap(px(CHIP_GAP))
             .children(tools.iter().map(|tool| tool_chip(tool, theme)));
 
-        // Fold body: 200ms committed-height tween on a USER toggle only.
-        // Auto-open (streaming) and content growth never tween — the closure
-        // lerps toward the *current* target, so tools arriving mid- or
-        // post-tween snap the destination instead of replaying a stale height
-        // (only `open` toggles animate — composes with the stick spring).
-        let body: AnyElement = if fold.epoch > 0 {
+        // Fold body: 200ms committed-height tween on a USER toggle only — and
+        // only within a short window of the click. Auto-open (streaming) and
+        // content growth never tween, and a SETTLED fold renders at its static
+        // height: leaving the tween armed replayed it on every remount, which
+        // in a virtualized list means every scroll-back-into-view (only `open`
+        // toggles animate — composes with the stick spring).
+        let animating = fold.epoch > 0
+            && fold
+                .toggled_at
+                .is_some_and(|at| at.elapsed() < FOLD_TWEEN_WINDOW);
+        let body: AnyElement = if animating {
             let from = fold.from;
             div()
                 .overflow_hidden()
