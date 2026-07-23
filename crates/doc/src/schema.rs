@@ -319,6 +319,48 @@ impl SessionDoc {
         Ok(false)
     }
 
+    /// Mark the input part carrying `request_id` resolved, wherever it lives
+    /// (input parts store the request id as their part id). The live-run path
+    /// resolves through the entry fold; this direct write is for answers to a
+    /// question whose run already died — no fold owns the entry anymore.
+    /// Returns `false` when no such part exists.
+    pub fn resolve_input(&self, request_id: &str) -> Result<bool, DocError> {
+        let messages = self.doc.get_list("messages");
+        for i in 0..messages.len() {
+            let Some(loro::ValueOrContainer::Container(loro::Container::Map(entry))) =
+                messages.get(i)
+            else {
+                continue;
+            };
+            let Some(loro::ValueOrContainer::Container(loro::Container::List(parts))) =
+                entry.get("parts")
+            else {
+                continue;
+            };
+            for j in 0..parts.len() {
+                let Some(loro::ValueOrContainer::Container(loro::Container::Map(part))) =
+                    parts.get(j)
+                else {
+                    continue;
+                };
+                let is_input = matches!(
+                    part.get("kind"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == "input"
+                );
+                let id_matches = matches!(
+                    part.get("id"),
+                    Some(loro::ValueOrContainer::Value(LoroValue::String(s))) if s.as_str() == request_id
+                );
+                if is_input && id_matches {
+                    part.insert("resolved", true)?;
+                    self.doc.commit();
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// Export a snapshot (persistence) — `ExportMode::Snapshot`.
     pub fn export_snapshot(&self) -> Result<Vec<u8>, DocError> {
         self.doc
@@ -683,6 +725,34 @@ mod tests {
             }]
         );
         assert_eq!(doc.chat_id().as_deref(), Some("chat-1"));
+    }
+
+    #[test]
+    fn resolve_input_stamps_the_part_in_place() {
+        let doc = SessionDoc::init("chat-1").unwrap();
+        doc.push_message(&SessionMessageEntry {
+            id: "m1".into(),
+            role: MessageRole::Assistant,
+            parts: vec![MessagePart::Input {
+                id: "r1".into(),
+                request_id: "r1".into(),
+                questions: vec![],
+                resolved: false,
+            }],
+            created_at: 1,
+            device_id: "dev-a".into(),
+            // The orphan case: the run died and recovery stamped the entry.
+            status: Some(MessageStatus::Aborted),
+            continuation_of: None,
+        })
+        .unwrap();
+        assert!(!doc.resolve_input("nope").unwrap());
+        assert!(doc.resolve_input("r1").unwrap());
+        let entries = doc.read_entries().unwrap();
+        assert!(matches!(
+            &entries[0].parts[0],
+            MessagePart::Input { resolved: true, .. }
+        ));
     }
 
     #[test]

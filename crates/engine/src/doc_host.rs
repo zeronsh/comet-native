@@ -27,7 +27,7 @@ use comet_doc::{
     SessionCommandStatus, SessionDoc, SessionMessageEntry, evaluate_command,
     join_continuation_entries,
 };
-use comet_proto::HarnessId;
+use comet_proto::{HarnessId, UserInputAnswer, UserInputQuestion};
 use comet_sync::{DocsStore, RoomClient};
 
 use crate::sessions::{SessionsEngine, SteerOutcome};
@@ -596,13 +596,67 @@ impl DocHost {
                 answers,
             } => {
                 if sessions.respond_input(chat_id, request_id, answers.clone())? {
-                    Ok((SessionCommandStatus::Applied, None))
-                } else {
-                    Ok((
+                    return Ok((SessionCommandStatus::Applied, None));
+                }
+                // No live resolver. Only a request id the doc shows as an
+                // OPEN question on a SETTLED entry gets the orphan fallback:
+                // a mismatched or already-resolved id is a stale/buggy answer
+                // and must still reject, and a still-streaming entry's
+                // question belongs to the live run (a just-consumed resolver
+                // racing a second answer must not spawn a duplicate turn).
+                let questions = handle.doc.read_entries().ok().and_then(|entries| {
+                    entries
+                        .iter()
+                        .rev()
+                        .filter(|e| e.status != Some(MessageStatus::Streaming))
+                        .find_map(|e| {
+                            e.parts.iter().find_map(|p| match p {
+                                MessagePart::Input {
+                                    request_id: rid,
+                                    questions,
+                                    resolved: false,
+                                    ..
+                                } if rid == request_id => Some(questions.clone()),
+                                _ => None,
+                            })
+                        })
+                });
+                let Some(questions) = questions else {
+                    return Ok((
                         SessionCommandStatus::Rejected,
                         Some("no pending input request".into()),
-                    ))
+                    ));
+                };
+                // The run died under the question (engine restart, crash).
+                // The question is still open in the doc and the command is
+                // durable, so honor it anyway — stamp the part resolved and
+                // deliver the answers as the next (resumed) turn, the same
+                // fallback a dead-run steer takes. The question UI stays up
+                // until the user answers (user requirement); this is what
+                // makes that answer still WORK.
+                let request = sessions
+                    .last_request(chat_id)
+                    .or_else(|| self.request_from_chat_row(chat_id, ""));
+                let Some(mut request) = request else {
+                    return Ok((
+                        SessionCommandStatus::Rejected,
+                        Some("no pending input request and no prior run config".into()),
+                    ));
+                };
+                request.prompt = respond_input_prompt(&questions, answers);
+                request.resume = None; // dispatch re-derives the harness session
+                request.attachments = Vec::new();
+                if let Err(err) = handle.doc.resolve_input(request_id) {
+                    tracing::warn!(chat = %chat_id, request = %request_id, error = %err,
+                        "orphaned input resolve failed");
                 }
+                sessions
+                    .dispatch(chat_id, self.harness_for(chat_id), request, None)
+                    .await?;
+                Ok((
+                    SessionCommandStatus::Applied,
+                    Some("answered as new turn".into()),
+                ))
             }
         }
     }
@@ -611,6 +665,7 @@ impl DocHost {
     /// since the last turn): rebuild the run config from the chat's workspace
     /// row — cwd from the row, model/reasoning/options/sandbox from its config
     /// (composer defaults otherwise). `None` without a workspace host or row.
+    // (Also the RespondInput dead-run fallback's config source.)
     fn request_from_chat_row(
         &self,
         chat_id: &str,
@@ -664,6 +719,29 @@ impl DocHost {
             self.save_snapshot(&handle);
         }
     }
+}
+
+/// The resumed-turn prompt for answers to a question whose run died: each
+/// answer paired with its question text so the reattached conversation reads
+/// naturally. Pure.
+pub fn respond_input_prompt(
+    questions: &[UserInputQuestion],
+    answers: &[UserInputAnswer],
+) -> String {
+    let mut lines = vec!["Answering your earlier question:".to_string()];
+    for answer in answers {
+        let picked = answer.labels.join(", ");
+        let question = questions
+            .iter()
+            .find(|q| q.id == answer.question_id)
+            .map(|q| q.question.trim())
+            .filter(|q| !q.is_empty());
+        match question {
+            Some(question) => lines.push(format!("{question} — {picked}")),
+            None => lines.push(picked),
+        }
+    }
+    lines.join("\n")
 }
 
 /// Per-chat background task: reacts to doc changes (local commits and remote imports)

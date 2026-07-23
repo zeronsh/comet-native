@@ -22,7 +22,7 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
-use comet_doc::{MessagePart, MessageStatus, SessionCommandPayload, SessionMessageEntry};
+use comet_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
 use comet_proto::{RunRequest, SandboxLevel, UserInputAnswer, UserInputQuestion};
 use comet_rpc::methods;
 
@@ -321,21 +321,26 @@ pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
     }
 }
 
-/// Find the live run's unresolved input request, if any: an unresolved input
-/// part on ANY still-streaming entry — never just the last transcript entry.
-/// (The user's forensics: a steer prompt sent while the agent waits appends a
-/// user entry AFTER the streaming assistant entry; a last-entry-only read
-/// made the QuestionPanel vanish exactly when the user typed, turning every
-/// subsequent keystroke into a steer the blocked run could not execute.
-/// Matches the original composer.tsx, which searches the live run's parts.)
+/// Find the unresolved input request the panel should serve, if any: an
+/// unresolved input part on the LAST assistant entry — regardless of the
+/// entry's run status. The question stays answerable until the user actually
+/// answers it (user requirement): a run that died under its question (engine
+/// restart reaping it) leaves an aborted entry whose answer the engine
+/// delivers as a resumed turn (`RespondInput`'s dead-run fallback). A newer
+/// assistant entry supersedes an unanswered question. Assistant-entry-scoped,
+/// not last-entry: a steer prompt sent while the agent waits appends a USER
+/// entry after the streaming assistant entry, and a last-entry-only read made
+/// the QuestionPanel vanish exactly when the user typed (earlier forensics;
+/// matches the original composer.tsx, which reads the live-assistant fold —
+/// rebuilt from replay even after the run died).
 pub fn pending_input_request(
     transcript: &[SessionMessageEntry],
 ) -> Option<(String, Vec<UserInputQuestion>)> {
     transcript
         .iter()
         .rev()
-        .filter(|entry| entry.status == Some(MessageStatus::Streaming))
-        .find_map(|entry| {
+        .find(|entry| entry.role == MessageRole::Assistant)
+        .and_then(|entry| {
             entry.parts.iter().find_map(|part| match part {
                 MessagePart::Input {
                     request_id,
@@ -1923,10 +1928,15 @@ impl Composer {
                     // fold/sync blip — or a steer appended behind the
                     // streaming entry — must not unmount the panel and lose
                     // the user's picks. Release only on explicit resolution
-                    // (here or on another device) or when the run is over.
+                    // (here or on another device) or when a NON-EMPTY
+                    // transcript shows the question superseded (a newer
+                    // assistant entry took over). Never on run death: the
+                    // question stays answerable until answered — the engine
+                    // delivers a dead run's answer as a resumed turn.
                     let transcript = self.state.read(cx).transcript.clone();
                     let released = input_request_resolved(&transcript, &wizard.request_id)
-                        || !self.run_live(cx);
+                        || (!transcript.is_empty()
+                            && !self.answered_requests.contains(&wizard.request_id));
                     if released {
                         self.wizard = None;
                         self.advance_task = None;
@@ -3483,7 +3493,7 @@ mod tests {
 
     #[test]
     fn pending_input_detection() {
-        use comet_doc::MessageRole;
+        use comet_doc::MessageStatus;
         let input_part = MessagePart::Input {
             id: "in-r1".into(),
             request_id: "r1".into(),
@@ -3508,11 +3518,34 @@ mod tests {
             pending_input_request(&t).map(|(id, _)| id),
             Some("r1".into())
         );
-        // Completed entry → no panel even if unresolved (run is gone).
+        // DEAD entry with an unresolved input STILL gets the panel: the
+        // question stays answerable until answered (the engine delivers the
+        // answer as a resumed turn), so a run reaped under its question —
+        // engine restart — must not orphan it (user report).
         let t = vec![entry(
-            Some(MessageStatus::Complete),
+            Some(MessageStatus::Aborted),
             vec![input_part.clone()],
         )];
+        assert_eq!(
+            pending_input_request(&t).map(|(id, _)| id),
+            Some("r1".into())
+        );
+        // A NEWER assistant entry supersedes an unanswered question.
+        let t = vec![
+            entry(Some(MessageStatus::Aborted), vec![input_part.clone()]),
+            SessionMessageEntry {
+                id: "m2".into(),
+                role: MessageRole::Assistant,
+                parts: vec![MessagePart::Text {
+                    id: "t2".into(),
+                    text: "moved on".into(),
+                }],
+                created_at: 2,
+                device_id: "d".into(),
+                status: Some(MessageStatus::Complete),
+                continuation_of: None,
+            },
+        ];
         assert!(pending_input_request(&t).is_none());
         // Resolved part → no panel.
         let resolved = MessagePart::Input {
