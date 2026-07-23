@@ -11,10 +11,11 @@
 //! - Notifications map to [`AgentEvent`]s: agentMessage/reasoning deltas (both
 //!   `delta`/`textDelta` spellings), item lifecycles → typed ToolCall/ToolResult,
 //!   `thread/tokenUsage/updated` → Usage, turn/completed|failed|aborted → Done.
-//! - Approvals: with `auto_approve` the wire policy is `"never"`; otherwise
-//!   `item/commandExecution/requestApproval` + `item/fileChange/requestApproval`
-//!   round-trip through [`RunControls::request_input`] as a synthesized yes/no
-//!   question (approval-as-input parity with comet's UX).
+//! - Approvals: the wire policy is always `"never"` — parity with the Claude
+//!   adapter's auto-approve-everything (unattended runs; the sandbox is the
+//!   guardrail). Stray `item/commandExecution/requestApproval` +
+//!   `item/fileChange/requestApproval` still round-trip through
+//!   [`RunControls::request_input`] as a synthesized yes/no question.
 //! - Steering: `turn/steer { expectedTurnId }` into the live turn; a rejected
 //!   steer (the turn-completed race) is queued and delivered as the next
 //!   `turn/start` on the same thread. The session is persistent across turns
@@ -47,7 +48,7 @@ use comet_proto::{
 };
 
 use crate::{Harness, HarnessError, RunControls};
-use catalog::{REASONING_LEVELS, sandbox_mode, sandbox_policy_type, static_models, to_effort};
+use catalog::{REASONING_LEVELS, sandbox_mode, sandbox_policy_value, static_models, to_effort};
 use normalize::{
     Phase, delta_text, item_id, item_type, map_item, turn_error_message, turn_id, usage_event,
 };
@@ -335,11 +336,13 @@ async fn run_session(session: Session) {
     let request_input = Arc::new(request_input);
 
     // ---- wire params ------------------------------------------------------
-    let approval_policy = if request.auto_approve {
-        "never"
-    } else {
-        "on-request"
-    };
+    // Parity with the Claude adapter, which auto-approves every `can_use_tool`
+    // regardless of `auto_approve` (comet sessions run unattended; the sandbox
+    // is the guardrail): never surface wire approvals. "on-request" turned
+    // every command into a yes/no question (user report: "asking me for
+    // approval at every step"). The approval-as-input plumbing below stays for
+    // stray requests and a future explicit permission-mode setting.
+    let approval_policy = "never";
     let effort = to_effort(request.reasoning);
     // Service tier rides thread-start and every turn (mirrors the Codex IDE
     // client). "default" means Standard — omit it entirely.
@@ -442,8 +445,13 @@ async fn run_session(session: Session) {
         p.insert("approvalPolicy".into(), approval_policy.into());
         p.insert(
             "sandboxPolicy".into(),
-            json!({ "type": sandbox_policy_type(request.sandbox) }),
+            sandbox_policy_value(request.sandbox),
         );
+        // Reasoning summaries stream (`item/reasoning/summaryTextDelta`) only
+        // when asked for — without this codex "thinks" in silence for minutes:
+        // nothing renders and the UI's 45s staleness gate flips Working off
+        // (user report: "not streaming, doesn't say it's working").
+        p.insert("summary".into(), "auto".into());
         if let Some(model) = &request.model {
             p.insert("model".into(), Value::String(model.clone()));
         }

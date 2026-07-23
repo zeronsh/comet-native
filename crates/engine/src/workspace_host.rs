@@ -71,6 +71,12 @@ struct WorkspaceHostInner {
     sessions_tx: watch::Sender<Vec<Session>>,
     spaces_tx: watch::Sender<Vec<Space>>,
     room: Mutex<Option<RoomClient>>,
+    /// Freshest presence heartbeat (ms) we have EVER observed per device. The
+    /// ephemeral store forgets entries after its 30s TTL and starts empty on a
+    /// room (re)join, so without this cache a receive-side hiccup snaps a
+    /// device's overlay back to its boot-time doc `lastSeenAt` — an instant
+    /// (and false) "offline" badge for a host that beat 20s ago.
+    presence_seen: Mutex<std::collections::HashMap<String, i64>>,
     /// Called with a device id whenever its presence heartbeat proves it alive —
     /// wired to `LinkCache::reset_cooldown` so a peer that comes back is dialed
     /// immediately instead of waiting out the failure backoff.
@@ -152,6 +158,7 @@ impl WorkspaceHost {
                 sessions_tx,
                 spaces_tx,
                 room: Mutex::new(None),
+                presence_seen: Mutex::new(std::collections::HashMap::new()),
                 peer_alive: Mutex::new(None),
                 _sub: sub,
             }),
@@ -669,13 +676,23 @@ impl WorkspaceHostInner {
         {
             let room = lock(&self.room);
             let Some(room) = room.as_ref() else { return };
+            let mut seen = lock(&self.presence_seen);
             let now = now_ms();
             for device in devices.iter_mut() {
-                let Some(loro::LoroValue::I64(ms)) =
-                    room.ephemeral().get(&presence_key(&device.id))
-                else {
+                // Freshest of the live ephemeral entry and the cache: the
+                // store's 30s TTL (and its empty state right after a room
+                // rejoin) must not erase freshness this engine already
+                // witnessed — the device is offline only once heartbeats
+                // genuinely stop arriving for the UI's whole online window.
+                let live = match room.ephemeral().get(&presence_key(&device.id)) {
+                    Some(loro::LoroValue::I64(ms)) => Some(ms),
+                    _ => None,
+                };
+                let cached = seen.get(&device.id).copied();
+                let Some(ms) = live.into_iter().chain(cached).max() else {
                     continue;
                 };
+                seen.insert(device.id.clone(), ms);
                 if let Some(at) = chrono::DateTime::<Utc>::from_timestamp_millis(ms)
                     && device.last_seen_at.is_none_or(|prev| prev < at)
                 {
