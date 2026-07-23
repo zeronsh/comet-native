@@ -1943,7 +1943,6 @@ impl Transcript {
         let open = fold.open.unwrap_or(auto_open);
         let target = if open { chips_height(tools.len()) } else { 0.0 };
         let summary = tool_group_summary(tools);
-        let any_error = tools.iter().any(|t| t.is_error);
 
         let toggle_id = row_id.clone();
         let tool_count = tools.len();
@@ -1959,11 +1958,12 @@ impl Transcript {
             .h(px(26.0))
             .cursor_pointer()
             .text_size(px(12.0))
-            .text_color(if any_error {
-                theme.danger
-            } else {
-                theme.text_muted
-            })
+            // Quiet even when children failed: agents routinely have failed
+            // probes mid-work, and a red HEADER read as "this whole step
+            // broke" (user report). Failures still show on the individual
+            // chips (destructive tint, comet tool-chip.tsx) and in the
+            // summary's "· N failed" count.
+            .text_color(theme.text_muted)
             .hover(|s| s.text_color(Theme::dark().text))
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.toggle_fold(toggle_id.clone(), tool_count, auto_open);
