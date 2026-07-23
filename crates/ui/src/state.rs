@@ -28,9 +28,11 @@ use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
 use comet_doc::SessionMessageEntry;
-use comet_engine::{EngineCore, default_registry, doc_host::EdgeConfig};
-use comet_proto::{AuthState, Chat, ChatIndicator, Device, HarnessId, Session, SessionStatus, Space};
-use comet_rpc::{RpcClient, connect_ws, memory_client, methods};
+use comet_engine::{Engine, EngineConfig, EngineRuntime, rpc::AuthRpc};
+use comet_proto::{
+    AuthState, Chat, ChatIndicator, Device, HarnessId, Session, SessionStatus, Space,
+};
+use comet_rpc::{RpcClient, RpcError, RpcReply, RpcService, connect_ws, memory_client, methods};
 
 // ---------------------------------------------------------------------------
 // Engine handle
@@ -47,6 +49,10 @@ pub struct EngineBootConfig {
     pub edge_url: String,
     /// Bearer for edge room joins; `None` runs offline.
     pub edge_token: Option<String>,
+    /// Workspace org override for explicit dev-mode runs.
+    pub org_id: Option<String>,
+    /// WorkOS client id for production authentication.
+    pub workos_client_id: Option<String>,
     /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
 }
@@ -73,7 +79,9 @@ trait EngineBackend: Send + Sync {
 
 /// Embedded engine: owns the [`EngineCore`] and an in-memory RPC loop.
 struct InProcessEngine {
-    core: EngineCore,
+    runtime: Arc<tokio::sync::Mutex<Option<EngineRuntime>>>,
+    boot_task: tokio::task::JoinHandle<()>,
+    refresh_task: tokio::task::JoinHandle<()>,
     client: RpcClient,
 }
 
@@ -86,7 +94,48 @@ impl EngineBackend for InProcessEngine {
         EngineMode::InProcess
     }
     async fn shutdown(&self) {
-        self.core.shutdown().await;
+        self.boot_task.abort();
+        if let Some(runtime) = self.runtime.lock().await.take() {
+            runtime.shutdown().await;
+        }
+        self.refresh_task.abort();
+    }
+}
+
+#[derive(Clone)]
+enum DeferredEngineState {
+    Waiting,
+    Ready(Arc<dyn RpcService>),
+    Failed(String),
+}
+
+/// Serves AuthRpc immediately, then holds all data RPC calls until the signed-in
+/// user's identity-scoped engine is assembled. Existing UI subscriptions remain
+/// pending and attach to the real service without reconnecting.
+struct DeferredEngineRpc {
+    auth: AuthRpc,
+    state: tokio::sync::watch::Receiver<DeferredEngineState>,
+}
+
+#[async_trait]
+impl RpcService for DeferredEngineRpc {
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        if AuthRpc::handles(method) {
+            return self.auth.handle(method, params).await;
+        }
+
+        let mut state = self.state.clone();
+        loop {
+            let current = { state.borrow().clone() };
+            match current {
+                DeferredEngineState::Waiting => {}
+                DeferredEngineState::Ready(service) => {
+                    return service.handle(method, params).await;
+                }
+                DeferredEngineState::Failed(message) => return Err(RpcError::Failed(message)),
+            }
+            state.changed().await.map_err(|_| RpcError::Closed)?;
+        }
     }
 }
 
@@ -137,49 +186,54 @@ impl EngineHandle {
         }
 
         tracing::info!(data_dir = %config.data_dir.display(), "no daemon on port; embedding engine");
-        let edge = config
-            .edge_token
-            .clone()
-            .map(|token| EdgeConfig::with_static_token(config.edge_url.clone(), token));
-        // Identity for the embedded (dev) engine: the dev bearer's `user@org`
-        // parts (mirroring the edge's parsing), env overrides, dev defaults —
-        // must match what the edge derives from the token, or the per-user
-        // `ws3/{org}/{user}` workspace room join is refused.
-        let (token_user, token_org) = match config.edge_token.as_deref() {
-            Some(token) => match token.split_once('@') {
-                Some((user, org)) => (Some(user.to_string()), Some(org.to_string())),
-                None => (Some(token.to_string()), None),
-            },
-            None => (None, None),
+        let engine_config = EngineConfig {
+            data_dir: config.data_dir,
+            edge_url: config.edge_url,
+            edge_token: config.edge_token,
+            ipc_port: config.ipc_port,
+            default_harness: config.default_harness,
+            org_id: config.org_id,
+            workos_client_id: config.workos_client_id,
         };
-        let org_id = token_org
-            .or_else(|| {
-                std::env::var("COMET_ORG_ID")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            })
-            .unwrap_or_else(|| comet_engine::DEFAULT_ORG_ID.to_string());
-        let user_id = token_user
-            .or_else(|| {
-                std::env::var("COMET_USER_ID")
-                    .ok()
-                    .filter(|s| !s.trim().is_empty())
-            })
-            .unwrap_or_else(|| comet_engine::DEFAULT_USER_ID.to_string());
-        let core = tokio::task::spawn_blocking(move || {
-            EngineCore::assemble_with_identity(
-                &config.data_dir,
-                Arc::new(default_registry()),
-                config.default_harness,
-                edge,
-                &org_id,
-                &user_id,
-            )
-        })
-        .await??;
-        let client = memory_client(core.rpc_service());
+        let auth = Engine::build_auth(&engine_config).await;
+        let refresh_task = auth.spawn_refresh_loop();
+        let (state_tx, state_rx) = tokio::sync::watch::channel(DeferredEngineState::Waiting);
+        let client = memory_client(Arc::new(DeferredEngineRpc {
+            auth: AuthRpc::new(auth.clone()),
+            state: state_rx,
+        }));
+        let runtime = Arc::new(tokio::sync::Mutex::new(None));
+        let runtime_for_boot = runtime.clone();
+        let boot_task = tokio::spawn(async move {
+            let mut auth_state = auth.watch_state();
+            while !auth_state.borrow().is_signed_in() {
+                if auth_state.changed().await.is_err() {
+                    state_tx.send_replace(DeferredEngineState::Failed(
+                        "authentication state closed before sign-in".into(),
+                    ));
+                    return;
+                }
+            }
+
+            match Engine::assemble_runtime(&engine_config, auth).await {
+                Ok(engine_runtime) => {
+                    let service: Arc<dyn RpcService> = engine_runtime.core().rpc_service();
+                    *runtime_for_boot.lock().await = Some(engine_runtime);
+                    state_tx.send_replace(DeferredEngineState::Ready(service));
+                }
+                Err(err) => {
+                    tracing::error!(error = %err, "embedded engine assembly failed");
+                    state_tx.send_replace(DeferredEngineState::Failed(format!("{err:#}")));
+                }
+            }
+        });
         Ok(EngineHandle {
-            inner: Arc::new(InProcessEngine { core, client }),
+            inner: Arc::new(InProcessEngine {
+                runtime,
+                boot_task,
+                refresh_task,
+                client,
+            }),
         })
     }
 
@@ -281,13 +335,21 @@ pub fn sort_active(rows: &mut Vec<(ChatIndicator, &Chat)>) {
 /// Session-tab order for a space: creation order (activity never reorders
 /// tabs), id tiebreak. Pure.
 pub fn sort_tabs(chats: &mut [&Chat]) {
-    chats.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+    chats.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 /// Spaces list order: creation order, id tiebreak — total and stable across
 /// devices. Pure.
 pub fn sort_spaces(spaces: &mut [Space]) {
-    spaces.sort_by(|a, b| a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id)));
+    spaces.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
 }
 
 /// Sidebar order: `last_message_at` desc, falling back to `created_at`; ties
@@ -733,7 +795,11 @@ impl AppState {
     pub fn overview_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
         let mut rows: Vec<(ChatIndicator, &Chat)> = self
             .visible_chats()
-            .filter(|c| c.space_id.as_deref().is_some_and(|id| self.space_row(id).is_some()))
+            .filter(|c| {
+                c.space_id
+                    .as_deref()
+                    .is_some_and(|id| self.space_row(id).is_some())
+            })
             .map(|c| (display_status(c, self.session_for(&c.id), now), c))
             .collect();
         sort_active(&mut rows);
@@ -936,7 +1002,11 @@ fn spawn_chats_watch(cx: &mut Context<AppState>, handle: EngineHandle) -> Task<(
             let alive = this.update(cx, |state, cx| {
                 state.apply_chats(parsed);
                 if state.selected_chat.is_none() && !state.auto_selected {
-                    let most_recent = state.chats.iter().find(|c| !c.archived).map(|c| c.id.clone());
+                    let most_recent = state
+                        .chats
+                        .iter()
+                        .find(|c| !c.archived)
+                        .map(|c| c.id.clone());
                     if let Some(chat_id) = most_recent {
                         state.auto_selected = true;
                         state.select_chat(Some(chat_id), cx);
@@ -1059,6 +1129,7 @@ fn spawn_transcript_watch(
 mod tests {
     use super::*;
     use chrono::TimeDelta;
+    use comet_engine::{EngineCore, default_registry};
     use comet_proto::UserProfile;
 
     /// A localhost port that was just free (bind :0, read, drop).
@@ -1075,6 +1146,8 @@ mod tests {
             ipc_port: free_port().await,
             edge_url: "http://127.0.0.1:1".into(),
             edge_token: None, // offline
+            org_id: None,
+            workos_client_id: None,
             default_harness: HarnessId::Mock,
         })
         .await
@@ -1087,6 +1160,48 @@ mod tests {
             .await
             .unwrap();
         assert!(harnesses.as_array().is_some_and(|h| !h.is_empty()));
+        handle.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn production_bootstrap_requires_sign_in_before_opening_engine_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = EngineHandle::bootstrap(EngineBootConfig {
+            data_dir: dir.path().to_path_buf(),
+            ipc_port: free_port().await,
+            edge_url: "http://127.0.0.1:1".into(),
+            edge_token: None,
+            org_id: None,
+            workos_client_id: Some("client_test".into()),
+            default_harness: HarnessId::Mock,
+        })
+        .await
+        .unwrap();
+
+        let mut auth = handle
+            .client()
+            .subscribe(methods::AUTH_STATUS, serde_json::json!({}))
+            .await
+            .unwrap();
+        assert_eq!(
+            parse_auth_state(&auth.recv().await.unwrap()),
+            Some(AuthState::SignedOut)
+        );
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                handle
+                    .client()
+                    .call(methods::LIST_HARNESSES, serde_json::json!({})),
+            )
+            .await
+            .is_err(),
+            "data RPC must wait behind the production sign-in gate"
+        );
+        assert!(
+            !dir.path().join("orgs/dev-org/dev-user").exists(),
+            "production boot must not create dev-user data"
+        );
         handle.shutdown().await;
     }
 
@@ -1111,6 +1226,8 @@ mod tests {
             ipc_port: port,
             edge_url: "http://127.0.0.1:1".into(),
             edge_token: None,
+            org_id: None,
+            workos_client_id: None,
             default_harness: HarnessId::Mock,
         })
         .await
@@ -1260,10 +1377,16 @@ mod tests {
         assert_eq!(display_status(&c, None, now), ChatIndicator::Completed);
         // Idle session + unseen = Completed.
         let idle = session("c", SessionStatus::Idle, 5, now);
-        assert_eq!(display_status(&c, Some(&idle), now), ChatIndicator::Completed);
+        assert_eq!(
+            display_status(&c, Some(&idle), now),
+            ChatIndicator::Completed
+        );
         // Stale working session falls back to the seen check.
         let stale = session("c", SessionStatus::Working, 300, now);
-        assert_eq!(display_status(&c, Some(&stale), now), ChatIndicator::Completed);
+        assert_eq!(
+            display_status(&c, Some(&stale), now),
+            ChatIndicator::Completed
+        );
         // Seen after the last message = Idle.
         c.last_seen_at = c.last_message_at.map(|t| t + TimeDelta::minutes(1));
         assert_eq!(display_status(&c, Some(&idle), now), ChatIndicator::Idle);
@@ -1271,7 +1394,10 @@ mod tests {
         let errored = session("c", SessionStatus::Errored, 600, now);
         assert_eq!(display_status(&c, Some(&errored), now), ChatIndicator::Idle);
         c.last_seen_at = None;
-        assert_eq!(display_status(&c, Some(&errored), now), ChatIndicator::Errored);
+        assert_eq!(
+            display_status(&c, Some(&errored), now),
+            ChatIndicator::Errored
+        );
         // No messages at all: nothing to see — Idle.
         let fresh = chat("f", 0, None);
         assert_eq!(display_status(&fresh, None, now), ChatIndicator::Idle);
@@ -1386,15 +1512,26 @@ mod tests {
             state.chats.iter().find(|c| c.id == "a").unwrap().config,
             Some(config)
         );
-        assert!(state.chats.iter().find(|c| c.id == "b").unwrap().config.is_none());
+        assert!(
+            state
+                .chats
+                .iter()
+                .find(|c| c.id == "b")
+                .unwrap()
+                .config
+                .is_none()
+        );
         // Unknown chat: no-op, no panic.
-        state.apply_chat_config("missing", comet_proto::ChatConfig {
-            harness: HarnessId::ClaudeCode,
-            model: None,
-            reasoning: None,
-            model_options: serde_json::Map::new(),
-            sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
-        });
+        state.apply_chat_config(
+            "missing",
+            comet_proto::ChatConfig {
+                harness: HarnessId::ClaudeCode,
+                model: None,
+                reasoning: None,
+                model_options: serde_json::Map::new(),
+                sandbox: comet_proto::SandboxLevel::WorkspaceWrite,
+            },
+        );
     }
 
     #[test]
@@ -1577,14 +1714,20 @@ mod tests {
         assert_eq!(format_time_ago(ago(35 * 86400), now), "1mo");
         assert_eq!(format_time_ago(ago(400 * 86400), now), "1y");
         // Clock skew (future timestamps) clamps to "now".
-        assert_eq!(format_time_ago(now + chrono::Duration::hours(2), now), "now");
+        assert_eq!(
+            format_time_ago(now + chrono::Duration::hours(2), now),
+            "now"
+        );
     }
 
     #[test]
     fn chat_location_joins_project_and_branch() {
         let mut c = chat_with_cwd("x", 1, Some("/home/w/dev/soccertcg"));
         c.branch = Some("comet/rebalance".into());
-        assert_eq!(chat_location(&c).as_deref(), Some("soccertcg · comet/rebalance"));
+        assert_eq!(
+            chat_location(&c).as_deref(),
+            Some("soccertcg · comet/rebalance")
+        );
         c.branch = None;
         assert_eq!(chat_location(&c).as_deref(), Some("soccertcg"));
         c.cwd = None;

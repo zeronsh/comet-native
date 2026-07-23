@@ -292,10 +292,7 @@ enum MutateParams {
     /// composer's mid-session model / reasoning / options changes, LWW-synced
     /// so they survive restarts and reach every device.
     #[serde(rename_all = "camelCase")]
-    SetChatConfig {
-        chat_id: String,
-        config: ChatConfig,
-    },
+    SetChatConfig { chat_id: String, config: ChatConfig },
     /// Tombstone: removes the chats-map row; the session doc remains.
     #[serde(rename_all = "camelCase")]
     DeleteChat { chat_id: String },
@@ -591,6 +588,106 @@ where
     .boxed()
 }
 
+/// Authentication-only RPC surface used while the headed app is waiting for a
+/// production WorkOS session. Keeping this independent from [`EngineRpc`] lets
+/// the UI show its sign-in and organization gates before identity-scoped Loro
+/// stores are opened.
+#[derive(Clone)]
+pub struct AuthRpc {
+    auth: Auth,
+}
+
+impl AuthRpc {
+    pub fn new(auth: Auth) -> Self {
+        Self { auth }
+    }
+
+    pub fn handles(method: &str) -> bool {
+        matches!(
+            method,
+            methods::AUTH_STATUS
+                | methods::SIGN_IN
+                | methods::SIGN_IN_HEADLESS
+                | methods::COMPLETE_SIGN_IN
+                | methods::SIGN_OUT
+                | methods::LIST_ORGS
+                | methods::CREATE_ORG
+                | methods::SELECT_ORG
+        )
+    }
+}
+
+#[async_trait]
+impl RpcService for AuthRpc {
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        match method {
+            methods::AUTH_STATUS => Ok(RpcReply::Stream(watch_stream(self.auth.watch_state()))),
+            methods::SIGN_IN => {
+                let url = self
+                    .auth
+                    .start_sign_in()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "url": url }))
+            }
+            methods::SIGN_IN_HEADLESS => {
+                let url = self.auth.start_headless_sign_in();
+                RpcReply::value(&serde_json::json!({ "url": url }))
+            }
+            methods::COMPLETE_SIGN_IN => {
+                #[derive(Deserialize)]
+                struct P {
+                    code: String,
+                }
+                let p: P = parse_params(params)?;
+                self.auth
+                    .complete_sign_in(&p.code)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::SIGN_OUT => {
+                self.auth.sign_out();
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::LIST_ORGS => {
+                let orgs = self
+                    .auth
+                    .list_orgs()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "orgs": orgs }))
+            }
+            methods::CREATE_ORG => {
+                #[derive(Deserialize)]
+                struct P {
+                    name: String,
+                }
+                let p: P = parse_params(params)?;
+                self.auth
+                    .create_org(&p.name)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::SELECT_ORG => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    organization_id: String,
+                }
+                let p: P = parse_params(params)?;
+                self.auth
+                    .select_org(&p.organization_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            _ => Err(RpcError::UnknownMethod(method.to_string())),
+        }
+    }
+}
+
 #[async_trait]
 impl RpcService for EngineRpc {
     async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
@@ -602,6 +699,11 @@ impl RpcService for EngineRpc {
         {
             let target = target.to_string();
             return self.forward(&target, method, params).await;
+        }
+        if AuthRpc::handles(method) {
+            return AuthRpc::new(self.auth()?.clone())
+                .handle(method, params)
+                .await;
         }
         match method {
             methods::LIST_HARNESSES => RpcReply::value(&self.registry.descriptors()),
@@ -899,68 +1001,6 @@ impl RpcService for EngineRpc {
                     .read_chunk(&p.path, p.offset, &roots)
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&chunk)
-            }
-            methods::AUTH_STATUS => Ok(RpcReply::Stream(watch_stream(self.auth()?.watch_state()))),
-            methods::SIGN_IN => {
-                let url = self
-                    .auth()?
-                    .start_sign_in()
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "url": url }))
-            }
-            methods::SIGN_IN_HEADLESS => {
-                let url = self.auth()?.start_headless_sign_in();
-                RpcReply::value(&serde_json::json!({ "url": url }))
-            }
-            methods::COMPLETE_SIGN_IN => {
-                #[derive(Deserialize)]
-                struct P {
-                    code: String,
-                }
-                let p: P = parse_params(params)?;
-                self.auth()?
-                    .complete_sign_in(&p.code)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
-            methods::SIGN_OUT => {
-                self.auth()?.sign_out();
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
-            methods::LIST_ORGS => {
-                let orgs = self
-                    .auth()?
-                    .list_orgs()
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "orgs": orgs }))
-            }
-            methods::CREATE_ORG => {
-                #[derive(Deserialize)]
-                struct P {
-                    name: String,
-                }
-                let p: P = parse_params(params)?;
-                self.auth()?
-                    .create_org(&p.name)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
-            }
-            methods::SELECT_ORG => {
-                #[derive(Deserialize)]
-                #[serde(rename_all = "camelCase")]
-                struct P {
-                    organization_id: String,
-                }
-                let p: P = parse_params(params)?;
-                self.auth()?
-                    .select_org(&p.organization_id)
-                    .await
-                    .map_err(|e| RpcError::Failed(e.to_string()))?;
-                RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             other => Err(RpcError::UnknownMethod(other.to_string())),
         }

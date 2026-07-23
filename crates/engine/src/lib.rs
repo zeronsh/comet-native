@@ -71,6 +71,7 @@ pub(crate) fn new_id() -> String {
     uuid::Uuid::new_v4().to_string()
 }
 
+#[derive(Debug, Clone)]
 pub struct EngineConfig {
     /// Data directory (default `~/.comet-native`, dev `~/.comet-native-dev`).
     pub data_dir: PathBuf,
@@ -320,19 +321,33 @@ pub struct Engine {
     pub config: EngineConfig,
 }
 
+/// A fully assembled identity-scoped engine plus the relay handle whose lifetime
+/// keeps this device reachable. Used by both the headless server and the headed
+/// in-process engine so their production authentication paths cannot diverge.
+pub struct EngineRuntime {
+    core: EngineCore,
+    _host_relay: Option<comet_rpc::HostRelay>,
+}
+
+impl EngineRuntime {
+    pub fn core(&self) -> &EngineCore {
+        &self.core
+    }
+
+    pub async fn shutdown(&self) {
+        self.core.shutdown().await;
+    }
+}
+
 impl Engine {
     pub fn new(config: EngineConfig) -> Self {
         Self { config }
     }
 
-    /// Run until ctrl-c: auth (dev or WorkOS), sessions engine + doc host + command
-    /// executor, IPC server, and — when edge+auth are ready — the device-room host
-    /// relay + peer link cache (targetDeviceId routing).
-    pub async fn run(self) -> anyhow::Result<()> {
-        let config = self.config;
-        tracing::info!(data_dir = %config.data_dir.display(), "engine starting");
-
-        std::fs::create_dir_all(&config.data_dir)?;
+    /// Resolve the shared dev/WorkOS auth configuration for headed and headless
+    /// modes. Production callers pass the baked WorkOS client id; explicit dev
+    /// bearers still opt into the local dev identity.
+    pub async fn build_auth(config: &EngineConfig) -> Auth {
         let mut auth_config = AuthConfig::new(config.edge_url.clone(), config.data_dir.clone());
         auth_config.workos_client_id = config.workos_client_id.clone();
         if let Ok(base) = std::env::var("COMET_WORKOS_API_BASE")
@@ -340,10 +355,6 @@ impl Engine {
         {
             auth_config.workos_api_base = base;
         }
-        // Fixed loopback callback port so the headed sign-in redirect URI
-        // (`http://127.0.0.1:{port}/callback`) can be registered EXACTLY with
-        // WorkOS (no wildcard ports there). `COMET_CALLBACK_PORT=0` forces the
-        // old ephemeral behavior.
         auth_config.callback_port = Some(
             std::env::var("COMET_CALLBACK_PORT")
                 .ok()
@@ -353,31 +364,20 @@ impl Engine {
         if let Some(token) = &config.edge_token {
             auth_config.dev_user_id = token.clone();
         }
-        let auth = Auth::detect(auth_config).await;
-        let _refresh_loop = auth.spawn_refresh_loop();
+        Auth::detect(auth_config).await
+    }
 
-        // WorkOS mode: gate edge features on a signed-in, org-scoped session. Headless
-        // sign-in prompt on TTY (paste-code flow) — CompleteSignIn over IPC also works.
-        if auth.workos_enabled() {
-            wait_for_sign_in(&auth).await;
-        }
-
-        // Edge sync: enabled when signed in (WorkOS) or a dev bearer is configured;
-        // `None` runs fully offline (no rooms, no relay) — M2 behavior preserved.
-        // The config carries `Auth` as a token PROVIDER, not a snapshot: every room
-        // (re)connect and edge request re-reads the (refreshed) access token, so an
-        // expired WorkOS token is never presented after a socket drop.
+    /// Open the identity-scoped stores and online transports for an auth session
+    /// that is already ready. The headed UI waits behind its sign-in gate before
+    /// calling this; headless mode waits on the terminal flow.
+    pub async fn assemble_runtime(
+        config: &EngineConfig,
+        auth: Auth,
+    ) -> anyhow::Result<EngineRuntime> {
         let online = (auth.workos_enabled() || config.edge_token.is_some())
             && auth.access_token().await.is_some();
         let edge = online.then(|| EdgeConfig::new(config.edge_url.clone(), Arc::new(auth.clone())));
 
-        // Workspace identity: the session's org claim (WorkOS) beats the dev
-        // bearer's `user@org` suffix beats the configured org; the user id
-        // comes from the signed-in session (dev mode: the bearer's prefix,
-        // mirroring the edge's parsing — the edge derives BOTH from the token,
-        // so the token must win over env or the room join 403s). Everything
-        // downstream — the per-user `ws3/{org}/{user}` workspace room and the
-        // org/user-scoped local store — keys off this pair.
         let dev_token_org = config
             .edge_token
             .as_deref()
@@ -405,17 +405,11 @@ impl Engine {
         core.set_auth(auth.clone());
         tracing::info!(device_id = %core.device_id, "engine core assembled");
 
-        // Device-room transport (edge + auth ready): host our relay room and enable
-        // peer dialing. Token refreshes take effect on every (re)dial via `Auth`'s
-        // TokenSource impl.
-        let _host_relay = edge.as_ref().map(|edge| {
+        let host_relay = edge.as_ref().map(|edge| {
             let links = comet_rpc::LinkCache::new(comet_rpc::LinkCacheConfig::new(
                 edge.url.clone(),
                 Arc::new(auth.clone()),
             ));
-            // Data-driven cooldown reset: a peer whose workspace presence
-            // heartbeat is fresh is reachable — clear its dial backoff so
-            // interactive remote control recovers immediately after a blip.
             let links_for_presence = links.clone();
             core.workspace
                 .set_peer_alive_hook(Arc::new(move |device_id: &str| {
@@ -425,14 +419,42 @@ impl Engine {
             core.start_host_relay(&edge.url)
         });
 
+        Ok(EngineRuntime {
+            core,
+            _host_relay: host_relay,
+        })
+    }
+
+    /// Run until ctrl-c: auth (dev or WorkOS), sessions engine + doc host + command
+    /// executor, IPC server, and — when edge+auth are ready — the device-room host
+    /// relay + peer link cache (targetDeviceId routing).
+    pub async fn run(self) -> anyhow::Result<()> {
+        let config = self.config;
+        tracing::info!(data_dir = %config.data_dir.display(), "engine starting");
+
+        std::fs::create_dir_all(&config.data_dir)?;
+        let auth = Self::build_auth(&config).await;
+        let _refresh_loop = auth.spawn_refresh_loop();
+
+        // WorkOS mode: gate edge features on a signed-in, org-scoped session. Headless
+        // sign-in prompt on TTY (paste-code flow) — CompleteSignIn over IPC also works.
+        if auth.workos_enabled() {
+            wait_for_sign_in(&auth).await;
+        }
+
+        let runtime = Self::assemble_runtime(&config, auth).await?;
+
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", config.ipc_port)).await?;
         tracing::info!(port = config.ipc_port, "IPC server listening");
-        let server = tokio::spawn(comet_rpc::serve_ws_listener(listener, core.rpc_service()));
+        let server = tokio::spawn(comet_rpc::serve_ws_listener(
+            listener,
+            runtime.core().rpc_service(),
+        ));
 
         tokio::signal::ctrl_c().await?;
         tracing::info!("shutting down");
         server.abort();
-        core.shutdown().await;
+        runtime.shutdown().await;
         Ok(())
     }
 }
