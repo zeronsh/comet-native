@@ -239,8 +239,17 @@ mod tests {
         assert_eq!(resolve_spans(&elems(), (2, 5), (0, 6)), spans);
     }
 
+    /// The drag tests below mutate the process-global selection state —
+    /// serialize them, or the parallel test runner interleaves their
+    /// begin/end_drag calls (long-standing flake).
+    fn state_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     #[test]
     fn drag_lifecycle_and_copy_joins() {
+        let _state = state_lock();
         begin("p1", 6);
         assert_eq!(drag_anchor("p1"), Some(6));
         assert_eq!(drag_anchor("p2"), None);
@@ -260,6 +269,7 @@ mod tests {
 
     #[test]
     fn empty_click_clears_on_release() {
+        let _state = state_lock();
         begin("p1", 3);
         assert_eq!(end_drag("p1"), None);
         assert_eq!(selected_text(), None);
@@ -267,6 +277,7 @@ mod tests {
 
     #[test]
     fn double_click_span() {
+        let _state = state_lock();
         begin_with_span("p1", "hello world", 6..11);
         assert_eq!(wash_range("p1"), Some(6..11));
         assert_eq!(end_drag("p1").as_deref(), Some("world"));
