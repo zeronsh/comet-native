@@ -542,11 +542,20 @@ impl Pickers {
             return;
         }
         self.open = Some(kind);
-        self.active = 0;
         self.search.update(cx, |input, cx| {
             input.set_placeholder("Search…", cx);
             input.set_text("", cx);
         });
+        // The keyboard-nav highlight starts ON the selected row — row 0
+        // otherwise reads as a second active row (user report).
+        self.active = match kind {
+            PickerKind::Checkout => match self.config.checkout {
+                CheckoutKind::Local => 0,
+                CheckoutKind::NewWorktree => 1,
+            },
+            PickerKind::Branch => self.selected_ref_index(cx),
+            _ => 0,
+        };
         // Searchable pickers focus the filter input (it sits inside the frame,
         // so the frame's key handler still sees arrows/Enter); the rest focus
         // the frame itself for pure keyboard nav.
@@ -562,7 +571,10 @@ impl Pickers {
             _ => window.focus(&self.focus, cx),
         }
         match kind {
-            PickerKind::Branch | PickerKind::Checkout => self.ensure_refs(false, cx),
+            // Force: the checkout state moves under us (a send mints a
+            // worktree+branch, terminals switch refs) — every open
+            // revalidates, keeping stale rows visible until fresh ones land.
+            PickerKind::Branch | PickerKind::Checkout => self.ensure_refs(true, cx),
             PickerKind::HarnessModel | PickerKind::Traits => {
                 self.ensure_harnesses(cx);
                 if let Some(harness) = self.effective_harness(cx) {
@@ -647,14 +659,23 @@ impl Pickers {
             return;
         }
         let fresh = self.refs_space.as_deref() == Some(space.id.as_str());
-        if !force && fresh && matches!(self.refs, Loadable::Ready(_) | Loadable::Loading) {
+        if fresh && matches!(self.refs, Loadable::Loading) {
+            return; // a load is already in flight
+        }
+        if !force && fresh && matches!(self.refs, Loadable::Ready(_)) {
             return;
         }
         let Some(engine) = self.engine(cx) else {
             return;
         };
         let local = self.state.read(cx).local_device_id.clone();
-        self.refs = Loadable::Loading;
+        // Stale-while-revalidate: a forced refresh of an already-loaded space
+        // keeps the current rows on screen while the reload runs — a send that
+        // just minted a worktree (or a terminal-side branch) appears on the
+        // popover's next open without the list ever flashing to a skeleton.
+        if !(force && fresh && matches!(self.refs, Loadable::Ready(_))) {
+            self.refs = Loadable::Loading;
+        }
         self.refs_space = Some(space.id.clone());
         self.refs_task = Some(cx.spawn(async move |this, cx| {
             let mut params = serde_json::Map::new();
@@ -680,6 +701,13 @@ impl Pickers {
                     },
                     Err(err) => Loadable::Error(err.to_string()),
                 };
+                // Rows landed under an open, un-searched popover: re-home the
+                // nav highlight to the selected row.
+                if pickers.open == Some(PickerKind::Branch)
+                    && pickers.search.read(cx).text().is_empty()
+                {
+                    pickers.active = pickers.selected_ref_index(cx);
+                }
                 cx.notify();
             })
             .ok();
@@ -710,12 +738,17 @@ impl Pickers {
         cx.notify();
     }
 
-    /// Mid-session ref switch: `git checkout` in the SESSION's cwd (worktree
-    /// or local folder — never a different path; harness resume is
-    /// cwd-scoped). The host's HEAD watcher reconciles `chat.branch`, which
-    /// syncs the new label to every device. Errors (dirty tree, branch
-    /// checked out in another worktree) keep the popover open with git's
-    /// message.
+    /// Mid-session ref switch, two shapes (both t3code):
+    ///
+    /// - The picked ref already lives in ANOTHER worktree → RETARGET the
+    ///   session onto that worktree (`reuseExistingWorktree`): a `setChatCwd`
+    ///   + `setChatBranch` mutate, no git. Resume is cwd-scoped, so the next
+    ///   run there starts a fresh harness conversation — the transcript
+    ///   itself carries on.
+    /// - Otherwise → `git checkout` in the SESSION's own cwd (`SwitchRef`,
+    ///   relay-forwarded to the host device). The host's HEAD watcher
+    ///   reconciles `chat.branch` to every device. Errors (dirty tree, ref
+    ///   held by the MAIN checkout) keep the popover open with git's message.
     fn switch_session_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
         if self.switching.is_some() {
             return; // one switch at a time
@@ -729,28 +762,56 @@ impl Pickers {
         let Some(engine) = self.engine(cx) else {
             return;
         };
+        if row.worktree_path.as_deref() == Some(cwd.as_str()) {
+            // Already this session's worktree — nothing to do.
+            self.open = None;
+            cx.notify();
+            return;
+        }
         let local = self.state.read(cx).local_device_id.clone();
         self.switch_error = None;
         self.switching = Some(row.name.clone());
         let ref_name = row.name.clone();
+        let retarget = row.worktree_path.clone();
         self.switch_task = Some(cx.spawn(async move |this, cx| {
-            let mut params = serde_json::Map::new();
-            params.insert("repoPath".into(), serde_json::Value::String(cwd));
-            params.insert(
-                "refName".into(),
-                serde_json::Value::String(ref_name.clone()),
-            );
-            // The checkout lives on the chat's HOST device (relay-forwarded).
-            if local.as_deref() != Some(chat.device_id.as_str()) {
-                params.insert(
-                    "targetDeviceId".into(),
-                    serde_json::Value::String(chat.device_id.clone()),
-                );
-            }
-            let result = engine
-                .client()
-                .call(methods::SWITCH_REF, serde_json::Value::Object(params))
-                .await;
+            let result = match retarget {
+                // Reuse the ref's existing worktree: move the session there.
+                Some(path) => {
+                    let cwd_mutate = serde_json::json!({
+                        "op": "setChatCwd",
+                        "chatId": chat.id,
+                        "cwd": path,
+                    });
+                    let branch_mutate = serde_json::json!({
+                        "op": "setChatBranch",
+                        "chatId": chat.id,
+                        "branch": ref_name,
+                    });
+                    match engine.client().call(methods::MUTATE, cwd_mutate).await {
+                        Ok(_) => engine.client().call(methods::MUTATE, branch_mutate).await,
+                        Err(err) => Err(err),
+                    }
+                }
+                // Plain ref: checkout in place on the chat's HOST device.
+                None => {
+                    let mut params = serde_json::Map::new();
+                    params.insert("repoPath".into(), serde_json::Value::String(cwd));
+                    params.insert(
+                        "refName".into(),
+                        serde_json::Value::String(ref_name.clone()),
+                    );
+                    if local.as_deref() != Some(chat.device_id.as_str()) {
+                        params.insert(
+                            "targetDeviceId".into(),
+                            serde_json::Value::String(chat.device_id.clone()),
+                        );
+                    }
+                    engine
+                        .client()
+                        .call(methods::SWITCH_REF, serde_json::Value::Object(params))
+                        .await
+                }
+            };
             this.update(cx, |pickers, cx| {
                 pickers.switching = None;
                 match result {
@@ -1017,6 +1078,24 @@ impl Pickers {
     }
 
     // ---- checkout resolution (the t3code env-mode semantics) ----
+
+    /// Index of the highlighted-by-default row in the (filtered) ref list:
+    /// the session's branch on an existing chat, the draft pick on a new one,
+    /// else the current branch. Capped to the displayed window.
+    fn selected_ref_index(&self, cx: &App) -> usize {
+        let rows = self.filtered_ref_rows(cx);
+        let selected = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.branch.clone())
+            .or_else(|| self.config.branch.clone());
+        let index = match selected {
+            Some(name) => rows.iter().position(|r| r.name == name).unwrap_or(0),
+            None => rows.iter().position(|r| r.current).unwrap_or(0),
+        };
+        index.min(MAX_REF_ROWS.saturating_sub(1))
+    }
 
     /// The picked ref's row, else the repo's current branch's row.
     fn selected_ref(&self) -> Option<&RepoRef> {

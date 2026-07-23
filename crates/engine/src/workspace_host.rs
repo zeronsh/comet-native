@@ -606,6 +606,12 @@ impl WorkspaceHost {
         Ok(self.inner.doc.set_chat_branch(chat_id, branch)?)
     }
 
+    /// Retarget a chat onto another folder (mid-session switch to an existing
+    /// worktree). Resume is cwd-scoped — the next run there starts fresh.
+    pub fn set_chat_cwd(&self, chat_id: &str, cwd: &str) -> Result<bool, EngineError> {
+        Ok(self.inner.doc.set_chat_cwd(chat_id, cwd)?)
+    }
+
     /// Canonical checkout identity for the chat's cwd (diff grouping key).
     pub fn set_chat_checkout(&self, chat_id: &str, checkout_id: &str) -> Result<bool, EngineError> {
         Ok(self.inner.doc.set_chat_checkout(chat_id, checkout_id)?)

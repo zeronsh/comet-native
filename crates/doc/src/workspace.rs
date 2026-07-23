@@ -332,6 +332,19 @@ impl WorkspaceDoc {
         Ok(true)
     }
 
+    /// Retarget the chat onto another folder — the mid-session "switch to an
+    /// existing worktree" move (t3code `reuseExistingWorktree`). LWW set;
+    /// `false` when no such row. Harness resume is cwd-scoped, so the next
+    /// run in the new folder starts a fresh harness conversation by design.
+    pub fn set_chat_cwd(&self, chat_id: &str, cwd: &str) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        row.insert("cwd", cwd)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
     /// Host-side checkout identity for the chat's cwd (diff grouping key).
     /// `false` when no such row.
     pub fn set_chat_checkout(&self, chat_id: &str, checkout_id: &str) -> Result<bool, DocError> {

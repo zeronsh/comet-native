@@ -267,6 +267,11 @@ enum MutateParams {
     /// "project · branch" sub-line.
     #[serde(rename_all = "camelCase")]
     SetChatBranch { chat_id: String, branch: String },
+    /// Retarget a chat onto another folder — mid-session switch to an
+    /// EXISTING worktree (the picked ref's checkout). Next run starts a
+    /// fresh harness conversation there (resume is cwd-scoped).
+    #[serde(rename_all = "camelCase")]
+    SetChatCwd { chat_id: String, cwd: String },
     /// Backdate a chat's activity timestamps (epoch ms) — the sidebar's
     /// relative-time column. Used by tooling/seeds; the doc fold sets these on
     /// real message traffic.
@@ -458,6 +463,11 @@ impl EngineRpc {
             MutateParams::SetChatBranch { chat_id, branch } => self
                 .workspace
                 .set_chat_branch(&chat_id, &branch)
+                .map_err(failed)
+                .map(drop),
+            MutateParams::SetChatCwd { chat_id, cwd } => self
+                .workspace
+                .set_chat_cwd(&chat_id, &cwd)
                 .map_err(failed)
                 .map(drop),
             MutateParams::SetChatActivity {
