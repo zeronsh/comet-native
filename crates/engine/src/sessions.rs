@@ -315,6 +315,15 @@ impl SessionsEngine {
         );
         self.set_status(chat_id, SessionStatus::Working, true);
 
+        // Name the chat NOW, off the first prompt — not after the first
+        // exchange completes ("called New session for a long time for no
+        // reason"; the titler only needs the prompt and skips titled chats;
+        // the Done-time call below stays as the retry for a failed
+        // generation).
+        if let Some(titles) = self.inner.titles.get() {
+            titles.maybe_generate(chat_id, harness_id, &request.prompt, &request.cwd);
+        }
+
         tokio::spawn(drive_run(
             self.inner.clone(),
             chat_id.to_string(),

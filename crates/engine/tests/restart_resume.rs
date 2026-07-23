@@ -662,10 +662,14 @@ async fn fresh_crash_auto_resumes_and_notes_the_interruption() {
         1
     );
     // The revived run continues the journal-recovered harness conversation.
-    let first = requests.lock().unwrap()[0].clone();
-    assert_eq!(first.prompt, "long task");
+    // (An auto-title request may precede it — titling fires at dispatch.)
+    let recorded = requests.lock().unwrap().clone();
+    let revived = recorded
+        .iter()
+        .find(|r| r.prompt == "long task")
+        .expect("auto-resumed dispatch reached the harness");
     assert_eq!(
-        first.resume.as_deref(),
+        revived.resume.as_deref(),
         Some("hs-crash"),
         "auto-resume must reattach the crashed harness session"
     );

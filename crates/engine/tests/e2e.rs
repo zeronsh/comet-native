@@ -1558,12 +1558,15 @@ async fn attachment_upload_then_run_threads_refs_and_paths() {
         other => panic!("unexpected user part {other:?}"),
     }
 
-    // The harness saw the staged paths on the request itself (the chat run;
-    // a later auto-title run legitimately carries none).
+    // The harness saw the staged paths on the request itself (the chat run —
+    // NOT the auto-title run, which fires at dispatch now, embeds the user
+    // prompt in its wrapper, and legitimately carries no attachments).
     let requests = seen.lock().unwrap().clone();
     let chat_run = requests
         .iter()
-        .find(|r| r.prompt.contains("what color is this?"))
+        .find(|r| {
+            r.prompt.contains("what color is this?") && !r.prompt.contains("word title")
+        })
         .expect("chat run reached the harness");
     assert_eq!(chat_run.attachments, vec![path.clone()]);
     assert!(chat_run.prompt.contains(&path));

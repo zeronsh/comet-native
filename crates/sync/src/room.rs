@@ -397,11 +397,18 @@ impl RoomActor {
                 SessionEnd::Evicted(reason) => {
                     if let Some(tx) = ready.take() {
                         let _ = tx.send(Err(SyncError::JoinRefused(reason)));
-                    } else {
-                        tracing::warn!(room = %self.room_id, %reason, "evicted from room");
-                        let _ = self.events.send(RoomEvent::Evicted);
+                        return;
                     }
-                    return;
+                    // NOT terminal for an established client: a transient
+                    // join refusal (expired token racing a refresh, an edge
+                    // deploy, a DO handover) used to kill the room FOREVER —
+                    // presence went "offline" and stayed there until an app
+                    // restart while the per-chat rooms kept working (user
+                    // report). Rejoin on a long, capped backoff instead; a
+                    // genuinely revoked session just keeps refusing quietly.
+                    tracing::warn!(room = %self.room_id, %reason, "evicted from room; rejoining with long backoff");
+                    let _ = self.events.send(RoomEvent::Evicted);
+                    backoff = BACKOFF_CAP;
                 }
                 SessionEnd::Lost(err) => {
                     if let Some(tx) = ready.take() {

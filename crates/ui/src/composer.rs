@@ -2125,14 +2125,20 @@ impl Composer {
                 }
                 .unwrap_or_else(|| ".".to_string());
                 let mut worktree_cwd: Option<String> = None;
+                // The picked ref rides createChat so the session footer names
+                // it from the first frame (it read "Select ref" until the
+                // host's diff reconciler got around to stamping the branch).
+                let mut chat_branch: Option<String> = None;
                 if is_new {
                     match &plan {
                         crate::pickers::CheckoutPlan::CurrentCheckout => {}
-                        crate::pickers::CheckoutPlan::ReuseWorktree { path } => {
+                        crate::pickers::CheckoutPlan::ReuseWorktree { path, branch } => {
                             cwd = path.clone();
                             worktree_cwd = Some(path.clone());
+                            chat_branch = Some(branch.clone());
                         }
                         crate::pickers::CheckoutPlan::NewWorktree { base } => {
+                            chat_branch = base.clone();
                             if let (Some(repo_path), Some(base)) = (&space_path, base) {
                                 let mut params = serde_json::json!({
                                     "repoPath": repo_path,
@@ -2175,6 +2181,12 @@ impl Composer {
                             object.insert(
                                 "cwd".into(),
                                 serde_json::Value::String(worktree_cwd.clone()),
+                            );
+                        }
+                        if let Some(branch) = &chat_branch {
+                            object.insert(
+                                "branch".into(),
+                                serde_json::Value::String(branch.clone()),
                             );
                         }
                         if let Some(config) = resolved.chat_config()

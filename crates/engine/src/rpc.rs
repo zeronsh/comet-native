@@ -233,6 +233,10 @@ enum MutateParams {
         space_id: String,
         #[serde(default)]
         config: Option<ChatConfig>,
+        /// The picked ref, named on the row from the first frame (the footer
+        /// read "Select ref" until the diff reconciler stamped it).
+        #[serde(default)]
+        branch: Option<String>,
         /// Cwd override (isolated-worktree path); default = the space's folder.
         #[serde(default)]
         cwd: Option<String>,
@@ -416,11 +420,19 @@ impl EngineRpc {
                 chat_id,
                 space_id,
                 config,
+                branch,
                 cwd,
-            } => self
-                .workspace
-                .create_chat(&chat_id, &space_id, config, cwd)
-                .map_err(failed),
+            } => {
+                self.workspace
+                    .create_chat(&chat_id, &space_id, config, cwd)
+                    .map_err(failed)?;
+                if let Some(branch) = branch.as_deref().filter(|b| !b.is_empty()) {
+                    self.workspace
+                        .set_chat_branch(&chat_id, branch)
+                        .map_err(failed)?;
+                }
+                Ok(())
+            }
             MutateParams::CreateSpace {
                 space_id,
                 device_id,
