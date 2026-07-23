@@ -426,6 +426,53 @@ impl Repos {
             .collect())
     }
 
+    /// Switch the checkout at `cwd` (a main folder OR a linked worktree) to
+    /// `ref_name` — the t3code `switchRef` port: an existing local branch is
+    /// checked out directly; a remote-only branch gets a local tracking
+    /// branch (`checkout --track origin/<ref>`). A dirty tree or a branch
+    /// already checked out in another worktree fails with git's own message.
+    /// Returns the resulting current branch.
+    pub async fn switch_ref(&self, cwd: &Path, ref_name: &str) -> Result<String, EngineError> {
+        let local = self
+            .git(
+                &[
+                    "show-ref",
+                    "--verify",
+                    "--quiet",
+                    &format!("refs/heads/{ref_name}"),
+                ],
+                Some(cwd),
+            )
+            .await
+            .is_ok();
+        if local {
+            self.git(&["checkout", ref_name], Some(cwd)).await?;
+        } else {
+            let remote = format!("origin/{ref_name}");
+            let has_remote = self
+                .git(
+                    &[
+                        "show-ref",
+                        "--verify",
+                        "--quiet",
+                        &format!("refs/remotes/{remote}"),
+                    ],
+                    Some(cwd),
+                )
+                .await
+                .is_ok();
+            if has_remote {
+                self.git(&["checkout", "--track", &remote], Some(cwd))
+                    .await?;
+            } else {
+                // Unknown ref: let git produce the authoritative error.
+                self.git(&["checkout", ref_name], Some(cwd)).await?;
+            }
+        }
+        let out = self.git(&["branch", "--show-current"], Some(cwd)).await?;
+        Ok(out.trim().to_string())
+    }
+
     // ── worktrees ───────────────────────────────────────────────────────────
 
     /// `git worktree add` an isolated checkout under

@@ -96,6 +96,14 @@ struct RepoPathParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SwitchRefParams {
+    /// The checkout to switch — a session's cwd (main folder or worktree).
+    repo_path: String,
+    ref_name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct CreateWorktreeParams {
     #[serde(alias = "repo")]
     repo_path: String,
@@ -516,6 +524,7 @@ fn forwardable(method: &str) -> bool {
             | methods::CREATE_REPO
             | methods::LIST_BRANCHES
             | methods::LIST_REFS
+            | methods::SWITCH_REF
             | methods::LIST_FOLDERS
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
@@ -694,6 +703,15 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&refs)
+            }
+            methods::SWITCH_REF => {
+                let p: SwitchRefParams = parse_params(params)?;
+                let branch = self
+                    .repos
+                    .switch_ref(std::path::Path::new(&p.repo_path), &p.ref_name)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "branch": branch }))
             }
             methods::LIST_FOLDERS => {
                 let p: ListFoldersParams = parse_params(params)?;

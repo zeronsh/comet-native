@@ -292,6 +292,11 @@ pub struct Pickers {
     /// Own slot: the refs load runs concurrently with the eager
     /// harness/model loads — sharing `load_task` would abort one mid-flight.
     refs_task: Option<Task<()>>,
+    /// In-flight mid-session `SwitchRef` (the ref being switched to).
+    switching: Option<String>,
+    switch_task: Option<Task<()>>,
+    /// Last mid-session switch failure (shown in the ref popover).
+    switch_error: Option<String>,
     mutate_task: Option<Task<()>>,
     _search_events: Subscription,
     _state_observe: Subscription,
@@ -320,6 +325,7 @@ impl Pickers {
                 this.config.model = None;
                 this.config.reasoning = None;
                 this.config.model_options.clear();
+                this.switch_error = None;
             }
             // A space switch invalidates the branch draft + cache — the folder
             // (and possibly the device) changed under them.
@@ -371,6 +377,9 @@ impl Pickers {
             boot_focus_pending: open.is_some(),
             load_task: None,
             refs_task: None,
+            switching: None,
+            switch_task: None,
+            switch_error: None,
             mutate_task: None,
             _search_events: search_events,
             _state_observe: state_observe,
@@ -543,6 +552,7 @@ impl Pickers {
         // the frame itself for pure keyboard nav.
         match kind {
             PickerKind::Branch => {
+                self.switch_error = None; // stale mid-session failures don't linger
                 let handle = self.search.read(cx).focus_handle(cx);
                 self.search.update(cx, |input, cx| {
                     input.set_placeholder("Search refs…", cx);
@@ -679,6 +689,12 @@ impl Pickers {
     // ---- selections ----
 
     fn pick_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
+        // Existing session: the pick SWITCHES the session's checkout (the
+        // t3code mid-session `switchRef`) instead of updating the draft.
+        if self.state.read(cx).selected_chat_row().is_some() {
+            self.switch_session_ref(row, cx);
+            return;
+        }
         self.config.branch = Some(row.name.clone());
         if row.worktree_path.is_some() {
             // Reuse the ref's existing worktree ("Current worktree") — the
@@ -691,6 +707,64 @@ impl Pickers {
             self.config.checkout = CheckoutKind::NewWorktree;
         }
         self.open = None;
+        cx.notify();
+    }
+
+    /// Mid-session ref switch: `git checkout` in the SESSION's cwd (worktree
+    /// or local folder — never a different path; harness resume is
+    /// cwd-scoped). The host's HEAD watcher reconciles `chat.branch`, which
+    /// syncs the new label to every device. Errors (dirty tree, branch
+    /// checked out in another worktree) keep the popover open with git's
+    /// message.
+    fn switch_session_ref(&mut self, row: RepoRef, cx: &mut Context<Self>) {
+        if self.switching.is_some() {
+            return; // one switch at a time
+        }
+        let Some(chat) = self.state.read(cx).selected_chat_row().cloned() else {
+            return;
+        };
+        let Some(cwd) = chat.cwd.clone() else {
+            return;
+        };
+        let Some(engine) = self.engine(cx) else {
+            return;
+        };
+        let local = self.state.read(cx).local_device_id.clone();
+        self.switch_error = None;
+        self.switching = Some(row.name.clone());
+        let ref_name = row.name.clone();
+        self.switch_task = Some(cx.spawn(async move |this, cx| {
+            let mut params = serde_json::Map::new();
+            params.insert("repoPath".into(), serde_json::Value::String(cwd));
+            params.insert(
+                "refName".into(),
+                serde_json::Value::String(ref_name.clone()),
+            );
+            // The checkout lives on the chat's HOST device (relay-forwarded).
+            if local.as_deref() != Some(chat.device_id.as_str()) {
+                params.insert(
+                    "targetDeviceId".into(),
+                    serde_json::Value::String(chat.device_id.clone()),
+                );
+            }
+            let result = engine
+                .client()
+                .call(methods::SWITCH_REF, serde_json::Value::Object(params))
+                .await;
+            this.update(cx, |pickers, cx| {
+                pickers.switching = None;
+                match result {
+                    Ok(_) => {
+                        pickers.open = None;
+                        // Checkout state changed — refresh tags/current.
+                        pickers.ensure_refs(true, cx);
+                    }
+                    Err(err) => pickers.switch_error = Some(err.to_string()),
+                }
+                cx.notify();
+            })
+            .ok();
+        }));
         cx.notify();
     }
 
@@ -1201,21 +1275,27 @@ impl Pickers {
     /// "Local checkout" + the chat's branch).
     pub fn render_footer(&mut self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let theme = Theme::of(cx).clone();
-        let (space, new_chat, chat_cwd, chat_branch) = {
+        // A selected chat whose workspace row hasn't synced yet (the moment
+        // right after send mints it) still renders the DRAFT footer — the
+        // values are identical, so the toolbar never blinks through a
+        // half-empty locked state.
+        let (space, session) = {
             let state = self.state.read(cx);
             let space = state.selected_space_row().cloned()?;
-            let new_chat = state.selected_chat.is_none();
-            let chat = state.selected_chat_row();
-            (
-                space,
-                new_chat,
-                chat.and_then(|c| c.cwd.clone()),
-                chat.and_then(|c| c.branch.clone()),
-            )
+            let session = state
+                .selected_chat
+                .as_ref()
+                .and_then(|_| state.selected_chat_row().cloned());
+            (space, session)
         };
         if !space.git_detected {
             return None;
         }
+        let new_chat = session.is_none();
+
+        // Refs feed both modes (draft labels, mid-session switch list) —
+        // eager + idempotent.
+        self.ensure_refs(false, cx);
 
         // Symmetric: the container's 8px gap sits above the toolbar; bleeding
         // 8 of the container's 16px bottom padding (mb -8) leaves 8 below —
@@ -1229,45 +1309,50 @@ impl Pickers {
             .px(px(10.0))
             .mb(px(-8.0));
 
-        if !new_chat {
-            // Locked: the session's checkout was fixed at creation. A cwd
-            // other than the space folder = a worktree.
-            let is_worktree = chat_cwd.as_deref().is_some_and(|cwd| cwd != space.path);
+        // The ref side is LIVE in both modes: draft pick on a new chat,
+        // checkout switch on an existing session (t3code keeps its branch
+        // selector interactive mid-session too).
+        let ref_label = match &session {
+            Some(chat) => chat
+                .branch
+                .clone()
+                .map(SharedString::from)
+                .unwrap_or_else(|| SharedString::from("Select ref")),
+            None => self.ref_label(),
+        };
+        let mut overlay: Option<(PickerKind, AnyElement)> = match self.open {
+            Some(PickerKind::Branch) => {
+                let content = self.render_branch_popover(cx);
+                Some((PickerKind::Branch, self.popover_frame(320.0, content, cx)))
+            }
+            Some(PickerKind::Checkout) if new_chat => {
+                let content = self.render_checkout_popover(cx);
+                Some((PickerKind::Checkout, self.popover_frame(224.0, content, cx)))
+            }
+            _ => None,
+        };
+        let ref_chip = self.footer_chip(
+            PickerKind::Branch,
+            "picker-branch",
+            crate::icons::GIT_BRANCH,
+            ref_label,
+            &theme,
+            cx,
+        );
+        let ref_side = attach_overlay(ref_chip, &mut overlay, PickerKind::Branch, "branch-popover");
+
+        if let Some(chat) = &session {
+            // The checkout KIND is fixed at creation (harness resume is
+            // cwd-scoped — the session never moves folders): label only.
+            let is_worktree = chat.cwd.as_deref().is_some_and(|cwd| cwd != space.path);
             let (icon_path, label) = if is_worktree {
                 (crate::icons::FOLDER_WITH_FILES, "Worktree")
             } else {
                 (crate::icons::FOLDER, "Local checkout")
             };
             let left = Self::footer_label(icon_path, SharedString::from(label), &theme);
-            let right = chat_branch.map(|branch| {
-                Self::footer_label(
-                    crate::icons::GIT_BRANCH,
-                    SharedString::from(branch),
-                    &theme,
-                )
-            });
-            return Some(
-                row.child(left)
-                    .children(right)
-                    .into_any_element(),
-            );
+            return Some(row.child(left).child(ref_side).into_any_element());
         }
-
-        // New session: live controls. Refs load eagerly so the labels resolve
-        // before either popover opens (idempotent).
-        self.ensure_refs(false, cx);
-
-        let mut overlay: Option<(PickerKind, AnyElement)> = match self.open {
-            Some(PickerKind::Branch) => {
-                let content = self.render_branch_popover(cx);
-                Some((PickerKind::Branch, self.popover_frame(320.0, content, cx)))
-            }
-            Some(PickerKind::Checkout) => {
-                let content = self.render_checkout_popover(cx);
-                Some((PickerKind::Checkout, self.popover_frame(224.0, content, cx)))
-            }
-            _ => None,
-        };
 
         let kind_icon = match (self.config.checkout, self.selected_ref_worktree().is_some()) {
             (CheckoutKind::Local, false) => crate::icons::FOLDER,
@@ -1281,14 +1366,6 @@ impl Pickers {
             &theme,
             cx,
         );
-        let ref_chip = self.footer_chip(
-            PickerKind::Branch,
-            "picker-branch",
-            crate::icons::GIT_BRANCH,
-            self.ref_label(),
-            &theme,
-            cx,
-        );
         Some(
             row.child(attach_overlay(
                 kind_chip,
@@ -1296,12 +1373,7 @@ impl Pickers {
                 PickerKind::Checkout,
                 "checkout-popover",
             ))
-            .child(attach_overlay(
-                ref_chip,
-                &mut overlay,
-                PickerKind::Branch,
-                "branch-popover",
-            ))
+            .child(ref_side)
             .into_any_element(),
         )
     }
@@ -1399,6 +1471,15 @@ impl Pickers {
         let rows = self.filtered_ref_rows(cx);
         let total = rows.len();
         let shown = total.min(MAX_REF_ROWS);
+        // Existing session: the highlighted row is the SESSION's branch and a
+        // pick switches the checkout (see `pick_ref`); a new chat highlights
+        // the draft pick.
+        let session_branch = self
+            .state
+            .read(cx)
+            .selected_chat_row()
+            .and_then(|c| c.branch.clone());
+        let switching = self.switching.clone();
         let body: AnyElement = match &self.refs {
             Loadable::Loading | Loadable::Idle => {
                 popover::skeleton_rows("branch-skeleton", &theme, 4)
@@ -1415,7 +1496,7 @@ impl Pickers {
                 .into_any_element(),
             Loadable::Ready(_) => {
                 let active = self.active;
-                let selected = self.config.branch.clone();
+                let selected = session_branch.or_else(|| self.config.branch.clone());
                 div()
                     .id("branch-list")
                     .flex()
@@ -1436,6 +1517,7 @@ impl Pickers {
                             } else {
                                 None
                             };
+                            let is_switching = switching.as_deref() == Some(row.name.as_str());
                             popover::menu_row_nav(
                                 &theme,
                                 is_selected,
@@ -1443,10 +1525,20 @@ impl Pickers {
                                 format!("branch-row-{ix}"),
                             )
                             .id(("branch-row", ix))
+                            .when(switching.is_some(), |el| el.opacity(0.55))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_ref(row.clone(), cx);
                             }))
                             .child(div().flex_1().min_w_0().truncate().child(label))
+                            .when(is_switching, |el| {
+                                el.child(
+                                    div()
+                                        .flex_none()
+                                        .text_size(px(10.0))
+                                        .text_color(theme.text_muted.opacity(0.6))
+                                        .child(SharedString::from("switching…")),
+                                )
+                            })
                             .when_some(tag, |el, tag| {
                                 el.child(
                                     div()
@@ -1467,6 +1559,18 @@ impl Pickers {
             .flex_col()
             .child(self.search_box(&theme))
             .child(body);
+        // Mid-session switch failure (dirty tree, ref checked out elsewhere):
+        // git's own message, under a hairline.
+        if let Some(error) = &self.switch_error {
+            popover = popover.child(popover::menu_section().child(
+                div()
+                    .px(px(Theme::SPACE_SM))
+                    .py(px(4.0))
+                    .text_size(px(11.0))
+                    .text_color(theme.danger.opacity(0.9))
+                    .child(SharedString::from(error.clone())),
+            ));
+        }
         if total > shown {
             popover = popover.child(
                 popover::menu_section().child(
