@@ -113,6 +113,18 @@ pub fn active_after_reorder(active: usize, from: usize, to: usize) -> usize {
     }
 }
 
+/// Merge the `targetDeviceId` passthrough into RPC params (no-op for chats on
+/// the connected engine's own device).
+fn with_target(mut params: serde_json::Value, target: &Option<String>) -> serde_json::Value {
+    if let (Some(target), Some(object)) = (target, params.as_object_mut()) {
+        object.insert(
+            "targetDeviceId".into(),
+            serde_json::Value::String(target.clone()),
+        );
+    }
+    params
+}
+
 /// Active index after closing `closed` (given the new, shorter length).
 pub fn active_after_close(active: usize, closed: usize, len_after: usize) -> usize {
     let shifted = if closed < active { active - 1 } else { active };
@@ -284,6 +296,23 @@ impl TerminalPanel {
         self.state.read(cx).engine().cloned()
     }
 
+    /// The chat's host device when it differs from the connected engine's own —
+    /// the PTY lives on the chat's device (feature-inventory §2.1 "terminals
+    /// live on the chat's host device"), so every terminal RPC for a remote
+    /// chat needs the `targetDeviceId` passthrough. Without it the local
+    /// engine checks the chat's cwd against its OWN filesystem and fails with
+    /// "Session working directory is unavailable" (user report).
+    fn chat_target(&self, chat: &str, cx: &App) -> Option<String> {
+        let state = self.state.read(cx);
+        let device = state
+            .chats
+            .iter()
+            .find(|c| c.id == chat)?
+            .device_id
+            .clone();
+        (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
+    }
+
     fn selected_chat(&self, cx: &App) -> Option<String> {
         self.state.read(cx).selected_chat.clone()
     }
@@ -335,7 +364,8 @@ impl TerminalPanel {
         });
         entry.active = entry.tabs.len() - 1;
 
-        let run = Self::spawn_session(chat.clone(), key, engine, cx);
+        let target = self.chat_target(&chat, cx);
+        let run = Self::spawn_session(chat.clone(), key, engine, target, cx);
         if let Some(tab) = self.tab_mut(&chat, key) {
             tab._run = Some(run);
         }
@@ -347,6 +377,7 @@ impl TerminalPanel {
         chat: String,
         key: u64,
         engine: EngineHandle,
+        target: Option<String>,
         cx: &mut Context<Self>,
     ) -> Task<()> {
         cx.spawn(async move |this, cx| {
@@ -363,7 +394,10 @@ impl TerminalPanel {
                 .client()
                 .call_as::<TerminalSession>(
                     methods::OPEN_TERMINAL,
-                    serde_json::json!({ "chatId": chat, "cols": cols, "rows": rows }),
+                    with_target(
+                        serde_json::json!({ "chatId": chat, "cols": cols, "rows": rows }),
+                        &target,
+                    ),
                 )
                 .await;
             let session = match opened {
@@ -399,7 +433,13 @@ impl TerminalPanel {
                 // Tab was closed before the open completed — release the PTY.
                 let _ = engine
                     .client()
-                    .call(methods::CLOSE_TERMINAL, serde_json::json!({ "terminalId": terminal_id }))
+                    .call(
+                        methods::CLOSE_TERMINAL,
+                        with_target(
+                            serde_json::json!({ "terminalId": terminal_id }),
+                            &target,
+                        ),
+                    )
                     .await;
                 return;
             }
@@ -417,7 +457,10 @@ impl TerminalPanel {
                     .client()
                     .subscribe(
                         methods::SUBSCRIBE_TERMINAL,
-                        serde_json::json!({ "terminalId": terminal_id, "afterSeq": after_seq }),
+                        with_target(
+                            serde_json::json!({ "terminalId": terminal_id, "afterSeq": after_seq }),
+                            &target,
+                        ),
                     )
                     .await;
                 let mut rx = match subscribed {
@@ -476,6 +519,7 @@ impl TerminalPanel {
         event: TerminalEvent,
         cx: &mut Context<Self>,
     ) -> StreamDisposition {
+        let target = self.chat_target(chat, cx);
         let Some(tab) = self.tab_mut(chat, key) else {
             return StreamDisposition::Stop;
         };
@@ -494,7 +538,10 @@ impl TerminalPanel {
                             .client()
                             .call(
                                 methods::WRITE_TERMINAL,
-                                serde_json::json!({ "terminalId": id, "data": data }),
+                                with_target(
+                                    serde_json::json!({ "terminalId": id, "data": data }),
+                                    &target,
+                                ),
                             )
                             .await;
                     })
@@ -553,6 +600,7 @@ impl TerminalPanel {
         let Some(engine) = self.engine(cx) else {
             return;
         };
+        let target = self.chat_target(&chat, cx);
         let Some(tab) = self.tab_mut(&chat, key) else {
             return;
         };
@@ -572,7 +620,10 @@ impl TerminalPanel {
                 .client()
                 .call(
                     methods::WRITE_TERMINAL,
-                    serde_json::json!({ "terminalId": id, "data": data }),
+                    with_target(
+                        serde_json::json!({ "terminalId": id, "data": data }),
+                        &target,
+                    ),
                 )
                 .await;
         })
@@ -631,6 +682,7 @@ impl TerminalPanel {
         tab.emulator.resize(cols, rows);
         let key = tab.key;
         let engine = self.engine(cx);
+        let target = self.chat_target(&chat, cx);
         if let (Some(engine), Some(tab)) = (engine, self.tab_mut(&chat, key)) {
             let id = tab.terminal_id.clone();
             tab.resize_task = Some(cx.spawn(async move |this, cx| {
@@ -654,7 +706,10 @@ impl TerminalPanel {
                     .client()
                     .call(
                         methods::RESIZE_TERMINAL,
-                        serde_json::json!({ "terminalId": id, "cols": cols, "rows": rows }),
+                        with_target(
+                            serde_json::json!({ "terminalId": id, "cols": cols, "rows": rows }),
+                            &target,
+                        ),
                     )
                     .await;
             }));
@@ -702,6 +757,7 @@ impl TerminalPanel {
 
     fn close_tab(&mut self, chat: &str, key: u64, window: &mut Window, cx: &mut Context<Self>) {
         let engine = self.engine(cx);
+        let target = self.chat_target(chat, cx);
         let Some(tabs) = self.chats.get_mut(chat) else {
             return;
         };
@@ -723,7 +779,7 @@ impl TerminalPanel {
                     .client()
                     .call(
                         methods::CLOSE_TERMINAL,
-                        serde_json::json!({ "terminalId": id }),
+                        with_target(serde_json::json!({ "terminalId": id }), &target),
                     )
                     .await;
             })

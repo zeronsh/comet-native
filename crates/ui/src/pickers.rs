@@ -588,7 +588,10 @@ impl Pickers {
     // ---- loads ----
 
     fn ensure_harnesses(&mut self, cx: &mut Context<Self>) {
-        if matches!(self.harnesses, Loadable::Ready(_) | Loadable::Loading) {
+        // Only load from Idle: `render` re-runs this every frame, so an Error
+        // that could re-trigger a load would flip back to Loading before the
+        // retry row ever painted (and spam the engine). Retry resets to Idle.
+        if !matches!(self.harnesses, Loadable::Idle) {
             return;
         }
         let Some(engine) = self.engine(cx) else {
@@ -618,10 +621,13 @@ impl Pickers {
     }
 
     fn ensure_models(&mut self, harness: HarnessId, cx: &mut Context<Self>) {
-        if matches!(
-            self.models.get(&harness),
-            Some(Loadable::Ready(_)) | Some(Loadable::Loading)
-        ) {
+        // Absent or Idle only — same render-loop hazard as `ensure_harnesses`;
+        // the retry row clears the map to re-arm.
+        if self
+            .models
+            .get(&harness)
+            .is_some_and(|slot| !matches!(slot, Loadable::Idle))
+        {
             return;
         }
         let Some(engine) = self.engine(cx) else {
@@ -662,7 +668,12 @@ impl Pickers {
         if fresh && matches!(self.refs, Loadable::Loading) {
             return; // a load is already in flight
         }
-        if !force && fresh && matches!(self.refs, Loadable::Ready(_)) {
+        // Non-forced (the footer's eager kick, re-run every render) only loads
+        // from Idle: an Error must WAIT for an explicit retry/reopen (force),
+        // or re-render would flip Error back to Loading before the retry row
+        // ever paints — an eternal skeleton plus an RPC storm (user report:
+        // "the ref dropdown never loads anything").
+        if !force && fresh && !matches!(self.refs, Loadable::Idle) {
             return;
         }
         let Some(engine) = self.engine(cx) else {
@@ -1585,6 +1596,7 @@ impl Pickers {
                         PickerKind::Branch | PickerKind::Checkout => this.ensure_refs(true, cx),
                         PickerKind::HarnessModel | PickerKind::Traits => {
                             this.harnesses = Loadable::Idle;
+                            this.models.clear();
                             this.ensure_harnesses(cx);
                         }
                     }))

@@ -463,6 +463,11 @@ pub struct Changes {
     diffs: Vec<CheckoutDiff>,
     started: bool,
     error: Option<SharedString>,
+    /// Device the running watch targets: `None` = the connected engine itself,
+    /// `Some(id)` = a remote chat's host (relay-forwarded). The stream only
+    /// carries the TARGET device's checkouts, so a selection change onto a
+    /// chat hosted elsewhere tears the watch down and re-subscribes.
+    watch_target: Option<String>,
     watch_task: Option<Task<()>>,
     parsed: Option<ParsedDiff>,
     parse_task: Option<Task<()>>,
@@ -484,6 +489,7 @@ impl Changes {
             diffs: Vec::new(),
             started: false,
             error: None,
+            watch_target: None,
             watch_task: None,
             parsed: None,
             parse_task: None,
@@ -495,27 +501,56 @@ impl Changes {
         }
     }
 
-    /// Start the `WatchCheckoutDiffs` subscription (idempotent). Retries with
-    /// a flat 2 s delay if the stream fails or ends; the last content stays
-    /// visible under an error banner meanwhile.
+    /// The selected chat's host device when it differs from the connected
+    /// engine's own — diffs are produced where the checkout lives, so a
+    /// remote chat's watch must relay-forward (`targetDeviceId`) to its host.
+    /// Without this the local stream simply never carries the remote checkout
+    /// and the pane sits on "Preparing diff…" forever (user report).
+    fn desired_target(&self, cx: &App) -> Option<String> {
+        let state = self.state.read(cx);
+        let device = state.selected_chat_row()?.device_id.clone();
+        (state.local_device_id.as_deref() != Some(device.as_str())).then_some(device)
+    }
+
+    /// Start the `WatchCheckoutDiffs` subscription (idempotent per target).
+    /// Retries with a flat 2 s delay if the stream fails or ends; the last
+    /// content stays visible under an error banner meanwhile.
     pub fn ensure_watch(&mut self, cx: &mut Context<Self>) {
-        if self.started {
+        let target = self.desired_target(cx);
+        if self.started && self.watch_target == target {
             return;
         }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             // Engine still booting — retry on the next state change via sync().
             return;
         };
+        // Retarget: the old task (and its stream) drop; rows from the previous
+        // device would resolve against the wrong checkouts, so clear them.
+        if self.started {
+            self.diffs.clear();
+            self.error = None;
+        }
         self.started = true;
-        self.watch_task = Some(Self::spawn_watch(engine, cx));
+        self.watch_target = target.clone();
+        self.watch_task = Some(Self::spawn_watch(engine, target, cx));
     }
 
-    fn spawn_watch(engine: EngineHandle, cx: &mut Context<Self>) -> Task<()> {
+    fn spawn_watch(engine: EngineHandle, target: Option<String>, cx: &mut Context<Self>) -> Task<()> {
         cx.spawn(async move |this, cx| {
             loop {
+                let mut params = serde_json::Map::new();
+                if let Some(target) = &target {
+                    params.insert(
+                        "targetDeviceId".into(),
+                        serde_json::Value::String(target.clone()),
+                    );
+                }
                 let subscribed = engine
                     .client()
-                    .subscribe(methods::WATCH_CHECKOUT_DIFFS, serde_json::json!({}))
+                    .subscribe(
+                        methods::WATCH_CHECKOUT_DIFFS,
+                        serde_json::Value::Object(params),
+                    )
                     .await;
                 match subscribed {
                     Ok(mut rx) => {
@@ -568,10 +603,9 @@ impl Changes {
 
     /// Reconcile parsed content with the currently-resolved diff.
     fn sync(&mut self, cx: &mut Context<Self>) {
-        // A watch attempt deferred by a booting engine retries here.
-        if !self.started {
-            self.ensure_watch(cx);
-        }
+        // The watch follows the selected chat's host device (idempotent when
+        // the target is unchanged); a boot-deferred attempt retries here too.
+        self.ensure_watch(cx);
         let Some(diff) = self.resolved(cx) else {
             if self.parsed.take().is_some() {
                 self.list.reset(0);

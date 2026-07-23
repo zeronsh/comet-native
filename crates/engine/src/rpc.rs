@@ -538,6 +538,8 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_FOLDERS
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
+            // Checkout diffs are produced on the device holding the checkout.
+            | methods::WATCH_CHECKOUT_DIFFS
             // Terminals live on the chat's host device.
             | methods::OPEN_TERMINAL
             | methods::SUBSCRIBE_TERMINAL
@@ -565,7 +567,9 @@ fn forwardable(method: &str) -> bool {
 fn is_stream_method(method: &str) -> bool {
     matches!(
         method,
-        methods::WATCH_DOC_MESSAGES | methods::SUBSCRIBE_TERMINAL
+        methods::WATCH_DOC_MESSAGES
+            | methods::SUBSCRIBE_TERMINAL
+            | methods::WATCH_CHECKOUT_DIFFS
     )
 }
 
