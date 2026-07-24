@@ -158,9 +158,14 @@ struct SessionView: View {
     private func content(chat: Chat, store: SessionStore) -> some View {
         let status = liveStatus(chat: chat)
         return VStack(spacing: 0) {
+            // The status strip floats over the transcript's faded bottom edge
+            // instead of stacking below it — the loader sits on the
+            // transparent zone and content is never pushed around.
             TranscriptView(store: store, chatId: chat.id)
-
-            statusStrip(chat: chat, status: status)
+                .overlay(alignment: .bottom) {
+                    statusStrip(chat: chat, status: status)
+                        .allowsHitTesting(false)
+                }
 
             if let request = store.openInputRequest {
                 QuestionPanel(requestId: request.requestId, questions: request.questions) { requestId, answers in

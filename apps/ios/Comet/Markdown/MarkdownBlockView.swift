@@ -90,6 +90,49 @@ extension [InlineRun] {
     }
 }
 
+extension [InlineRun] {
+    /// The veiled variant of `styled()`: runs are further split at veil-chunk
+    /// boundaries so fading text keeps the renderer's rounded code washes.
+    func styledVeiled(size: CGFloat = MD.textSize,
+                      weight: Font.Weight = .regular,
+                      baseColor: Color = Theme.text,
+                      veil: RowVeil) -> Text {
+        let total = reduce(0) { $0 + $1.text.count }
+        let segments = veil.segments(totalLength: total)
+        var result = Text(verbatim: "")
+        var offset = 0
+        for run in self {
+            let chars = [Character](run.text)
+            let runRange = offset..<(offset + chars.count)
+            for segment in segments {
+                let lower = Swift.max(segment.range.lowerBound, runRange.lowerBound)
+                let upper = Swift.min(segment.range.upperBound, runRange.upperBound)
+                guard lower < upper else { continue }
+                let slice = String(chars[(lower - offset)..<(upper - offset)])
+                if run.style.code {
+                    var piece = AttributedString(slice)
+                    piece.font = Theme.mono(size - 1.5)
+                    piece.foregroundColor = Theme.inlineCodeText.opacity(segment.alpha)
+                    result = result + Text(piece).customAttribute(InlineCodeAttribute())
+                } else {
+                    var sliced = run
+                    sliced.text = slice
+                    var attr = [sliced].attributed(size: size, weight: weight, baseColor: baseColor)
+                    if segment.alpha < 1 {
+                        for r in attr.runs {
+                            let base: Color = attr[r.range].foregroundColor ?? baseColor
+                            attr[r.range].foregroundColor = base.opacity(segment.alpha)
+                        }
+                    }
+                    result = result + Text(attr)
+                }
+            }
+            offset += chars.count
+        }
+        return result
+    }
+}
+
 // MARK: - Block view
 
 struct MarkdownBlockView: View {

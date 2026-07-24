@@ -67,8 +67,7 @@ struct SheetSelectRow: View {
                 Spacer(minLength: 8)
                 Image(systemName: "checkmark")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
-                    .opacity(selected ? 1 : 0)
+                    .foregroundStyle(Theme.text)                    .opacity(selected ? 1 : 0)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 11)

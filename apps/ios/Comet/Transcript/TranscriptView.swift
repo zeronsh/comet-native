@@ -36,7 +36,7 @@ struct TranscriptView: View {
                     rowView(row, previous: ix > 0 ? rows[ix - 1] : nil, isFirst: ix == 0)
                         .id(row.id)
                 }
-                Color.clear.frame(height: 24)  // last-row bottom pad
+                Color.clear.frame(height: 44)  // bottom pad clears the fade + floating status strip
             }
             .frame(maxWidth: Self.maxContentWidth)
             .frame(maxWidth: .infinity)
@@ -87,11 +87,14 @@ struct TranscriptView: View {
             .allowsHitTesting(false)
         }
         .overlay(alignment: .bottom) {
-            // Matching fade into the status strip / composer.
+            // Short ramp that reaches FULL bg at the bottom edge — content
+            // dissolves completely beneath the floating status strip, but the
+            // fade starts low enough that message bottoms stay legible.
             LinearGradient(
                 stops: [
                     .init(color: Theme.bg.opacity(0), location: 0),
-                    .init(color: Theme.bg.opacity(0.85), location: 0.6),
+                    .init(color: Theme.bg.opacity(0.55), location: 0.45),
+                    .init(color: Theme.bg, location: 0.9),
                     .init(color: Theme.bg, location: 1),
                 ],
                 startPoint: .top, endPoint: .bottom
@@ -266,26 +269,22 @@ struct MarkdownRowView: View {
         switch block {
         case .paragraph(let runs):
             let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
-            Text(applying(veil, to: runs.attributed()))
-                                .lineSpacing(MD.lineHeight - MD.textSize - 4)
+            runs.styledVeiled(veil: veil)
+                .textRenderer(InlineCodeRenderer())
+                .lineSpacing(MD.lineHeight - MD.textSize - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .heading(let level, let runs):
             let m = MD.headingMetrics(level)
             let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
-            Text(applying(veil, to: runs.attributed(size: m.size, weight: .semibold)))
-                                .lineSpacing(m.line - m.size - 4)
+            runs.styledVeiled(size: m.size, weight: .semibold, veil: veil)
+                .textRenderer(InlineCodeRenderer())
+                .lineSpacing(m.line - m.size - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         default:
             MarkdownBlockView(block: block, cacheKey: row.id)
         }
-    }
-
-    private func applying(_ veil: RowVeil, to attr: AttributedString) -> AttributedString {
-        var copy = attr
-        veil.apply(to: &copy, sourceOffset: 0)
-        return copy
     }
 }
 

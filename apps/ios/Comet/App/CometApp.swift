@@ -13,7 +13,10 @@ struct CometApp: App {
             RootView()
                 .environment(model)
                 .preferredColorScheme(.dark)
-                .tint(Theme.accent)
+                // Monochrome controls: glass buttons, toolbar icons, and
+                // toggles render white like the desktop — accent stays paint
+                // for status/markdown, never chrome.
+                .tint(Theme.text)
                 .background(Theme.bg)
         }
     }

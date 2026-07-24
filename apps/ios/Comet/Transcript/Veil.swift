@@ -75,6 +75,32 @@ final class RowVeil {
         return 1 - pow(1 - p, curvePow)
     }
 
+    /// The veil as contiguous (range, alpha) segments over a text of
+    /// `totalLength` characters — settled text alpha 1, fading spans partial.
+    /// Drives the Text-concatenation render path (rounded code washes need
+    /// per-segment Text pieces, not AttributedString mutation).
+    func segments(totalLength: Int) -> [(range: Range<Int>, alpha: Double)] {
+        let now = Date().timeIntervalSince1970 * 1000
+        var out: [(Range<Int>, Double)] = []
+        var cursor = 0
+        for span in spans.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
+            let lower = min(span.range.lowerBound, totalLength)
+            let upper = min(span.range.upperBound, totalLength)
+            if lower > cursor {
+                out.append((cursor..<lower, 1))
+            }
+            if upper > lower {
+                let progress = min(max((now - span.startMs) / span.durationMs, 0), 1)
+                out.append((lower..<upper, Self.opacity(progress: progress)))
+            }
+            cursor = max(cursor, upper)
+        }
+        if cursor < totalLength {
+            out.append((cursor..<totalLength, 1))
+        }
+        return out
+    }
+
     /// Multiply fading alphas into an AttributedString whose characters map
     /// 1:1 onto the veiled source range starting at `sourceOffset`.
     func apply(to attr: inout AttributedString, sourceOffset: Int) {

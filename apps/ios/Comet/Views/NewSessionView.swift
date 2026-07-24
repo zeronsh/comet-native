@@ -568,7 +568,7 @@ struct ModelPickerSheet: View {
                 } else {
                     Image(systemName: "checkmark")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
+                        .foregroundStyle(Theme.text)
                         .opacity(selected ? 1 : 0)
                 }
             }
@@ -706,7 +706,7 @@ struct RefPickerSheet: View {
                 } else {
                     Image(systemName: "checkmark")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Theme.accent)
+                        .foregroundStyle(Theme.text)
                         .opacity(ref.name == selected ? 1 : 0)
                 }
             }
@@ -795,7 +795,7 @@ struct CheckoutPickerSheet: View {
                 Spacer(minLength: 8)
                 Image(systemName: "checkmark")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(Theme.accent)
+                    .foregroundStyle(Theme.text)
                     .opacity(rowKind == kind ? 1 : 0)
             }
             .padding(.horizontal, 16)
