@@ -318,17 +318,19 @@ pub fn attention_rank(status: ChatIndicator) -> u8 {
     }
 }
 
-/// Active-list order: attention buckets (awaiting > errored > working >
-/// completed), recency (`last_message_at` desc, `created_at` fallback) within a
-/// bucket, id tiebreak so the sort is total. Pure.
+/// Active-list order: pure recency (`last_message_at` desc, `created_at`
+/// fallback), id tiebreak so the sort is total. Deliberately NOT
+/// attention-bucketed: status drives the DOT, never the position — bucketing
+/// meant that merely OPENING a completed session (completed → seen → idle)
+/// dropped its row under the pointer (user report: "their position in the
+/// scrollbar changes"). Matches the old sidebar, which rendered chats in
+/// recency order and let the dots carry urgency; [`attention_rank`] still
+/// aggregates the space rows' urgency dot.
 pub fn sort_active(rows: &mut Vec<(ChatIndicator, &Chat)>) {
-    rows.sort_by(|(sa, a), (sb, b)| {
+    rows.sort_by(|(_, a), (_, b)| {
         let ka = a.last_message_at.unwrap_or(a.created_at);
         let kb = b.last_message_at.unwrap_or(b.created_at);
-        attention_rank(*sa)
-            .cmp(&attention_rank(*sb))
-            .then_with(|| kb.cmp(&ka))
-            .then_with(|| a.id.cmp(&b.id))
+        kb.cmp(&ka).then_with(|| a.id.cmp(&b.id))
     });
 }
 
@@ -790,8 +792,8 @@ impl AppState {
     }
 
     /// The sidebar's Sessions list: every non-archived chat of a LIVE space,
-    /// on any device — idle included — attention-sorted (awaiting > errored >
-    /// working > completed > idle, recency within each bucket).
+    /// on any device — idle included — in pure recency order (status drives
+    /// the dot, never the position; see [`sort_active`]).
     pub fn overview_chats(&self, now: DateTime<Utc>) -> Vec<(ChatIndicator, &Chat)> {
         let mut rows: Vec<(ChatIndicator, &Chat)> = self
             .visible_chats()
@@ -1404,7 +1406,7 @@ mod tests {
     }
 
     #[test]
-    fn active_list_sorts_by_attention_then_recency() {
+    fn active_list_sorts_by_recency_only_status_never_moves_rows() {
         let a = chat("a", 0, Some(10)); // Completed (older)
         let b = chat("b", 0, Some(20)); // Completed (newer)
         let c = chat("c", 0, Some(5)); // AwaitingInput
@@ -1417,7 +1419,19 @@ mod tests {
         ];
         sort_active(&mut rows);
         let order: Vec<&str> = rows.iter().map(|(_, c)| c.id.as_str()).collect();
-        assert_eq!(order, ["c", "d", "b", "a"]);
+        assert_eq!(order, ["b", "a", "c", "d"], "recency desc, status ignored");
+
+        // Opening a completed session (completed → seen → idle) must NOT
+        // change its position (user report: rows jumped under the pointer).
+        let mut seen = vec![
+            (ChatIndicator::Idle, &a),
+            (ChatIndicator::Completed, &b),
+            (ChatIndicator::AwaitingInput, &c),
+            (ChatIndicator::Working, &d),
+        ];
+        sort_active(&mut seen);
+        let order_after: Vec<&str> = seen.iter().map(|(_, c)| c.id.as_str()).collect();
+        assert_eq!(order, order_after);
     }
 
     #[test]
