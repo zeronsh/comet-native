@@ -2041,7 +2041,7 @@ impl Pickers {
         // model options that used to live in the separate traits popover.
         let traits = self.render_traits_sections(self.model_rows_len(cx), cx);
         div()
-            .max_h(px(560.0))
+            .max_h(px(420.0))
             .flex()
             .flex_col()
             .child(
@@ -2460,7 +2460,9 @@ impl Render for Pickers {
             .items_center()
             .flex_none()
             .gap(px(4.0))
-            .child(attach_overlay(
+            // End-anchored: the menu's right edge sits flush with the chip's
+            // right edge (user request), same as the footer's ref popover.
+            .child(attach_overlay_end(
                 combined_chip,
                 &mut overlay,
                 PickerKind::HarnessModel,
