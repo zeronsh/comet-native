@@ -23,7 +23,7 @@ const DEFAULT_EDGE_URL: &str = "https://edge.comet.zeron.sh";
 /// authorize URL), so baking it in is safe. Overridden by `COMET_WORKOS_CLIENT_ID`;
 /// set it to the empty string — or set a dev bearer via `COMET_EDGE_TOKEN` — to
 /// force dev-mode auth instead.
-const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01KWD0E9SYPV2WE4QN9TP9DP0W";
+const DEFAULT_WORKOS_CLIENT_ID: &str = "client_01KWD0EAKZKD50YCQJNYSRE4BY";
 
 fn edge_url_from_env() -> String {
     std::env::var("COMET_EDGE_URL")
