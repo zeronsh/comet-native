@@ -322,7 +322,7 @@ struct ToolGroupView: View {
                 .frame(height: 26)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressWashButtonStyle(cornerRadius: 6))
 
             if open {
                 VStack(alignment: .leading, spacing: 0) {

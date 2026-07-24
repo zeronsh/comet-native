@@ -29,6 +29,7 @@ struct SpaceView: View {
                         ChatRow(chat: chat, showLocation: false)
                     }
                 }
+                .buttonStyle(PressWashButtonStyle())
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 1, leading: 12, bottom: 1, trailing: 12))

@@ -160,3 +160,25 @@ struct SheetPrimaryButton: View {
         .disabled(!enabled)
     }
 }
+
+/// Pressed-state wash for tappable rows and chips — the desktop's
+/// `element_hover` (white 6%) translated to touch. Fades out on release.
+struct PressWashButtonStyle: ButtonStyle {
+    var cornerRadius: CGFloat = 8
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(configuration.isPressed ? Theme.elementHover : Color.clear,
+                        in: RoundedRectangle(cornerRadius: cornerRadius))
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+/// Capsule variant for chips: deepens the existing fill while pressed.
+struct ChipPressButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .overlay(Capsule().fill(configuration.isPressed ? whiteAlpha(0.06) : .clear))
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}

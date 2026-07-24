@@ -173,7 +173,7 @@ struct NewSessionView: View {
                 .frame(height: 36)
                 .background(whiteAlpha(0.10), in: Capsule())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(ChipPressButtonStyle())
 
             // Checkout + ref chips — the desktop footer (git spaces only).
             if space?.gitDetected == true {
@@ -204,7 +204,7 @@ struct NewSessionView: View {
             .frame(height: 36)
             .background(whiteAlpha(0.10), in: Capsule())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(ChipPressButtonStyle())
     }
 
     // MARK: Checkout model (pickers.rs port)

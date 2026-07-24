@@ -119,6 +119,7 @@ struct HomeView: View {
                 } label: {
                     SpaceRow(space: space)
                 }
+                .buttonStyle(PressWashButtonStyle())
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 2, leading: 12, bottom: 2, trailing: 12))
@@ -146,6 +147,7 @@ struct HomeView: View {
                 } label: {
                     ChatRow(chat: chat, showLocation: true)
                 }
+                .buttonStyle(PressWashButtonStyle())
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 1, leading: 12, bottom: 1, trailing: 12))
