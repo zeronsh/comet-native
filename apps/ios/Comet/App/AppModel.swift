@@ -49,6 +49,7 @@ final class AppModel {
 
     func restore() {
         if demo != nil { return }
+        DocDisk.prune(keep: 80)
         let args = ProcessInfo.processInfo.arguments
         if args.contains("-e2e") {
             Task { await E2ERunner.run(model: self) }
@@ -152,6 +153,7 @@ final class AppModel {
         demo = nil
         Keychain.delete(key: "accessToken")
         Keychain.delete(key: "refreshToken")
+        DocDisk.wipeAll()  // local doc state belongs to the signed-in identity
         storedUserId = ""
         storedOrgId = ""
         phase = .signedOut
@@ -375,6 +377,12 @@ final class AppModel {
             return
         }
         workspace?.markSeen(chatId: chatId)
+    }
+
+    /// Persist every open doc now (app backgrounding).
+    func flushDocs() {
+        workspace?.flushToDisk()
+        sessionStores.values.forEach { $0.flushToDisk() }
     }
 
     // MARK: Session stores

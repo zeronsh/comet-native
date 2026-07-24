@@ -28,9 +28,17 @@ final class WorkspaceStore {
         self.config = config
     }
 
+    @ObservationIgnored private var saver: DocSaver?
+
     func start() {
         guard room == nil else { return }
         let roomId = "ws3/\(config.orgId)/\(config.userId)"
+        // Local-first: hydrate from the on-device snapshot before joining —
+        // the sidebar renders immediately and the join backfills incrementally.
+        if DocDisk.load(into: doc, id: roomId) {
+            project()
+        }
+        saver = DocSaver(docId: roomId, doc: doc)
         let client = RoomClient(roomId: roomId, doc: doc) { [config] in
             await config.workspaceSocketURL()
         } events: { [weak self] event in
@@ -40,10 +48,11 @@ final class WorkspaceStore {
 
         // Local commits → room. The subscription fires synchronously inside
         // commit; hop to the actor to send.
-        let localSub = doc.subscribeLocalUpdate { [weak client] update in
+        let localSub = doc.subscribeLocalUpdate { [weak client, weak self] update in
             guard let client else { return }
             let bytes = [UInt8](update)
             Task { await client.sendLocalUpdate(bytes) }
+            Task { @MainActor [weak self] in self?.saver?.poke() }
         }
         subscriptions.append(localSub)
 
@@ -53,10 +62,16 @@ final class WorkspaceStore {
         project()
     }
 
+    /// Backgrounding hook: persist immediately.
+    func flushToDisk() {
+        saver?.flush()
+    }
+
     func stop() {
         heartbeatTask?.cancel()
         heartbeatTask = nil
         subscriptions.removeAll()
+        saver?.flush()
         if let room {
             Task { await room.stop() }
         }
@@ -73,6 +88,7 @@ final class WorkspaceStore {
             connected = false
         case .remoteUpdate:
             project()
+            saver?.poke()
         case .ephemeralUpdate:
             projectPresence()
         }

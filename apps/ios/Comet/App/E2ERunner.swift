@@ -36,6 +36,8 @@ enum E2ERunner {
             log("FAIL no workspace store")
             return
         }
+        // Warm-start probe: rows visible BEFORE any network = disk hydration.
+        log("warm-start devices=\(workspace.devices.count) chats=\(workspace.chats.count)")
         let device = await poll(timeout: 15, label: "workspace device") {
             workspace.connected ? workspace.devices.first { $0.platform != "ios" } : nil
         }

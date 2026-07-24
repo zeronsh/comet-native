@@ -40,26 +40,41 @@ final class SessionStore {
         entries = new
     }
 
+    @ObservationIgnored private var saver: DocSaver?
+
     func start() {
         guard room == nil, !offline else { return }
+        // Local-first: last-synced transcript renders instantly (even when the
+        // host device is offline); the join backfills incrementally from here.
+        if DocDisk.load(into: doc, id: chatId) {
+            project()
+        }
+        saver = DocSaver(docId: chatId, doc: doc)
         let client = RoomClient(roomId: chatId, doc: doc) { [config, chatId] in
             await config.sessionSocketURL(chatId: chatId)
         } events: { [weak self] event in
             Task { @MainActor [weak self] in self?.handle(event) }
         }
         room = client
-        let localSub = doc.subscribeLocalUpdate { [weak client] update in
+        let localSub = doc.subscribeLocalUpdate { [weak client, weak self] update in
             guard let client else { return }
             let bytes = [UInt8](update)
             Task { await client.sendLocalUpdate(bytes) }
+            Task { @MainActor [weak self] in self?.saver?.poke() }
         }
         subscriptions.append(localSub)
         Task { await client.start() }
         project()
     }
 
+    /// Backgrounding hook: persist immediately.
+    func flushToDisk() {
+        saver?.flush()
+    }
+
     func stop() {
         subscriptions.removeAll()
+        saver?.flush()
         if let room {
             Task { await room.stop() }
         }
@@ -76,6 +91,7 @@ final class SessionStore {
             connected = false
         case .remoteUpdate:
             project()
+            saver?.poke()
         case .ephemeralUpdate:
             break
         }
