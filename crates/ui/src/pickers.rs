@@ -348,7 +348,7 @@ impl Pickers {
         // headless compositors, so captures need a data-side path.
         let open = match std::env::var("COMET_OPEN_PICKER").ok().as_deref() {
             Some("model") => Some(PickerKind::HarnessModel),
-            Some("traits") => Some(PickerKind::Traits),
+            Some("traits") => Some(PickerKind::HarnessModel),
             Some("branch") => Some(PickerKind::Branch),
             Some("checkout") => Some(PickerKind::Checkout),
             _ => None,
@@ -543,6 +543,13 @@ impl Pickers {
     }
 
     fn toggle(&mut self, kind: PickerKind, window: &mut Window, cx: &mut Context<Self>) {
+        // Model + traits merged into ONE menu (user request): the traits chip
+        // opens the combined harness/model/reasoning popover.
+        let kind = if kind == PickerKind::Traits {
+            PickerKind::HarnessModel
+        } else {
+            kind
+        };
         if self.open == Some(kind) {
             self.open = None;
             cx.notify();
@@ -1284,8 +1291,11 @@ impl Pickers {
                 let count = match self.open {
                     Some(PickerKind::Branch) => self.filtered_ref_rows(cx).len().min(MAX_REF_ROWS),
                     Some(PickerKind::Checkout) => 2,
-                    Some(PickerKind::HarnessModel) => self.model_rows_len(cx),
-                    Some(PickerKind::Traits) => self.trait_rows_len(cx),
+                    Some(PickerKind::HarnessModel) => {
+                        // Combined menu: models first, then the ladder/options.
+                        self.model_rows_len(cx) + self.trait_rows_len(cx)
+                    }
+                    Some(PickerKind::Traits) => 0, // merged into HarnessModel
                     None => 0,
                 };
                 self.active = popover::menu_step(Some(self.active), count, delta).unwrap_or(0);
@@ -1293,9 +1303,16 @@ impl Pickers {
             }
             MenuKey::Enter if !search_focused => {
                 if self.open == Some(PickerKind::HarnessModel) {
-                    self.activate_model_row(cx);
-                } else if self.open == Some(PickerKind::Traits) {
-                    self.activate_trait_row(cx);
+                    // Combined flat index: models, then ladder/options.
+                    let models = self.model_rows_len(cx);
+                    if self.active < models {
+                        self.activate_model_row(cx);
+                    } else {
+                        let saved = self.active;
+                        self.active = saved - models;
+                        self.activate_trait_row(cx);
+                        self.active = saved;
+                    }
                 } else if self.open == Some(PickerKind::Checkout) {
                     let kind = if self.active == 0 {
                         CheckoutKind::Local
@@ -1328,7 +1345,8 @@ impl Pickers {
             PickerKind::HarnessModel => "picker-model",
             PickerKind::Traits => "picker-traits",
         };
-        let open = self.open == Some(kind);
+        let open = self.open == Some(kind)
+            || (kind == PickerKind::Traits && self.open == Some(PickerKind::HarnessModel));
         // Ghost pill (comet composer/styles.tsx `pill`): `h-8 rounded-lg px-2.5
         // gap-1.5 text-[12px] font-medium text-muted-foreground`, icons size-4,
         // hover/open wash — no border, no caret; the actions row stays quiet.
@@ -1870,7 +1888,7 @@ impl Pickers {
                 }
                 div()
                     .flex()
-                    .flex_col()
+                    .flex_row()
                     .gap(px(4.0))
                     .p(px(4.0))
                     .children(descriptors.into_iter().enumerate().map(|(ix, descriptor)| {
@@ -1878,17 +1896,26 @@ impl Pickers {
                         let is_viewed = effective == Some(harness);
                         let is_disabled = locked && !is_viewed;
                         let (icon_path, tint) = harness_brand_icon(harness);
-                        // Square brand tab; the committed harness keeps a
-                        // 2px bar hugging the rail's right edge.
+                        let name: SharedString = descriptor.name.clone().into();
+                        // Horizontal brand tab: icon + name pill, active wash
+                        // on the viewed harness (user request: tabs on top).
                         div()
                             .id(("harness-tab", ix))
-                            .relative()
-                            .w_full()
-                            .h(px(40.0))
+                            .flex_1()
+                            .h(px(32.0))
                             .flex()
+                            .flex_row()
                             .items_center()
                             .justify_center()
+                            .gap(px(6.0))
                             .rounded(px(8.0))
+                            .text_size(px(12.0))
+                            .font_weight(gpui::FontWeight::MEDIUM)
+                            .text_color(if is_viewed {
+                                theme.text
+                            } else {
+                                theme.text_muted
+                            })
                             .when(is_viewed, |el| el.bg(crate::theme::white_alpha(0.10)))
                             .when(is_disabled, |el| el.opacity(0.35))
                             .when(!is_disabled, |el| {
@@ -1898,25 +1925,14 @@ impl Pickers {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_harness(harness, cx);
                             }))
-                            .child(crate::icons::icon(icon_path).size(px(20.0)).text_color(
+                            .child(crate::icons::icon(icon_path).size(px(16.0)).text_color(
                                 tint.unwrap_or(if is_viewed {
                                     theme.text
                                 } else {
                                     theme.text_muted
                                 }),
                             ))
-                            .when(is_viewed, |el| {
-                                el.child(
-                                    div()
-                                        .absolute()
-                                        .right(px(-4.0))
-                                        .top(px(12.0))
-                                        .w(px(2.0))
-                                        .h(px(16.0))
-                                        .rounded_l_full()
-                                        .bg(theme.text),
-                                )
-                            })
+                            .child(div().truncate().child(name))
                     }))
                     .into_any_element()
             }
@@ -1951,9 +1967,6 @@ impl Pickers {
                     .flex()
                     .flex_col()
                     .gap(px(2.0))
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
                     .children(models.into_iter().enumerate().map(|(ix, model)| {
                         let label: SharedString = model.label.clone().into();
                         let description: Option<SharedString> =
@@ -2015,39 +2028,55 @@ impl Pickers {
                 .into_any_element(),
         };
 
+        // One combined menu (user request): harness tabs across the top,
+        // then the viewed harness's models, then the reasoning ladder and
+        // model options that used to live in the separate traits popover.
+        let traits = self.render_traits_sections(self.model_rows_len(cx), cx);
         div()
-            .h(px(256.0))
+            .max_h(px(560.0))
             .flex()
-            .flex_row()
-            // Left rail: `w-12 border-r border-white/[0.07] bg-white/[0.02]`.
+            .flex_col()
             .child(
                 div()
-                    .w(px(48.0))
                     .flex_none()
-                    .h_full()
-                    .border_r_1()
+                    .border_b_1()
                     .border_color(crate::theme::white_alpha(0.07))
                     .bg(crate::theme::white_alpha(0.02))
                     .child(rail),
             )
             .child(
+                // ONE scroll surface for models + reasoning + options — a
+                // nested models scroller clipped the traits tail against the
+                // menu's max height.
                 div()
+                    .id("model-menu-scroll")
                     .flex_1()
-                    .min_w_0()
-                    .h_full()
+                    .min_h_0()
                     .flex()
                     .flex_col()
                     .p(px(4.0))
+                    .overflow_y_scroll()
                     .child(popover::menu_heading(&theme, &heading_label))
-                    .child(models),
+                    .child(models)
+                    .child(
+                        div()
+                            .mt(px(4.0))
+                            .pt(px(4.0))
+                            .border_t_1()
+                            .border_color(crate::theme::white_alpha(0.07))
+                            .child(traits),
+                    ),
             )
             .into_any_element()
     }
 
-    /// The traits picker (comet traits-picker.tsx): one menu — the reasoning
-    /// ladder plus every advertised model option as headed row sections.
-    /// Selecting keeps the menu open; the selected row carries the check.
-    fn render_traits_popover(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    /// The reasoning ladder plus every advertised model option as headed row
+    /// sections (formerly the separate traits popover — comet
+    /// traits-picker.tsx; now the tail of the combined model menu). Selecting
+    /// keeps the menu open; the selected row carries the check. `nav_offset`
+    /// is the flat keyboard index where these rows start (the model rows
+    /// come first in the combined menu).
+    fn render_traits_sections(&mut self, nav_offset: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let Some(model) = self.selected_model(cx).cloned() else {
             return popover::skeleton_rows("traits-skeleton", &theme, 3);
@@ -2057,8 +2086,8 @@ impl Pickers {
         // the ladder check mirrors the chip summary.
         let current = self.effective_reasoning(cx);
         // Keyboard nav: flat row index — ladder first, then option choices in
-        // render order.
-        let nav_active = self.active;
+        // render order — offset past the model rows above.
+        let nav_active = self.active.wrapping_sub(nav_offset);
         let ladder_len = levels.len();
 
         let ladder: AnyElement = if levels.is_empty() {
@@ -2390,11 +2419,8 @@ impl Render for Pickers {
                     self.popover_frame_flush(320.0, content, cx),
                 ))
             }
-            Some(PickerKind::Traits) => {
-                let content = self.render_traits_popover(cx);
-                Some((PickerKind::Traits, self.popover_frame(224.0, content, cx)))
-            }
-            None => None,
+            // Traits merged into the HarnessModel popover.
+            Some(PickerKind::Traits) | None => None,
         };
 
         // Left cluster (the branch chip moved to the composer FOOTER row).
