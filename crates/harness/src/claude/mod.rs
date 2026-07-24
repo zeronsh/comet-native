@@ -68,6 +68,11 @@ fn resolve_claude_executable() -> Option<PathBuf> {
     }
     candidates.push(PathBuf::from("/opt/homebrew/bin/claude"));
     candidates.push(PathBuf::from("/usr/local/bin/claude"));
+    candidates.extend(
+        crate::node_version_manager_bins()
+            .into_iter()
+            .map(|d| d.join(exe)),
+    );
     candidates.into_iter().find(|p| p.exists())
 }
 
@@ -124,7 +129,8 @@ impl ClaudeHarness {
         resolve_claude_executable().ok_or_else(|| {
             HarnessError::NotInstalled(
                 "claude (searched PATH, ~/.claude/local, ~/.local/bin, /opt/homebrew/bin, \
-                 /usr/local/bin; set CLAUDE_CODE_EXECUTABLE to override)"
+                 /usr/local/bin, and fnm/nvm/volta/pnpm/bun install dirs; set \
+                 CLAUDE_CODE_EXECUTABLE to override)"
                     .into(),
             )
         })
@@ -132,6 +138,7 @@ impl ClaudeHarness {
 
     fn build_command(&self, exe: &PathBuf, request: &RunRequest) -> Command {
         let mut cmd = Command::new(exe);
+        crate::prepend_exe_dir_to_path(&mut cmd, exe);
         cmd.args([
             "--print",
             "--input-format",

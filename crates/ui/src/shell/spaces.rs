@@ -1136,6 +1136,12 @@ impl Shell {
             .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 this.add_space_key(event, cx)
             }))
+            // Clicking the scrim dismisses (user requirement) — same close
+            // path as Escape.
+            .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                this.add_space = None;
+                cx.notify();
+            }))
             .child(tabs)
             .child(input_row)
             .child(crumbs)

@@ -79,6 +79,11 @@ fn resolve_codex_executable() -> Option<PathBuf> {
     }
     candidates.push(PathBuf::from("/opt/homebrew/bin/codex"));
     candidates.push(PathBuf::from("/usr/local/bin/codex"));
+    candidates.extend(
+        crate::node_version_manager_bins()
+            .into_iter()
+            .map(|d| d.join(exe)),
+    );
     candidates.into_iter().find(|p| p.exists())
 }
 
@@ -155,7 +160,8 @@ impl CodexHarness {
         resolve_codex_executable().ok_or_else(|| {
             HarnessError::NotInstalled(
                 "codex (searched PATH, ~/.local/bin, ~/.codex/bin, ~/.npm-global/bin, \
-                 /opt/homebrew/bin, /usr/local/bin; set CODEX_EXECUTABLE to override)"
+                 /opt/homebrew/bin, /usr/local/bin, and fnm/nvm/volta/pnpm/bun install \
+                 dirs; set CODEX_EXECUTABLE to override)"
                     .into(),
             )
         })
@@ -220,6 +226,7 @@ impl Harness for CodexHarness {
         }
         let mut cmd = Command::new(&exe);
         cmd.arg("app-server");
+        crate::prepend_exe_dir_to_path(&mut cmd, &exe);
         if !request.cwd.is_empty() {
             cmd.current_dir(&request.cwd);
         }
