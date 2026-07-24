@@ -53,14 +53,16 @@ const MAX_FRAGMENT_COUNT: u64 = 16 * 1024;
 /// Presence timeout, matching the edge's `new EphemeralStore(30_000)`.
 const EPHEMERAL_TIMEOUT_MS: i64 = 30_000;
 /// Text `"ping"` keepalive interval — answered by the DO's hibernation-safe
-/// auto-response pair without waking it.
-const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// auto-response pair without waking it. 15s for the same reason as the
+/// device relay's (crates/rpc/src/device_room.rs): an idle-flow reaper on a
+/// laptop's uplink can fire inside a minute, and a 30s keepalive races it.
+const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// Silence lease: every ping elicits an auto-pong, so a healthy socket sees
 /// inbound traffic at least once per `PING_INTERVAL`. No inbound frame for a
-/// full interval plus grace = the socket is dead (half-open TCP after a NAT
-/// timeout or sleep/wake) — drop it and let the reconnect loop take over
+/// couple of intervals plus grace = the socket is dead (half-open TCP after a
+/// NAT timeout or sleep/wake) — drop it and let the reconnect loop take over
 /// instead of waiting minutes for a TCP write failure.
-const SILENCE_LEASE: Duration = Duration::from_secs(45);
+const SILENCE_LEASE: Duration = Duration::from_secs(40);
 const BACKOFF_BASE: Duration = Duration::from_millis(250);
 const BACKOFF_CAP: Duration = Duration::from_secs(30);
 /// Stop resubmitting after this many InvalidUpdate-triggered rejoins in one

@@ -47,12 +47,20 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// Text `"ping"` keepalive — answered by the DO's hibernation-safe auto-response
 /// pair (`edge/src/device-room.ts`) without waking it.
-const PING_INTERVAL: Duration = Duration::from_secs(30);
+///
+/// 15s, not 30: a laptop's uplink (corporate proxy, VPN split-tunnel extension,
+/// consumer NAT) can reap an idle flow well inside a minute, and a keepalive
+/// that races the reaper loses. The frame is 4 bytes and never wakes the DO, so
+/// the only cost of halving the interval is that the host stays reachable.
+const PING_INTERVAL: Duration = Duration::from_secs(15);
 /// Silence lease: every ping elicits an auto-pong, so a healthy socket sees
 /// inbound traffic at least once per `PING_INTERVAL`. No inbound frame for a
-/// full interval plus grace = dead socket (half-open TCP after NAT timeout or
-/// sleep/wake) — drop it and reconnect instead of waiting on a TCP write error.
-const SILENCE_LEASE: Duration = Duration::from_secs(45);
+/// couple of intervals plus grace = dead socket (half-open TCP after NAT
+/// timeout or sleep/wake) — drop it and reconnect instead of waiting on a TCP
+/// write error. Must stay well under the relay's own host-liveness window
+/// (`HOST_LIVENESS_MS`, edge/src/device-room.ts) so a host replaces its dead
+/// socket before the relay gives up on the device.
+const SILENCE_LEASE: Duration = Duration::from_secs(40);
 
 // ---------------------------------------------------------------------------
 // Frame codec
@@ -395,7 +403,10 @@ async fn host_session(
                 Some(Ok(_)) => last_rx = tokio::time::Instant::now(),
             },
             _ = ping.tick() => {
-                if sink.send(WsMessage::Text("ping".into())).await.is_err() {
+                if let Err(err) = sink.send(WsMessage::Text("ping".into())).await {
+                    // The usual way a silently-reaped uplink surfaces: reads
+                    // saw nothing, the keepalive write is what finds the body.
+                    tracing::warn!(error = %err, "device-room: host keepalive failed; reconnecting");
                     break;
                 }
             }

@@ -49,10 +49,30 @@ interface SocketState {
   userId: string;
   role: "host" | "client";
   connId: string;
+  /** Accept time — the liveness floor until the socket's first auto-pong. */
+  joinedAt?: number;
 }
 
 const HOST_TAG = "host";
 const clientTag = (connId: string) => `client:${connId}`;
+
+/** How long a host socket may go without proving liveness before the relay
+ * stops routing to it.
+ *
+ * A host whose network dies silently (laptop lid, NAT/proxy reaping an idle
+ * flow) leaves a socket the runtime still reports as connected: no close
+ * event ever fires, so `getWebSockets(HOST_TAG)` keeps returning it and the
+ * supersede-on-join `close()` never completes either. Picking `[0]` from that
+ * list therefore pinned the room to the OLDEST such corpse — every client
+ * frame vanished into it while the live host sat later in the list, and
+ * clients hung to their own timeouts because a non-empty host list also
+ * suppressed the `host_offline` bounce.
+ *
+ * Hosts ping every 15s (crates/rpc/src/device_room.rs PING_INTERVAL) and the
+ * DO's auto-response stamps a timestamp without waking us, so liveness is free
+ * to read. The window is sized for the 30s of older builds still in the fleet
+ * — 2.5 of their intervals — so upgrading engines is never a prerequisite. */
+const HOST_LIVENESS_MS = 75_000;
 
 /** Control frames the relay itself emits (kind " relay"). */
 // MUST byte-match packages/rpc device-frames.ts RELAY_KIND — clients compare
@@ -97,6 +117,25 @@ export class DeviceRoom implements DurableObject {
     );
   }
 
+  /** The host socket to route to: the freshest one that has proven itself
+   * alive within [`HOST_LIVENESS_MS`]. `undefined` = no live host, which is
+   * what makes clients see `host_offline` instead of hanging on a corpse. */
+  private liveHost(): WebSocket | undefined {
+    return pickLiveHost(
+      this.ctx.getWebSockets(HOST_TAG).map((ws) => ({
+        ws,
+        // Auto-pongs are stamped even while hibernating; `joinedAt` covers the
+        // window before a fresh socket's first ping. Sockets attached by an
+        // older deploy have neither and read as ancient — correct: they are.
+        lastSeenAt: Math.max(
+          this.ctx.getWebSocketAutoResponseTimestamp(ws)?.getTime() ?? 0,
+          (ws.deserializeAttachment() as SocketState | null)?.joinedAt ?? 0
+        )
+      })),
+      Date.now()
+    );
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     const userId = request.headers.get(AUTH_USER_HEADER);
@@ -129,7 +168,7 @@ export class DeviceRoom implements DurableObject {
       } else {
         this.ctx.acceptWebSocket(pair[1], [clientTag(connId)]);
       }
-      const state: SocketState = { userId, role, connId };
+      const state: SocketState = { userId, role, connId, joinedAt: Date.now() };
       pair[1].serializeAttachment(state);
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
@@ -151,7 +190,13 @@ export class DeviceRoom implements DurableObject {
 
     if (url.pathname === "/status" && request.method === "GET") {
       if (!owner || owner !== userId) return json({ error: "forbidden" }, owner ? 403 : 404);
-      return json({ hostConnected: this.ctx.getWebSockets(HOST_TAG).length > 0 });
+      // `hostSockets` counts corpses too — the gap between it and
+      // `hostConnected` is the only externally visible signal that a device's
+      // room is accumulating silently-dead host sockets.
+      return json({
+        hostConnected: this.liveHost() !== undefined,
+        hostSockets: this.ctx.getWebSockets(HOST_TAG).length
+      });
     }
 
     // Durable command nudge (§7). Any authenticated device of the owner may
@@ -162,7 +207,7 @@ export class DeviceRoom implements DurableObject {
       const body = (await request.json().catch(() => null)) as { chatId?: string } | null;
       const chatId = body?.chatId;
       if (!chatId || !CHAT_ID_RE.test(chatId)) return json({ error: "bad_chat_id" }, 400);
-      const host = this.ctx.getWebSockets(HOST_TAG)[0];
+      const host = this.liveHost();
       if (host) {
         this.deliver(host, { s: chatId, k: NUDGE_KIND }, new TextEncoder().encode(JSON.stringify({ chatId })));
         return json({ delivered: true });
@@ -211,7 +256,7 @@ export class DeviceRoom implements DurableObject {
       return;
     }
     if (state.role === "client") {
-      const host = this.ctx.getWebSockets(HOST_TAG)[0];
+      const host = this.liveHost();
       if (!host) {
         // Host offline: bounce a relay-level error so the client can surface
         // "device is asleep" instead of hanging.
@@ -237,12 +282,17 @@ export class DeviceRoom implements DurableObject {
     if (!state) return;
     if (state.role === "client") {
       // Tell the host so it can tear down any per-client streams (ptys etc.).
-      const host = this.ctx.getWebSockets(HOST_TAG)[0];
+      const host = this.liveHost();
       if (host) {
         this.deliver(host, { s: "", k: RELAY_KIND, from: state.connId }, encodeRelayError("client_closed"));
       }
       return;
     }
+    // A host socket went away. Only tear the clients' links down when NO live
+    // host is left: a superseded predecessor closing (or a corpse the runtime
+    // finally reaps) must not knock clients off the successor that already
+    // replaced it.
+    if (this.liveHost()) return;
     // Host went away: notify every client.
     for (const client of this.ctx.getWebSockets()) {
       const cs = client.deserializeAttachment() as SocketState | null;
@@ -263,6 +313,20 @@ export class DeviceRoom implements DurableObject {
     }
   }
 }
+
+/** Freshest host socket that has proven itself alive inside the liveness
+ * window, or `undefined` when every candidate is stale (or there are none).
+ * Pure so the routing rule is testable without a DO. */
+export const pickLiveHost = <T>(
+  hosts: ReadonlyArray<{ ws: T; lastSeenAt: number }>,
+  now: number
+): T | undefined => {
+  let best: { ws: T; lastSeenAt: number } | undefined;
+  for (const host of hosts) {
+    if (!best || host.lastSeenAt > best.lastSeenAt) best = host;
+  }
+  return best && now - best.lastSeenAt <= HOST_LIVENESS_MS ? best.ws : undefined;
+};
 
 const encodeRelayError = (code: string): Uint8Array =>
   new TextEncoder().encode(JSON.stringify({ error: code }));
