@@ -26,6 +26,8 @@ struct HomeView: View {
                 sessionsSection
             }
             .listStyle(.plain)
+            .environment(\.defaultMinListRowHeight, 10)
+            .contentMargins(.top, 2, for: .scrollContent)
             .scrollContentBackground(.hidden)
             .scrollEdgeEffectStyle(.soft, for: .top)
             .background(Theme.surface.ignoresSafeArea())
@@ -167,7 +169,7 @@ struct HomeView: View {
             .font(Theme.sans(11, weight: .medium))
             .foregroundStyle(Theme.textMuted.opacity(0.6))
             .textCase(nil)
-            .listRowInsets(EdgeInsets(top: 14, leading: 16, bottom: 4, trailing: 16))
+            .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 3, trailing: 16))
     }
 }
 
@@ -198,7 +200,7 @@ struct SpaceRow: View {
                 .foregroundStyle(Theme.textFaint.opacity(0.6))
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 
@@ -242,7 +244,7 @@ struct ChatRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 6)
+        .padding(.vertical, 5)
         .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 

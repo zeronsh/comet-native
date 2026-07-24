@@ -216,7 +216,8 @@ struct SessionView: View {
                 }
             }
             .frame(height: 24)
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.leading, 26)  // aligns with the composer's text start
         }
     }
 

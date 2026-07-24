@@ -44,6 +44,13 @@ struct TranscriptView: View {
         .scrollPosition($scrollPosition)
         .defaultScrollAnchor(.bottom)
         .background(Theme.bg)
+        .task {
+            // Preloaded transcripts (disk hydration, demo) exist at first
+            // layout, and lazy row materialization drifts the default bottom
+            // anchor — snap once the first pass settles.
+            try? await Task.sleep(nanoseconds: 80_000_000)
+            scrollPosition.scrollTo(edge: .bottom)
+        }
         .onScrollPhaseChange { _, newPhase in
             // Desktop rule: the pin breaks only on USER input (wheel-up/drag),
             // never on streaming growth. Phases track the gesture.

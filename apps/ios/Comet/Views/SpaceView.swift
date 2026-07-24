@@ -43,6 +43,7 @@ struct SpaceView: View {
             }
         }
         .listStyle(.plain)
+        .environment(\.defaultMinListRowHeight, 10)
         .scrollContentBackground(.hidden)
         .scrollEdgeEffectStyle(.soft, for: .top)
         .background(Theme.surface.ignoresSafeArea())
