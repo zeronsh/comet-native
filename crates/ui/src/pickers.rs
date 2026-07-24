@@ -1336,6 +1336,7 @@ impl Pickers {
         label: SharedString,
         set: bool,
         chip_icon: Option<(&'static str, Option<gpui::Hsla>)>,
+        suffix: Option<SharedString>,
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<gpui::Div> {
@@ -1389,6 +1390,16 @@ impl Pickers {
                 )
             })
             .child(div().min_w_0().truncate().child(label))
+            // The effort half of the combined model+effort chip: muted, no
+            // icon (user request) — one button, two tones.
+            .when_some(suffix, |el, suffix| {
+                el.child(
+                    div()
+                        .flex_none()
+                        .text_color(theme.text_muted.opacity(0.7))
+                        .child(suffix),
+                )
+            })
     }
 
     /// A footer-row trigger (t3code ghost `Button size="xs"`): leading icon,
@@ -1896,9 +1907,10 @@ impl Pickers {
                         let is_viewed = effective == Some(harness);
                         let is_disabled = locked && !is_viewed;
                         let (icon_path, tint) = harness_brand_icon(harness);
-                        let name: SharedString = descriptor.name.clone().into();
-                        // Horizontal brand tab: icon + name pill, active wash
-                        // on the viewed harness (user request: tabs on top).
+                        let _ = &descriptor.name;
+                        // Horizontal brand tab, ICON ONLY (user request):
+                        // active wash on the viewed harness; the menu heading
+                        // right below names it.
                         div()
                             .id(("harness-tab", ix))
                             .flex_1()
@@ -1925,14 +1937,13 @@ impl Pickers {
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 this.pick_harness(harness, cx);
                             }))
-                            .child(crate::icons::icon(icon_path).size(px(16.0)).text_color(
+                            .child(crate::icons::icon(icon_path).size(px(18.0)).text_color(
                                 tint.unwrap_or(if is_viewed {
                                     theme.text
                                 } else {
                                     theme.text_muted
                                 }),
                             ))
-                            .child(div().truncate().child(name))
                     }))
                     .into_any_element()
             }
@@ -1948,11 +1959,8 @@ impl Pickers {
                         .map(|d| d.name.clone())
                 })
                 .unwrap_or_else(|| "Models".to_string());
-            if locked {
-                format!("{name} · this session")
-            } else {
-                name
-            }
+            let _ = locked; // the lock still dims foreign tabs above
+            name
         };
 
         let models: AnyElement = match effective.map(|h| (h, self.models.get(&h))) {
@@ -2433,22 +2441,19 @@ impl Render for Pickers {
             .items_center()
             .min_w_0()
             .gap(px(4.0));
-        let model_chip = self.trigger_chip(
+        // ONE combined model+effort chip (user request): brand icon + model
+        // name, then the effort level muted with no icon — a single button
+        // opening the single merged menu.
+        let combined_chip = self.trigger_chip(
             PickerKind::HarnessModel,
             model_label,
             true,
             Some(harness_icon),
+            Some(traits_label),
             &theme,
             cx,
         );
-        let traits_chip = self.trigger_chip(
-            PickerKind::Traits,
-            traits_label,
-            traits_set.is_some(),
-            Some((crate::icons::TUNING, None)),
-            &theme,
-            cx,
-        );
+        let _ = traits_set;
         let right = div()
             .flex()
             .flex_row()
@@ -2456,16 +2461,10 @@ impl Render for Pickers {
             .flex_none()
             .gap(px(4.0))
             .child(attach_overlay(
-                model_chip,
+                combined_chip,
                 &mut overlay,
                 PickerKind::HarnessModel,
                 "model-popover",
-            ))
-            .child(attach_overlay(
-                traits_chip,
-                &mut overlay,
-                PickerKind::Traits,
-                "traits-popover",
             ));
         div()
             .w_full()
