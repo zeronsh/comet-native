@@ -119,8 +119,12 @@ export class DeviceRoom implements DurableObject {
 
   /** The host socket to route to: the freshest one that has proven itself
    * alive within [`HOST_LIVENESS_MS`]. `undefined` = no live host, which is
-   * what makes clients see `host_offline` instead of hanging on a corpse. */
-  private liveHost(): WebSocket | undefined {
+   * what makes clients see `host_offline` instead of hanging on a corpse.
+   *
+   * `exclude` drops the socket a close is being handled for — the runtime
+   * still lists it during `webSocketClose`, and counting it as live would
+   * suppress the very `host_closed` that close is supposed to announce. */
+  private liveHost(exclude?: WebSocket): WebSocket | undefined {
     return pickLiveHost(
       this.ctx.getWebSockets(HOST_TAG).map((ws) => ({
         ws,
@@ -132,7 +136,8 @@ export class DeviceRoom implements DurableObject {
           (ws.deserializeAttachment() as SocketState | null)?.joinedAt ?? 0
         )
       })),
-      Date.now()
+      Date.now(),
+      exclude
     );
   }
 
@@ -292,7 +297,7 @@ export class DeviceRoom implements DurableObject {
     // host is left: a superseded predecessor closing (or a corpse the runtime
     // finally reaps) must not knock clients off the successor that already
     // replaced it.
-    if (this.liveHost()) return;
+    if (this.liveHost(ws)) return;
     // Host went away: notify every client.
     for (const client of this.ctx.getWebSockets()) {
       const cs = client.deserializeAttachment() as SocketState | null;
@@ -316,13 +321,18 @@ export class DeviceRoom implements DurableObject {
 
 /** Freshest host socket that has proven itself alive inside the liveness
  * window, or `undefined` when every candidate is stale (or there are none).
- * Pure so the routing rule is testable without a DO. */
+ * `exclude` skips a socket whose close is being handled — the runtime still
+ * lists it there, and counting it as live would suppress the `host_closed`
+ * that close exists to announce. Pure so the routing rule is testable without
+ * a DO. */
 export const pickLiveHost = <T>(
   hosts: ReadonlyArray<{ ws: T; lastSeenAt: number }>,
-  now: number
+  now: number,
+  exclude?: T
 ): T | undefined => {
   let best: { ws: T; lastSeenAt: number } | undefined;
   for (const host of hosts) {
+    if (host.ws === exclude) continue;
     if (!best || host.lastSeenAt > best.lastSeenAt) best = host;
   }
   return best && now - best.lastSeenAt <= HOST_LIVENESS_MS ? best.ws : undefined;

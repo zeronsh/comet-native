@@ -73,4 +73,26 @@ describe("device-room host selection", () => {
   it("has no host in an empty room", () => {
     expect(pickLiveHost([], NOW)).toBeUndefined();
   });
+
+  // The runtime still lists a socket while its close is being handled. Counting
+  // it as live made `webSocketClose` skip the broadcast, so clients were never
+  // told their host had left and sat on a link that would never answer again.
+  it("skips the socket whose close is being handled", () => {
+    expect(
+      pickLiveHost([{ ws: "leaving", lastSeenAt: fresh }], NOW, "leaving")
+    ).toBeUndefined();
+  });
+
+  it("still finds a successor when the departing socket is excluded", () => {
+    expect(
+      pickLiveHost(
+        [
+          { ws: "leaving", lastSeenAt: NOW },
+          { ws: "successor", lastSeenAt: fresh }
+        ],
+        NOW,
+        "leaving"
+      )
+    ).toBe("successor");
+  });
 });
