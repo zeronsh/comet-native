@@ -43,7 +43,7 @@ not built yet).
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| 3.1 Lifecycle | partial | Device registration, presence heartbeat (ephemeral, 15s), stale-session recovery, headless TTY sign-in, host-only doc executor with steer→new-turn fallback. Gaps: single-instance lock, login-shell PATH capture, crash shield, parent-PID watchdog. |
+| 3.1 Lifecycle | partial | Device registration, presence heartbeat (ephemeral, 15s), stale-session recovery, host-only doc executor with steer→new-turn fallback, single-instance data-dir lock. CLI auth decoupled from the daemon: `comet login`/`logout`/`status` work on the persisted session and exit; headless TTY sign-in remains, and off-TTY (systemd/launchd) headless fails fast with "run `comet login` first"; `comet daemon install/start/stop/restart/status/uninstall` manages launchd / systemd `--user` units (install-time PATH captured into the unit for harness CLIs). Gaps: login-shell PATH capture for the headed app, crash shield, parent-PID watchdog. |
 | 3.2 Sessions engine | partial | Run journal on disk with crash recovery (aborted stamps), steering mailbox at step boundaries, doc hooks at boundaries, streamed part folding at STREAM_COMMIT_MS. Gaps: idle reaper + 10-min stall watchdog for persistent harness sessions. |
 | 3.3 Session-docs host | done | docs.sqlite snapshots + processed-command ledger, mark-BEFORE-execute, room join per open chat, diff sidecar publish, cold-chat delivery both directions (nudge POST on queue for remote-hosted chats + warm-open on nudge receipt). Gap (minor): no boot-time warm-open of recent chats (14d/30) — cold chats rely on nudges. |
 | 3.4 Terminals | done | PTYs, 1MB bounded replay + `afterSeq` resume, 32 max, exited 30-min TTL, live shells survive detach. |

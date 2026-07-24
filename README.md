@@ -69,8 +69,29 @@ curl -fsSL https://comet.zeron.sh/install.sh | sh
 Installs the self-contained binary to `~/.comet-native/app`, links `comet` into
 `~/.local/bin`, and sets up a systemd user service. Production endpoints
 (`https://edge.comet.zeron.sh` + WorkOS auth) are baked in — no configuration
-needed. First run `comet headless` to sign in (paste-code flow), then
+needed. Sign in with `comet login` (paste-code flow), then
 `systemctl --user start comet-native`.
+
+## Auth & daemon CLI
+
+Authentication is decoupled from the long-running engine: `comet login` runs the
+paste-code sign-in + workspace onboarding, persists `~/.comet-native/session.json`
+(0600), and exits. A service-managed `comet headless` loads that session — off a
+TTY it exits with "run `comet login` first" instead of waiting on a prompt.
+
+```bash
+comet login       # sign in, persist the session, exit
+comet logout      # remove the saved session
+comet status      # auth + engine liveness; exits nonzero when sign-in is needed
+
+comet daemon install    # install + enable + start (launchd on macOS, systemd --user on Linux)
+comet daemon start|stop|restart|status|uninstall
+```
+
+`comet daemon install` captures the current `COMET_*` env (and `PATH`, for the
+harness CLIs) into the unit, and manages the same `comet-native.service` the
+installer creates on Linux. While an engine is running it owns the session
+(refresh tokens rotate), so `login`/`logout` refuse until it is stopped.
 
 ## Run (from source)
 

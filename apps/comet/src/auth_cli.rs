@@ -124,7 +124,11 @@ pub async fn status(config: EngineConfig) -> anyhow::Result<()> {
     let ipc = std::net::TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(500));
     println!(
         "IPC:      {} 127.0.0.1:{}",
-        if ipc.is_ok() { "listening on" } else { "not listening on" },
+        if ipc.is_ok() {
+            "listening on"
+        } else {
+            "not listening on"
+        },
         config.ipc_port
     );
     if !signed_in {

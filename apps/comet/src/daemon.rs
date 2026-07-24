@@ -14,7 +14,9 @@ use std::process::Command;
 use anyhow::{Context, bail};
 
 const LAUNCHD_LABEL: &str = "sh.zeron.comet";
-const SYSTEMD_UNIT: &str = "comet.service";
+/// Same unit name the curl|sh installer (`edge/src/install.sh`) writes, so
+/// `comet daemon …` manages that installation rather than a competing copy.
+const SYSTEMD_UNIT: &str = "comet-native.service";
 
 /// Environment captured into the unit file. `PATH` is always included (the
 /// engine spawns harness CLIs like `claude`, which service managers' minimal
@@ -51,7 +53,10 @@ pub fn install(data_dir: &Path) -> anyhow::Result<()> {
             "launchctl",
             &["bootstrap", &launchd_domain()?, &plist.to_string_lossy()],
         )?;
-        println!("Installed and started {LAUNCHD_LABEL} ({}).", plist.display());
+        println!(
+            "Installed and started {LAUNCHD_LABEL} ({}).",
+            plist.display()
+        );
     } else if cfg!(target_os = "linux") {
         let unit = systemd_unit_path()?;
         std::fs::create_dir_all(unit.parent().expect("systemd user dir"))?;
@@ -65,11 +70,14 @@ pub fn install(data_dir: &Path) -> anyhow::Result<()> {
     } else {
         bail!("comet daemon is only supported on macOS (launchd) and Linux (systemd)");
     }
-    println!("Logs: {}", if cfg!(target_os = "macos") {
-        format!("{}", data_dir.join("daemon.log").display())
-    } else {
-        format!("journalctl --user -u {SYSTEMD_UNIT}")
-    });
+    println!(
+        "Logs: {}",
+        if cfg!(target_os = "macos") {
+            format!("{}", data_dir.join("daemon.log").display())
+        } else {
+            format!("journalctl --user -u {SYSTEMD_UNIT}")
+        }
+    );
     Ok(())
 }
 
@@ -140,7 +148,12 @@ pub fn stop() -> anyhow::Result<()> {
 
 pub fn restart() -> anyhow::Result<()> {
     if cfg!(target_os = "macos") {
-        if run_quiet("launchctl", &["kickstart", "-k", &launchd_service_target()?]).is_err() {
+        if run_quiet(
+            "launchctl",
+            &["kickstart", "-k", &launchd_service_target()?],
+        )
+        .is_err()
+        {
             // Not loaded (e.g. after `stop`) — fall through to a plain start.
             return start();
         }
@@ -210,8 +223,12 @@ fn captured_env() -> Vec<(String, String)> {
 }
 
 fn render_systemd_unit(exe: &Path, env: &[(String, String)]) -> String {
+    // The start limit must actually trip on the "run `comet login` first"
+    // fail-fast exit (5 × RestartSec=5 lands inside the 60s window) — otherwise
+    // a signed-out daemon restart-loops forever.
     let mut unit = String::from(
-        "[Unit]\nDescription=Comet engine (headless)\nAfter=network-online.target\n\n[Service]\n",
+        "[Unit]\nDescription=Comet native headless engine\nAfter=network-online.target\n\
+         StartLimitIntervalSec=60\nStartLimitBurst=5\n\n[Service]\n",
     );
     for (key, value) in env {
         // systemd unquotes the value; escape the characters it treats specially.
@@ -219,10 +236,29 @@ fn render_systemd_unit(exe: &Path, env: &[(String, String)]) -> String {
         unit.push_str(&format!("Environment=\"{key}={value}\"\n"));
     }
     unit.push_str(&format!(
-        "ExecStart={} headless\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n",
-        exe.display()
+        "ExecStart={} headless\nRestart=on-failure\nRestartSec=5\nEnvironmentFile=-%h/.comet-native/env\n\n[Install]\nWantedBy=default.target\n",
+        systemd_exec_path(exe)
     ));
     unit
+}
+
+/// The ExecStart binary path. An exe under `~/.comet-native/app/` came from the
+/// curl|sh installer, whose upgrades relink `app/current` — point the unit at
+/// the symlink (as the installer's own unit does) so it never pins one version.
+/// (`current_exe` resolves symlinks, so the versioned dir is what we see here.)
+fn systemd_exec_path(exe: &Path) -> String {
+    exec_path_for(exe, std::env::var_os("HOME").map(PathBuf::from).as_deref())
+}
+
+fn exec_path_for(exe: &Path, home: Option<&Path>) -> String {
+    let installed = home
+        .map(|home| home.join(".comet-native/app"))
+        .is_some_and(|app_root| exe.starts_with(app_root));
+    if installed {
+        "%h/.comet-native/app/current/comet".to_string()
+    } else {
+        format!("{}", exe.display())
+    }
 }
 
 fn render_launchd_plist(exe: &Path, env: &[(String, String)], log: &Path) -> String {
@@ -359,7 +395,29 @@ mod tests {
         // Inner quotes escaped so systemd re-parses the value verbatim.
         assert!(unit.contains("Environment=\"RUST_LOG=info,comet=\\\"debug\\\"\"\n"));
         assert!(unit.contains("Restart=on-failure"));
+        assert!(unit.contains("EnvironmentFile=-%h/.comet-native/env"));
         assert!(unit.contains("WantedBy=default.target"));
+    }
+
+    #[test]
+    fn installed_exe_uses_the_current_symlink() {
+        // Installer-managed binary (current_exe resolves the `current` symlink to
+        // the versioned dir): the unit must point back at the symlink.
+        assert_eq!(
+            exec_path_for(
+                Path::new("/home/u/.comet-native/app/0.3.0/comet"),
+                Some(Path::new("/home/u")),
+            ),
+            "%h/.comet-native/app/current/comet"
+        );
+        // Source build: literal path.
+        assert_eq!(
+            exec_path_for(
+                Path::new("/src/target/debug/comet"),
+                Some(Path::new("/home/u"))
+            ),
+            "/src/target/debug/comet"
+        );
     }
 
     #[test]
@@ -375,8 +433,8 @@ mod tests {
         assert!(plist.contains("<string>https://e?a=1&amp;b=2</string>"));
         assert!(plist.contains("<string>headless</string>"));
         assert!(plist.contains("<key>SuccessfulExit</key><false/>"));
-        assert!(
-            plist.contains("<key>StandardOutPath</key><string>/Users/x/.comet-native/daemon.log</string>")
-        );
+        assert!(plist.contains(
+            "<key>StandardOutPath</key><string>/Users/x/.comet-native/daemon.log</string>"
+        ));
     }
 }
