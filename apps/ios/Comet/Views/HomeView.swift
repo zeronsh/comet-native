@@ -202,7 +202,7 @@ struct SpaceRow: View {
                 .foregroundStyle(Theme.textFaint.opacity(0.6))
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 5)
+        .padding(.vertical, 8)
         .contentShape(RoundedRectangle(cornerRadius: 8))
     }
 
