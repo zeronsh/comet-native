@@ -436,10 +436,11 @@ impl Engine {
         let auth = Self::build_auth(&config).await;
         let _refresh_loop = auth.spawn_refresh_loop();
 
-        // WorkOS mode: gate edge features on a signed-in, org-scoped session. Headless
-        // sign-in prompt on TTY (paste-code flow) — CompleteSignIn over IPC also works.
+        // WorkOS mode: gate edge features on a signed-in, org-scoped session. A TTY
+        // gets the interactive paste-code flow; a service manager (systemd/launchd)
+        // fails fast with a "run `comet login`" error instead of hanging on a prompt.
         if auth.workos_enabled() {
-            wait_for_sign_in(&auth).await;
+            terminal_sign_in(&auth).await?;
         }
 
         let runtime = Self::assemble_runtime(&config, auth).await?;
@@ -460,10 +461,13 @@ impl Engine {
 }
 
 /// Block until the WorkOS session is signed in AND org-scoped. On a TTY, print the
-/// headless (paste-code) sign-in URL and read the pasted `state.code` from stdin;
-/// `SignIn`/`CompleteSignIn`/`CreateOrg` over IPC drive the same state.
-async fn wait_for_sign_in(auth: &Auth) {
+/// headless (paste-code) sign-in URL, read the pasted `state.code` from stdin, and
+/// run workspace onboarding (create / auto-join / numbered picker). Off a TTY this
+/// errors immediately — a daemon under systemd/launchd must load the session that
+/// `comet login` persisted, never wait on a prompt nobody can see.
+pub async fn terminal_sign_in(auth: &Auth) -> Result<(), EngineError> {
     use std::io::IsTerminal;
+    let interactive = std::io::stdin().is_terminal();
     let mut state_rx = auth.watch_state();
     let mut stdin_reader: Option<tokio::task::JoinHandle<()>> = None;
     let mut org_reader: Option<tokio::task::JoinHandle<()>> = None;
@@ -476,44 +480,48 @@ async fn wait_for_sign_in(auth: &Auth) {
                 break;
             }
             AuthState::NeedsOrganization { user } => {
+                if !interactive {
+                    // No reader tasks have been spawned on this path (both spawns
+                    // are TTY-gated), so an early return leaks nothing.
+                    return Err(EngineError::Other(format!(
+                        "signed in as {} but no workspace is selected — run `comet login` on this machine to pick one",
+                        user.email
+                    )));
+                }
                 if org_reader.is_none() {
-                    if std::io::stdin().is_terminal() {
-                        // Workspace onboarding on the TTY (old comet's
-                        // `backend login` flow): create if none, auto-join a
-                        // single membership, numbered picker otherwise.
-                        println!("Signed in as {}.", user.email);
-                        org_reader = Some(tokio::spawn(run_org_onboarding(auth.clone())));
-                    } else {
-                        println!(
-                            "Signed in as {} — create or select a workspace from the Comet UI to continue.",
-                            user.email
-                        );
-                    }
+                    // Workspace onboarding on the TTY (old comet's
+                    // `backend login` flow): create if none, auto-join a
+                    // single membership, numbered picker otherwise.
+                    println!("Signed in as {}.", user.email);
+                    org_reader = Some(tokio::spawn(run_org_onboarding(auth.clone())));
                 }
             }
             AuthState::SignedOut => {
+                if !interactive {
+                    return Err(EngineError::Other(
+                        "not signed in — run `comet login` on this machine first".into(),
+                    ));
+                }
                 if stdin_reader.is_none() {
                     let url = auth.start_headless_sign_in();
                     println!("Sign in to Comet:\n\n  {url}\n");
-                    if std::io::stdin().is_terminal() {
-                        println!("Then paste the code shown in the browser here and press enter.");
-                        let auth = auth.clone();
-                        stdin_reader = Some(tokio::spawn(async move {
-                            loop {
-                                let Some(line) = read_stdin_line().await else {
-                                    return;
-                                };
-                                let pasted = line.trim();
-                                if pasted.is_empty() {
-                                    continue;
-                                }
-                                match auth.complete_sign_in(pasted).await {
-                                    Ok(()) => return,
-                                    Err(err) => println!("Sign-in failed: {err}"),
-                                }
+                    println!("Then paste the code shown in the browser here and press enter.");
+                    let auth = auth.clone();
+                    stdin_reader = Some(tokio::spawn(async move {
+                        loop {
+                            let Some(line) = read_stdin_line().await else {
+                                return;
+                            };
+                            let pasted = line.trim();
+                            if pasted.is_empty() {
+                                continue;
                             }
-                        }));
-                    }
+                            match auth.complete_sign_in(pasted).await {
+                                Ok(()) => return,
+                                Err(err) => println!("Sign-in failed: {err}"),
+                            }
+                        }
+                    }));
                 }
             }
         }
@@ -527,6 +535,7 @@ async fn wait_for_sign_in(auth: &Auth) {
     if let Some(reader) = org_reader {
         reader.abort();
     }
+    Ok(())
 }
 
 /// One line from stdin (blocking read off the runtime). `None` = stdin closed.

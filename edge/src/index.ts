@@ -126,9 +126,14 @@ export default {
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return json({ error: "expected websocket" }, 426);
       }
+      // `s2/` = the WorkOS staging→production identity break: rooms are
+      // claim-on-first-join per user id, and prod issued a fresh id for
+      // everyone — a new namespace lets prod identities claim fresh rooms
+      // while hosts re-upload doc state from their local snapshots (same
+      // playbook as `ws3` below). Frame-level room ids stay the bare chatId.
       return forward(
         env.SESSION_ROOMS,
-        parts[1],
+        `s2/${parts[1]}`,
         request,
         auth.userId,
         "/ws",
@@ -136,19 +141,19 @@ export default {
       );
     }
     if (parts[0] === "tail" && parts[1] && ID_RE.test(parts[1]) && request.method === "GET") {
-      return forward(env.SESSION_ROOMS, parts[1], request, auth.userId, "/tail", "");
+      return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/tail", "");
     }
     if (parts[0] === "stats" && parts[1] && ID_RE.test(parts[1]) && request.method === "GET") {
-      return forward(env.SESSION_ROOMS, parts[1], request, auth.userId, "/stats", "");
+      return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/stats", "");
     }
     if (parts[0] === "diff" && parts[1] && ID_RE.test(parts[1])) {
-      return forward(env.SESSION_ROOMS, parts[1], request, auth.userId, "/diff", "");
+      return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/diff", "");
     }
     if (parts[0] === "snapshot" && parts[1] && ID_RE.test(parts[1]) && request.method === "GET") {
-      return forward(env.SESSION_ROOMS, parts[1], request, auth.userId, "/snapshot", "");
+      return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/snapshot", "");
     }
     if (parts[0] === "append" && parts[1] && ID_RE.test(parts[1]) && request.method === "POST") {
-      return forward(env.SESSION_ROOMS, parts[1], request, auth.userId, "/append", "");
+      return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/append", "");
     }
 
     // ── workspace rooms (ARCHITECTURE §2.2/§6.1): same SessionRoom DO class;
@@ -192,9 +197,10 @@ export default {
         }
         const role = url.searchParams.get("role") === "host" ? "host" : "client";
         const connId = url.searchParams.get("connId") ?? crypto.randomUUID();
+        // `d2/` — same staging→prod identity break as `s2/` above.
         return forward(
           env.DEVICE_ROOMS,
-          deviceId,
+          `d2/${deviceId}`,
           request,
           auth.userId,
           "/ws",
@@ -202,16 +208,16 @@ export default {
         );
       }
       if (parts[2] === "sidecar" && parts[3] && /^[a-z0-9-]{1,64}$/.test(parts[3])) {
-        return forward(env.DEVICE_ROOMS, deviceId, request, auth.userId, `/sidecar/${parts[3]}`, "");
+        return forward(env.DEVICE_ROOMS, `d2/${deviceId}`, request, auth.userId, `/sidecar/${parts[3]}`, "");
       }
       if (parts[2] === "status") {
-        return forward(env.DEVICE_ROOMS, deviceId, request, auth.userId, "/status", "");
+        return forward(env.DEVICE_ROOMS, `d2/${deviceId}`, request, auth.userId, "/status", "");
       }
       // Durable command nudge (§7): "chat X has pending commands — open its
       // doc". Delivered live if the host is connected, else queued in the DO
       // and replayed on the host's next join.
       if (parts[2] === "nudge" && request.method === "POST") {
-        return forward(env.DEVICE_ROOMS, deviceId, request, auth.userId, "/nudge", "");
+        return forward(env.DEVICE_ROOMS, `d2/${deviceId}`, request, auth.userId, "/nudge", "");
       }
     }
 

@@ -79,11 +79,66 @@ impl InstanceLock {
         let _ = file.flush();
         Ok(Self { _file: file })
     }
+
+    /// Best-effort liveness probe: the pid stamped by the engine currently holding
+    /// this data dir's lock, `None` when no engine is running (or the platform
+    /// cannot test a lock without taking it). Used by `comet status` and the
+    /// login/logout guards; a single non-blocking try — no retry budget — so a
+    /// starting engine's transient fork-window artifacts read as "running", which
+    /// is the safe direction for those callers.
+    pub fn holder(data_dir: &Path) -> Option<String> {
+        let path = data_dir.join("engine.lock");
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let file = OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .open(&path)
+                .ok()?;
+            let rc = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) };
+            if rc == 0 {
+                // We took it: nothing is running. Closing the fd releases it, but
+                // unlock explicitly so the window is as small as possible.
+                unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) };
+                return None;
+            }
+            let pid = std::fs::read_to_string(&path).unwrap_or_default();
+            let pid = pid.trim();
+            Some(if pid.is_empty() {
+                "unknown".to_string()
+            } else {
+                pid.to_string()
+            })
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = path;
+            None
+        }
+    }
 }
 
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn holder_probe_reports_pid_without_disturbing_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(InstanceLock::holder(dir.path()), None, "unlocked dir");
+        let lock = InstanceLock::acquire(dir.path()).expect("acquire");
+        assert_eq!(
+            InstanceLock::holder(dir.path()).as_deref(),
+            Some(std::process::id().to_string().as_str()),
+        );
+        // The probe must not have stolen the lock from the holder.
+        InstanceLock::acquire(dir.path()).expect_err("still held after probe");
+        drop(lock);
+        assert_eq!(InstanceLock::holder(dir.path()), None, "released");
+    }
 
     #[test]
     fn second_acquire_fails_while_held_then_succeeds_after_drop() {

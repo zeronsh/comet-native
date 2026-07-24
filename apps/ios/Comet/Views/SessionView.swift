@@ -9,6 +9,7 @@ struct SessionView: View {
     let chatId: String
     @State private var showConfig = false
     @State private var refs: [RepoRef] = []
+    @State private var catalogs: [String: [ModelInfo]] = [:]
 
     private var chat: Chat? { model.chat(id: chatId) }
 
@@ -88,12 +89,16 @@ struct SessionView: View {
                         }
                     ),
                     lockedHarness: true,
+                    catalogs: catalogs,
                     checkout: checkoutContext(chat: chat)
                 )
             }
         }
         .task(id: chatId) {
-            guard let space = chatSpace, space.gitDetected else { return }
+            guard let space = chatSpace else { return }
+            let harness = chat?.config?.harness ?? "claude-code"
+            catalogs[harness] = await model.listModels(space: space, harness: harness)
+            guard space.gitDetected else { return }
             if let loaded = await model.listRefs(space: space) {
                 refs = loaded
             }

@@ -21,6 +21,8 @@ struct NewSessionView: View {
     @State private var showPicker = false
     @State private var showRefPicker = false
     @State private var showCheckoutPicker = false
+    /// Live per-harness catalogs from the space's device (static fallback).
+    @State private var catalogs: [String: [ModelInfo]] = [:]
     @State private var refs: [RepoRef] = []
     @State private var selectedRef: String?
     @State private var checkoutKind: CheckoutKind = .local
@@ -31,9 +33,12 @@ struct NewSessionView: View {
         model.spaces.first { $0.id == spaceId }
     }
 
+    private var models: [ModelInfo] {
+        catalogs[harness] ?? HarnessCatalog.models(for: harness)
+    }
+
     private var selectedModel: ModelInfo {
-        HarnessCatalog.models(for: harness).first { $0.id == storedModel }
-            ?? HarnessCatalog.defaultModel(for: harness)
+        models.first { $0.id == storedModel } ?? models[0]
     }
 
     private var reasoning: String? {
@@ -105,6 +110,11 @@ struct NewSessionView: View {
                 }
             }
         }
+        .task(id: "\(spaceId)/\(harness)") {
+            // Live model catalog from the device that will run the session.
+            guard let space else { return }
+            catalogs[harness] = await model.listModels(space: space, harness: harness)
+        }
         .sheet(isPresented: $showPicker) {
             ModelPickerSheet(harness: $harness, modelId: Binding(
                 get: { selectedModel.id },
@@ -112,7 +122,7 @@ struct NewSessionView: View {
             ), reasoning: Binding(
                 get: { reasoning },
                 set: { storedReasoning = $0 ?? "" }
-            ))
+            ), catalogs: catalogs)
         }
         .onAppear {
             focused = true
@@ -343,8 +353,14 @@ struct ModelPickerSheet: View {
     @Binding var reasoning: String?
     /// True when reconfiguring a live chat: the harness can't change mid-chat.
     var lockedHarness = false
+    /// Live per-harness catalogs from the device (static fallback when absent).
+    var catalogs: [String: [ModelInfo]] = [:]
     /// Present on live git chats: checkout label + switchable refs.
     var checkout: SessionCheckoutContext?
+
+    private func models(for harness: String) -> [ModelInfo] {
+        catalogs[harness] ?? HarnessCatalog.models(for: harness)
+    }
 
     @State private var switching: String?
     @State private var switchError: String?
@@ -365,7 +381,7 @@ struct ModelPickerSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         SheetLabel("Model")
                         SheetCard {
-                            let models = HarnessCatalog.models(for: harness)
+                            let models = models(for: harness)
                             ForEach(Array(models.enumerated()), id: \.element.id) { ix, m in
                                 SheetSelectRow(title: m.label,
                                                subtitle: m.description,
@@ -428,7 +444,7 @@ struct ModelPickerSheet: View {
     }
 
     private var selectedModel: ModelInfo? {
-        HarnessCatalog.models(for: harness).first { $0.id == modelId }
+        models(for: harness).first { $0.id == modelId }
     }
 
     private func harnessTab(_ h: HarnessInfo) -> some View {

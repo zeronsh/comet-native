@@ -26,8 +26,7 @@ enum HarnessCatalog {
     ]
 
     private static let fullLadder = ["low", "medium", "high", "xhigh", "max", "ultracode", "ultrathink"]
-    private static let claudeMaxLadder = ["low", "medium", "high", "max", "ultrathink"]
-    private static let claudeBaseLadder = ["low", "medium", "high", "max"]
+    private static let claudeXhighLadder = ["low", "medium", "high", "xhigh", "max", "ultrathink"]
     private static let codexUltraLadder = ["low", "medium", "high", "xhigh", "max", "ultra"]
     private static let codexMaxLadder = ["low", "medium", "high", "xhigh", "max"]
     private static let codexXhighLadder = ["low", "medium", "high", "xhigh"]
@@ -55,12 +54,12 @@ enum HarnessCatalog {
             return [
                 ModelInfo(id: "claude-fable-5", label: "Fable 5",
                           description: "Most intelligent model for building agents", reasoningLevels: fullLadder),
-                ModelInfo(id: "claude-opus-4-6", label: "Opus 4.6",
-                          description: "Powerful model for complex work", reasoningLevels: claudeMaxLadder),
-                ModelInfo(id: "claude-opus-4-5", label: "Opus 4.5",
-                          description: "Previous generation flagship", reasoningLevels: claudeBaseLadder),
-                ModelInfo(id: "claude-sonnet-4-5", label: "Sonnet 4.5",
-                          description: "Balanced speed and intelligence", reasoningLevels: claudeBaseLadder),
+                ModelInfo(id: "claude-opus-4-8", label: "Opus 4.8",
+                          description: "Powerful model for complex work", reasoningLevels: fullLadder),
+                ModelInfo(id: "claude-opus-4-7", label: "Opus 4.7",
+                          description: "Previous generation Opus", reasoningLevels: claudeXhighLadder),
+                ModelInfo(id: "claude-sonnet-5", label: "Sonnet 5",
+                          description: "Balanced speed and intelligence", reasoningLevels: claudeXhighLadder),
                 ModelInfo(id: "claude-haiku-4-5", label: "Haiku 4.5",
                           description: "Fastest model for everyday tasks", reasoningLevels: []),
             ]

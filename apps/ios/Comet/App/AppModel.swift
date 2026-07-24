@@ -219,6 +219,21 @@ final class AppModel {
         return workspace?.deviceOnline(deviceId) ?? false
     }
 
+    /// Live model catalog from the space's owning device (the desktop's
+    /// "catalog source = the device that runs the session" rule); static
+    /// fallback when the device is unreachable.
+    func listModels(space: Space, harness: String) async -> [ModelInfo] {
+        if demo != nil {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            return HarnessCatalog.models(for: harness)
+        }
+        if let live = await workspace?.listModels(deviceId: space.deviceId, harness: harness),
+           !live.isEmpty {
+            return live
+        }
+        return HarnessCatalog.models(for: harness)
+    }
+
     /// Refs of the space's repo (git spaces only).
     func listRefs(space: Space) async -> [RepoRef]? {
         if let demo {

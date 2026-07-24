@@ -114,19 +114,15 @@ const FULL_LADDER: &[ReasoningLevel] = &[
     ReasoningLevel::Ultrathink,
 ];
 
-const MAX_LADDER: &[ReasoningLevel] = &[
+/// opus-4-7 / sonnet-5+ tier (claude.ts `claudeEffortsFor`): xhigh native,
+/// no ultracode.
+const XHIGH_LADDER: &[ReasoningLevel] = &[
     ReasoningLevel::Low,
     ReasoningLevel::Medium,
     ReasoningLevel::High,
+    ReasoningLevel::XHigh,
     ReasoningLevel::Max,
     ReasoningLevel::Ultrathink,
-];
-
-const BASE_LADDER: &[ReasoningLevel] = &[
-    ReasoningLevel::Low,
-    ReasoningLevel::Medium,
-    ReasoningLevel::High,
-    ReasoningLevel::Max,
 ];
 
 fn model(
@@ -160,24 +156,24 @@ pub(crate) fn static_models() -> Vec<Model> {
             vec![context_window()],
         ),
         model(
-            "claude-opus-4-6",
-            "Opus 4.6",
+            "claude-opus-4-8",
+            "Opus 4.8",
             "Powerful model for complex work",
-            MAX_LADDER,
-            vec![context_window(), toggle("fastMode", "Fast Mode")],
-        ),
-        model(
-            "claude-opus-4-5",
-            "Opus 4.5",
-            "Previous generation flagship",
-            BASE_LADDER,
+            FULL_LADDER,
             vec![toggle("fastMode", "Fast Mode")],
         ),
         model(
-            "claude-sonnet-4-5",
-            "Sonnet 4.5",
+            "claude-opus-4-7",
+            "Opus 4.7",
+            "Previous generation Opus",
+            XHIGH_LADDER,
+            vec![toggle("fastMode", "Fast Mode")],
+        ),
+        model(
+            "claude-sonnet-5",
+            "Sonnet 5",
             "Balanced speed and intelligence",
-            BASE_LADDER,
+            XHIGH_LADDER,
             vec![context_window()],
         ),
         model(

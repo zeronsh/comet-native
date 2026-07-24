@@ -225,6 +225,25 @@ final class WorkspaceStore {
         try? await relay(for: deviceId).call(method: "ListRefs", params: ["repoPath": repoPath])
     }
 
+    /// ListModels — the target device's live harness catalog (the desktop
+    /// discovers models from the CLI itself; static lists are only fallback).
+    func listModels(deviceId: String, harness: String) async -> [ModelInfo]? {
+        struct WireModel: Decodable {
+            var id: String
+            var label: String
+            var description: String?
+            var reasoningLevels: [String]?
+        }
+        let wire: [WireModel]? = try? await relay(for: deviceId)
+            .call(method: "ListModels", params: ["harness": harness])
+        return wire.map { models in
+            models.map {
+                ModelInfo(id: $0.id, label: $0.label, description: $0.description,
+                          reasoningLevels: $0.reasoningLevels ?? [])
+            }
+        }
+    }
+
     /// SwitchRef — `git checkout` in the given folder on the target device.
     /// Returns git's error message on failure (dirty tree, held ref, …).
     func switchRef(deviceId: String, repoPath: String, refName: String) async -> String? {
