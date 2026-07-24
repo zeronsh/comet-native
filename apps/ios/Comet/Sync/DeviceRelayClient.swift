@@ -116,8 +116,9 @@ actor DeviceRelayClient {
         try await connect()
         let id = nextId
         nextId += 1
-        var frame: [String: Any] = ["id": id, "method": method]
-        if !params.isEmpty { frame["params"] = params }
+        // Always send a params object — the engine's serde rejects a missing
+        // field even when every param is optional (ListFolders home listing).
+        let frame: [String: Any] = ["id": id, "method": method, "params": params]
         let payload = try JSONSerialization.data(withJSONObject: frame)
         let data = Self.encodeFrame(header: #"{"s":"rpc","k":"rpc"}"#, payload: payload)
 

@@ -497,9 +497,10 @@ impl Harness for PersistentHarness {
                 }
             }
         });
-        Ok(futures::stream::unfold(rx, |mut rx| async move {
-            rx.recv().await.map(|ev| (ev, rx))
-        })
+        Ok(futures::stream::unfold(
+            rx,
+            |mut rx| async move { rx.recv().await.map(|ev| (ev, rx)) },
+        )
         .boxed())
     }
 }

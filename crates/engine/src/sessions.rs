@@ -25,8 +25,8 @@ use futures::StreamExt;
 use tokio::sync::{broadcast, mpsc, oneshot, watch};
 
 use comet_doc::{
-    DocError, MessagePart, MessageRole, MessageStatus, STREAM_COMMIT_MS, SegmentWriter,
-    SessionDoc, fold_event_into_parts, sanitize_tool_call,
+    DocError, MessagePart, MessageRole, MessageStatus, STREAM_COMMIT_MS, SegmentWriter, SessionDoc,
+    fold_event_into_parts, sanitize_tool_call,
 };
 use comet_harness::{CancellationToken, Harness, RunControls, SteerMessage};
 use comet_proto::{
@@ -468,9 +468,7 @@ impl SessionsEngine {
                     .find(|e| e.role == MessageRole::User)
                     .and_then(|e| {
                         e.parts.iter().find_map(|p| match p {
-                            MessagePart::Text { text, .. } => {
-                                Some((e.id.clone(), text.clone()))
-                            }
+                            MessagePart::Text { text, .. } => Some((e.id.clone(), text.clone())),
                             _ => None,
                         })
                     })

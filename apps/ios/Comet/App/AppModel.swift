@@ -50,6 +50,10 @@ final class AppModel {
     func restore() {
         if demo != nil { return }
         let args = ProcessInfo.processInfo.arguments
+        if args.contains("-e2e") {
+            Task { await E2ERunner.run(model: self) }
+            return
+        }
         if args.contains("-demo") {
             enterDemoMode()
             if let ix = args.firstIndex(of: "-route"), ix + 1 < args.count {

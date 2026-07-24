@@ -267,14 +267,14 @@ struct MarkdownRowView: View {
         case .paragraph(let runs):
             let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             Text(applying(veil, to: runs.attributed()))
-                .lineSpacing(MD.lineHeight - MD.textSize - 4)
+                                .lineSpacing(MD.lineHeight - MD.textSize - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .heading(let level, let runs):
             let m = MD.headingMetrics(level)
             let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             Text(applying(veil, to: runs.attributed(size: m.size, weight: .semibold)))
-                .lineSpacing(m.line - m.size - 4)
+                                .lineSpacing(m.line - m.size - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         default:

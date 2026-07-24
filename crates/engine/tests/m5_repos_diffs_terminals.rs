@@ -156,7 +156,10 @@ async fn repos_round_trip_add_branches_worktrees() {
     // a plain branch has neither.
     let refs = repos.refs(&repo_dir).await.expect("refs");
     let by_name = |name: &str| refs.iter().find(|r| r.name == name).expect("ref row");
-    assert!(by_name("main").current, "main is the main checkout: {refs:?}");
+    assert!(
+        by_name("main").current,
+        "main is the main checkout: {refs:?}"
+    );
     assert_eq!(
         by_name(&worktree.branch).worktree_path.as_deref(),
         Some(worktree.path.as_str()),
@@ -376,7 +379,13 @@ async fn spaces_sync_stamps_git_presence_and_reacts_to_git_init() {
     let core = assemble(&tmp.path().join("data"));
     // Seeded as git (a lying picker) — the owner's sync must correct it.
     core.workspace
-        .create_space("space-1", &core.device_id, &folder.to_string_lossy(), None, true)
+        .create_space(
+            "space-1",
+            &core.device_id,
+            &folder.to_string_lossy(),
+            None,
+            true,
+        )
         .expect("space row");
     core.spaces_sync.reconcile_now().await;
 
@@ -428,7 +437,13 @@ async fn delete_space_cascades_chats_and_sessions() {
 
     let core = assemble(&tmp.path().join("data"));
     core.workspace
-        .create_space("space-1", &core.device_id, &folder.to_string_lossy(), None, false)
+        .create_space(
+            "space-1",
+            &core.device_id,
+            &folder.to_string_lossy(),
+            None,
+            false,
+        )
         .expect("space row");
     core.workspace
         .create_chat("chat-1", "space-1", None, None)

@@ -398,7 +398,11 @@ impl WorkspaceHost {
     /// tombstones the row ("do not resume" after a rejected resume). Best-effort:
     /// a missing chat row (claim happens on first command) just returns.
     pub fn set_chat_harness_session(&self, chat_id: &str, session_id: &str, cwd: &str) {
-        match self.inner.doc.set_chat_harness_session(chat_id, session_id, cwd) {
+        match self
+            .inner
+            .doc
+            .set_chat_harness_session(chat_id, session_id, cwd)
+        {
             Ok(_) => {}
             Err(err) => {
                 tracing::warn!(chat = %chat_id, error = %err, "workspace harness-session write failed");
@@ -514,7 +518,11 @@ impl WorkspaceHost {
     }
 
     /// Synced seen marker (any device; LWW + monotonic guard in the doc layer).
-    pub fn mark_chat_seen(&self, chat_id: &str, at: chrono::DateTime<Utc>) -> Result<bool, EngineError> {
+    pub fn mark_chat_seen(
+        &self,
+        chat_id: &str,
+        at: chrono::DateTime<Utc>,
+    ) -> Result<bool, EngineError> {
         Ok(self.inner.doc.set_chat_seen(chat_id, at)?)
     }
 
@@ -583,7 +591,6 @@ impl WorkspaceHost {
         self.inner.doc.upsert_chat(&chat)?;
         Ok(true)
     }
-
 
     pub fn set_chat_archived(&self, chat_id: &str, archived: bool) -> Result<bool, EngineError> {
         Ok(self.inner.doc.set_chat_archived(chat_id, archived)?)

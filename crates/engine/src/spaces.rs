@@ -108,8 +108,8 @@ fn reconcile(inner: &Arc<SpacesSyncInner>, spaces: &[Space]) {
         // failures are fine — the repair tick still converges.
         let watcher = {
             let tx = kick_tx.clone();
-            let result = notify::recommended_watcher(
-                move |event: Result<notify::Event, notify::Error>| {
+            let result =
+                notify::recommended_watcher(move |event: Result<notify::Event, notify::Error>| {
                     let Ok(event) = event else { return };
                     if event
                         .paths
@@ -118,8 +118,7 @@ fn reconcile(inner: &Arc<SpacesSyncInner>, spaces: &[Space]) {
                     {
                         let _ = tx.send(());
                     }
-                },
-            );
+                });
             match result {
                 Ok(mut watcher) => {
                     use notify::Watcher as _;

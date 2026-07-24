@@ -576,9 +576,7 @@ fn forwardable(method: &str) -> bool {
 fn is_stream_method(method: &str) -> bool {
     matches!(
         method,
-        methods::WATCH_DOC_MESSAGES
-            | methods::SUBSCRIBE_TERMINAL
-            | methods::WATCH_CHECKOUT_DIFFS
+        methods::WATCH_DOC_MESSAGES | methods::SUBSCRIBE_TERMINAL | methods::WATCH_CHECKOUT_DIFFS
     )
 }
 

@@ -66,6 +66,30 @@ extension [InlineRun] {
     }
 }
 
+extension [InlineRun] {
+    /// Concatenated `Text` with inline-code runs tagged for the rounded-wash
+    /// renderer (custom TextAttributes only attach via `Text.customAttribute`,
+    /// not AttributedString). Settled rows render through this; live veiled
+    /// rows use `attributed()` (square wash only while fading).
+    func styled(size: CGFloat = MD.textSize,
+                weight: Font.Weight = .regular,
+                baseColor: Color = Theme.text) -> Text {
+        var result = Text(verbatim: "")
+        for run in self {
+            if run.style.code {
+                var piece = AttributedString(run.text)
+                piece.font = Theme.mono(size - 1.5)
+                piece.foregroundColor = Theme.inlineCodeText
+                result = result + Text(piece).customAttribute(InlineCodeAttribute())
+            } else {
+                result = result + Text([run].attributed(size: size, weight: weight,
+                                                        baseColor: baseColor))
+            }
+        }
+        return result
+    }
+}
+
 // MARK: - Block view
 
 struct MarkdownBlockView: View {
@@ -76,7 +100,8 @@ struct MarkdownBlockView: View {
     var body: some View {
         switch block {
         case .paragraph(let runs):
-            Text(runs.attributed())
+            runs.styled()
+                .textRenderer(InlineCodeRenderer())
                 .lineSpacing(MD.lineHeight - MD.textSize - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -84,7 +109,8 @@ struct MarkdownBlockView: View {
 
         case .heading(let level, let runs):
             let m = MD.headingMetrics(level)
-            Text(runs.attributed(size: m.size, weight: .semibold))
+            runs.styled(size: m.size, weight: .semibold)
+                .textRenderer(InlineCodeRenderer())
                 .lineSpacing(m.line - m.size - 4)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -315,7 +341,8 @@ struct TableBlockView: View {
         let alignment: Alignment = column < align.count
             ? (align[column] == .center ? .center : align[column] == .right ? .trailing : .leading)
             : .leading
-        return Text(runs.attributed(weight: weight))
+        return runs.styled(weight: weight)
+            .textRenderer(InlineCodeRenderer())
             .lineSpacing(MD.lineHeight - MD.textSize - 4)
             .padding(12)
             .frame(minWidth: 48, maxWidth: .infinity, alignment: alignment)
