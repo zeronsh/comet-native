@@ -568,6 +568,72 @@ Table of Contents
    Reject reordering, truncation, duplication, and cross-object splicing.
    Do not assemble unverified plaintext into a trusted file or document.
 
+7.5. Signed-wrapper v1 fixture profile
+
+   This subsection fixes a candidate signed-wrapper encoding for isolated
+   conformance tests. It does not close G1-G3, authorize transport use, or
+   define the encrypted payload, its nonce allocator, or membership rules.
+   The wrapper is shared by public control records and encrypted payloads;
+   a valid wrapper signature is NOT proof that its payload is encrypted.
+
+   Encode exactly one RFC 8949 core-deterministic CBOR map, with these
+   integer keys in ascending order. All lengths/unsigned integers use
+   their shortest encoding. Reject duplicates, missing/unknown/reordered
+   keys, indefinite lengths, tags, text, floats, negative integers, and
+   trailing bytes. There is no alternate JSON or legacy interpretation.
+
+      Key  Field                 Type
+       0   wrapper version       unsigned integer, exactly 1
+       1   record kind           unsigned: 1 policy, 2 key envelope, 3 content
+       2   vault ID              byte string, 16 bytes
+       3   storage generation    byte string, 16 bytes
+       4   authorizing epoch     unsigned integer, 1 through 2^64-1
+       5   object ID             byte string, 16 bytes
+       6   author device ID      byte string, 16 bytes
+       7   immutable revision    byte string, 16 bytes
+       8   membership hash       byte string, 32 bytes
+       9   payload               bounded byte string
+      10   Ed25519 signature     byte string, 64 bytes
+
+   IDs are raw opaque bytes, not UUID text, account names, or paths. The
+   membership hash identifies the policy authorizing the signer, not the
+   hash of this record; genesis cannot require its own hash. Genesis and
+   membership transitions need their separate reviewed payload/trust rules.
+   A zero hash is not permission to bypass trust verification.
+
+   Signature input is the ASCII bytes "zeron/signed-record/v1" followed
+   by one zero byte, then the deterministic CBOR map of keys 0 through 9
+   (map length 10, not the length-11 signed map). All payload bytes are
+   covered. Use ordinary Ed25519, not Ed25519ph. Signature output itself
+   need not be deterministic across platforms; persist the complete signed
+   record once and retransmit those same bytes.
+
+   Parsing yields an UNVERIFIED record. Verification requires an expected
+   binding obtained from trusted local profile/object/policy state: kind,
+   vault, generation, epoch, object, author, and membership hash. The caller
+   separately supplies that author's public key from verified membership;
+   no public key is embedded in this wrapper. Comparing a record with a
+   context copied from that same untrusted record is not authorization.
+   Only successful context AND signature verification yields payload access
+   through the verified-record interface. This still does not authorize
+   commands, validate a membership transition, or prove freshness.
+
+   The revision is signed but not a server sequence. Dedupe/replay and
+   accepted-history policy remain separate. Valid signatures do not allow
+   old epochs to be treated as new writes after revocation.
+
+   Each caller supplies a trusted payload byte limit. Validate encoded
+   size (payload limit plus at most 256 bytes of wrapper overhead), field
+   lengths, and declared payload length before copying or signing data.
+   Limit arithmetic must not wrap. Empty payloads are structurally valid;
+   each reviewed payload schema decides whether they are meaningful.
+   Full-width epoch values must not be rounded through JavaScript numbers.
+
+   The isolated codecs implement only this fixed map grammar, not a
+   general CBOR value tree. Payload codecs, cipher-suite identifiers,
+   AEAD associated data, key IDs, nonce/salt fields, and author admission
+   checks remain required before encrypted records can enter transport.
+
 
 8. Chat Log, Checkpoint, and Cursor Integration
 ----------------------------------------------
@@ -1062,6 +1128,22 @@ Table of Contents
    G6. Profile ownership for legacy routes, in-flight write fencing,
        migration cancellation/recovery, and measured retention of old
        cloud copies. These need deployment verification, not assumptions.
+
+   Implementation direction accepted by the maintainer on 2026-09-04:
+
+      - Native CryptoKit content/key-envelope operations on Swift, a small
+        reusable Rust crypto boundary, and a shared Rust channel through
+        a narrow Swift bridge rather than a second handshake implementation.
+      - Device-bound, non-syncing iOS Keychain keys accessible after the
+        first unlock following boot; replacement devices approve/recover.
+      - Explicit opt-in unattended headless operation using supported
+        protected service credentials, with unlock-on-boot also available
+        and no silent plaintext-file fallback.
+      - A grouped, checksummed Base32 recovery secret and a locally saved
+        recovery file carrying vault/trust-anchor metadata.
+
+   These choices select implementation/UX directions, not exact wire
+   encodings, nonce rules, libraries, or closure of the gates above.
 
    Before broad release, an independent security review SHOULD cover the
    complete construction and its implementation, particularly pairing,
