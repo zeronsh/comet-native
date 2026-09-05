@@ -2796,6 +2796,13 @@ impl Transcript {
         self.cancel_user_hold();
         let released_own_turn = self.own_turn.as_ref().is_some_and(|anchor| anchor.held);
         self.release_own_turn_hold();
+        if self.own_turn.is_some() {
+            // Cancel any tail spring synchronously too; the deferred input
+            // decision below may re-engage it after reading the new offset.
+            self.pinned = false;
+            self.spring.reset();
+            self.spring_last_tick = None;
+        }
         // The list invokes this handler ONLY from its wheel/touch input path
         // (programmatic scroll_by/scroll_to never re-enter it), while holding
         // its internal RefCell borrow — reading the ListState back
@@ -2813,7 +2820,10 @@ impl Transcript {
                     let distance = this.distance_from_bottom();
                     let previous = this.last_scroll_distance;
                     this.last_scroll_distance = distance;
-                    this.pinned = false;
+                    // Reaching the end preserves normal tail-follow intent
+                    // without reasserting a possibly stale prompt hold.
+                    this.pinned =
+                        distance <= AT_BOTTOM_PX || Self::should_restick(distance, previous);
                     this.spring.reset();
                     this.spring_last_tick = None;
                     // Re-stick only when returning to a short turn's actual
@@ -2830,7 +2840,11 @@ impl Transcript {
                             anchor.held = true;
                             anchor.positioned = false;
                         }
+                        this.pinned = false;
                         this.own_turn_kick = true;
+                    }
+                    if this.pinned {
+                        this.wake_spring();
                     }
                     this.show_jump_button = distance > SCROLL_BUTTON_THRESHOLD_PX
                         && !this.own_turn.as_ref().is_some_and(|a| a.held);
@@ -3125,7 +3139,7 @@ impl Transcript {
             return;
         }
         let inset = Self::own_send_inset(anchor_ix);
-        if self.is_glued() {
+        if self.is_glued() && self.own_turn.as_ref().is_some_and(|anchor| anchor.held) {
             self.list.scroll_by(px(-viewport_height));
         }
         let anchor_bounds = self.list.bounds_for_item(anchor_ix);
@@ -3136,7 +3150,7 @@ impl Transcript {
             let held = self.own_turn.take().is_some_and(|a| a.held);
             self.own_turn_last_tick = None;
             self.list.set_tail_reservation(None);
-            if held || self.distance_from_bottom() <= AT_BOTTOM_PX {
+            if held || self.pinned || self.distance_from_bottom() <= AT_BOTTOM_PX {
                 self.engage_pin(cx);
             } else {
                 cx.notify();
@@ -8220,7 +8234,17 @@ mod tests {
                     );
                     tick(&transcript, window, cx);
                     let this = transcript.read(cx);
-                    let top = this.list.bounds_for_item(0).unwrap().top();
+                    let top = this
+                        .list
+                        .bounds_for_item(0)
+                        .map(|bounds| bounds.top())
+                        .unwrap_or_else(|| {
+                            // A genuine bottom pin uses GPUI's end sentinel, for
+                            // which bounds_for_item intentionally returns None.
+                            this.list.viewport_bounds().top()
+                                + this.list.offset_for_item(0)
+                                + this.list.scroll_px_offset_for_scrollbar().y
+                        });
                     assert!(top >= px(-2.5), "wheel entered a blank runway: {top:?}");
                     assert!(
                         top <= previous + px(0.5),
@@ -8500,6 +8524,126 @@ mod tests {
                     "unknown prefix rows created a blank tail"
                 );
                 assert!(this.distance_from_bottom() <= 1.0);
+            });
+        }
+
+        #[test]
+        fn runway_wheel_down_at_the_end_keeps_following_when_streaming_overflows() {
+            with_window(|transcript, window, cx| {
+                transcript.update(cx, |this, cx| {
+                    feed(this, vec![prompt("prompt")], cx);
+                    this.rail_enabled = false;
+                });
+                draw(window, cx);
+                transcript.update(cx, |this, cx| {
+                    this.on_own_send("chat".into(), "prompt".into(), cx)
+                });
+                draw(window, cx);
+                for _ in 0..80 {
+                    tick(&transcript, window, cx);
+                }
+                wheel(window, -60.0, cx);
+                // Let the real wheel handler's deferred ListState read finish
+                // before delivering more output, as in the native event loop.
+                cx.defer(move |cx| {
+                    assert!(
+                        transcript.read(cx).pinned,
+                        "downward input at the runway end must retain follow intent"
+                    );
+                    let mut text = String::new();
+                    for chunk in 0..20 {
+                        text.push_str(&format!(
+                            "\n\nSection {chunk}\n\n```text\ncontent {chunk}\n```\n"
+                        ));
+                        transcript.update(cx, |this, cx| {
+                            feed(
+                                this,
+                                vec![
+                                    prompt("prompt"),
+                                    assistant(
+                                        "reply",
+                                        MessageStatus::Streaming,
+                                        vec![text_part("text", &text)],
+                                    ),
+                                ],
+                                cx,
+                            )
+                        });
+                        draw(window, cx);
+                        for _ in 0..40 {
+                            tick(&transcript, window, cx);
+                        }
+                    }
+                    let this = transcript.read(cx);
+                    assert!(this.own_turn.is_none());
+                    assert!(this.pinned);
+                    assert!(
+                        this.distance_from_bottom() <= 1.0,
+                        "output stopped following after the runway filled"
+                    );
+                });
+            });
+        }
+
+        #[test]
+        fn runway_down_then_up_before_overflow_preserves_the_user_viewport() {
+            with_window(|transcript, window, cx| {
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        vec![
+                            prompt("old"),
+                            assistant(
+                                "history",
+                                MessageStatus::Complete,
+                                vec![text_part("text", &"History.\n\n".repeat(80))],
+                            ),
+                            prompt("prompt"),
+                        ],
+                        cx,
+                    );
+                    this.rail_enabled = false;
+                });
+                draw(window, cx);
+                transcript.update(cx, |this, cx| {
+                    this.on_own_send("chat".into(), "prompt".into(), cx)
+                });
+                draw(window, cx);
+                for _ in 0..80 {
+                    tick(&transcript, window, cx);
+                }
+                wheel(window, -60.0, cx);
+                cx.defer(move |cx| {
+                    assert!(transcript.read(cx).pinned);
+                    draw(window, cx);
+                    wheel(window, 300.0, cx);
+                    assert!(
+                        !transcript.read(cx).pinned,
+                        "upward input must cancel the spring synchronously"
+                    );
+                    cx.defer(move |cx| {
+                        assert!(!transcript.read(cx).pinned);
+                        let before = transcript.read(cx).list.logical_scroll_top();
+                        transcript.update(cx, |this, cx| {
+                            let mut entries = this.state.read(cx).transcript.clone();
+                            entries.push(assistant(
+                                "reply",
+                                MessageStatus::Streaming,
+                                vec![text_part("text", &"New output.\n\n".repeat(80))],
+                            ));
+                            feed(this, entries, cx);
+                        });
+                        draw(window, cx);
+                        for _ in 0..80 {
+                            tick(&transcript, window, cx);
+                        }
+                        let this = transcript.read(cx);
+                        assert!(!this.pinned);
+                        let after = this.list.logical_scroll_top();
+                        assert_eq!(before.item_ix, after.item_ix);
+                        assert!((before.offset_in_item - after.offset_in_item).abs() <= px(1.0));
+                    });
+                });
             });
         }
 
