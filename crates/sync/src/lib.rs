@@ -25,5 +25,5 @@ pub use chat_client::{
 pub use registry::{
     ReconnectState, RegistryClient, RegistryEvent, RegistryTransport, RegistryTuning,
 };
-pub use store::{DocsStore, StoreError};
+pub use store::{DocsStore, MAX_ENCRYPTED_OUTBOX_BYTES, PendingEncryptedBatch, StoreError};
 pub use types::{RoomStatsSnapshot, StaticUrl, SyncError, UrlProvider};

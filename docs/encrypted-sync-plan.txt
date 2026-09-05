@@ -1469,4 +1469,52 @@ ES-16  Release controls, support, and staged activation
    evidence are still required for the complete feature in PR #252.
 
 
+16. Atomic Encrypted Chat Outbox (2026-09-04)
+--------------------------------------------
+
+   Integrated zeron-crypto into zeron-sync and added an encrypted_outbox
+   table to DocsStore. Only sealed ChatUpdate records can enter this queue;
+   blob/sidecar/checkpoint work needs its own transport-specific handling.
+   The queue rejects records larger than ChatClient's existing MAX_PUSH_BYTES
+   before committing them, and enforces a bounded per-profile byte budget.
+
+   persist_encrypted_batch writes the local snapshot, verified receive cursor,
+   document lineage epoch, and immutable ciphertext in one IMMEDIATE SQLite
+   transaction with synchronous=FULL. A PendingEncryptedBatch receipt is
+   returned only after commit. A duplicate enqueue returns the existing bytes
+   without overwriting a newer snapshot; reusing an ID for another document
+   or different bytes is rejected. Cursor overflow/regression is rejected.
+   Crypto key epochs use 8-byte big-endian blobs, separate from the existing
+   document epoch, so full-width u64 values do not wrap through SQLite i64.
+
+   Replay requires the caller's trusted current binding and author public
+   key, filters every binding dimension, verifies stored record signatures,
+   and preserves FIFO order. Old-epoch/policy records remain stored rather
+   than being sent as current or silently discarded. Reads are bounded to
+   128 batches and 64 MiB; enqueue quotas are checked under the write lock.
+   Acknowledgment deletes only the exact receipt/bytes and is idempotent;
+   it never deletes the snapshot or processed-command ledger. Corrupt rows
+   stop replay and are retained for recovery instead of being acknowledged.
+
+   Nine new integration tests cover restart/ack, duplicate/stale enqueues,
+   transaction failure after snapshot update, quota/cursor failures, exact
+   policy filtering, corrupted ciphertext, stale acknowledgments, purpose/
+   frame-size rejection, full-width key epochs, and concurrent connections
+   competing for a one-record quota. All pass. The normal all-target
+   workspace check and crypto/doc/sync/RPC/engine suites also pass, with
+   their existing warnings and explicitly ignored live-service tests.
+
+   The caller must serialize per-document mutations and supply a cursor
+   already verified by the receive path. These APIs do not manufacture
+   trusted membership or connect encrypted traffic to the legacy transport.
+   Local snapshots remain plaintext under the existing endpoint-data policy;
+   no private content keys are stored in the outbox.
+
+   Remaining work in this same PR: secure key persistence and bootstrap/
+   membership/key envelopes; pairing/recovery/revocation; desktop/iOS vault
+   gates and native durable storage; wire the committed batches and verified
+   apply outcomes into WS/HTTPS; cover registry/RPC/sidecars/blobs; migrate
+   plaintext profiles; finish end-to-end leakage, failure, and security review.
+
+
                           -- End of Project Plan --

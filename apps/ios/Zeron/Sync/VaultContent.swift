@@ -90,10 +90,12 @@ final class VaultDeviceSigner: CustomStringConvertible, CustomDebugStringConvert
 
 struct VaultSealedContent: CustomStringConvertible, CustomDebugStringConvertible {
     let binding: VaultRecordBinding
+    let purpose: VaultContentPurpose
     let revisionId: Data
     let encoded: Data
-    fileprivate init(binding: VaultRecordBinding, revisionId: Data, encoded: Data) {
+    fileprivate init(binding: VaultRecordBinding, purpose: VaultContentPurpose, revisionId: Data, encoded: Data) {
         self.binding = binding
+        self.purpose = purpose
         self.revisionId = revisionId
         self.encoded = encoded
     }
@@ -140,7 +142,7 @@ enum VaultContentCrypto {
             let input = try VaultRecordCodec.signingBytes(binding: binding, revisionId: revisionId, payload: payload, maxPayloadBytes: limit)
             let signature = try signer.key.signature(for: input)
             let encoded = try VaultRecordCodec.encodeSigned(binding: binding, revisionId: revisionId, payload: payload, signature: signature, maxPayloadBytes: limit)
-            return VaultSealedContent(binding: binding, revisionId: revisionId, encoded: encoded)
+            return VaultSealedContent(binding: binding, purpose: purpose, revisionId: revisionId, encoded: encoded)
         }
     }
 

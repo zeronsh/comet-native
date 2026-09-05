@@ -185,11 +185,15 @@ impl fmt::Debug for DeviceSigner {
 
 pub struct SealedContent {
     binding: RecordBinding,
+    purpose: ContentPurpose,
     revision_id: [u8; 16],
     encoded: Vec<u8>,
 }
 
 impl SealedContent {
+    pub fn purpose(&self) -> ContentPurpose {
+        self.purpose
+    }
     pub fn binding(&self) -> &RecordBinding {
         &self.binding
     }
@@ -305,6 +309,7 @@ fn seal_with_random(
         record::encode_signed(binding, &revision_id, &payload, &signature, payload_limit)?;
     Ok(SealedContent {
         binding: *binding,
+        purpose,
         revision_id,
         encoded,
     })

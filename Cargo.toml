@@ -22,6 +22,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
+zeron-crypto = { path = "crates/crypto" }
 zeron-proto = { path = "crates/proto" }
 zeron-doc = { path = "crates/doc" }
 zeron-sync = { path = "crates/sync" }
