@@ -1,7 +1,12 @@
 #![forbid(unsafe_code)]
 
 pub mod content;
+pub mod envelope;
+pub mod hpke;
+pub mod keyring;
+pub mod policy;
 pub mod record;
+pub mod recovery;
 
 use ring::{aead, hkdf, signature};
 use std::fmt;
@@ -16,6 +21,8 @@ pub enum CryptoError {
     InvalidOutputLength,
     SizeLimitExceeded,
     AuthenticationFailed,
+    InvalidPublicKey,
+    EntropyUnavailable,
 }
 
 impl fmt::Display for CryptoError {
@@ -29,9 +36,31 @@ impl std::error::Error for CryptoError {}
 pub struct SecretBytes(Zeroizing<Vec<u8>>);
 
 impl SecretBytes {
+    pub(crate) fn new(bytes: Zeroizing<Vec<u8>>) -> Self {
+        Self(bytes)
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
+}
+
+/// SHA-256 over `parts` in order — the only digest this crate exposes, used
+/// for membership hashes and identifier derivation.
+pub fn sha256(parts: &[&[u8]]) -> [u8; 32] {
+    let mut context = ring::digest::Context::new(&ring::digest::SHA256);
+    for part in parts {
+        context.update(part);
+    }
+    let mut output = [0; 32];
+    output.copy_from_slice(context.finish().as_ref());
+    output
+}
+
+/// Fill `buffer` from the OS entropy source.
+pub fn fill_random(buffer: &mut [u8]) -> Result<(), CryptoError> {
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), buffer)
+        .map_err(|_| CryptoError::EntropyUnavailable)
 }
 
 impl fmt::Debug for SecretBytes {

@@ -175,6 +175,16 @@ impl DeviceSigner {
     pub fn public_key(&self) -> &[u8] {
         self.key_pair.public_key().as_ref()
     }
+
+    /// Ordinary Ed25519 over `message` (callers supply the domain-separated
+    /// signed-record input; this is never exposed as a raw RPC).
+    pub(crate) fn sign_bytes(&self, message: &[u8]) -> Result<[u8; 64], ContentError> {
+        self.key_pair
+            .sign(message)
+            .as_ref()
+            .try_into()
+            .map_err(|_| ContentError::InvalidSigningKey)
+    }
 }
 
 impl fmt::Debug for DeviceSigner {
@@ -299,12 +309,7 @@ fn seal_with_random(
     let mut payload = protected_header(6, purpose, &key.identifier, &salt);
     record::bytes_field(&mut payload, 5, &ciphertext);
     let signature_input = record::signing_bytes(binding, &revision_id, &payload, payload_limit)?;
-    let signature: [u8; 64] = signer
-        .key_pair
-        .sign(&signature_input)
-        .as_ref()
-        .try_into()
-        .map_err(|_| ContentError::InvalidSigningKey)?;
+    let signature = signer.sign_bytes(&signature_input)?;
     let encoded =
         record::encode_signed(binding, &revision_id, &payload, &signature, payload_limit)?;
     Ok(SealedContent {

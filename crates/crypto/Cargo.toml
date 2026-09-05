@@ -8,6 +8,11 @@ publish.workspace = true
 [dependencies]
 ring = { version = "=0.17.14", default-features = false, features = ["alloc"] }
 zeroize = { version = "=1.9.0", default-features = false, features = ["alloc"] }
+# X25519 for HPKE (RFC 9180 DHKEM) recipient envelopes: ring exposes only
+# single-use ephemeral agreement keys, so static recipient decapsulation
+# needs a curve library. Reviewed 4.1.3 archive (checksum 97fb8b7c…b2be):
+# cfg-only build script, no process/network/filesystem access.
+curve25519-dalek = { version = "=4.1.3", default-features = false, features = ["zeroize"] }
 
 [dev-dependencies]
 serde.workspace = true

@@ -117,6 +117,14 @@ impl<'a> UnverifiedRecord<'a> {
         &self.revision_id
     }
 
+    /// The payload bytes BEFORE verification — for decoding public routing
+    /// fields only (a policy record's device list must be read to find the
+    /// key that verifies it). Nothing decoded from here is trusted until
+    /// [`Self::verify`] succeeds against an independently expected binding.
+    pub fn untrusted_payload(&self) -> &'a [u8] {
+        self.payload
+    }
+
     pub fn verify(
         self,
         expected: &RecordBinding,
@@ -349,6 +357,18 @@ impl<'a> Reader<'a> {
 
     pub(crate) fn fixed_field<const N: usize>(&mut self, key: u64) -> Result<[u8; N], RecordError> {
         self.bytes_field(key, N)?
+            .try_into()
+            .map_err(|_| RecordError::Malformed)
+    }
+
+    /// A bare byte string of exactly `N` bytes (array elements carry no key).
+    pub(crate) fn fixed_bytes<const N: usize>(&mut self) -> Result<[u8; N], RecordError> {
+        let length =
+            usize::try_from(self.argument(2)?).map_err(|_| RecordError::SizeLimitExceeded)?;
+        if length != N {
+            return Err(RecordError::Malformed);
+        }
+        self.take(length)?
             .try_into()
             .map_err(|_| RecordError::Malformed)
     }
