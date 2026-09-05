@@ -1,6 +1,6 @@
 Zeron Project                                              September 2026
 Project Plan: Encrypted Sync                             Date: 2026-09-04
-Status: M0 discovery / isolated primitive scaffolding implemented
+Status: Implementation in progress / encrypted-sync activation unavailable
 Branch: feat/encrypted-sync
 Design: docs/rfc-0001-encrypted-sync.txt (Draft 00)
 Code baseline: a0650ab
@@ -1379,6 +1379,43 @@ ES-16  Release controls, support, and staged activation
    earlier missing-GPUI limitation; full iOS device and security review are
    still required. Next work remains complete key-admission policy and
    reviewed HPKE interoperability before wiring key-management transports.
+
+
+14. Workspace Verification Restored (2026-09-04)
+------------------------------------------------
+
+   The GPUI issue was a missing cached checkout, not a broken pin or API.
+   The pinned commit exists and is dated 2026-08-19; its GitHub signature
+   status is unverified. Fetched the exact locked dependency sources with:
+
+      cargo fetch --locked --target aarch64-apple-darwin
+
+   Inspected the GPUI/GPUI-macOS build entry points: local resource/binding
+   generation and shader preparation, with no unexpected network step.
+   No dependency versions, repository security settings, or GPUI source
+   files were changed. Cargo.toml and Cargo.lock remained unchanged.
+
+   Normal workspace commands now work:
+      cargo test -p zeron-crypto --locked --offline
+      cargo check --workspace --all-targets --locked --offline
+      cargo test -p zeron-doc -p zeron-sync -p zeron-rpc -p zeron-engine --locked --offline
+
+   Results: crypto's 17 tests passed; the all-target workspace check passed;
+   the doc/sync/RPC/engine unit and integration suites passed after the
+   test synchronization correction below. Existing warnings remain; live
+   provider/edge tests retain their existing explicit ignored status.
+
+   The broader run reproduced a pre-existing heartbeat test race twice.
+   Its "run completes" predicate accepted ANY complete message, including
+   the user entry created before the harness had emitted reasoning. The
+   test then read the journal too early. Tightened the predicate to require
+   a complete ASSISTANT entry; no assertion was removed and no production
+   behavior was changed. The formerly failing test and the broader suite
+   then passed.
+
+   The old isolated-manifest commands are historical evidence only. Use
+   the real workspace from here onward; do not preserve a workaround for
+   a checkout that simply needed its pinned dependencies fetched.
 
 
                           -- End of Project Plan --
