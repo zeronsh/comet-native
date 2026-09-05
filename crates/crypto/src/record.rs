@@ -219,6 +219,15 @@ fn buffer(
     Ok(Vec::with_capacity(payload.len() + MAX_OVERHEAD))
 }
 
+pub(crate) fn context_bytes(
+    binding: &RecordBinding,
+    revision_id: &[u8; 16],
+) -> Result<Vec<u8>, RecordError> {
+    let mut output = buffer(binding, &[], 0)?;
+    header_fields(&mut output, 9, binding, revision_id);
+    Ok(output)
+}
+
 fn fields(
     out: &mut Vec<u8>,
     count: u64,
@@ -226,6 +235,11 @@ fn fields(
     revision_id: &[u8; 16],
     payload: &[u8],
 ) {
+    header_fields(out, count, binding, revision_id);
+    bytes_field(out, 9, payload);
+}
+
+fn header_fields(out: &mut Vec<u8>, count: u64, binding: &RecordBinding, revision_id: &[u8; 16]) {
     argument(out, 5, count);
     uint_field(out, 0, 1);
     uint_field(out, 1, binding.kind as u64);
@@ -236,21 +250,20 @@ fn fields(
     bytes_field(out, 6, &binding.author_id);
     bytes_field(out, 7, revision_id);
     bytes_field(out, 8, &binding.membership_hash);
-    bytes_field(out, 9, payload);
 }
 
-fn uint_field(out: &mut Vec<u8>, key: u64, value: u64) {
+pub(crate) fn uint_field(out: &mut Vec<u8>, key: u64, value: u64) {
     argument(out, 0, key);
     argument(out, 0, value);
 }
 
-fn bytes_field(out: &mut Vec<u8>, key: u64, value: &[u8]) {
+pub(crate) fn bytes_field(out: &mut Vec<u8>, key: u64, value: &[u8]) {
     argument(out, 0, key);
     argument(out, 2, value.len() as u64);
     out.extend_from_slice(value);
 }
 
-fn argument(out: &mut Vec<u8>, major: u8, value: u64) {
+pub(crate) fn argument(out: &mut Vec<u8>, major: u8, value: u64) {
     if value < 24 {
         out.push((major << 5) | value as u8);
         return;
@@ -265,9 +278,21 @@ fn argument(out: &mut Vec<u8>, major: u8, value: u64) {
     out.extend_from_slice(&value.to_be_bytes()[8 - width..]);
 }
 
-struct Reader<'a>(&'a [u8]);
+pub(crate) struct Reader<'a>(&'a [u8]);
 
 impl<'a> Reader<'a> {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
+        Self(bytes)
+    }
+
+    pub(crate) fn finish(&self) -> Result<(), RecordError> {
+        if self.0.is_empty() {
+            Ok(())
+        } else {
+            Err(RecordError::Malformed)
+        }
+    }
+
     fn take(&mut self, length: usize) -> Result<&'a [u8], RecordError> {
         if length > self.0.len() {
             return Err(RecordError::Malformed);
@@ -277,7 +302,7 @@ impl<'a> Reader<'a> {
         Ok(value)
     }
 
-    fn argument(&mut self, major: u8) -> Result<u64, RecordError> {
+    pub(crate) fn argument(&mut self, major: u8) -> Result<u64, RecordError> {
         let head = self.take(1)?[0];
         if head >> 5 != major {
             return Err(RecordError::Malformed);
@@ -307,12 +332,12 @@ impl<'a> Reader<'a> {
         Ok(())
     }
 
-    fn uint_field(&mut self, key: u64) -> Result<u64, RecordError> {
+    pub(crate) fn uint_field(&mut self, key: u64) -> Result<u64, RecordError> {
         self.key(key)?;
         self.argument(0)
     }
 
-    fn bytes_field(&mut self, key: u64, limit: usize) -> Result<&'a [u8], RecordError> {
+    pub(crate) fn bytes_field(&mut self, key: u64, limit: usize) -> Result<&'a [u8], RecordError> {
         self.key(key)?;
         let length =
             usize::try_from(self.argument(2)?).map_err(|_| RecordError::SizeLimitExceeded)?;
@@ -322,7 +347,7 @@ impl<'a> Reader<'a> {
         self.take(length)
     }
 
-    fn fixed_field<const N: usize>(&mut self, key: u64) -> Result<[u8; N], RecordError> {
+    pub(crate) fn fixed_field<const N: usize>(&mut self, key: u64) -> Result<[u8; N], RecordError> {
         self.bytes_field(key, N)?
             .try_into()
             .map_err(|_| RecordError::Malformed)

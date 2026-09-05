@@ -1,5 +1,6 @@
 #![forbid(unsafe_code)]
 
+pub mod content;
 pub mod record;
 
 use ring::{aead, hkdf, signature};

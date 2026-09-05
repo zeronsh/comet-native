@@ -133,7 +133,18 @@ enum VaultRecordCodec {
         return Data(capacity: payload.count + maxOverhead)
     }
 
+    static func contextBytes(binding: VaultRecordBinding, revisionId: Data) throws -> Data {
+        var output = try buffer(binding: binding, revisionId: revisionId, payload: Data(), limit: 0)
+        headerFields(into: &output, count: 9, binding: binding, revisionId: revisionId)
+        return output
+    }
+
     private static func fields(into out: inout Data, count: UInt64, binding: VaultRecordBinding, revisionId: Data, payload: Data) {
+        headerFields(into: &out, count: count, binding: binding, revisionId: revisionId)
+        bytesField(into: &out, key: 9, value: payload)
+    }
+
+    private static func headerFields(into out: inout Data, count: UInt64, binding: VaultRecordBinding, revisionId: Data) {
         argument(into: &out, major: 5, value: count)
         uintField(into: &out, key: 0, value: 1)
         uintField(into: &out, key: 1, value: binding.kind.rawValue)
@@ -144,21 +155,20 @@ enum VaultRecordCodec {
         bytesField(into: &out, key: 6, value: binding.authorId)
         bytesField(into: &out, key: 7, value: revisionId)
         bytesField(into: &out, key: 8, value: binding.membershipHash)
-        bytesField(into: &out, key: 9, value: payload)
     }
 
-    private static func uintField(into out: inout Data, key: UInt64, value: UInt64) {
+    static func uintField(into out: inout Data, key: UInt64, value: UInt64) {
         argument(into: &out, major: 0, value: key)
         argument(into: &out, major: 0, value: value)
     }
 
-    private static func bytesField(into out: inout Data, key: UInt64, value: Data) {
+    static func bytesField(into out: inout Data, key: UInt64, value: Data) {
         argument(into: &out, major: 0, value: key)
         argument(into: &out, major: 2, value: UInt64(value.count))
         out.append(value)
     }
 
-    private static func argument(into out: inout Data, major: UInt8, value: UInt64) {
+    static func argument(into out: inout Data, major: UInt8, value: UInt64) {
         if value < 24 {
             out.append((major << 5) | UInt8(value))
             return
@@ -177,7 +187,7 @@ enum VaultRecordCodec {
     }
 }
 
-private struct VaultRecordReader {
+struct VaultRecordReader {
     private let data: Data
     private var offset: Int
 

@@ -1160,8 +1160,8 @@ ES-16  Release controls, support, and staged activation
    Workspace metadata and package-specific rustfmt checks also passed.
    This is not a full workspace build or test result.
 
-   Current Swift/shared-vector command (replaces the original single-file
-   interpreter command in the historical Section 10.1 probe):
+   Historical Swift/shared-vector command for this slice (superseded by
+   the normal-workspace commands in Section 15):
 
       swiftc apps/ios/Zeron/Sync/VaultCrypto.swift \
         apps/ios/Zeron/Sync/VaultSignedRecord.swift \
@@ -1416,6 +1416,57 @@ ES-16  Release controls, support, and staged activation
    The old isolated-manifest commands are historical evidence only. Use
    the real workspace from here onward; do not preserve a workaround for
    a checkout that simply needed its pinned dependencies fetched.
+
+
+15. Content Encryption Implemented (2026-09-04)
+-----------------------------------------------
+
+   Selected the per-record-derived-key design for implementation, superseding
+   the undecided status in the historical Section 12 notes. RFC 7.7 specifies
+   the exact wire, key-derivation, and AAD inputs. No earlier draft ciphertext
+   is a compatibility target. Release security review still applies.
+
+   Rust content.rs and Swift VaultContent.swift now provide:
+      - Immutable scoped content-root keys and device signing identities.
+      - Fresh OS-generated revision/salt material for every new seal.
+      - HKDF-SHA256 per-record AES-256-GCM keys, one encryption per derived
+        key, and signed ciphertext envelopes with explicit purpose/key ID.
+      - Signature/context verification before key selection and AEAD open;
+        no plaintext or alternate-format fallback on failure.
+      - Bounded allocations, explicit entropy errors, and redacted key/
+        plaintext wrapper diagnostics. Secret export is explicit for future
+        protected key envelopes, not a general RPC operation.
+
+   Root-key objects are bound to vault/generation/epoch/object. Using one
+   under a different scope or a signer under another author ID fails before
+   encryption. Key lifecycle code must generate new root material on rotation;
+   reconstructing an old secret under new labels is not revocation.
+
+   Shared fixtures demonstrate Swift opening Rust ciphertext and Rust opening
+   fresh Swift ciphertext. Tests cover mutation/truncation, wrong roots/IDs/
+   purposes/scopes/authors, empty payloads, size and entropy failures, distinct
+   fresh seals, stable retry bytes, and AEAD rejection even after a modified
+   ciphertext/context is re-signed by the test author.
+
+   Verification: 25 Rust tests passed from the real workspace, 15 native
+   XCTest cases passed, and the all-target workspace check passed. The
+   conformance runner now compiles VaultContent.swift alongside VaultCrypto
+   and VaultSignedRecord. No external dependency version was changed.
+
+      swiftc apps/ios/Zeron/Sync/VaultCrypto.swift \
+        apps/ios/Zeron/Sync/VaultSignedRecord.swift \
+        apps/ios/Zeron/Sync/VaultContent.swift \
+        scripts/check-crypto-capabilities.swift -o target/crypto-capabilities-probe
+      ./target/crypto-capabilities-probe \
+        crates/crypto/tests/fixtures/primitives.json target/crypto-swift-vectors.json
+      ZERON_CRYPTO_TEST_VECTORS="$PWD/target/crypto-swift-vectors.json" \
+        cargo test -p zeron-crypto --locked --offline
+      cargo check --workspace --all-targets --locked --offline
+
+   Next is durable outbox/snapshot persistence and key-management integration.
+   These codecs are working implementation, not a user-facing activation:
+   bootstrap/pairing/recovery, every content path, migration, and final security
+   evidence are still required for the complete feature in PR #252.
 
 
                           -- End of Project Plan --

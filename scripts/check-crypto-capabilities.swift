@@ -40,6 +40,14 @@ struct PrimitiveVectors: Codable {
     let ed25519PointEncodings: [EncodingVector]
     let ed25519ScalarEncodings: [EncodingVector]
     let ed25519Rejections: [RejectionVector]
+    var encryptedContent: [EncryptedContentVector]
+}
+
+struct EncryptedContentVector: Codable {
+    let name, vaultId, generation, objectId, authorId, membershipHash: String
+    let epoch, purpose: UInt64
+    let keyId, contentKey, signerSeed, publicKey, plaintext, encoded: String
+    var peerRecord: String?
 }
 
 struct EncodingVector: Codable {
@@ -97,12 +105,17 @@ struct CryptoCapabilityProbe {
             vectors.signedRecords[index].peerSignature = signature.map { String(format: "%02x", $0) }.joined()
             vectors.signedRecords[index].peerRecord = record.map { String(format: "%02x", $0) }.joined()
         }
+        try check("encrypted-content fixtures", !vectors.encryptedContent.isEmpty)
+        for index in vectors.encryptedContent.indices {
+            let record = try encryptedContent(vectors.encryptedContent[index])
+            vectors.encryptedContent[index].peerRecord = record.map { String(format: "%02x", $0) }.joined()
+        }
         try hpkeCapability()
         if let outputPath = CommandLine.arguments.dropFirst(2).first {
             try JSONEncoder().encode(vectors).write(to: URL(fileURLWithPath: outputPath), options: .atomic)
             print("PASS: emitted public-key test vectors for Rust verification")
         }
-        print("Primitive/wrapper conformance only: no nonce-allocation, membership, secure-store, or complete E2EE guarantees tested.")
+        print("Core encryption conformance passed; complete sync integration and security review remain separate.")
     }
 
     static func aes(_ v: AESVector) throws {
@@ -366,6 +379,44 @@ struct CryptoCapabilityProbe {
         let peerSignature = try signer.signature(for: input)
         let peerRecord = try VaultRecordCodec.encodeSigned(binding: binding, revisionId: revision, payload: payload, signature: peerSignature, maxPayloadBytes: payload.count)
         return (peerSignature, peerRecord)
+    }
+
+    static func encryptedContent(_ vector: EncryptedContentVector) throws -> Data {
+        guard let purpose = VaultContentPurpose(rawValue: vector.purpose) else { throw ProbeFailure(check: "fixture purpose") }
+        let binding = try VaultRecordBinding(
+            kind: .content, vaultId: hex(vector.vaultId), generation: hex(vector.generation), epoch: vector.epoch,
+            objectId: hex(vector.objectId), authorId: hex(vector.authorId), membershipHash: hex(vector.membershipHash)
+        )
+        let key = try VaultContentKey(scope: VaultKeyScope(binding), identifier: hex(vector.keyId), bytes: hex(vector.contentKey))
+        let signer = try VaultDeviceSigner(authorId: binding.authorId, seed: hex(vector.signerSeed))
+        try check("\(vector.name): fixture signing key", signer.publicKey == hex(vector.publicKey))
+        let plaintext = try hex(vector.plaintext)
+        let encoded = try hex(vector.encoded)
+        let opened = try VaultContentCrypto.open((Data([255]) + encoded).dropFirst(), expected: binding, purpose: purpose, key: key, trustedPublicKey: signer.publicKey, maxPlaintextBytes: plaintext.count)
+        try check("\(vector.name): Swift decrypts Rust ciphertext", opened.plaintext == plaintext)
+        let sealed = try VaultContentCrypto.seal(binding: binding, purpose: purpose, key: key, signer: signer, plaintext: plaintext, maxPlaintextBytes: plaintext.count)
+        let again = try VaultContentCrypto.seal(binding: binding, purpose: purpose, key: key, signer: signer, plaintext: plaintext, maxPlaintextBytes: plaintext.count)
+        try check("\(vector.name): fresh record identity and ciphertext", sealed.revisionId != again.revisionId && sealed.encoded != again.encoded)
+        try check("\(vector.name): native round trip", VaultContentCrypto.open(sealed.encoded, expected: binding, purpose: purpose, key: key, trustedPublicKey: signer.publicKey, maxPlaintextBytes: plaintext.count).plaintext == plaintext)
+        if plaintext.count >= 16 {
+            try check("\(vector.name): plaintext canary absent", sealed.encoded.range(of: plaintext) == nil)
+        }
+        for index in encoded.indices {
+            var corrupted = encoded
+            corrupted[index] ^= 1
+            do {
+                _ = try VaultContentCrypto.open(corrupted, expected: binding, purpose: purpose, key: key, trustedPublicKey: signer.publicKey, maxPlaintextBytes: plaintext.count)
+            } catch is VaultContentError { continue }
+            throw ProbeFailure(check: "encrypted record tampering accepted")
+        }
+        for length in 0..<encoded.count {
+            do {
+                _ = try VaultContentCrypto.open(encoded.prefix(length), expected: binding, purpose: purpose, key: key, trustedPublicKey: signer.publicKey, maxPlaintextBytes: plaintext.count)
+            } catch is VaultContentError { continue }
+            throw ProbeFailure(check: "encrypted record truncation accepted")
+        }
+        print("PASS: \(vector.name): tamper and truncation rejection")
+        return sealed.encoded
     }
 
     static func hpkeCapability() throws {

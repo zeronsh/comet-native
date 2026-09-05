@@ -682,6 +682,61 @@ Table of Contents
    enroll a device based on the precheck alone. These rules apply only to
    Ed25519, not to X25519/HPKE keys.
 
+7.7. Encrypted content record implementation
+
+   Content uses the signed wrapper with kind = 3. Its payload is one
+   deterministic CBOR map with exactly these ordered integer keys:
+
+      0  format version       unsigned, exactly 1
+      1  suite                unsigned, exactly 1 (AES-256-GCM/HKDF-SHA256)
+      2  purpose              unsigned: 1 update, 2 checkpoint, 3 frontier,
+                              4 registry field, 5 tail, 6 diff, 7 blob,
+                              8 device sidecar
+      3  content-key ID       byte string, 16 bytes
+      4  per-record salt      byte string, 32 bytes
+      5  ciphertext and tag   byte string; final 16 bytes are the GCM tag
+
+   A content root key is random, 32 bytes, and scoped to one vault, storage
+   generation, write epoch, and object. Its ID and scope are immutable in
+   the key object. A new epoch requires fresh root keys, not relabeling or
+   rewrapping the old roots. Signers likewise bind a device ID to their
+   private signing key; a caller cannot label a seal as another author.
+
+   Define C as the deterministic CBOR map of signed-wrapper fields 0..8
+   (length 9, including the fresh revision). Define H as the deterministic
+   CBOR map of encrypted-payload fields 0..4 (length 5). Then:
+
+      K = HKDF-SHA256(root key, salt,
+            ASCII("zeron/content/key/v1") || 00 || C || H, 32 bytes)
+      AAD = ASCII("zeron/content/aad/v1") || 00 || C || H
+
+   Use K for exactly one AES-256-GCM encryption with a 12-byte zero nonce.
+   Generate the 16-byte revision and 32-byte salt from fresh OS randomness
+   for each new seal. Randomness failure yields no record. The public seal
+   API accepts no caller-provided nonce or salt. The complete encrypted
+   payload is then signed using Section 7.5, and the resulting immutable
+   record is persisted before transport. Retries use those stored bytes;
+   re-encryption always creates a fresh salt and transport revision while
+   preserving semantic command IDs inside the plaintext.
+
+   Opening first verifies the expected wrapper context and author, then
+   requires the expected purpose, key ID, and root-key scope. It derives K
+   and authenticates GCM before returning any plaintext. Unknown formats,
+   suites, and purposes fail closed. Signature-only or plaintext draft
+   records are not a content-encryption fallback.
+
+   The implementation caps plaintext at 16 MiB minus 400 bytes, with a
+   smaller caller-supplied limit for each transport/object type. The 400
+   bytes conservatively cover encryption and signed-wrapper overhead;
+   existing row and sidecar quotas still apply. Length checks precede
+   randomness, copying, and crypto work where possible.
+
+   This selects the per-record-derived-key approach for implementation,
+   not a claim that review is finished. Entropy quality, aggregate key-use
+   budgets, collision/authentication bounds, restored-device identity, and
+   live VM/RNG-state cloning remain explicit release-review requirements.
+   No compatibility with earlier unshipped draft encryption is required.
+
 
 8. Chat Log, Checkpoint, and Cursor Integration
 ----------------------------------------------
