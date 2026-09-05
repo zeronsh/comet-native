@@ -96,6 +96,12 @@ Table of Contents
        sync does not decrypt cloud copies. An explicit future export into
        another profile would be a separate, consented operation.
 
+   D8. No encryption format has shipped. The first encrypted-sync release
+       is one feature developed in one PR; draft codecs may be replaced
+       directly without compatibility layers for earlier drafts. Existing
+       plaintext data and clients still require the migration/fencing
+       treatment in Section 12. Future unknown encrypted formats fail closed.
+
    Local-only profiles MUST remain local. Enabling encryption or signing
    in MUST NOT import local-only sessions, attachments, or agent secrets.
    Any existing explicit profile-copy flow must respect the vault gate.
@@ -633,6 +639,48 @@ Table of Contents
    general CBOR value tree. Payload codecs, cipher-suite identifiers,
    AEAD associated data, key IDs, nonce/salt fields, and author admission
    checks remain required before encrypted records can enter transport.
+
+7.6. Ed25519 input-encoding prechecks
+
+   The isolated verification adapters reject small-order and noncanonical
+   encodings before invoking the existing Ed25519 implementation. This
+   is a candidate verification-policy restriction, not complete device-key
+   admission and not a new signature algorithm.
+
+   For the 32-byte public key A and the first 32 bytes R of a signature:
+
+      - Inspect the little-endian y-coordinate after masking the sign bit
+        in a COPY of the final byte. Require y < p, where p = 2^255 - 19.
+      - Reject y equal to 0, 1, p-1, or either of these two little-endian
+        order-eight coordinates (both sign-bit variants are rejected):
+
+        26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05
+        c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a
+
+   For the final 32 bytes S, require the full little-endian integer to be
+   less than L = 2^252 + 27742317777372353535851937790883648493. Do not mask
+   S's high bits or reduce it modulo L. S = 0 passes this encoding check
+   but still requires a valid signature equation under an acceptable key.
+
+   Pass the ORIGINAL, unmodified A/R/S bytes to the signature library.
+   These comparisons inspect public data only. Signature failures retain
+   the existing coarse authentication error and do not yield a verified
+   record. Future transport callers MUST NOT turn such failures into cursor
+   advancement or an alternate verification mode.
+
+   The identity-point regression is concrete: the underlying libraries
+   tested here accepted A = R = identity, S = 0 for a synthetic message.
+   No valid device private key is needed for that construction. It is not
+   a break of signatures under correctly generated keys, but it cannot be
+   used as device-possession evidence. The adapter must reject it even if
+   a caller accidentally supplies the identity point as its trusted key.
+
+   Passing the encoding precheck does NOT prove that bytes decode to an
+   acceptable prime-order device key. The existing library still performs
+   signature verification; mixed-order point policy, complete admission,
+   and cross-version agreement remain G1/G2 review requirements. Do not
+   enroll a device based on the precheck alone. These rules apply only to
+   Ed25519, not to X25519/HPKE keys.
 
 
 8. Chat Log, Checkpoint, and Cursor Integration

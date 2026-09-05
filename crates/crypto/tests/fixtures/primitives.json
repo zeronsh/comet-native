@@ -102,5 +102,81 @@
     { "name": "nonminimal epoch", "offset": 42, "remove": 2, "insert": "190018", "error": "NonCanonical" },
     { "name": "short signature", "offset": 140, "remove": 2, "insert": "583f", "error": "Malformed" },
     { "name": "short identifier", "offset": 6, "remove": 1, "insert": "4f", "error": "Malformed" }
+  ],
+  "ed25519PointEncodings": [
+    { "name": "order-four zero", "encoding": "0000000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "identity", "encoding": "0100000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "order-eight y1", "encoding": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", "allowed": false },
+    { "name": "order-eight y2", "encoding": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", "allowed": false },
+    { "name": "order-two minus-one", "encoding": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "noncanonical p", "encoding": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "noncanonical p+1", "encoding": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "noncanonical maximum y", "encoding": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "canonical p-2 encoding only", "encoding": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": true },
+    { "name": "RFC 8032 public-key encoding", "encoding": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "allowed": true },
+    { "name": "canonical two encoding only", "encoding": "0200000000000000000000000000000000000000000000000000000000000000", "allowed": true },
+    { "name": "short point", "encoding": "00000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "long point", "encoding": "000000000000000000000000000000000000000000000000000000000000000000", "allowed": false }
+  ],
+  "ed25519ScalarEncodings": [
+    { "name": "zero scalar", "encoding": "0000000000000000000000000000000000000000000000000000000000000000", "allowed": true },
+    { "name": "one scalar", "encoding": "0100000000000000000000000000000000000000000000000000000000000000", "allowed": true },
+    { "name": "L-1", "encoding": "ecd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010", "allowed": true },
+    { "name": "L", "encoding": "edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010", "allowed": false },
+    { "name": "L+1", "encoding": "eed3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010", "allowed": false },
+    { "name": "high scalar bit", "encoding": "0000000000000000000000000000000000000000000000000000000000000080", "allowed": false },
+    { "name": "maximum scalar", "encoding": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "allowed": false },
+    { "name": "short scalar", "encoding": "00000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "long scalar", "encoding": "000000000000000000000000000000000000000000000000000000000000000000", "allowed": false }
+  ],
+  "ed25519Rejections": [
+    {
+      "name": "identity-key signature",
+      "publicKey": "0100000000000000000000000000000000000000000000000000000000000000",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "negative-zero identity key",
+      "publicKey": "0100000000000000000000000000000000000000000000000000000000000080",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "noncanonical identity key",
+      "publicKey": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "noncanonical identity R",
+      "publicKey": "0100000000000000000000000000000000000000000000000000000000000000",
+      "message": "",
+      "signature": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "noncanonical S plus L",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901554c8c7872aa064e049dbb3013fbf29380d25bf5f0595bbe24655141438e7a101b"
+    },
+    {
+      "name": "scalar exactly L",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010"
+    },
+    {
+      "name": "small-order R with regular key",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000005fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    {
+      "name": "noncanonical R with regular key",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    }
   ]
 }

@@ -18,6 +18,52 @@ final class VaultCryptoTests: XCTestCase {
         return (encoded, key.publicKey.rawRepresentation, binding)
     }
 
+    func testEd25519PrechecksPreserveSlicedValidSignatures() throws {
+        let signer = Curve25519.Signing.PrivateKey()
+        let message = Data("synthetic signature precheck".utf8)
+        let key = (Data([255]) + signer.publicKey.rawRepresentation).dropFirst()
+        let signature = (Data([255]) + (try signer.signature(for: message))).dropFirst()
+        let originalKey = key
+        let originalSignature = signature
+        XCTAssertTrue(VaultCrypto.passesEd25519PointEncodingPrecheck(key))
+        XCTAssertTrue(VaultCrypto.passesEd25519PointEncodingPrecheck(signature.prefix(32)))
+        XCTAssertTrue(VaultCrypto.passesEd25519ScalarEncodingPrecheck(signature.suffix(32)))
+        XCTAssertNoThrow(try VaultCrypto.verifyEd25519(publicKey: key, message: message, signature: signature))
+        XCTAssertEqual(key, originalKey)
+        XCTAssertEqual(signature, originalSignature)
+        let order = Data([
+            0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+        ] + Array(repeating: 0, count: 15) + [0x10])
+        XCTAssertFalse(VaultCrypto.passesEd25519ScalarEncodingPrecheck(order))
+        var noncanonical = signature
+        noncanonical.replaceSubrange(noncanonical.index(noncanonical.endIndex, offsetBy: -32)..<noncanonical.endIndex, with: order)
+        XCTAssertThrowsError(try VaultCrypto.verifyEd25519(publicKey: key, message: message, signature: noncanonical)) {
+            XCTAssertEqual($0 as? VaultCryptoError, .authenticationFailed)
+        }
+        XCTAssertEqual(signature, originalSignature)
+    }
+
+    func testEd25519RejectsIdentityKeySignature() {
+        let identity = Data([1]) + Data(repeating: 0, count: 31)
+        let signature = identity + Data(repeating: 0, count: 32)
+        XCTAssertThrowsError(try VaultCrypto.verifyEd25519(
+            publicKey: identity, message: Data("synthetic key-admission probe".utf8), signature: signature
+        )) { XCTAssertEqual($0 as? VaultCryptoError, .authenticationFailed) }
+    }
+
+    func testSignedRecordRejectsIdentityKeySignature() throws {
+        let (_, _, binding) = try signedRecordSample()
+        let identity = Data([1]) + Data(repeating: 0, count: 31)
+        let encoded = try VaultRecordCodec.encodeSigned(
+            binding: binding, revisionId: Data(repeating: 5, count: 16), payload: Data(),
+            signature: identity + Data(repeating: 0, count: 32), maxPayloadBytes: 0
+        )
+        let parsed = try VaultUnverifiedRecord.parse(encoded, maxPayloadBytes: 0)
+        XCTAssertThrowsError(try parsed.verify(expected: binding, trustedPublicKey: identity)) {
+            XCTAssertEqual($0 as? VaultRecordError, .invalidSignature)
+        }
+    }
+
     func testSignedRecordVerificationAndEveryContextField() throws {
         let (encoded, key, binding) = try signedRecordSample()
         let record = try VaultUnverifiedRecord.parse((Data([255]) + encoded).dropFirst(), maxPayloadBytes: 4)

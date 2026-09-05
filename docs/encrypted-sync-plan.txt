@@ -54,12 +54,27 @@ Code baseline: a0650ab
    All ES work packages below start PENDING. A written design is not an
    implemented control, and a passing crypto test is not complete sync.
 
+   Maintainer direction (2026-09-04):
+      - Commit and push notable progress to PR #252 and keep its status
+        updated without waiting for another commit/push request.
+      - Deliver encrypted sync as one feature in this PR. No encryption
+        format has shipped; draft codecs may be replaced directly. Do not
+        add compatibility layers or migrations for earlier draft formats.
+      - This does not remove the need to migrate existing plaintext data,
+        stop old plaintext producers, or preserve user data.
+      - Fix the pinned GPUI dependency setup and use normal workspace tests
+        rather than treating an offline checkout failure as permanent.
+      - Proceed with implementation using idiomatic defaults. Security
+        review and complete coverage remain release gates, not a reason
+        to preserve unshipped prototypes or postpone implementation.
+
    Before starting a package:
 
       1. Assign one accountable owner and a reviewer; roles below are
          planning labels, not assignments to particular people.
-      2. For implementation, confirm dependencies and relevant RFC design
-         gates are closed. Discovery packages exist to close those gates.
+      2. Confirm dependencies and record exact design decisions for the
+         slice before coding. Track unresolved protocol/security risks as
+         blockers to production activation, with tests and review evidence.
       3. Capture the existing test baseline and write the failing fixture
          or regression test for the behaviour being introduced.
       4. Keep changes narrow and preserve existing comments/conventions.
@@ -72,10 +87,11 @@ Code baseline: a0650ab
    a build. Library selection and independent security review are explicit
    work, not assumptions hidden in a coding task.
 
-   This document authorises no production request, data deletion, release,
-   dependency installation, or commit. Those actions require the relevant
-   implementation/release approvals. No implementation tests ran as part
-   of writing this plan.
+   Milestone commits/PR updates and restoring pinned build dependencies
+   are authorised by the maintainer's current direction above. Production
+   requests, data deletion, and release still require separate approval.
+   New dependencies still require supply-chain review. Historical discovery
+   entries below describe what had run at each point, not the current limit.
 
 
 3. Milestones and Dependency Order
@@ -1278,6 +1294,91 @@ ES-16  Release controls, support, and staged activation
    Before encrypting content, resolve the nonce proposal and exact inner
    payload/AEAD/key-binding format. No signature-only record may be used as
    evidence that workspace content is end-to-end encrypted.
+
+
+13. Ed25519 Encoding Hardening (2026-09-04)
+------------------------------------------
+
+   PR #252 was open with review still required when this work began. The
+   automated review had reported no issues; that is not protocol approval.
+   The subsequent standing direction in Section 2 authorises committing
+   and pushing this and later notable milestones to the same PR.
+
+13.1. Reproduction and scope
+
+   Both ring and CryptoKit accepted A = R = the encoded identity point,
+   S = 0 for synthetic messages. With that point supplied as the trusted
+   public key, the signed-wrapper adapters also returned a verified record.
+   Added failing regression tests at BOTH the primitive and wrapper layers
+   before changing verification; two Rust and two XCTest cases failed as
+   expected. This is not a signature break under a correctly generated
+   public key. It demonstrates why a raw signature check is insufficient
+   as device-key possession/admission evidence for arbitrary input keys.
+
+   No live application transport currently calls these adapters, so this
+   finding does not establish an exploit against deployed sync. It is an
+   important restriction to enforce before implementing enrollment.
+
+13.2. Added restrictions
+
+   RFC Section 7.6 records the exact candidate byte-level policy:
+
+      - Inspect A and R as 32-byte compressed Edwards encodings. Reject
+        y >= 2^255-19 and the small-order y coordinates, for either sign.
+      - Require the full 32-byte scalar S to be less than the Ed25519
+        subgroup order L; do not mask high bits or reduce modulo L.
+      - Preserve the original input bytes for the library's signature
+        calculation. Sign-bit masking is performed only on a local copy
+        used for the public-coordinate check.
+
+   Rust and Swift apply the same prechecks before their existing signature
+   libraries. Failures remain AuthenticationFailed / authenticationFailed;
+   signed wrappers map them to InvalidSignature / invalidSignature. No
+   alternate verifier, fallback, curve arithmetic, or signature algorithm
+   was introduced. Helpers are explicitly named encoding PRECHECKS and
+   are not a device-admission API.
+
+   These restrictions intentionally do not claim complete prime-subgroup
+   admission or identical behavior for all mixed-order point constructions.
+   Passing the precheck is necessary, not sufficient, for signature success
+   or key acceptance. Full G1/G2 verification/admission review remains open.
+
+13.3. Fixtures, evidence, and sources
+
+   Expanded the shared fixture file with 13 point-encoding cases, 9 scalar
+   cases, and 8 complete signature rejection cases. The Rust and Swift
+   harnesses also test both point sign bits, the entire noncanonical field
+   range p through 2^255-1, S boundaries including L-1/L/L+1 and high bits,
+   malformed lengths, immutable input, and nonzero Data slice indices.
+   Existing positive RFC and fresh CryptoKit-signature fixtures still pass.
+   Explicitly positive encoding-only cases prevent tests from confusing
+   an encoding check with successful curve-point admission.
+
+   Verification:
+      - 17 Rust tests passed against the actual source through the existing
+        isolated manifest, including fresh Swift signatures/records.
+      - 11 native XCTest cases passed through the macOS source runner.
+      - Shared Swift fixtures and iOS simulator-target typecheck passed.
+      - Clippy passed with warnings denied; no new dependency was added.
+
+   Inspected RFC 8032 and the small-order/canonical-encoding reference in
+   libsodium 1.0.18, source blob ec6d86f5ec5243cc01a951ba2f13cccc574009a5:
+      https://www.rfc-editor.org/rfc/rfc8032.html
+      https://github.com/jedisct1/libsodium/blob/1.0.18/src/libsodium/crypto_core/ed25519/ref10/ed25519_ref10.c
+      https://hdevalence.ca/blog/2020-10-04-its-25519am/
+
+   Only the public mathematical coordinate/order values informed these
+   byte checks. No libsodium dependency was installed or executed, and
+   this does not claim compatibility with every libsodium validation rule.
+   The validation-criteria analysis explicitly explains why a small-order
+   exclusion list alone is not a full solution to mixed-order agreement.
+
+   The nonce proposal in Section 12 is still undecided. No encrypted write,
+   key store, enrollment flow, migration, activation, or existing Xcode
+   project/scheme behavior changed. Full workspace verification retains the
+   earlier missing-GPUI limitation; full iOS device and security review are
+   still required. Next work remains complete key-admission policy and
+   reviewed HPKE interoperability before wiring key-management transports.
 
 
                           -- End of Project Plan --

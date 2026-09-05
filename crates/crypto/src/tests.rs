@@ -9,6 +9,25 @@ struct Vectors {
     aes256gcm: Vec<AesVector>,
     ed25519: Vec<SignatureVector>,
     hkdf_sha256: Vec<HkdfVector>,
+    ed25519_point_encodings: Vec<EncodingVector>,
+    ed25519_scalar_encodings: Vec<EncodingVector>,
+    ed25519_rejections: Vec<RejectionVector>,
+}
+
+#[derive(Deserialize)]
+struct EncodingVector {
+    name: String,
+    encoding: String,
+    allowed: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RejectionVector {
+    name: String,
+    public_key: String,
+    message: String,
+    signature: String,
 }
 
 #[derive(Deserialize)]
@@ -205,6 +224,81 @@ fn ed25519_rejects_invalid_lengths_and_wrong_keys() {
     }
     assert_eq!(
         verify_ed25519(&[0; 32], &[], &sig),
+        Err(CryptoError::AuthenticationFailed)
+    );
+}
+
+#[test]
+fn ed25519_encoding_prechecks_match_shared_vectors() {
+    let fixtures = vectors();
+    assert!(fixtures.ed25519_point_encodings.len() >= 13);
+    assert!(fixtures.ed25519_scalar_encodings.len() >= 9);
+    for v in fixtures.ed25519_point_encodings {
+        let mut encoded = hex(&v.encoding);
+        let before = encoded.clone();
+        assert_eq!(
+            ed25519_point_encoding_precheck(&encoded),
+            v.allowed,
+            "{}",
+            v.name
+        );
+        assert_eq!(encoded, before);
+        if encoded.len() == 32 {
+            encoded[31] ^= 0x80;
+            assert_eq!(
+                ed25519_point_encoding_precheck(&encoded),
+                v.allowed,
+                "{} opposite sign",
+                v.name
+            );
+        }
+    }
+    for v in fixtures.ed25519_scalar_encodings {
+        let encoded = hex(&v.encoding);
+        assert_eq!(
+            ed25519_scalar_encoding_precheck(&encoded),
+            v.allowed,
+            "{}",
+            v.name
+        );
+    }
+    for low_byte in 0xed..=0xff {
+        for high_byte in [0x7f, 0xff] {
+            let mut noncanonical = [0xff; 32];
+            noncanonical[0] = low_byte;
+            noncanonical[31] = high_byte;
+            assert!(!ed25519_point_encoding_precheck(&noncanonical));
+        }
+    }
+}
+
+#[test]
+fn ed25519_rejection_vectors_fail_closed() {
+    let fixtures = vectors();
+    assert!(fixtures.ed25519_rejections.len() >= 8);
+    for v in fixtures.ed25519_rejections {
+        let key = hex(&v.public_key);
+        let message = hex(&v.message);
+        let sig = hex(&v.signature);
+        assert_eq!(key.len(), 32);
+        assert_eq!(sig.len(), 64);
+        assert_eq!(
+            verify_ed25519(&key, &message, &sig),
+            Err(CryptoError::AuthenticationFailed),
+            "{}",
+            v.name
+        );
+    }
+}
+
+#[test]
+fn ed25519_rejects_identity_key_signature() {
+    let mut identity = [0; 32];
+    identity[0] = 1;
+    let mut signature = [0; 64];
+    signature[0] = 1;
+    assert_eq!(
+        verify_ed25519(&identity, b"synthetic key-admission probe", &signature),
         Err(CryptoError::AuthenticationFailed)
     );
 }

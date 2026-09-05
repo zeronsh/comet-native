@@ -80,9 +80,63 @@ pub fn verify_ed25519(
     if signature.len() != 64 {
         return Err(CryptoError::InvalidSignatureLength);
     }
+    if !ed25519_point_encoding_precheck(public_key)
+        || !ed25519_point_encoding_precheck(&signature[..32])
+        || !ed25519_scalar_encoding_precheck(&signature[32..])
+    {
+        return Err(CryptoError::AuthenticationFailed);
+    }
     signature::UnparsedPublicKey::new(&signature::ED25519, public_key)
         .verify(message, signature)
         .map_err(|_| CryptoError::AuthenticationFailed)
+}
+
+const ED25519_FIELD_MODULUS: [u8; 32] = {
+    let mut bytes = [0xff; 32];
+    bytes[0] = 0xed;
+    bytes[31] = 0x7f;
+    bytes
+};
+
+const ED25519_SMALL_ORDER_Y: [[u8; 32]; 5] = [
+    [0; 32],
+    {
+        let mut bytes = [0; 32];
+        bytes[0] = 1;
+        bytes
+    },
+    {
+        let mut bytes = ED25519_FIELD_MODULUS;
+        bytes[0] = 0xec;
+        bytes
+    },
+    [
+        0x26, 0xe8, 0x95, 0x8f, 0xc2, 0xb2, 0x27, 0xb0, 0x45, 0xc3, 0xf4, 0x89, 0xf2, 0xef, 0x98,
+        0xf0, 0xd5, 0xdf, 0xac, 0x05, 0xd3, 0xc6, 0x33, 0x39, 0xb1, 0x38, 0x02, 0x88, 0x6d, 0x53,
+        0xfc, 0x05,
+    ],
+    [
+        0xc7, 0x17, 0x6a, 0x70, 0x3d, 0x4d, 0xd8, 0x4f, 0xba, 0x3c, 0x0b, 0x76, 0x0d, 0x10, 0x67,
+        0x0f, 0x2a, 0x20, 0x53, 0xfa, 0x2c, 0x39, 0xcc, 0xc6, 0x4e, 0xc7, 0xfd, 0x77, 0x92, 0xac,
+        0x03, 0x7a,
+    ],
+];
+
+const ED25519_SCALAR_ORDER: [u8; 32] = [
+    0xed, 0xd3, 0xf5, 0x5c, 0x1a, 0x63, 0x12, 0x58, 0xd6, 0x9c, 0xf7, 0xa2, 0xde, 0xf9, 0xde, 0x14,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10,
+];
+
+pub(crate) fn ed25519_point_encoding_precheck(encoded: &[u8]) -> bool {
+    let Ok(mut y) = <[u8; 32]>::try_from(encoded) else {
+        return false;
+    };
+    y[31] &= 0x7f;
+    y.iter().rev().lt(ED25519_FIELD_MODULUS.iter().rev()) && !ED25519_SMALL_ORDER_Y.contains(&y)
+}
+
+pub(crate) fn ed25519_scalar_encoding_precheck(encoded: &[u8]) -> bool {
+    encoded.len() == 32 && encoded.iter().rev().lt(ED25519_SCALAR_ORDER.iter().rev())
 }
 
 pub fn hkdf_sha256(

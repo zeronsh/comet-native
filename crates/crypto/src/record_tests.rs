@@ -65,6 +65,23 @@ fn signed(binding: &RecordBinding, revision: &[u8; 16], payload: &[u8]) -> (Vec<
 }
 
 #[test]
+fn signed_record_rejects_identity_signer() {
+    let context = binding();
+    let mut identity = [0; 32];
+    identity[0] = 1;
+    let mut signature = [0; 64];
+    signature[0] = 1;
+    let encoded = encode_signed(&context, &[5; 16], &[], &signature, 0).unwrap();
+    assert_eq!(
+        UnverifiedRecord::parse(&encoded, 0)
+            .unwrap()
+            .verify(&context, &identity)
+            .unwrap_err(),
+        RecordError::InvalidSignature
+    );
+}
+
+#[test]
 fn signed_record_shared_fixture() {
     let live = std::env::var("ZERON_CRYPTO_TEST_VECTORS")
         .ok()

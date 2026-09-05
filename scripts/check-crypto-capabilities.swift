@@ -37,6 +37,18 @@ struct PrimitiveVectors: Codable {
     let hkdfSha256: [HKDFVector]
     var signedRecords: [SignedRecordVector]
     let recordMutations: [RecordMutation]
+    let ed25519PointEncodings: [EncodingVector]
+    let ed25519ScalarEncodings: [EncodingVector]
+    let ed25519Rejections: [RejectionVector]
+}
+
+struct EncodingVector: Codable {
+    let name, encoding: String
+    let allowed: Bool
+}
+
+struct RejectionVector: Codable {
+    let name, publicKey, message, signature: String
 }
 
 struct AESVector: Codable {
@@ -78,6 +90,7 @@ struct CryptoCapabilityProbe {
             vectors.ed25519[index].peerSignature = try signature(vectors.ed25519[index])
         }
         for vector in vectors.hkdfSha256 { try hkdf(vector) }
+        try ed25519EncodingChecks(vectors)
         try check("signed-wrapper fixture groups", !vectors.signedRecords.isEmpty && vectors.recordMutations.count >= 21)
         for index in vectors.signedRecords.indices {
             let (signature, record) = try signedRecord(vectors.signedRecords[index], mutations: vectors.recordMutations)
@@ -197,6 +210,50 @@ struct CryptoCapabilityProbe {
             guard result.bitCount == length * 8 else { throw ProbeFailure(check: "HKDF output size") }
         }
         print("PASS: \(v.name): output bounds")
+    }
+
+    static func ed25519EncodingChecks(_ fixtures: PrimitiveVectors) throws {
+        guard fixtures.ed25519PointEncodings.count >= 13, fixtures.ed25519ScalarEncodings.count >= 9,
+              fixtures.ed25519Rejections.count >= 8 else { throw ProbeFailure(check: "Ed25519 rejection fixtures missing") }
+        for v in fixtures.ed25519PointEncodings {
+            var encoded = (Data([255]) + (try hex(v.encoding))).dropFirst()
+            let before = encoded
+            guard VaultCrypto.passesEd25519PointEncodingPrecheck(encoded) == v.allowed, encoded == before else {
+                throw ProbeFailure(check: v.name)
+            }
+            if encoded.count == 32 {
+                encoded[encoded.index(before: encoded.endIndex)] ^= 0x80
+                guard VaultCrypto.passesEd25519PointEncodingPrecheck(encoded) == v.allowed else {
+                    throw ProbeFailure(check: "\(v.name): opposite sign")
+                }
+            }
+        }
+        for v in fixtures.ed25519ScalarEncodings {
+            let encoded = (Data([255]) + (try hex(v.encoding))).dropFirst()
+            guard VaultCrypto.passesEd25519ScalarEncodingPrecheck(encoded) == v.allowed else {
+                throw ProbeFailure(check: v.name)
+            }
+        }
+        for lowByte: UInt8 in 0xed...0xff {
+            for highByte: UInt8 in [0x7f, 0xff] {
+                var encoded = Data(repeating: 0xff, count: 32)
+                encoded[0] = lowByte
+                encoded[31] = highByte
+                guard !VaultCrypto.passesEd25519PointEncodingPrecheck(encoded) else {
+                    throw ProbeFailure(check: "noncanonical field coordinate accepted")
+                }
+            }
+        }
+        for v in fixtures.ed25519Rejections {
+            let key = try hex(v.publicKey)
+            let message = try hex(v.message)
+            let signature = try hex(v.signature)
+            guard key.count == 32, signature.count == 64 else { throw ProbeFailure(check: "\(v.name): invalid fixture length") }
+            try rejects(v.name, .authenticationFailed) {
+                try VaultCrypto.verifyEd25519(publicKey: key, message: message, signature: signature)
+            }
+        }
+        print("PASS: shared Ed25519 encoding prechecks, sign variants, field/scalar bounds, and rejection vectors")
     }
 
     static func rejectsRecord(_ name: String, _ expected: VaultRecordError, _ operation: () throws -> Void) throws {
