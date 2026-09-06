@@ -50,7 +50,7 @@ struct SessionView: View {
         .navigationTitle(chat?.displayTitle ?? "Session")  // feeds the back menu
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(removing: .title)  // the leading header owns the bar
-        .toolbarBackground(Theme.bg, for: .navigationBar)
+        .toolbarBackground(.regularMaterial, for: .navigationBar)
         .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             if let chat {

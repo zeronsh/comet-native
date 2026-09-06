@@ -55,6 +55,8 @@ final class SessionStore {
     private(set) var pendingSends: [PendingSend] = []
     /// Local submission only; remote user entries never pull a reader to a new turn.
     private(set) var lastSubmittedMessageId: String?
+    /// Presentation state survives navigation with the warm session store.
+    var expandedUserMessages: Set<String> = []
 
     let doc = LoroDoc()
     /// The chat2 room cursor — the last server row seq folded into `doc`.

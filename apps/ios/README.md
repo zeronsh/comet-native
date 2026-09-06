@@ -69,8 +69,9 @@ Transcript/
   TranscriptRows.swift  rows_for_entry port: block-granularity rows, stable
                         ids ({msg}#{part}.{block}, {msg}#g{n}), fingerprint
                         versions, consecutive-tool grouping
-  TranscriptView.swift  virtualized history + realized newest turn, explicit
-                        bottom anchor, local-send runway, user-intent follow
+  NativeTranscriptTable.swift  UIKit row reuse, gesture anchoring and
+                        animated local-send runway retained across navigation
+  TranscriptView.swift  SwiftUI message content, user-message folding, follow
                         (70pt re-engage, 140pt jump), tool activity rail
   Veil.swift            paint-only streaming fade (EMA-tracked duration,
                         1−(1−p)^1.6 curve)
@@ -95,8 +96,9 @@ Theme/                  theme.rs port: oklch→sRGB converter, exact palette,
 | Add-space palette (device + folder browser) | New-space sheet: device tabs + remote folder browser (ListFolders over the device-room relay, git repos badged) |
 | ControlRpc over device-room relay | `DeviceRelayClient` — binary `uleb128(len)+header+payload` frames, `{"s","k","to","from"}` header, ndjson ControlRpc; used for ListFolders + direct-to-host `Mutate {createSpace}` (local doc-write fallback when the host is offline) |
 | Hover timestamps / copy | Context menus |
-| gpui `list()` sum-tree virtualization | `LazyVStack` history + bounded eager tail, stable row ids and version fingerprints |
-| Stick-to-bottom spring, wheel-up breaks pin | Scroll-phase-gated follow, explicit anchors, composer-sized viewport, local prompt runway |
+| Long user messages: Show more / Show less | Five-line preview, 44pt disclosure target, expansion retained per session |
+| gpui `list()` sum-tree virtualization | Native table row reuse with SwiftUI content, stable row ids and version fingerprints |
+| Stick-to-bottom spring, wheel-up breaks pin | Gesture-owned follow, composer-sized viewport with glass underlap, retained local prompt runway |
 
 Status colors, font families, veil timing, command-ledger shapes, and wire
 protocol follow desktop. Text sizes and touch targets are adapted for phones;

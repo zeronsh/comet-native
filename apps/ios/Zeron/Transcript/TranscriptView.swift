@@ -1,5 +1,5 @@
 // Block-granularity transcript with a single owner for follow intent.
-// Explicit targets keep lazy height estimates out of scroll coordinates.
+// UIKit owns row reuse and scrolling; SwiftUI owns message presentation.
 import SwiftUI
 
 struct TranscriptView: View {
@@ -10,135 +10,37 @@ struct TranscriptView: View {
     static let maxContentWidth: CGFloat = 736
     static let stickThreshold: CGFloat = 70
     static let jumpThreshold: CGFloat = 140
-    private static let bottomID = "transcript-bottom"
-
     @State private var veils = VeilStore()
     @State private var folds: [String: Bool] = [:]
-    @State private var viewportHeight: CGFloat = 0
-    @State private var runwayEntry: String?
-    @State private var glideUntil = Date.distantPast
-    @State private var correction: Task<Void, Never>?
+    @State private var userExpansionHeights: [String: CGFloat] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.verticalSizeClass) private var verticalSizeClass
-    private var bottomSpacing: CGFloat { verticalSizeClass == .compact ? 8 : 24 }
 
     var body: some View {
         let rows = store.transcriptCache.rows(revision: store.revision,
                                               entries: store.entries,
                                               pendingSends: store.pendingSends)
-        // Always realize the newest turn. A fully lazy tail can report an
-        // estimated "bottom" with NO rows instantiated after a bulk append.
-        // Keep history virtualized and bound eager work for very long turns.
-        let ownSplit = runwayEntry.flatMap { entry in rows.firstIndex { $0.entryId == entry } }
-        let latestTurn = rows.lastIndex { if case .user = $0.kind { return true }; return false } ?? 0
-        let split = max(ownSplit ?? latestTurn, rows.count - 48)
-        let reservesTurn = ownSplit == split && ownSplit != nil
-        ScrollViewReader { proxy in
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(rows[..<split])) { row in
-                            rowView(row, proxy: proxy).id(row.id)
-                        }
-                    }
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(Array(rows[split...])) { row in
-                            rowView(row, proxy: proxy)
-                                .modifier(TranscriptTailProbe(rowID: row.id,
-                                    isTail: row.id == rows.last?.id || (row.entryId == runwayEntry && row.turnStart),
-                                    chatId: chatId))
-                                .id(row.id)
-                        }
-                        if reservesTurn { Spacer(minLength: 0) }
-                    }
-                    // Reply growth consumes the reservation in this layout
-                    // pass. A short completed reply retains its prompt at top.
-                    .frame(minHeight: reservesTurn ? max(0, viewportHeight - bottomSpacing) : 0,
-                           alignment: .topLeading)
-                    Color.clear.frame(height: bottomSpacing)
-                        .id(Self.bottomID)
-                }
-                .frame(maxWidth: Self.maxContentWidth)
-                .frame(maxWidth: .infinity)
+        let runway = store.lastSubmittedMessageId
+        NativeTranscriptTable(rows: rows, scroll: scroll, runwayID: runway,
+            expansionHeight: runway.flatMap { userExpansionHeights[$0] } ?? 0,
+            bottomSpacing: verticalSizeClass == .compact ? 8 : 24,
+            reduceMotion: reduceMotion,
+            configurationID: folds.hashValue ^ store.expandedUserMessages.hashValue ^ dynamicTypeSize.hashValue) { row in
+                AnyView(rowView(row)
+                    .modifier(TranscriptTailProbe(rowID: row.id,
+                        isTail: row.id == rows.last?.id || (row.entryId == runway && row.turnStart),
+                        chatId: chatId))
+                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+                    .environment(\.colorScheme, .dark))
             }
             .modifier(TranscriptViewportProbe(chatId: chatId))
-            .accessibilityIdentifier("transcript")
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.top, for: .alignment)
-            .scrollDismissesKeyboard(.interactively)
-            .simultaneousGesture(TapGesture().onEnded {
-                UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                                to: nil, from: nil, for: nil)
-            })
             .background(Theme.bg)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _, height in
-                viewportHeight = height
-                if scroll.pinned { scheduleCorrection(proxy: proxy) }
-            }
-            .onScrollGeometryChange(for: TranscriptGeometry.self) { geo in
-                TranscriptGeometry(contentHeight: geo.contentSize.height,
-                                   viewportHeight: geo.containerSize.height,
-                                   offset: geo.contentOffset.y,
-                                   bottom: geo.contentSize.height - geo.visibleRect.maxY)
-            } action: { old, new in
-                scroll.observe(old: old, new: new)
-            }
-            .onScrollPhaseChange { _, phase in
-                switch phase {
-                case .tracking:
-                    correction?.cancel()
-                    scroll.userScrolling = true
-                    scroll.userDragging = false
-                case .interacting, .decelerating:
-                    scroll.userScrolling = true
-                    scroll.userDragging = true
-                case .idle:
-                    scroll.endGesture()
-                    if scroll.pinned { scheduleCorrection(proxy: proxy) }
-                case .animating: break
-                @unknown default: break
-                }
-            }
-            .task(id: rows.isEmpty) {
-                guard !rows.isEmpty else { return }
-                // Warm opens and delayed hydration take exactly the same path.
-                // Do not erase measurements: unchanged geometry will not report again.
-                for _ in 0..<12 {
-                    guard !Task.isCancelled, !scroll.userScrolling, scroll.pinned else { break }
-                    proxy.scrollTo(Self.bottomID, anchor: .bottom)
-                    try? await Task.sleep(for: .milliseconds(30))
-                    if abs(scroll.distanceFromBottom) <= 2 { break }
-                }
-            }
-            .onChange(of: store.lastSubmittedMessageId) { _, entry in
-                guard let entry else { return }
-                withAnimation(reduceMotion ? nil : .spring(duration: 0.35)) {
-                    runwayEntry = entry
-                    scroll.arm()
-                }
-                scheduleCorrection(proxy: proxy, animated: true)
-            }
-            .onChange(of: dynamicTypeSize) {
-                if scroll.pinned { scheduleCorrection(proxy: proxy) }
-            }
-            .onChange(of: folds) {
-                if scroll.pinned { scheduleCorrection(proxy: proxy) }
-            }
-            .onChange(of: store.revision) {
-                if let entry = runwayEntry, !rows.contains(where: { $0.entryId == entry }) {
-                    runwayEntry = nil
-                }
-                if scroll.pinned { scheduleCorrection(proxy: proxy) }
-            }
-            .onDisappear {
-                correction?.cancel()
-            }
             .overlay(alignment: .bottomTrailing) {
                 if scroll.showJump {
                     Button {
                         scroll.arm()
-                        scheduleCorrection(proxy: proxy, animated: true)
+                        scroll.jumpToLatest?(!reduceMotion)
                     } label: {
                         Image(systemName: "arrow.down")
                             .font(.system(size: 16, weight: .medium))
@@ -153,39 +55,29 @@ struct TranscriptView: View {
                 }
             }
             .motionAnimation(Motion.fadeQuick, value: scroll.showJump)
-        }
-    }
-
-    private func scheduleCorrection(proxy: ScrollViewProxy, animated: Bool = false) {
-        guard scroll.pinned, !scroll.userScrolling else { return }
-        // Coalesce a stream burst, but retain a trailing correction after
-        // programmatic movement. No deadline that can silently drop the last one.
-        correction?.cancel()
-        if animated && !reduceMotion { glideUntil = Date().addingTimeInterval(0.4) }
-        let delay = animated ? 0 : max(0, glideUntil.timeIntervalSinceNow)
-        correction = Task { @MainActor in
-            if delay > 0 { try? await Task.sleep(for: .seconds(delay)) }
-            await Task.yield()
-            guard !Task.isCancelled, scroll.pinned, !scroll.userScrolling else { return }
-            withAnimation(animated && !reduceMotion ? .spring(duration: 0.35) : nil) {
-                proxy.scrollTo(Self.bottomID, anchor: .bottom)
-            }
-            // A newly appended target may not exist in the reader's layout
-            // map until the next pass. Retry after that pass, even when the
-            // estimated content size happened to remain unchanged.
-            try? await Task.sleep(for: .milliseconds(animated ? 400 : 300))
-            guard !Task.isCancelled, scroll.pinned, !scroll.userScrolling else { return }
-            proxy.scrollTo(Self.bottomID, anchor: .bottom)
-        }
     }
 
     @ViewBuilder
-    private func rowView(_ row: TranscriptRow, proxy: ScrollViewProxy) -> some View {
+    private func rowView(_ row: TranscriptRow) -> some View {
         Group {
             switch row.kind {
             case .user(let text):
                 UserBubble(text: text, pending: row.timestamp == nil,
-                           deviceId: store.hostDeviceId ?? "")
+                           deviceId: store.hostDeviceId ?? "",
+                           expanded: store.expandedUserMessages.contains(row.entryId),
+                           onToggle: {
+                    // Expanding a prompt is an explicit reading action.
+                    // Keep its visible position instead of chasing the tail.
+                    scroll.pinned = false
+                    if !store.expandedUserMessages.insert(row.entryId).inserted {
+                        store.expandedUserMessages.remove(row.entryId)
+                    }
+                    scroll.refreshLayout?()
+                }, onExpansionHeightChanged: { height in
+                    guard (userExpansionHeights[row.entryId] ?? 0) != height else { return }
+                    userExpansionHeights[row.entryId] = height
+                    scroll.refreshLayout?()
+                })
             case .markdown(let block, let streaming):
                 MarkdownRowView(row: row, block: block, streaming: streaming, veils: veils)
             case .toolGroup(let tools, let autoOpen):
@@ -194,7 +86,7 @@ struct TranscriptView: View {
                     withAnimation(reduceMotion ? nil : Motion.resize) {
                         folds[row.id] = !(folds[row.id] ?? autoOpen)
                     }
-                }, onDetailChanged: { scheduleCorrection(proxy: proxy) })
+                }, onDetailChanged: { scroll.refreshLayout?() })
             case .inputChip(let header, let resolved):
                 InputChipView(header: header, resolved: resolved)
             case .errorChip(let message):
@@ -203,6 +95,8 @@ struct TranscriptView: View {
         }
         .padding(.top, row.topGap)
         .padding(.horizontal, 20)
+        .frame(maxWidth: Self.maxContentWidth)
+        .frame(maxWidth: .infinity)
     }
 }
 
@@ -217,6 +111,10 @@ struct TranscriptGeometry: Equatable {
 final class ScrollState {
     var pinned = true
     var showJump = false
+    @ObservationIgnored weak var nativeScrollView: UIScrollView?
+    @ObservationIgnored var refreshLayout: (() -> Void)?
+    @ObservationIgnored var jumpToLatest: ((Bool) -> Void)?
+    @ObservationIgnored var interactionEpoch: UInt64 = 0
     @ObservationIgnored var userScrolling = false
     @ObservationIgnored var userDragging = false
     @ObservationIgnored var distanceFromBottom: CGFloat = 0
@@ -315,9 +213,9 @@ final class TranscriptBuilderCache {
 final class VeilStore {
     @ObservationIgnored private var veils: [String: RowVeil] = [:]
 
-    func veil(for rowId: String, seeded: Bool) -> RowVeil {
+    func veil(for rowId: String, seededLength: Int) -> RowVeil {
         if let existing = veils[rowId] { return existing }
-        let veil = RowVeil()
+        let veil = RowVeil(seededLength: seededLength)
         veils[rowId] = veil
         return veil
     }
@@ -334,6 +232,22 @@ struct UserBubble: View {
     var pending = false
     /// The chat's host device — where attachment files live (read-back key).
     var deviceId = ""
+    var expanded = false
+    var onToggle: () -> Void = {}
+    var onExpansionHeightChanged: (CGFloat) -> Void = { _ in }
+    @State private var fullHeight: CGFloat = 0
+    @State private var collapsedHeight: CGFloat = 0
+
+    static func needsCollapse(_ text: String) -> Bool {
+        text.count > 400 || text.split(separator: "\n", omittingEmptySubsequences: false).count > 5
+    }
+
+    private func prompt(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.sans(MD.textSize))
+            .lineSpacing(MD.lineHeight - MD.textSize - 4)
+            .foregroundStyle(Theme.text)
+    }
 
     var body: some View {
         // Attachment refs ride the message text (message-attachments.ts
@@ -345,10 +259,47 @@ struct UserBubble: View {
                 UserAttachmentsStrip(deviceId: deviceId, attachments: parsed.attachments)
             }
             if !parsed.text.isEmpty {
-                Text(parsed.text)
-                    .font(Theme.sans(MD.textSize))
-                    .lineSpacing(MD.lineHeight - MD.textSize - 4)
-                    .foregroundStyle(Theme.text)
+                let collapsible = Self.needsCollapse(parsed.text) || fullHeight > collapsedHeight + 0.5
+                VStack(alignment: .leading, spacing: 0) {
+                    prompt(parsed.text)
+                        .lineLimit(expanded ? nil : 5)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            if !expanded { collapsedHeight = height }
+                        }
+                        .background(alignment: .topLeading) {
+                            if expanded {
+                                prompt(parsed.text)
+                                    .lineLimit(5)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .hidden()
+                                    .accessibilityHidden(true)
+                                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { collapsedHeight = $0 }
+                            }
+                        }
+                        .background(alignment: .topLeading) {
+                            prompt(parsed.text)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .hidden()
+                                .accessibilityHidden(true)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                        }
+                    if collapsible {
+                        Button {
+                            onToggle()
+                        } label: {
+                            Text(expanded ? "Show less" : "Show more")
+                                .font(Theme.sans(14))
+                                .foregroundStyle(Theme.textMuted)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                    }
+                }
+                .onChange(of: expanded && collapsedHeight > 0 ? max(0, fullHeight - collapsedHeight) : 0, initial: true) { _, height in
+                    onExpansionHeightChanged(height)
+                }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
                     .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.bubbleRadius))
@@ -364,6 +315,9 @@ struct UserBubble: View {
         }
         .opacity(pending ? 0.65 : 1)
         .frame(maxWidth: .infinity, alignment: .trailing)
+        // Jump-button visibility can animate the enclosing transcript update.
+        // Do not let that tween sweep the disclosure through revealed text.
+        .transaction { $0.animation = nil }
     }
 }
 
@@ -375,10 +329,36 @@ struct MarkdownRowView: View {
     let streaming: Bool
     let veils: VeilStore
 
+    @State private var fading = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var textLength: Int {
+        switch block {
+        case .paragraph(let runs), .heading(_, let runs): return runs.reduce(0) { $0 + $1.text.count }
+        default: return 0
+        }
+    }
+
     var body: some View {
-        if streaming, isVeilable {
-            TimelineView(.animation) { _ in
-                veiledText
+        if streaming, isVeilable, !reduceMotion {
+            // Reattaching a row must never fade already-visible text to black.
+            let veil = veils.veil(for: row.id, seededLength: textLength)
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !fading)) { _ in
+                veiledText(veil: veil)
+            }
+            .onChange(of: textLength) { _, length in
+                veil.noteLength(length)
+                fading = veil.isFading
+            }
+            .task(id: textLength) {
+                // Stop frame work when the last appended span has settled.
+                // A new chunk cancels this task and starts a new deadline.
+                try? await Task.sleep(for: .milliseconds(600))
+                while !Task.isCancelled, veil.isFading {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard !Task.isCancelled else { return }
+                fading = false
             }
             .onDisappear { veils.drop(row.id) }
         } else {
@@ -394,11 +374,9 @@ struct MarkdownRowView: View {
     }
 
     @ViewBuilder
-    private var veiledText: some View {
-        let veil = veils.veil(for: row.id, seeded: false)
+    private func veiledText(veil: RowVeil) -> some View {
         switch block {
         case .paragraph(let runs):
-            let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             runs.styledVeiled(veil: veil)
                 .textRenderer(InlineCodeRenderer())
                 .lineSpacing(MD.lineHeight - MD.textSize - 4)
@@ -406,7 +384,6 @@ struct MarkdownRowView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .heading(let level, let runs):
             let m = MD.headingMetrics(level)
-            let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             runs.styledVeiled(size: m.size, weight: .semibold, veil: veil)
                 .textRenderer(InlineCodeRenderer())
                 .lineSpacing(m.line - m.size - 4)
