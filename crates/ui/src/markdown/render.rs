@@ -903,6 +903,18 @@ thread_local! {
     static REGISTRY: RefCell<Vec<RegEntry>> = const { RefCell::new(Vec::new()) };
 }
 
+#[cfg(test)]
+pub(crate) fn selection_test_bounds(key: &str) -> gpui::Bounds<gpui::Pixels> {
+    REGISTRY.with(|r| {
+        r.borrow()
+            .iter()
+            .find(|entry| entry.key.as_ref() == key)
+            .expect("text must be registered")
+            .layout
+            .bounds()
+    })
+}
+
 /// A zero-size canvas that clears the selection registry — paint it FIRST in
 /// the transcript root (before any markdown), so each frame's registry holds
 /// exactly that frame's visible text elements in paint order.
