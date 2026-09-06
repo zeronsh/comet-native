@@ -74,6 +74,12 @@ header regression checks that actual cells remain realized above the safe-area
 edge. The animation test also relays out the parent on every sample to catch
 fractional-inset rounding that could otherwise cancel the native scroll.
 
+For onscreen-keyboard checks, disconnect the hardware keyboard in Simulator’s
+I/O → Keyboard menu for each device. If that connection is stale, reconnect and
+disconnect it in the menu: XCTest typing can force the software keyboard open
+even when ordinary editor taps would leave it hidden. The keyboard visibility
+assertion catches that setup problem instead of silently testing only the composer.
+
 `ZeronUITests/MobilePolishTests` exercises actual project selection/dismissal,
 session navigation, scroll gestures, jump-to-latest, keyboard/composer changes,
 tool disclosures, model picking, sending, question entry, new-session creation,
