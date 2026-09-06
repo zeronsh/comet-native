@@ -208,20 +208,22 @@ final class TranscriptBuilderCache {
     }
 }
 
-/// Veil registry — one RowVeil per live row, dropped on the live→complete flip.
+/// Keep each row's fade clock across hosted-cell reconfiguration. A replaced
+/// hosting view disappearing must not discard the replacement's active fade.
 @Observable
 final class VeilStore {
     @ObservationIgnored private var veils: [String: RowVeil] = [:]
 
     func veil(for rowId: String, seededLength: Int) -> RowVeil {
-        if let existing = veils[rowId] { return existing }
+        if let existing = veils[rowId] {
+            // Register the delta before Text is constructed. Doing this in
+            // onChange paints one opaque frame, then makes the same words dark.
+            existing.noteLength(seededLength)
+            return existing
+        }
         let veil = RowVeil(seededLength: seededLength)
         veils[rowId] = veil
         return veil
-    }
-
-    func drop(_ rowId: String) {
-        veils.removeValue(forKey: rowId)
     }
 }
 
@@ -346,8 +348,7 @@ struct MarkdownRowView: View {
             TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !fading)) { _ in
                 veiledText(veil: veil)
             }
-            .onChange(of: textLength) { _, length in
-                veil.noteLength(length)
+            .onChange(of: textLength) { _, _ in
                 fading = veil.isFading
             }
             .task(id: textLength) {
@@ -360,7 +361,8 @@ struct MarkdownRowView: View {
                 guard !Task.isCancelled else { return }
                 fading = false
             }
-            .onDisappear { veils.drop(row.id) }
+            .onAppear { fading = veil.isFading }
+            .transaction { $0.animation = nil }
         } else {
             MarkdownBlockView(block: block, cacheKey: row.id)
         }

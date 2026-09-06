@@ -28,6 +28,9 @@ struct NativeTranscriptTable: UIViewRepresentable {
 @MainActor
 final class TranscriptViewport: UIView {
     let table: TranscriptTableView
+    private var offsetFraction: CGFloat = 0
+    private var mirroredKeys: Set<String> = []
+    private var offsetFractions: [String: CGFloat] = [:]
 
     init(scroll: ScrollState) {
         table = TranscriptTableView(scroll: scroll)
@@ -49,15 +52,61 @@ final class TranscriptViewport: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        // Clipping alone cannot reveal virtualized rows outside the table.
-        // Extend its actual viewport behind the bar; the inset keeps resting
-        // content and runway aligned with the visible area below the header.
-        let top = window.map { max(0, convert(bounds, to: $0).minY) } ?? 0
-        table.setViewport(size: bounds.size, topInset: top)
+        let oldHeight = table.logicalViewportHeight
+        let oldRunway = table.tableFooterView?.frame.height ?? 0
+        let following = table.followsBottom
+        let height = max(bounds.height, window?.bounds.height ?? bounds.height)
+        table.setViewport(size: bounds.size, renderHeight: height)
+        table.layoutIfNeeded()
+        let heightDelta = oldHeight - bounds.height
+        if abs(heightDelta) > 0.01 {
+            let runwayDelta = oldRunway - (table.tableFooterView?.frame.height ?? 0)
+            offsetFraction = following ? runwayDelta / heightDelta : 1
+        }
+        // UIKit layers interrupted keyboard springs additively. Mirror every
+        // active size animation, including its start time, rather than replacing
+        // a running spring with a separate guessed curve.
+        var activeKeys: Set<String> = []
+        for key in layer.animationKeys() ?? [] {
+            guard let animation = layer.animation(forKey: key) as? CABasicAnimation,
+                  animation.keyPath == "bounds.size",
+                  let from = (animation.fromValue as? NSValue)?.cgSizeValue.height,
+                  let to = (animation.toValue as? NSValue)?.cgSizeValue.height else { continue }
+            activeKeys.insert(key)
+            let positionKey = "viewport-position-" + key
+            if table.layer.animation(forKey: positionKey) == nil || animation.beginTime == 0 {
+                offsetFractions[key] = offsetFraction
+            }
+            mirror(animation, keyPath: "position.y", delta: from - to, key: positionKey)
+            mirror(animation, keyPath: "bounds.origin.y",
+                   delta: (offsetFractions[key] ?? offsetFraction) * (from - to),
+                   key: "viewport-offset-" + key)
+        }
+        for key in mirroredKeys.subtracting(activeKeys) {
+            table.layer.removeAnimation(forKey: "viewport-position-" + key)
+            table.layer.removeAnimation(forKey: "viewport-offset-" + key)
+            offsetFractions.removeValue(forKey: key)
+        }
+        mirroredKeys = activeKeys
+    }
+
+    private func mirror(_ source: CABasicAnimation, keyPath: String, delta: CGFloat, key: String) {
+        guard abs(delta) > 0.01 else { table.layer.removeAnimation(forKey: key); return }
+        let animation = source.copy() as! CABasicAnimation
+        animation.delegate = nil
+        animation.keyPath = keyPath
+        animation.isAdditive = true
+        animation.fromValue = delta
+        animation.toValue = 0
+        animation.byValue = nil
+        table.layer.add(animation, forKey: key)
     }
 
     override var accessibilityElements: [Any]? {
-        get { table.visibleCells.sorted { $0.frame.minY < $1.frame.minY } }
+        get {
+            table.visibleCells.filter { table.convert($0.frame, to: self).intersects(bounds) }
+                .sorted { $0.frame.minY < $1.frame.minY }
+        }
         set { }
     }
 
@@ -113,10 +162,13 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
         addGestureRecognizer(tap)
     }
 
-    private var viewportHeight: CGFloat { max(0, bounds.height - contentInset.top) }
+    var followsBottom: Bool { follow.pinned && !userOwnsScroll }
+    var logicalViewportHeight: CGFloat { max(0, bounds.height - contentInset.top) }
+    private var viewportHeight: CGFloat { logicalViewportHeight }
 
-    func setViewport(size: CGSize, topInset: CGFloat) {
-        let nextFrame = CGRect(x: 0, y: -topInset, width: size.width, height: size.height + topInset)
+    func setViewport(size: CGSize, renderHeight: CGFloat) {
+        let topInset = max(0, renderHeight - size.height)
+        let nextFrame = CGRect(x: 0, y: -topInset, width: size.width, height: renderHeight)
         // UIKit reconstructs frame from bounds/center. Fractional safe-area
         // values can differ by floating-point noise; resetting an unchanged
         // offset here would cancel the native send animation.
@@ -125,13 +177,20 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
             || abs(frame.height - nextFrame.height) > 0.01
             || abs(contentInset.top - topInset) > 0.01 else { return }
         let logicalOffset = contentOffset.y + contentInset.top
+        let anchor = followsBottom ? nil : visibleAnchor()
         updating = true
-        frame = nextFrame
-        contentInset.top = topInset
-        verticalScrollIndicatorInsets.top = topInset
-        let target = min(max(-topInset, logicalOffset - topInset),
-                         max(-topInset, contentSize.height - bounds.height))
-        setContentOffset(CGPoint(x: 0, y: target), animated: false)
+        // Apply final layout once; the viewport mirrors its compositor motion.
+        // Avoid a second spring inside UIKit's self-sizing rows.
+        UIView.performWithoutAnimation {
+            frame = nextFrame
+            contentInset.top = topInset
+            verticalScrollIndicatorInsets.top = topInset
+            let target = min(max(-topInset, logicalOffset - topInset),
+                             max(-topInset, contentSize.height - bounds.height))
+            setContentOffset(CGPoint(x: 0, y: target), animated: false)
+            layoutIfNeeded()
+            if let anchor { restore(anchor) }
+        }
         updating = false
         setNeedsLayout()
     }
@@ -171,6 +230,8 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
         let previous = rows
         let previousIDs = previous.map(\.id)
         let nextIDs = input.rows.map(\.id)
+        let appending = hasPositioned && !previousIDs.isEmpty
+            && nextIDs.count > previousIDs.count && nextIDs.starts(with: previousIDs)
         let newSubmission = input.runwayID != nil && input.runwayID != runwayID && hasPositioned
         let presentationChanged = configurationID != input.configurationID
         configurationID = input.configurationID
@@ -187,15 +248,19 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
         updating = true
         UIView.performWithoutAnimation {
             if previousIDs != nextIDs {
-                if hasPositioned, nextIDs.starts(with: previousIDs), !previousIDs.isEmpty {
+                if appending {
                     insertRows(at: (previousIDs.count..<nextIDs.count).map { IndexPath(row: $0, section: 0) }, with: .none)
                 } else {
                     reloadData()
                 }
-            } else {
+            }
+            if previousIDs == nextIDs || appending {
+                // A chunk can finish the previous block and append the next one.
+                // Insertion alone leaves that visible block missing its suffix.
                 let visible = indexPathsForVisibleRows ?? []
                 let changed = visible.filter {
-                    presentationChanged || previous[$0.row].version != rows[$0.row].version
+                    $0.row < previous.count
+                        && (presentationChanged || previous[$0.row].version != rows[$0.row].version)
                 }
                 if !changed.isEmpty { reconfigureRows(at: changed) }
             }
@@ -220,7 +285,7 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
     }
 
     override func layoutSubviews() {
-        super.layoutSubviews()
+        UIView.performWithoutAnimation { super.layoutSubviews() }
         guard window != nil, !updating, !settling, !rows.isEmpty else { return }
         if !hasPositioned {
             hasPositioned = true
@@ -231,8 +296,10 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
             }
         }
         settling = true
-        updateRunway()
-        if follow.pinned, !userOwnsScroll, !animatingFollow { alignBottom(animated: false) }
+        UIView.performWithoutAnimation {
+            updateRunway()
+            if follow.pinned, !userOwnsScroll, !animatingFollow { alignBottom(animated: false) }
+        }
         settling = false
     }
 
@@ -241,15 +308,17 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
     }
 
     private func visibleAnchor() -> (id: String, offset: CGFloat)? {
-        guard let index = indexPathsForVisibleRows?.min(), index.row < rows.count else { return nil }
-        return (rows[index.row].id, rectForRow(at: index).minY - contentOffset.y)
+        let top = contentOffset.y + contentInset.top
+        guard let index = indexPathsForVisibleRows?.sorted().first(where: { rectForRow(at: $0).maxY > top }),
+              index.row < rows.count else { return nil }
+        return (rows[index.row].id, rectForRow(at: index).minY - top)
     }
 
     private func restore(_ anchor: (id: String, offset: CGFloat)) {
         guard let index = rows.firstIndex(where: { $0.id == anchor.id }) else { return }
         let rect = rectForRow(at: IndexPath(row: index, section: 0))
         let visibleOffset = max(anchor.offset, -max(0, rect.height - 44))
-        let target = min(max(-contentInset.top, rect.minY - visibleOffset), max(-contentInset.top, contentSize.height - bounds.height))
+        let target = min(max(-contentInset.top, rect.minY - visibleOffset - contentInset.top), max(-contentInset.top, contentSize.height - bounds.height))
         setContentOffset(CGPoint(x: 0, y: target), animated: false)
     }
 

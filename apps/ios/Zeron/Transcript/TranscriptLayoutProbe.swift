@@ -18,6 +18,13 @@ enum TranscriptLayoutProbe {
             markers[key, default: []].append(WeakView(view, viewport: viewport))
         }
     }
+    static func presentedFrame(for key: String) -> CGRect? {
+        guard let view = markers[key]?.last(where: { $0.view?.window != nil })?.view,
+              let window = view.window else { return nil }
+        let layer = view.layer.presentation() ?? view.layer
+        return layer.convert(layer.bounds, to: window.layer.presentation() ?? window.layer)
+    }
+
     static func sample() {
         for (key, candidates) in markers {
             guard let marker = candidates.last(where: { $0.view?.window != nil }),

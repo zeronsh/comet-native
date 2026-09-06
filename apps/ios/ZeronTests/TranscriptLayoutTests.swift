@@ -11,6 +11,8 @@ final class TranscriptLayoutTests: XCTestCase {
         var identity = UUID()
         var composerHeight: CGFloat = 64
         var dynamicTypeSize: DynamicTypeSize = .large
+        var useEditor = false
+        var draft = ""
         init(store: SessionStore) { self.store = store }
     }
 
@@ -20,7 +22,13 @@ final class TranscriptLayoutTests: XCTestCase {
             VStack(spacing: 0) {
                 TranscriptView(store: harness.store, chatId: harness.store.chatId, scroll: harness.scroll)
                     .id(harness.identity)
-                Color.black.frame(height: harness.composerHeight)
+                if harness.useEditor {
+                    ComposerShell(draft: Binding(get: { harness.draft }, set: { harness.draft = $0 }),
+                                  sendEnabled: true, showStop: false, onSend: {}) { EmptyView() }
+                        .padding(.bottom, 8)
+                } else {
+                    Color.black.frame(height: harness.composerHeight)
+                }
             }
             .environment(\.dynamicTypeSize, harness.dynamicTypeSize)
         }
@@ -31,18 +39,19 @@ final class TranscriptLayoutTests: XCTestCase {
     private var key: String { harness.store.chatId }
 
     private func mount(turns: Int, size: CGSize = CGSize(width: 390, height: 844),
-                       offline: Bool = true, waitForLayout: Bool = true) async {
+                       offline: Bool = true, waitForLayout: Bool = true, useEditor: Bool = false) async {
         TranscriptLayoutProbe.enabled = true
         let config = AppConfig(edgeURL: URL(string: "http://localhost:8787")!, mode: .dev,
                                userId: "test", orgId: "test", deviceId: "test", deviceName: "Test")
         let store = SessionStore(chatId: UUID().uuidString, config: config, offline: offline)
         store.setEntries(BenchRunner.syntheticEntries(turns: turns))
         harness = Harness(store: store)
+        harness.useEditor = useEditor
         let scene = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first!
         window = UIWindow(windowScene: scene)
-        window.frame = CGRect(origin: .zero, size: size)
+        window.frame = useEditor ? scene.screen.bounds : CGRect(origin: .zero, size: size)
         window.rootViewController = UIHostingController(rootView: Surface(harness: harness)
-            .frame(width: size.width, height: size.height))
+            .frame(width: useEditor ? nil : size.width, height: useEditor ? nil : size.height))
         window.makeKeyAndVisible()
         if waitForLayout { await settle() }
     }
@@ -135,14 +144,205 @@ final class TranscriptLayoutTests: XCTestCase {
         }
     }
 
+    func testAppendingBlockAlsoRefreshesTheCompletedParagraph() async {
+        await mount(turns: 0)
+        let table = harness.scroll.nativeScrollView as! TranscriptTableView
+        var rendered: [String: UInt64] = [:]
+        func row(_ id: String, _ text: String, version: UInt64) -> TranscriptRow {
+            TranscriptRow(id: id, version: version, turnStart: false,
+                kind: .markdown(block: .paragraph([InlineRun(text: text, style: .plain)]), streaming: true),
+                entryId: "reply", timestamp: nil, partKey: "reply#t0")
+        }
+        func input(_ rows: [TranscriptRow]) -> NativeTranscriptTable {
+            NativeTranscriptTable(rows: rows, scroll: harness.scroll, runwayID: nil,
+                expansionHeight: 0, bottomSpacing: 24, reduceMotion: true, configurationID: 0) { row in
+                    rendered[row.id] = row.version
+                    return AnyView(Text("Rendered version \(row.version)"))
+                }
+        }
+        table.update(input([row("paragraph", "Reply on this", version: 1)]))
+        table.layoutIfNeeded()
+        XCTAssertEqual(rendered["paragraph"], 1)
+        // One network chunk finishes a paragraph AND introduces the next block.
+        table.update(input([row("paragraph", "Reply on this device:", version: 2),
+                            row("next-block", "New block", version: 1)]))
+        table.layoutIfNeeded()
+        XCTAssertEqual(rendered["paragraph"], 2, "The already-visible paragraph must receive its final words")
+        XCTAssertEqual(rendered["next-block"], 1)
+    }
+
+    func testRealKeyboardAndComposerMoveWithPinnedTranscript() async {
+        await mount(turns: 600, useEditor: true)
+        let editor = findNativeEditor(window)!
+        let tailKey = key + "|a599#t1.0"
+        for showing in [true, false, true, false] {
+            let baseline = TranscriptLayoutProbe.presentedFrame(for: key)!.maxY
+                - TranscriptLayoutProbe.presentedFrame(for: tailKey)!.maxY
+            if showing { editor.becomeFirstResponder() } else { editor.resignFirstResponder() }
+            var errors: [CGFloat] = []
+            var positions: [CGFloat] = []
+            for _ in 0..<100 {
+                try? await Task.sleep(for: .milliseconds(16))
+                if let viewport = TranscriptLayoutProbe.presentedFrame(for: key),
+                   let tail = TranscriptLayoutProbe.presentedFrame(for: tailKey) {
+                    positions.append(viewport.maxY)
+                    errors.append(abs(viewport.maxY - tail.maxY - baseline))
+                }
+            }
+            let attachment = XCTAttachment(string: "Viewport positions: \(positions)\nGap errors: \(errors)")
+            attachment.name = showing ? "keyboard-opening-motion" : "keyboard-closing-motion"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertEqual(errors.count, 100, "Both views must remain realized on every sample")
+            XCTAssertGreaterThan((positions.max() ?? 0) - (positions.min() ?? 0), 150)
+            XCTAssertLessThan(errors.max() ?? .infinity, 4)
+            assertTailVisible()
+        }
+    }
+
+    func testInterruptedKeyboardMotionKeepsTranscriptAttached() async {
+        await mount(turns: 600, useEditor: true)
+        let editor = findNativeEditor(window)!
+        let tailKey = key + "|a599#t1.0"
+        let baseline = TranscriptLayoutProbe.presentedFrame(for: key)!.maxY
+            - TranscriptLayoutProbe.presentedFrame(for: tailKey)!.maxY
+        var errors: [CGFloat] = []
+        var samples: [String] = []
+        for showing in [true, false, true, false, true, false] {
+            if showing { editor.becomeFirstResponder() } else { editor.resignFirstResponder() }
+            for _ in 0..<8 {
+                try? await Task.sleep(for: .milliseconds(16))
+                if let viewport = TranscriptLayoutProbe.presentedFrame(for: key),
+                   let tail = TranscriptLayoutProbe.presentedFrame(for: tailKey) {
+                    errors.append(abs(viewport.maxY - tail.maxY - baseline))
+                    samples.append("show=\(showing) viewport=\(viewport.maxY) tail=\(tail.maxY) gap=\(viewport.maxY - tail.maxY)")
+                }
+            }
+        }
+        let attachment = XCTAttachment(string: samples.joined(separator: "\n"))
+        attachment.name = "interrupted-keyboard-motion"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTAssertGreaterThan(errors.count, 40)
+        XCTAssertLessThan(errors.max() ?? .infinity, 4)
+        await settle()
+        assertTailVisible()
+    }
+
+    func testKeyboardKeepsStreamingRunwayPromptAnchored() async {
+        await mount(turns: 2, useEditor: true)
+        let store = harness.store
+        store.demoResponder = { [weak store] prompt in
+            guard let store else { return }
+            var entries = store.entries
+            entries.append(MessageEntry(id: "keyboard-prompt", role: .user,
+                parts: [.text(id: "t0", text: prompt)], createdAt: nowMs(),
+                deviceId: "test", status: .complete, continuationOf: nil))
+            entries.append(MessageEntry(id: "keyboard-reply", role: .assistant,
+                parts: [.text(id: "t0", text: "A short reply")], createdAt: nowMs(),
+                deviceId: "test", status: .streaming, continuationOf: nil))
+            store.setEntries(entries)
+        }
+        store.sendSteer(prompt: "Keep this turn anchored.")
+        await settle()
+        let editor = findNativeEditor(window)!
+        for showing in [true, false, true, false] {
+            if showing { editor.becomeFirstResponder() } else { editor.resignFirstResponder() }
+            var errors: [CGFloat] = []
+            for tick in 0..<70 {
+                try? await Task.sleep(for: .milliseconds(16))
+                if tick % 5 == 0 {
+                    var entries = store.entries
+                    entries[entries.count - 1].parts = [.text(id: "t0", text: "A short reply" + String(repeating: ".", count: tick / 5))]
+                    store.setEntries(entries)
+                }
+                if let viewport = TranscriptLayoutProbe.presentedFrame(for: key),
+                   let prompt = TranscriptLayoutProbe.presentedFrame(for: key + "|keyboard-prompt") {
+                    errors.append(abs(viewport.minY - prompt.minY))
+                }
+            }
+            let attachment = XCTAttachment(string: "Prompt anchor errors: \(errors)")
+            attachment.name = "keyboard-streaming-runway"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertEqual(errors.count, 70, "The streaming prompt must stay realized throughout keyboard motion")
+            XCTAssertLessThan(errors.max() ?? .infinity, 4)
+        }
+    }
+
+    func testKeyboardKeepsHistoryReadingAnchorStill() async {
+        await mount(turns: 120, useEditor: true)
+        let table = harness.scroll.nativeScrollView as! TranscriptTableView
+        harness.scroll.pinned = false
+        table.setContentOffset(CGPoint(x: 0, y: table.contentOffset.y - 1600), animated: false)
+        await settle()
+        let top = table.superview!.convert(table.superview!.bounds, to: window).minY
+        let cell = table.visibleCells.first {
+            let rect = table.convert($0.frame, to: window)
+            return rect.minY > top && rect.minY < top + 250
+        }!
+        func presentedY() -> CGFloat {
+            let layer = cell.layer.presentation() ?? cell.layer
+            return layer.convert(layer.bounds, to: window.layer.presentation() ?? window.layer).minY
+        }
+        let start = presentedY()
+        let editor = findNativeEditor(window)!
+        for showing in [true, false] {
+            if showing { editor.becomeFirstResponder() } else { editor.resignFirstResponder() }
+            var errors: [CGFloat] = []
+            for _ in 0..<100 {
+                try? await Task.sleep(for: .milliseconds(16))
+                errors.append(abs(presentedY() - start))
+            }
+            XCTAssertLessThan(errors.max() ?? .infinity, 4)
+            XCTAssertFalse(harness.scroll.pinned)
+        }
+    }
+
+    private func findNativeEditor(_ view: UIView) -> UITextView? {
+        if let editor = view as? UITextView { return editor }
+        return view.subviews.lazy.compactMap { self.findNativeEditor($0) }.first
+    }
+
+    func testAnimatedComposerResizeKeepsTranscriptAttachedThroughoutMotion() async {
+        await mount(turns: 600)
+        let tailKey = key + "|a599#t1.0"
+        let startGap = TranscriptLayoutProbe.presentedFrame(for: key)!.maxY
+            - TranscriptLayoutProbe.presentedFrame(for: tailKey)!.maxY
+        for height: CGFloat in [390, 64, 240, 64] {
+            withAnimation(.easeInOut(duration: 0.35)) { harness.composerHeight = height }
+            var samples: [String] = []
+            var gaps: [CGFloat] = []
+            var positions: [CGFloat] = []
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .milliseconds(16))
+                guard let viewport = TranscriptLayoutProbe.presentedFrame(for: key),
+                      let tail = TranscriptLayoutProbe.presentedFrame(for: tailKey) else { continue }
+                gaps.append(viewport.maxY - tail.maxY)
+                positions.append(viewport.maxY)
+                samples.append("viewport=\(viewport.maxY) tail=\(tail.maxY) gap=\(viewport.maxY-tail.maxY)")
+            }
+            let attachment = XCTAttachment(string: samples.joined(separator: "\n"))
+            attachment.name = "composer-motion-\(Int(height))"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertEqual(gaps.count, 30, "Resizing must not temporarily unrealize the tail")
+            XCTAssertGreaterThan(Set(positions.map { Int($0.rounded()) }).count, 5)
+            XCTAssertLessThan(gaps.map { abs($0 - startGap) }.max() ?? .infinity, 4,
+                "Transcript and composer must move together throughout the resize")
+            await settle()
+            assertTailVisible()
+        }
+    }
+
     func testRowsRemainRealizedBeneathTopSafeArea() async {
         await mount(turns: 600)
         let table = harness.scroll.nativeScrollView as! TranscriptTableView
         let viewport = table.superview!
         let visibleTop = viewport.convert(viewport.bounds, to: window).minY
         XCTAssertGreaterThan(visibleTop, 0)
-        XCTAssertEqual(table.convert(table.bounds, to: window).minY, 0, accuracy: 0.01)
-        XCTAssertEqual(table.contentInset.top, visibleTop, accuracy: 0.01)
+        XCTAssertLessThanOrEqual(table.convert(table.bounds, to: window).minY, 0)
+        XCTAssertEqual(table.logicalViewportHeight, viewport.bounds.height, accuracy: 0.01)
         let earliestRow = table.visibleCells.map { table.convert($0.frame, to: window).minY }.min()!
         XCTAssertLessThan(earliestRow, visibleTop,
             "The table must realize rows behind the header, not stop at the safe-area edge")
