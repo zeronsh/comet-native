@@ -1,5 +1,9 @@
 # macOS streaming stability follow-up
 
+For the v0.2.43 follow-up, production-history idle measurements, and standalone
+reproduction of the transient Metal driver charge, see
+[idle presence and memory attribution](performance-idle-presence.md).
+
 v0.2.41 removes the sidebar conversation-row cache introduced here because it
 broke row widths and text truncation. The measurements below describe v0.2.40;
 they are not performance claims for the hotfix. The crash, sync-recovery and

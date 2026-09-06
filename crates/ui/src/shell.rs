@@ -1241,8 +1241,12 @@ impl Shell {
         // Working-indicator heartbeat: notify once a second while a session is
         // live so elapsed time and the flavour word stay fresh.
         let ticker = cx.spawn(async move |this, cx| {
+            let mut displayed_minute = Utc::now().timestamp().div_euclid(60);
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
+                let minute = Utc::now().timestamp().div_euclid(60);
+                let minute_changed = minute != displayed_minute;
+                displayed_minute = minute;
                 let alive = this.update(cx, |shell: &mut Shell, cx| {
                     let live = {
                         let s = shell.state.read(cx);
@@ -1257,7 +1261,9 @@ impl Shell {
                                     | zeron_proto::ConnectivityState::Reconnecting
                             )
                     };
-                    if live {
+                    // Relative sidebar times still advance when unchanged
+                    // presence heartbeats no longer invalidate the whole UI.
+                    if live || minute_changed {
                         cx.notify();
                     }
                 });
