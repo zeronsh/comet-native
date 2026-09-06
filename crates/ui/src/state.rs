@@ -587,6 +587,12 @@ pub struct AppState {
     /// Auth stream value; `None` until the engine reports one (M4).
     pub auth: Option<AuthState>,
     pub devices: Vec<Device>,
+    // Last published device presentation. Heartbeats refresh the underlying
+    // timestamps without invalidating every view when no displayed value changed.
+    device_presentation: Option<Vec<(Device, bool, String)>>,
+    // Presence ticks also retire stale remote session indicators. Remember
+    // their last published appearance even when the device rows stay online.
+    session_presence_presentation: Vec<Indicator>,
     /// Live edge posture (WatchConnectivity): drives the connection pill,
     /// composer honesty ("will queue"), and the Queued send badges.
     pub connectivity: zeron_proto::Connectivity,
@@ -595,6 +601,7 @@ pub struct AppState {
     /// Sorted (see [`sort_chats`]); includes archived rows — views filter.
     pub chats: Vec<Chat>,
     pub sessions: Vec<Session>,
+    session_presentation: Option<Vec<Session>>,
     /// The project the new-session canvas mints into. Healed by
     /// [`Self::apply_spaces`] when the row vanishes; selecting a chat implies
     /// its project.
@@ -693,10 +700,13 @@ impl AppState {
             workspace_scope: None,
             auth: None,
             devices: Vec::new(),
+            device_presentation: None,
+            session_presence_presentation: Vec::new(),
             connectivity: zeron_proto::Connectivity::default(),
             spaces: Vec::new(),
             chats: Vec::new(),
             sessions: Vec::new(),
+            session_presentation: None,
             selected_space: None,
             no_project: false,
             selected_device: None,
@@ -784,8 +794,31 @@ impl AppState {
         }
     }
 
-    pub fn apply_sessions(&mut self, sessions: Vec<Session>) {
+    pub fn apply_sessions(&mut self, sessions: Vec<Session>) -> bool {
+        self.apply_sessions_at(sessions, Utc::now())
+    }
+
+    fn apply_sessions_at(&mut self, sessions: Vec<Session>, now: DateTime<Utc>) -> bool {
+        let presence: Vec<_> = sessions
+            .iter()
+            .map(|session| effective_indicator(Some(session), now))
+            .collect();
+        let presentation: Vec<_> = sessions
+            .iter()
+            .map(|session| {
+                let mut metadata = session.clone();
+                // The timestamp is a liveness lease, not visible text. Keep its
+                // effective indicator in the key and retain the actual value below.
+                metadata.updated_at = DateTime::<Utc>::UNIX_EPOCH;
+                metadata
+            })
+            .collect();
+        let changed = self.session_presentation.as_ref() != Some(&presentation)
+            || self.session_presence_presentation != presence;
+        self.session_presentation = Some(presentation);
+        self.session_presence_presentation = presence;
         self.sessions = sessions;
+        changed
     }
 
     pub fn apply_spaces(&mut self, mut spaces: Vec<Space>) {
@@ -863,7 +896,11 @@ impl AppState {
         self.send_pending(chat_id, now) && self.chat_delivery_degraded(chat_id)
     }
 
-    pub fn apply_devices(&mut self, mut devices: Vec<Device>) {
+    pub fn apply_devices(&mut self, devices: Vec<Device>) -> bool {
+        self.apply_devices_at(devices, Utc::now())
+    }
+
+    fn apply_devices_at(&mut self, mut devices: Vec<Device>, now: DateTime<Utc>) -> bool {
         // A local-only workspace has no remote device identity to distinguish.
         // Keep the engine's legacy sentinel out of the UI while preserving real
         // hostnames and user-assigned device names.
@@ -878,7 +915,31 @@ impl AppState {
             self.change_requests
                 .clear_unsupported_on_version_change(&device.id, device.version.as_deref());
         }
+        let presentation: Vec<_> = devices
+            .iter()
+            .map(|device| {
+                let mut metadata = device.clone();
+                metadata.last_seen_at = None;
+                (
+                    metadata,
+                    crate::settings::devices::device_online(device.last_seen_at, now),
+                    crate::settings::devices::format_last_seen(device.last_seen_at, now),
+                )
+            })
+            .collect();
+        let session_presence: Vec<_> = self
+            .sessions
+            .iter()
+            .map(|session| effective_indicator(Some(session), now))
+            .collect();
+        let changed = self.device_presentation.as_ref() != Some(&presentation)
+            || self.session_presence_presentation != session_presence;
+        self.device_presentation = Some(presentation);
+        self.session_presence_presentation = session_presence;
+        // Freshness must advance even when the heartbeat does not redraw:
+        // delivery gating and later renders still need the newest timestamp.
         self.devices = devices;
+        changed
     }
 
     /// True when `device_id`'s engine (per its registry device row) is at
@@ -1413,9 +1474,12 @@ impl AppState {
         self.workspace_scope = None;
         self.auth = None;
         self.devices.clear();
+        self.device_presentation = None;
+        self.session_presence_presentation.clear();
         self.spaces.clear();
         self.chats.clear();
         self.sessions.clear();
+        self.session_presentation = None;
         self.selected_space = None;
         self.no_project = false;
         self.selected_device = None;
@@ -1500,32 +1564,37 @@ impl AppState {
                 cx,
                 handle.clone(),
                 methods::WATCH_CONNECTIVITY,
-                AppState::apply_connectivity,
+                |state, value| {
+                    state.apply_connectivity(value);
+                    true
+                },
             ),
             spawn_watch(
                 cx,
                 handle.clone(),
                 methods::WATCH_TRANSFERS,
-                AppState::apply_transfers,
+                |state, value| {
+                    state.apply_transfers(value);
+                    true
+                },
             ),
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::WATCH_SPACES,
-                AppState::apply_spaces,
-            ),
+            spawn_watch(cx, handle.clone(), methods::WATCH_SPACES, |state, value| {
+                state.apply_spaces(value);
+                true
+            }),
             // Auth frames parse tolerantly — engine and proto tags differ today.
-            spawn_watch(
-                cx,
-                handle.clone(),
-                methods::AUTH_STATUS,
-                AppState::apply_auth_value,
-            ),
+            spawn_watch(cx, handle.clone(), methods::AUTH_STATUS, |state, value| {
+                state.apply_auth_value(value);
+                true
+            }),
             spawn_watch(
                 cx,
                 handle.clone(),
                 methods::UPDATE_STATUS,
-                AppState::apply_update,
+                |state, value| {
+                    state.apply_update(value);
+                    true
+                },
             ),
             spawn_local_device_probe(cx, handle.clone()),
         ]);
@@ -1901,7 +1970,7 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
     cx: &mut Context<AppState>,
     handle: EngineHandle,
     method: &'static str,
-    apply: fn(&mut AppState, T),
+    apply: fn(&mut AppState, T) -> bool,
 ) -> Task<()> {
     cx.spawn(async move |this, cx| {
         // Resubscribe loop: these are the standing Sessions/Devices/Spaces
@@ -1935,12 +2004,14 @@ fn spawn_watch<T: DeserializeOwned + 'static>(
                     }
                 };
                 let alive = this.update(cx, |state, cx| {
-                    apply(state, parsed);
+                    let changed = apply(state, parsed);
                     state.apply_pending_deep_link(cx);
-                    if matches!(method, methods::WATCH_SPACES | methods::WATCH_DEVICES) {
-                        state.reconcile_change_request_watches(cx);
+                    if changed {
+                        if matches!(method, methods::WATCH_SPACES | methods::WATCH_DEVICES) {
+                            state.reconcile_change_request_watches(cx);
+                        }
+                        cx.notify();
                     }
-                    cx.notify();
                 });
                 if alive.is_err() {
                     return;
@@ -2777,6 +2848,92 @@ mod tests {
             created_at: None,
             version: None,
         }
+    }
+
+    #[test]
+    fn session_heartbeats_preserve_freshness_without_redrawing_unchanged_status() {
+        let mut state = AppState::new();
+        let now = Utc::now();
+        let mut row = Session {
+            chat_id: "chat".into(),
+            device_id: "host".into(),
+            status: SessionStatus::Working,
+            started_at: Some(now),
+            updated_at: now,
+        };
+        assert!(state.apply_sessions_at(vec![row.clone()], now));
+        row.updated_at = now + TimeDelta::seconds(30);
+        assert!(!state.apply_sessions_at(vec![row.clone()], now + TimeDelta::seconds(30)));
+        assert_eq!(state.sessions[0].updated_at, row.updated_at);
+        assert_eq!(
+            state.indicator_for("chat", now + TimeDelta::seconds(60)),
+            Indicator::Working
+        );
+        assert!(state.apply_sessions_at(vec![row.clone()], now + TimeDelta::seconds(76)));
+        row.updated_at = now + TimeDelta::seconds(80);
+        assert!(state.apply_sessions_at(vec![row.clone()], now + TimeDelta::seconds(80)));
+        row.status = SessionStatus::AwaitingInput;
+        assert!(state.apply_sessions_at(vec![row.clone()], now + TimeDelta::seconds(80)));
+        row.status = SessionStatus::Idle;
+        row.started_at = None;
+        assert!(state.apply_sessions_at(vec![row], now + TimeDelta::seconds(80)));
+        assert!(state.apply_sessions_at(vec![], now + TimeDelta::seconds(80)));
+    }
+
+    #[test]
+    fn unchanged_device_heartbeat_still_retires_stale_session_indicators() {
+        let mut state = AppState::new();
+        let now = Utc::now();
+        state.sessions = vec![Session {
+            chat_id: "chat".into(),
+            device_id: "host".into(),
+            status: SessionStatus::Working,
+            started_at: Some(now),
+            updated_at: now,
+        }];
+        let mut row = device("host", "Host");
+        row.last_seen_at = Some(now);
+        assert!(state.apply_devices_at(vec![row.clone()], now));
+        row.last_seen_at = Some(now + TimeDelta::seconds(30));
+        assert!(!state.apply_devices_at(vec![row.clone()], now + TimeDelta::seconds(30)));
+        row.last_seen_at = Some(now + TimeDelta::seconds(46));
+        assert!(state.apply_devices_at(vec![row], now + TimeDelta::seconds(46)));
+        assert_eq!(
+            state.indicator_for("chat", now + TimeDelta::seconds(46)),
+            Indicator::None
+        );
+        let mut recovered = state.sessions.clone();
+        recovered[0].updated_at = now + TimeDelta::seconds(47);
+        assert!(
+            state.apply_sessions_at(recovered, now + TimeDelta::seconds(47)),
+            "a heartbeat must immediately restore an indicator retired by a device tick"
+        );
+    }
+
+    #[test]
+    fn device_heartbeats_keep_freshness_without_repainting_unchanged_presentation() {
+        let mut state = AppState::new();
+        let now = Utc::now();
+        let mut row = device("host", "Host");
+        row.last_seen_at = Some(now);
+        assert!(state.apply_devices_at(vec![row.clone()], now));
+        row.last_seen_at = Some(now + TimeDelta::seconds(15));
+        assert!(!state.apply_devices_at(vec![row.clone()], now + TimeDelta::seconds(15)));
+        assert_eq!(state.devices[0].last_seen_at, row.last_seen_at);
+        // The settings label still advances even before the presence dot expires.
+        assert!(state.apply_devices_at(vec![row.clone()], now + TimeDelta::seconds(75)));
+        // An identical frame must redraw when presence crosses the expiry boundary.
+        assert!(state.apply_devices_at(vec![row.clone()], now + TimeDelta::seconds(86)));
+        assert!(!state.device_online("host", now + TimeDelta::seconds(86)));
+        row.last_seen_at = Some(now + TimeDelta::seconds(90));
+        assert!(state.apply_devices_at(vec![row.clone()], now + TimeDelta::seconds(90)));
+        assert!(state.device_online("host", now + TimeDelta::seconds(90)));
+        row.name = "Renamed".into();
+        assert!(state.apply_devices_at(vec![row.clone()], now + TimeDelta::seconds(90)));
+        row.version = Some("9.0.0".into());
+        assert!(state.apply_devices_at(vec![row], now + TimeDelta::seconds(90)));
+        assert!(state.apply_devices_at(vec![], now + TimeDelta::seconds(90)));
+        assert!(!state.apply_devices_at(vec![], now + TimeDelta::seconds(90)));
     }
 
     #[test]
