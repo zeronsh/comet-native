@@ -2,16 +2,15 @@
 //! splash content. All motion routes through `crate::motion` pure helpers, so
 //! the math is unit-tested and these elements are testable-by-compile.
 //!
-//! Rendering pattern: each cell is its own `with_animation` repeating element
-//! sharing one period; per-cell offsets come from [`motion::staggered_phase`],
-//! so all cells stay phase-locked (they start on the same frame) without a
-//! shared clock. Cells animate inside fixed-size slots — opacity and inner size
+//! Rendering pattern: cells share a self-parking pulse clock; per-cell offsets
+//! come from [`motion::staggered_phase`], so all cells stay phase-locked.
+//! Cells animate inside fixed-size slots — opacity and inner size
 //! are paint-local and never move surrounding layout. Reduced motion snaps every
 //! cell to its rest state automatically (gpui `reduce_motion`).
 
 use gpui::{
-    AnyElement, App, EntityId, IntoElement, ParentElement, PathBuilder, SharedString, Styled,
-    canvas, div, point, px,
+    AnyElement, App, AppContext, Context, Entity, EntityId, IntoElement, ParentElement,
+    PathBuilder, Render, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
 };
 
 use crate::motion::{self, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT, ZERON_PULSE};
@@ -122,7 +121,7 @@ pub fn gradient_spinner(
 ) -> impl IntoElement {
     let center = (MATRIX_SIDE as f32 - 1.0) / 2.0;
     let max = MATRIX_SIDE as f32 - 1.0 + center;
-    let delta = motion::pulse_delta(&GRADIENT_SPIN, view, cx);
+    let delta = motion::pulse_delta_slow(&GRADIENT_SPIN, view, cx);
     div()
         .flex()
         .flex_col()
@@ -177,6 +176,67 @@ fn mini_spinner_tinted(
     key: impl Into<SharedString>,
     cell_px: f32,
     row_tints: [gpui::Hsla; 3],
+    _view: EntityId,
+    _cx: &mut App,
+) -> impl IntoElement {
+    MiniSpinner {
+        key: key.into(),
+        cell_px,
+        row_tints,
+    }
+}
+
+#[derive(IntoElement)]
+struct MiniSpinner {
+    key: SharedString,
+    cell_px: f32,
+    row_tints: [gpui::Hsla; 3],
+}
+
+impl RenderOnce for MiniSpinner {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Keep pulse invalidation separate from container state changes so
+        // cached sibling rows can be reused while these six cells animate.
+        let view = window.with_global_id(self.key.into(), |id, window| {
+            window.with_element_state(id, |previous: Option<Entity<MiniSpinnerView>>, _| {
+                let view = previous.unwrap_or_else(|| {
+                    cx.new(|_| MiniSpinnerView {
+                        cell_px: self.cell_px,
+                        row_tints: self.row_tints,
+                    })
+                });
+                view.update(cx, |view, cx| {
+                    if view.cell_px != self.cell_px || view.row_tints != self.row_tints {
+                        view.cell_px = self.cell_px;
+                        view.row_tints = self.row_tints;
+                        cx.notify();
+                    }
+                });
+                (view.clone(), view)
+            })
+        });
+        view.cached(
+            gpui::StyleRefinement::default()
+                .w(px(self.cell_px * 2.5))
+                .h(px(self.cell_px * 4.0)),
+        )
+    }
+}
+
+struct MiniSpinnerView {
+    cell_px: f32,
+    row_tints: [gpui::Hsla; 3],
+}
+
+impl Render for MiniSpinnerView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        mini_spinner_cells(self.cell_px, self.row_tints, cx.entity_id(), cx)
+    }
+}
+
+fn mini_spinner_cells(
+    cell_px: f32,
+    row_tints: [gpui::Hsla; 3],
     view: EntityId,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -186,7 +246,6 @@ fn mini_spinner_tinted(
     /// (0,0) → (0,1) → (1,1) → (2,1) → (2,0) → (1,0).
     const RING: [[usize; COLS]; ROWS] = [[0, 1], [5, 2], [4, 3]];
     const RING_LEN: f32 = (COLS * ROWS) as f32;
-    let _key = key.into();
     let delta = motion::pulse_delta(&GRADIENT_SPIN, view, cx);
     div()
         .flex()

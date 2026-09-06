@@ -1,6 +1,6 @@
 # Zeron
 
-Control your coding agents (Claude Code, Codex, Cursor, Grok, Hermes, Pi) locally by default, with optional multi-device sync.
+Control your coding agents (Claude Code, Codex, Cursor, Devin, Grok, Hermes, Pi) locally by default, with optional multi-device sync.
 
 *English | [简体中文](README.zh-CN.md)*
 

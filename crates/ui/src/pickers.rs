@@ -2202,11 +2202,15 @@ impl Pickers {
             })
             // The effort half of the combined model+effort chip (and the space
             // chip's "@ device" tag): muted, no icon — one button, two tones.
-            // `tint` overrides the muted tone (the offline warning).
+            // `tint` overrides the muted tone (the offline warning). Under row
+            // pressure the suffix yields FIRST (large shrink factor) so the
+            // model name — the run's identity — truncates last.
             .when_some(suffix, |el, (suffix, tint)| {
                 el.child(
                     div()
-                        .flex_none()
+                        .flex_shrink(1000.0)
+                        .min_w_0()
+                        .truncate()
                         .text_color(tint.unwrap_or(theme.text_muted.opacity(0.7)))
                         .child(suffix),
                 )
@@ -3789,6 +3793,8 @@ pub(crate) fn harness_brand_icon(harness: HarnessId) -> (&'static str, Option<gp
         ),
         HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
         HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
+        // Cognition's mark (the Devin product icon), monochrome.
+        HarnessId::Devin => (crate::icons::DEVIN_MARK, None),
         // Monochrome mark, tinted by the surface like OpenAI's.
         HarnessId::Grok => (crate::icons::GROK_MARK, None),
         // Nous Research's mark (the Hermes product icon), monochrome.
@@ -4057,7 +4063,12 @@ impl Render for Pickers {
             .flex()
             .flex_row()
             .items_center()
-            .flex_none()
+            // Shrinkable under row pressure, like the footer chips: the chip's
+            // own `min_w_0().truncate()` label/suffix only engage when this
+            // cluster is allowed to give up width — `flex_none` here let the
+            // labels paint over the attach/send buttons at narrow widths
+            // instead of truncating (user report).
+            .min_w_0()
             .gap(px(4.0))
             // End-anchored: the menu's right edge sits flush with the chip's
             // right edge (user request), same as the footer's ref popover.

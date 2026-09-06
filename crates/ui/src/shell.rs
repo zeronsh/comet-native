@@ -981,8 +981,34 @@ struct SubagentTab {
     _events: Subscription,
 }
 
+/// Sidebar render identity lets transcript/caret frames reuse its GPUI scene.
+/// State and event handlers stay on Shell. Explicit Shell notifications still
+/// invalidate the sidebar, including selection, menus, theme and navigation.
+struct SidebarPane {
+    shell: gpui::WeakEntity<Shell>,
+    _observation: Subscription,
+}
+
+impl Render for SidebarPane {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::transcript::record_view_frame("sidebar");
+        let Some(shell) = self.shell.upgrade() else {
+            return div().into_any_element();
+        };
+        let inner = shell.update(cx, |shell, cx| {
+            let theme = Theme::of(cx).clone();
+            match shell.route {
+                Route::Settings(section) => shell.render_settings_nav(section, &theme, cx),
+                Route::Chat | Route::PullRequests => shell.render_chat_sidebar(&theme, cx),
+            }
+        });
+        div().size_full().child(inner).into_any_element()
+    }
+}
+
 pub struct Shell {
     state: Entity<AppState>,
+    sidebar_pane: Entity<SidebarPane>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
     /// Measured height of the bottom chrome stack (status strip + composer +
@@ -1192,6 +1218,7 @@ pub struct Shell {
     _composer_events: Subscription,
     /// The primary transcript's spawn-chip events (subagent tabs).
     _transcript_events: Subscription,
+    _transcript_invalidation: Subscription,
 }
 
 impl Shell {
@@ -1222,8 +1249,12 @@ impl Shell {
         // Working-indicator heartbeat: notify once a second while a session is
         // live so elapsed time and the flavour word stay fresh.
         let ticker = cx.spawn(async move |this, cx| {
+            let mut displayed_minute = Utc::now().timestamp().div_euclid(60);
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
+                let minute = Utc::now().timestamp().div_euclid(60);
+                let minute_changed = minute != displayed_minute;
+                displayed_minute = minute;
                 let alive = this.update(cx, |shell: &mut Shell, cx| {
                     let live = {
                         let s = shell.state.read(cx);
@@ -1238,7 +1269,9 @@ impl Shell {
                                     | zeron_proto::ConnectivityState::Reconnecting
                             )
                     };
-                    if live {
+                    // Relative sidebar times still advance when unchanged
+                    // presence heartbeats no longer invalidate the whole UI.
+                    if live || minute_changed {
                         cx.notify();
                     }
                 });
@@ -1298,8 +1331,19 @@ impl Shell {
             Route::PullRequests => NavEntry::PullRequests,
             Route::Settings(section) => NavEntry::Settings(section),
         });
+        // Parent notifications carry presentation changes (session status,
+        // elapsed labels, menus); sibling animation/caret ticks do not.
+        let transcript_invalidation = cx.observe_self(|shell, cx| {
+            shell.transcript.update(cx, |_, cx| cx.notify());
+        });
+        let shell = cx.entity();
+        let sidebar_pane = cx.new(|cx| SidebarPane {
+            shell: shell.downgrade(),
+            _observation: cx.observe(&shell, |_, _, cx| cx.notify()),
+        });
         Self {
             state,
+            sidebar_pane,
             transcript,
             composer,
             // Seed with the compact composer stack's rough height so the
@@ -1399,6 +1443,7 @@ impl Shell {
             _state_observation: observation,
             _composer_events: composer_events,
             _transcript_events: transcript_events,
+            _transcript_invalidation: transcript_invalidation,
         }
     }
 
@@ -3721,15 +3766,16 @@ impl Shell {
         out
     }
 
-    fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         // The sidebar is part of the resolved theme. A second fixed-Zeron
         // palette here made imported families look split in half and froze
         // activity/glyph personality independently of the selected variant.
-        let theme = Theme::of(cx).clone();
-        let inner: AnyElement = match self.route {
-            Route::Settings(section) => self.render_settings_nav(section, &theme, cx),
-            Route::Chat | Route::PullRequests => self.render_chat_sidebar(&theme, cx),
-        };
+        let inner = self.sidebar_pane.clone().cached(
+            gpui::StyleRefinement::default()
+                .w(px(self.settings.sidebar_width))
+                .h_full()
+                .flex_none(),
+        );
         let target = self.sidebar_target();
         // Transparent — the sidebar sits directly on the frost shell; the main
         // card's own border provides the separation. The content row spans the
@@ -4004,7 +4050,7 @@ impl Shell {
                             format!("chat-working-{id}"),
                             2.0,
                             theme.glyph,
-                            cx.entity_id(),
+                            self.sidebar_pane.entity_id(),
                             cx,
                         )
                         .into_any_element()
@@ -4255,7 +4301,7 @@ impl Shell {
                     "connection-spinner",
                     2.0,
                     theme.text_muted,
-                    cx.entity_id(),
+                    self.sidebar_pane.entity_id(),
                     cx,
                 )
                 .into_any_element(),
@@ -5638,7 +5684,10 @@ impl Shell {
         // at all → the onboarding card. The composer sits below the first two
         // (new-chat mode mints the chat id on first send).
         let outlet: AnyElement = if has_selection {
-            self.transcript.clone().into_any_element()
+            self.transcript
+                .clone()
+                .cached(gpui::StyleRefinement::default().size_full())
+                .into_any_element()
         } else if !has_spaces && !no_project {
             // Onboarding (first boot / after the destructive wipe): no folders
             // to work in yet — one clear affordance.
@@ -7473,6 +7522,7 @@ fn header_icon_button(
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::transcript::record_view_frame("shell");
         self.viewport_width = f32::from(window.viewport_size().width);
         // Appearance actions persist independently of the shell. Mirror the
         // globals before any later debounced settings save can overwrite them.
@@ -7614,9 +7664,7 @@ impl Render for Shell {
             // forward the slot instead of eating it.
             .on_action(cx.listener(|this, jump: &JumpSession, _, cx| {
                 let pickers = this.composer.read(cx).pickers().clone();
-                let handled = pickers.update(cx, |pickers, cx| {
-                    pickers.jump_model_slot(jump.0, cx)
-                });
+                let handled = pickers.update(cx, |pickers, cx| pickers.jump_model_slot(jump.0, cx));
                 if !handled && !this.overlay_owns_keyboard(cx) {
                     this.jump_to_session(jump.0, cx)
                 }

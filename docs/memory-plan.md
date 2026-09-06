@@ -129,6 +129,18 @@ dial-lock hygiene. Verified: full workspace suite green; 20-chat run shows the
 LRU evicting (8×), post-cap growth slope halved, and RSS recovering at idle —
 which the baseline never did. Cold-open stayed on the measured ~62ms path.
 
+**Allocator revision (2026-09-03):** the phase-1 mimalloc adoption itself
+became the top residency cause — `mimalloc = "0.1"` had drifted onto crate
+0.1.52, whose bundled default is mimalloc **v3.3.2**, and v3 retains the
+streaming/render churn as permanent RSS instead of returning it (measured on
+Linux: daemon at 908MB for 7.3MB of docs after six streamed chats, no idle
+recovery; glibc control flat on identical workloads; the ratchet surfaced as
+"memory grows unbounded when scrolling/switching sessions"). Fix: mimalloc is
+now macOS-only (the libmalloc watermark it was adopted for) and pinned to the
+crate's `v2` feature (mimalloc 2.3.2, ~half of v3's retention); Linux runs the
+system allocator. Purge knobs (`MIMALLOC_PURGE_DELAY=0`,
+`MIMALLOC_ABANDONED_PAGE_PURGE=1`) measurably do NOT rescue v3.
+
 Known follow-ups: GPU atlas tiles for raw-bytes images still free only on
 window close (needs a small gpui-fork patch exposing a drop path for
 `ImageSource::Image`); UI-side full-transcript clone per frame

@@ -50,17 +50,27 @@ struct RecordingSink {
     checkpoints: Mutex<Vec<(Vec<u8>, u64)>>,
     cursor_advances: Mutex<Vec<u64>>,
     frontier_contained: std::sync::atomic::AtomicBool,
+    pending_until_checkpoint: std::sync::atomic::AtomicBool,
     /// Global apply order across rows and checkpoints — the overlap test
     /// pins "checkpoint imports before any row that buffered during it".
     ops: Mutex<Vec<String>>,
 }
 
 impl ChatDocSink for RecordingSink {
-    fn apply_row(&self, bytes: &[u8], cursor: u64) {
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome {
+        if self
+            .pending_until_checkpoint
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            return RowImportOutcome::PendingDependencies;
+        }
         lock(&self.rows).push((bytes.to_vec(), cursor));
         lock(&self.ops).push(format!("row@{cursor}"));
+        RowImportOutcome::Applied
     }
     fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String> {
+        self.pending_until_checkpoint
+            .store(false, std::sync::atomic::Ordering::Relaxed);
         lock(&self.checkpoints).push((bytes.to_vec(), cursor));
         lock(&self.ops).push(format!("ckpt@{cursor}"));
         Ok(())
@@ -1356,4 +1366,168 @@ async fn checkpointless_amnesty_refetches_from_zero() {
     assert_eq!(client.stats().cursor, 3);
     drop(end);
     client.shutdown().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn causal_gap_refetches_checkpoint_without_skipping_parked_row() {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (first_pipe, mut first_end) = pipe_pair();
+    let (second_pipe, mut second_end) = pipe_pair();
+    let sink = Arc::new(RecordingSink::default());
+    sink.frontier_contained.store(true, Relaxed);
+    sink.pending_until_checkpoint.store(true, Relaxed);
+    let (fetch, calls) = fetcher(b"complete-history");
+    let server = tokio::spawn(async move {
+        let state = serde_json::json!({"headSeq": 5, "seqFloor": 5,
+            "checkpointSeq": 5, "checkpointSize": 1000, "rowCount": 0, "rowBytes": 0});
+        serve_join(&mut first_end, state.clone(), b"frontier", vec![], false).await;
+        send(
+            &first_end,
+            frame_type::ROW,
+            serde_json::json!({"seq": 6, "device": "dev-b", "batchId": "b6"}),
+            b"dependent-row",
+        )
+        .await;
+        let hello = expect_kind(&mut second_end, frame_type::HELLO).await;
+        assert_eq!(
+            hello.header["cursor"], 5,
+            "parked row must not advance cursor"
+        );
+        let mut state = state;
+        state["headSeq"] = 6.into();
+        send(&second_end, frame_type::STATE, state, b"frontier").await;
+        let rows = expect_kind(&mut second_end, frame_type::ROWS_REQ).await;
+        assert_eq!(rows.header["after"], 5);
+        assert_eq!(
+            rows.header["excludeOwn"], false,
+            "repair includes every writer"
+        );
+        send(
+            &second_end,
+            frame_type::ROW,
+            serde_json::json!({"seq": 6, "device": "dev-b", "batchId": "b6"}),
+            b"dependent-row",
+        )
+        .await;
+        send(
+            &second_end,
+            frame_type::ROWS_DONE,
+            serde_json::json!({"headSeq": 6}),
+            &[],
+        )
+        .await;
+        (first_end, second_end)
+    });
+    let client = ChatClient::connect_with_tuned(
+        connector(vec![first_pipe, second_pipe]),
+        sink.clone(),
+        fetch,
+        "dev-a",
+        5,
+        ChatTuning::default(),
+    )
+    .await
+    .unwrap();
+    let ends = server.await.unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while client.stats().cursor != 6 {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "causal repair stalled"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        calls.load(Relaxed),
+        1,
+        "fetch despite the contained frontier"
+    );
+    assert_eq!(*lock(&sink.ops), vec!["ckpt@5", "row@6"]);
+    drop(ends);
+    client.shutdown().await;
+}
+
+struct FixedHttpRows {
+    body: Vec<u8>,
+    requests: Mutex<Vec<u64>>,
+}
+impl ChatTransport for FixedHttpRows {
+    fn fetch_rows(&self, after: u64) -> BoxFuture<'static, Result<Vec<u8>, SyncError>> {
+        lock(&self.requests).push(after);
+        let body = self.body.clone();
+        Box::pin(async move { Ok(body) })
+    }
+    fn push(&self, _: String, _: Vec<u8>) -> BoxFuture<'static, Result<String, SyncError>> {
+        Box::pin(async { panic!("read-only recovery must not push") })
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn http_catchup_crosses_a_contained_checkpoint_and_repairs_causal_gaps() {
+    use std::sync::atomic::Ordering::Relaxed;
+    for pending_dependencies in [false, true] {
+        let sink = Arc::new(RecordingSink::default());
+        sink.frontier_contained.store(true, Relaxed);
+        sink.pending_until_checkpoint
+            .store(pending_dependencies, Relaxed);
+        let (fetch, calls) = fetcher(b"complete-history");
+        let frames = [
+            encode(
+                frame_type::STATE,
+                &serde_json::json!({"headSeq": 6, "seqFloor": 5,
+                "checkpointSeq": 5, "checkpointSize": 1000, "rowCount": 1, "rowBytes": 20}),
+                b"frontier",
+            ),
+            encode(
+                frame_type::ROW,
+                &serde_json::json!({"seq": 6, "device": "dev-b", "batchId": "b6"}),
+                b"row",
+            ),
+            encode(
+                frame_type::ROWS_DONE,
+                &serde_json::json!({"headSeq": 6}),
+                &[],
+            ),
+        ];
+        let mut body = Vec::new();
+        for frame in frames {
+            body.extend_from_slice(&(frame.len() as u32).to_le_bytes());
+            body.extend_from_slice(&frame);
+        }
+        let transport = Arc::new(FixedHttpRows {
+            body,
+            requests: Mutex::new(Vec::new()),
+        });
+        let client = ChatClient::connect_with_transport(
+            connector(vec![]),
+            sink.clone(),
+            fetch,
+            "dev-a",
+            1,
+            ChatTuning::default(),
+            Some(transport.clone()),
+        )
+        .await
+        .unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while client.stats().cursor != 6 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "HTTP recovery stalled"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert_eq!(calls.load(Relaxed), u64::from(pending_dependencies));
+        assert_eq!(lock(&transport.requests)[0], 1);
+        assert_eq!(lock(&sink.rows).last().unwrap().1, 6);
+        if pending_dependencies {
+            assert_eq!(
+                lock(&transport.requests)[1],
+                5,
+                "retry starts before the parked row"
+            );
+            assert_eq!(lock(&sink.ops)[0], "ckpt@5");
+        }
+        client.shutdown().await;
+    }
 }

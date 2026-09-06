@@ -1,0 +1,6345 @@
+{
+  "method": "Native foreground release replay using the bundled sanitized fixture repeated four times at a 10 ms provider delay. Same 1320x880 logical window at 2x scale, 500 ms counters, and foreground/display guards as the standard replay. Both runs passed their complete foreground checks. No simultaneous builds or sampling profilers. The first run observes completion for 10 seconds and the second for 30 seconds; these are stress checks, not a matched baseline comparison.",
+  "machine": {
+    "model": "Mac16,7",
+    "architecture": "arm64",
+    "memoryGiB": 24,
+    "os": "macOS 26.0.1 (25A362)"
+  },
+  "applicationRevision": "9294a95b3c746f6a207a76f57bc51cb942f02197",
+  "graphicsRevision": "0003b923354ea8938b2d0cadbd17ef93108e2ae5",
+  "fixtureSha256": "8f91503a5a5f36b6344e347a81378696d707f4742b32e8670e76943bb1eca1cc",
+  "environment": {
+    "ZERON_REPLAY_REPEAT": "4",
+    "ZERON_REPLAY_DELAY_MS": "10",
+    "ZERON_FRAME_STATS": "0"
+  },
+  "runs": [
+    {
+      "settledObservationSeconds": 10,
+      "summary": {
+        "binarySha256": "1f6c253eec14756da12efdb41ffbe4c4aba31c925f2bf0df7d48ae781bfda3e6",
+        "harness": "claude-code",
+        "mode": "replay",
+        "platform": "darwin",
+        "arch": "arm64",
+        "renderThreads": "default",
+        "frameStats": "0",
+        "submission": "rpc",
+        "replySha256": "cb96ce276ed79aa8d791fc796f56ccf586b29e73d54acc911b42aacf30236f8f",
+        "replyBytes": 210502,
+        "transcriptBytes": 218387,
+        "frames": 175,
+        "phases": {
+          "idle": {
+            "durationSeconds": 9.031,
+            "engine": {
+              "peakFootprintMiB": 23.422791,
+              "endFootprintMiB": 22.625916,
+              "lifetimePeakFootprintMiB": 23.454041,
+              "peakRssMiB": 34.375,
+              "endRssMiB": 25.203125,
+              "cpuPercent": 0.041696190898017974
+            },
+            "ui": {
+              "peakFootprintMiB": 321.704155,
+              "endFootprintMiB": 298.735405,
+              "lifetimePeakFootprintMiB": 360.31353,
+              "peakRssMiB": 96.765625,
+              "endRssMiB": 88.828125,
+              "cpuPercent": 0.722870767356882
+            }
+          },
+          "stream": {
+            "durationSeconds": 21.539,
+            "engine": {
+              "peakFootprintMiB": 28.032188,
+              "endFootprintMiB": 27.344688,
+              "lifetimePeakFootprintMiB": 28.032188,
+              "peakRssMiB": 45.53125,
+              "endRssMiB": 45.53125,
+              "cpuPercent": 1.316387134964483
+            },
+            "ui": {
+              "peakFootprintMiB": 328.735405,
+              "endFootprintMiB": 328.516655,
+              "lifetimePeakFootprintMiB": 360.31353,
+              "peakRssMiB": 112.546875,
+              "endRssMiB": 110.890625,
+              "cpuPercent": 15.344746353126887
+            }
+          },
+          "settled": {
+            "durationSeconds": 9.522,
+            "engine": {
+              "peakFootprintMiB": 31.172813,
+              "endFootprintMiB": 30.797813,
+              "lifetimePeakFootprintMiB": 31.172813,
+              "peakRssMiB": 45.875,
+              "endRssMiB": 37.59375,
+              "cpuPercent": 0.035561510186936054
+            },
+            "ui": {
+              "peakFootprintMiB": 333.282303,
+              "endFootprintMiB": 333.282303,
+              "lifetimePeakFootprintMiB": 360.31353,
+              "peakRssMiB": 111.515625,
+              "endRssMiB": 107.875,
+              "cpuPercent": 3.495858275572361
+            }
+          }
+        },
+        "postCompletionTail": {
+          "durationSeconds": 9.522,
+          "engine": {
+            "endFootprintMiB": 30.797813,
+            "endRssMiB": 37.59375,
+            "cpuPercent": 0.035561510186936054
+          },
+          "ui": {
+            "endFootprintMiB": 333.282303,
+            "endRssMiB": 107.875,
+            "cpuPercent": 3.495858275572361
+          }
+        }
+      },
+      "samples": [
+        {
+          "at": 1788630098541,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.08023825,
+            "rssMiB": 34.375,
+            "footprintMiB": 23.360291,
+            "lifetimePeakFootprintMiB": 23.360291,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.383613583,
+            "rssMiB": 96.75,
+            "footprintMiB": 321.59478,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 73195,
+              "cpuSeconds": 1.620445667,
+              "rssMiB": 613.53125,
+              "footprintMiB": 438.845032,
+              "lifetimePeakFootprintMiB": 609.595032,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73274,
+              "cpuSeconds": 0.824129167,
+              "rssMiB": 145.34375,
+              "footprintMiB": 107.418587,
+              "lifetimePeakFootprintMiB": 107.418587,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73199,
+              "cpuSeconds": 0.125016958,
+              "rssMiB": 67.421875,
+              "footprintMiB": 49.947685,
+              "lifetimePeakFootprintMiB": 49.947685,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73201,
+              "cpuSeconds": 0.663597083,
+              "rssMiB": 154.46875,
+              "footprintMiB": 134.140129,
+              "lifetimePeakFootprintMiB": 134.140129,
+              "idleWakeups": 1
+            },
+            {
+              "pid": 73284,
+              "cpuSeconds": 0.355985458,
+              "rssMiB": 111.3125,
+              "footprintMiB": 80.431488,
+              "lifetimePeakFootprintMiB": 80.431488,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630099054,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.08023825,
+            "rssMiB": 26.515625,
+            "footprintMiB": 23.360291,
+            "lifetimePeakFootprintMiB": 23.360291,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.38407925,
+            "rssMiB": 96.5625,
+            "footprintMiB": 321.59478,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 73195,
+              "cpuSeconds": 1.62592575,
+              "rssMiB": 501.09375,
+              "footprintMiB": 432.938782,
+              "lifetimePeakFootprintMiB": 609.595032,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73274,
+              "cpuSeconds": 1.0863575,
+              "rssMiB": 145.640625,
+              "footprintMiB": 113.216331,
+              "lifetimePeakFootprintMiB": 113.216331,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73199,
+              "cpuSeconds": 0.125016958,
+              "rssMiB": 67.421875,
+              "footprintMiB": 49.947685,
+              "lifetimePeakFootprintMiB": 49.947685,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73201,
+              "cpuSeconds": 0.663597083,
+              "rssMiB": 154.421875,
+              "footprintMiB": 134.140129,
+              "lifetimePeakFootprintMiB": 134.140129,
+              "idleWakeups": 1
+            },
+            {
+              "pid": 73284,
+              "cpuSeconds": 0.575638125,
+              "rssMiB": 160.3125,
+              "footprintMiB": 118.20034,
+              "lifetimePeakFootprintMiB": 118.20034,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630099537,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.080684542,
+            "rssMiB": 25.765625,
+            "footprintMiB": 23.422791,
+            "lifetimePeakFootprintMiB": 23.422791,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.388364,
+            "rssMiB": 96.765625,
+            "footprintMiB": 321.672905,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 73195,
+              "cpuSeconds": 1.626880917,
+              "rssMiB": 500.96875,
+              "footprintMiB": 432.641907,
+              "lifetimePeakFootprintMiB": 609.595032,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73274,
+              "cpuSeconds": 1.688710917,
+              "rssMiB": 154.9375,
+              "footprintMiB": 124.342865,
+              "lifetimePeakFootprintMiB": 124.342865,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630100039,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.080708125,
+            "rssMiB": 25.765625,
+            "footprintMiB": 23.422791,
+            "lifetimePeakFootprintMiB": 23.422791,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.390267833,
+            "rssMiB": 96.765625,
+            "footprintMiB": 321.672905,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 73195,
+              "cpuSeconds": 1.630054542,
+              "rssMiB": 500.96875,
+              "footprintMiB": 432.641907,
+              "lifetimePeakFootprintMiB": 609.595032,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73274,
+              "cpuSeconds": 2.266256667,
+              "rssMiB": 166.125,
+              "footprintMiB": 137.40699,
+              "lifetimePeakFootprintMiB": 137.40699,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630100541,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.080870292,
+            "rssMiB": 23.59375,
+            "footprintMiB": 23.422791,
+            "lifetimePeakFootprintMiB": 23.422791,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.392181625,
+            "rssMiB": 90.453125,
+            "footprintMiB": 321.704155,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 73195,
+              "cpuSeconds": 1.630971917,
+              "rssMiB": 500.953125,
+              "footprintMiB": 432.641907,
+              "lifetimePeakFootprintMiB": 609.595032,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 73274,
+              "cpuSeconds": 2.841344833,
+              "rssMiB": 174.71875,
+              "footprintMiB": 147.971024,
+              "lifetimePeakFootprintMiB": 147.971024,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630101041,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.081086458,
+            "rssMiB": 22.84375,
+            "footprintMiB": 23.422791,
+            "lifetimePeakFootprintMiB": 23.422791,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.394237,
+            "rssMiB": 89.875,
+            "footprintMiB": 303.56353,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 73195,
+              "cpuSeconds": 1.635794125,
+              "rssMiB": 500.953125,
+              "footprintMiB": 432.641907,
+              "lifetimePeakFootprintMiB": 609.595032,
+              "idleWakeups": 1
+            },
+            {
+              "pid": 73274,
+              "cpuSeconds": 3.566452708,
+              "rssMiB": 196.375,
+              "footprintMiB": 169.880043,
+              "lifetimePeakFootprintMiB": 169.880043,
+              "idleWakeups": 54
+            }
+          ]
+        },
+        {
+          "at": 1788630101545,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.081158208,
+            "rssMiB": 21.9375,
+            "footprintMiB": 23.422791,
+            "lifetimePeakFootprintMiB": 23.422791,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.397188875,
+            "rssMiB": 88.015625,
+            "footprintMiB": 303.56353,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 2
+          },
+          "harness": [
+            {
+              "pid": 73195,
+              "cpuSeconds": 1.636496083,
+              "rssMiB": 499.796875,
+              "footprintMiB": 432.641907,
+              "lifetimePeakFootprintMiB": 609.595032,
+              "idleWakeups": 2
+            },
+            {
+              "pid": 73274,
+              "cpuSeconds": 3.841572042,
+              "rssMiB": 213.171875,
+              "footprintMiB": 188.459541,
+              "lifetimePeakFootprintMiB": 188.459541,
+              "idleWakeups": 55
+            }
+          ]
+        },
+        {
+          "at": 1788630102057,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.082690917,
+            "rssMiB": 25.109375,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.401095,
+            "rssMiB": 88.390625,
+            "footprintMiB": 303.797905,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630102559,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.082807292,
+            "rssMiB": 25.109375,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.405677292,
+            "rssMiB": 88.5,
+            "footprintMiB": 303.81353,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630103062,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.08302575,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.411559208,
+            "rssMiB": 88.640625,
+            "footprintMiB": 303.81353,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630103559,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083153042,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.416064875,
+            "rssMiB": 88.640625,
+            "footprintMiB": 303.81353,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630104063,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083153042,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.420456333,
+            "rssMiB": 88.78125,
+            "footprintMiB": 303.766655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630104566,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083281917,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.4250285,
+            "rssMiB": 88.78125,
+            "footprintMiB": 303.766655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630105067,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083431083,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.429964042,
+            "rssMiB": 88.78125,
+            "footprintMiB": 303.766655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630105566,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083582583,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.434586083,
+            "rssMiB": 88.8125,
+            "footprintMiB": 303.78228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630106074,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083582583,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.4420575,
+            "rssMiB": 88.828125,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 3
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630106572,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083669,
+            "rssMiB": 25.171875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.445202375,
+            "rssMiB": 88.828125,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 5
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630107069,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.083841208,
+            "rssMiB": 25.1875,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.447875167,
+            "rssMiB": 88.828125,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 5
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630107572,
+          "phase": "idle",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.084003833,
+            "rssMiB": 25.203125,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.448896042,
+            "rssMiB": 88.828125,
+            "footprintMiB": 298.735405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 5
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630108062,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.093790917,
+            "rssMiB": 27.453125,
+            "footprintMiB": 22.625916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.451321583,
+            "rssMiB": 88.828125,
+            "footprintMiB": 298.735405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 5
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630108563,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.10929675,
+            "rssMiB": 30.765625,
+            "footprintMiB": 16.875916,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.530714083,
+            "rssMiB": 102.796875,
+            "footprintMiB": 322.391655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.0302785,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630109083,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.117550375,
+            "rssMiB": 31.265625,
+            "footprintMiB": 17.157166,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.595164458,
+            "rssMiB": 104.125,
+            "footprintMiB": 323.422905,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.0323215,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630109570,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.123689167,
+            "rssMiB": 31.546875,
+            "footprintMiB": 16.313416,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.67846725,
+            "rssMiB": 104.9375,
+            "footprintMiB": 323.40728,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.035895083,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630110078,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.128920667,
+            "rssMiB": 31.75,
+            "footprintMiB": 16.454041,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.758403458,
+            "rssMiB": 105.296875,
+            "footprintMiB": 323.610405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.03905025,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630110574,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.134753583,
+            "rssMiB": 32.734375,
+            "footprintMiB": 17.235291,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.833871625,
+            "rssMiB": 105.953125,
+            "footprintMiB": 324.079155,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 7
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.042085417,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630111076,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.140405042,
+            "rssMiB": 33.03125,
+            "footprintMiB": 17.516541,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 0.918708667,
+            "rssMiB": 106.359375,
+            "footprintMiB": 324.110405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.045243958,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630111574,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.146835042,
+            "rssMiB": 34.09375,
+            "footprintMiB": 18.516563,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.007487083,
+            "rssMiB": 106.640625,
+            "footprintMiB": 324.28228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.048477875,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630112083,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.151874208,
+            "rssMiB": 34.4375,
+            "footprintMiB": 18.360313,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.085182958,
+            "rssMiB": 106.859375,
+            "footprintMiB": 324.50103,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.051254667,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630112581,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.158970083,
+            "rssMiB": 35.171875,
+            "footprintMiB": 19.094688,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.163603667,
+            "rssMiB": 107.140625,
+            "footprintMiB": 324.59478,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.054930125,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630113066,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.163829625,
+            "rssMiB": 35.390625,
+            "footprintMiB": 19.313438,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.245337083,
+            "rssMiB": 107.515625,
+            "footprintMiB": 324.90728,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.057691917,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630113583,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.170611,
+            "rssMiB": 35.859375,
+            "footprintMiB": 19.782188,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.335531333,
+            "rssMiB": 108.015625,
+            "footprintMiB": 325.03228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.0607995,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630114082,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.176558458,
+            "rssMiB": 36.328125,
+            "footprintMiB": 20.219688,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.410333958,
+            "rssMiB": 108.390625,
+            "footprintMiB": 325.34478,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.063598833,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630114583,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.182126875,
+            "rssMiB": 36.515625,
+            "footprintMiB": 20.172813,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.478566708,
+            "rssMiB": 108.421875,
+            "footprintMiB": 325.37603,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.066747083,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630115085,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.188298917,
+            "rssMiB": 37.15625,
+            "footprintMiB": 20.797813,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.5566855,
+            "rssMiB": 108.4375,
+            "footprintMiB": 325.18853,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.06956925,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630115587,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.193508,
+            "rssMiB": 37.203125,
+            "footprintMiB": 20.844688,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.633602167,
+            "rssMiB": 108.65625,
+            "footprintMiB": 325.40728,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.072421667,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630116084,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.20040525,
+            "rssMiB": 37.46875,
+            "footprintMiB": 21.047813,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.711134833,
+            "rssMiB": 108.6875,
+            "footprintMiB": 325.43853,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.075919833,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630116572,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.205399542,
+            "rssMiB": 37.234375,
+            "footprintMiB": 21.094688,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.778784208,
+            "rssMiB": 108.609375,
+            "footprintMiB": 325.75103,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.078825208,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630117080,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.212270125,
+            "rssMiB": 37.59375,
+            "footprintMiB": 21.438438,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.855055125,
+            "rssMiB": 108.640625,
+            "footprintMiB": 325.78228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.082290583,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630117591,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.218580542,
+            "rssMiB": 38.015625,
+            "footprintMiB": 21.860313,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 1.934243208,
+            "rssMiB": 108.859375,
+            "footprintMiB": 326.00103,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.085268458,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630118087,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.225334792,
+            "rssMiB": 38.15625,
+            "footprintMiB": 22.000938,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.016987542,
+            "rssMiB": 109.125,
+            "footprintMiB": 325.96978,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 9
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.088441125,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630118588,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.231037625,
+            "rssMiB": 38.640625,
+            "footprintMiB": 22.297813,
+            "lifetimePeakFootprintMiB": 23.454041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.092986917,
+            "rssMiB": 109.1875,
+            "footprintMiB": 325.90728,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 10
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.091273125,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630119085,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.23847825,
+            "rssMiB": 40.53125,
+            "footprintMiB": 23.547813,
+            "lifetimePeakFootprintMiB": 23.547813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.170300042,
+            "rssMiB": 109.625,
+            "footprintMiB": 326.329155,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 10
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.09382825,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630119585,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.244815417,
+            "rssMiB": 41.09375,
+            "footprintMiB": 23.844688,
+            "lifetimePeakFootprintMiB": 24.000938,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.245294792,
+            "rssMiB": 110.25,
+            "footprintMiB": 326.954155,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 10
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.097081375,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630120092,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.251999,
+            "rssMiB": 41.609375,
+            "footprintMiB": 24.250938,
+            "lifetimePeakFootprintMiB": 24.360313,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.318554,
+            "rssMiB": 110.265625,
+            "footprintMiB": 326.96978,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 10
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.099786792,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630120590,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.25656925,
+            "rssMiB": 41.625,
+            "footprintMiB": 24.266563,
+            "lifetimePeakFootprintMiB": 24.360313,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.391794958,
+            "rssMiB": 110.328125,
+            "footprintMiB": 327.03228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 10
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.102555417,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630121092,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.264182625,
+            "rssMiB": 42.140625,
+            "footprintMiB": 24.407188,
+            "lifetimePeakFootprintMiB": 24.657188,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.465811458,
+            "rssMiB": 110.328125,
+            "footprintMiB": 327.03228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 10
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.105079625,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630121591,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.26739825,
+            "rssMiB": 42.140625,
+            "footprintMiB": 24.407188,
+            "lifetimePeakFootprintMiB": 24.657188,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.519864542,
+            "rssMiB": 110.375,
+            "footprintMiB": 326.954155,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 10
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.106513958,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630122088,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.275260583,
+            "rssMiB": 42.359375,
+            "footprintMiB": 24.438438,
+            "lifetimePeakFootprintMiB": 24.657188,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.59535325,
+            "rssMiB": 110.390625,
+            "footprintMiB": 326.954155,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 14
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.109257917,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630122590,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.280564583,
+            "rssMiB": 42.375,
+            "footprintMiB": 24.454063,
+            "lifetimePeakFootprintMiB": 24.657188,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.672928125,
+            "rssMiB": 110.578125,
+            "footprintMiB": 327.141655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 14
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.111767333,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630123093,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.285709708,
+            "rssMiB": 42.6875,
+            "footprintMiB": 24.766563,
+            "lifetimePeakFootprintMiB": 24.766563,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.73236325,
+            "rssMiB": 110.65625,
+            "footprintMiB": 327.21978,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 15
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.113719458,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630123584,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.291959833,
+            "rssMiB": 42.78125,
+            "footprintMiB": 24.860313,
+            "lifetimePeakFootprintMiB": 24.860313,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.788398583,
+            "rssMiB": 110.96875,
+            "footprintMiB": 327.25103,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 16
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.115265792,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630124078,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.297948958,
+            "rssMiB": 43.734375,
+            "footprintMiB": 25.610313,
+            "lifetimePeakFootprintMiB": 25.797813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.865841083,
+            "rssMiB": 111.03125,
+            "footprintMiB": 327.141655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 23
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.117846833,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 4
+            }
+          ]
+        },
+        {
+          "at": 1788630124593,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.305224583,
+            "rssMiB": 44.671875,
+            "footprintMiB": 26.547813,
+            "lifetimePeakFootprintMiB": 26.547813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 2.945107292,
+            "rssMiB": 111.890625,
+            "footprintMiB": 327.75103,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 32
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.120573125,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 6
+            }
+          ]
+        },
+        {
+          "at": 1788630125095,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.313974583,
+            "rssMiB": 45,
+            "footprintMiB": 26.875938,
+            "lifetimePeakFootprintMiB": 26.875938,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.0256745,
+            "rssMiB": 112.515625,
+            "footprintMiB": 327.547905,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 32
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.123428958,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 6
+            }
+          ]
+        },
+        {
+          "at": 1788630125603,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.320061167,
+            "rssMiB": 45,
+            "footprintMiB": 26.875938,
+            "lifetimePeakFootprintMiB": 26.875938,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.112699333,
+            "rssMiB": 112.515625,
+            "footprintMiB": 327.516655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 33
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.126147042,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 6
+            }
+          ]
+        },
+        {
+          "at": 1788630126091,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.327046083,
+            "rssMiB": 45.328125,
+            "footprintMiB": 27.204063,
+            "lifetimePeakFootprintMiB": 27.204063,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.185688792,
+            "rssMiB": 112.53125,
+            "footprintMiB": 327.516655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 34
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.128603333,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 6
+            }
+          ]
+        },
+        {
+          "at": 1788630126597,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.332827458,
+            "rssMiB": 45.390625,
+            "footprintMiB": 27.266563,
+            "lifetimePeakFootprintMiB": 27.266563,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.26962675,
+            "rssMiB": 112.53125,
+            "footprintMiB": 327.516655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 34
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.131355042,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 6
+            }
+          ]
+        },
+        {
+          "at": 1788630127098,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.340852792,
+            "rssMiB": 45.515625,
+            "footprintMiB": 27.391563,
+            "lifetimePeakFootprintMiB": 27.391563,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.34991075,
+            "rssMiB": 112.546875,
+            "footprintMiB": 327.53228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 34
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.13400425,
+              "rssMiB": 9.859375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 6
+            }
+          ]
+        },
+        {
+          "at": 1788630127594,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.346204792,
+            "rssMiB": 45.265625,
+            "footprintMiB": 27.500938,
+            "lifetimePeakFootprintMiB": 27.500938,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.430759042,
+            "rssMiB": 109.890625,
+            "footprintMiB": 328.56353,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.137111583,
+              "rssMiB": 7.15625,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630128101,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.355633583,
+            "rssMiB": 45.34375,
+            "footprintMiB": 27.579063,
+            "lifetimePeakFootprintMiB": 27.579063,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.515616167,
+            "rssMiB": 109.984375,
+            "footprintMiB": 328.422905,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.139832125,
+              "rssMiB": 7.15625,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630128594,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.363583333,
+            "rssMiB": 45.4375,
+            "footprintMiB": 27.672813,
+            "lifetimePeakFootprintMiB": 27.672813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.589391708,
+            "rssMiB": 110.421875,
+            "footprintMiB": 328.53228,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.142041417,
+              "rssMiB": 7.15625,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630129099,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.3708275,
+            "rssMiB": 45.53125,
+            "footprintMiB": 28.032188,
+            "lifetimePeakFootprintMiB": 28.032188,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.669990125,
+            "rssMiB": 110.6875,
+            "footprintMiB": 328.735405,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.144550375,
+              "rssMiB": 7.15625,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630129601,
+          "phase": "stream",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.377327542,
+            "rssMiB": 45.53125,
+            "footprintMiB": 27.344688,
+            "lifetimePeakFootprintMiB": 28.032188,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.7564265,
+            "rssMiB": 110.890625,
+            "footprintMiB": 328.516655,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147096542,
+              "rssMiB": 7.15625,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630130102,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.380463833,
+            "rssMiB": 45.875,
+            "footprintMiB": 28.813438,
+            "lifetimePeakFootprintMiB": 28.813438,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.851236667,
+            "rssMiB": 111.515625,
+            "footprintMiB": 331.094803,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 7.234375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630130604,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.381539208,
+            "rssMiB": 41.125,
+            "footprintMiB": 31.063438,
+            "lifetimePeakFootprintMiB": 31.063438,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 3.996508,
+            "rssMiB": 110.109375,
+            "footprintMiB": 332.844803,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630131125,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.38188225,
+            "rssMiB": 40.921875,
+            "footprintMiB": 31.094688,
+            "lifetimePeakFootprintMiB": 31.094688,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.110263542,
+            "rssMiB": 109.546875,
+            "footprintMiB": 333.126053,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630131616,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382099833,
+            "rssMiB": 40.953125,
+            "footprintMiB": 31.094688,
+            "lifetimePeakFootprintMiB": 31.094688,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.117959792,
+            "rssMiB": 109.6875,
+            "footprintMiB": 333.126053,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630132119,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382099833,
+            "rssMiB": 40.90625,
+            "footprintMiB": 31.094688,
+            "lifetimePeakFootprintMiB": 31.094688,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.124580208,
+            "rssMiB": 109.640625,
+            "footprintMiB": 333.126053,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630132616,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382238583,
+            "rssMiB": 40.90625,
+            "footprintMiB": 31.094688,
+            "lifetimePeakFootprintMiB": 31.094688,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.128704167,
+            "rssMiB": 109.640625,
+            "footprintMiB": 333.126053,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630133126,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382238583,
+            "rssMiB": 40.578125,
+            "footprintMiB": 31.094688,
+            "lifetimePeakFootprintMiB": 31.094688,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.134498208,
+            "rssMiB": 109.546875,
+            "footprintMiB": 333.188553,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630133617,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382549625,
+            "rssMiB": 40.578125,
+            "footprintMiB": 31.094688,
+            "lifetimePeakFootprintMiB": 31.094688,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.137220542,
+            "rssMiB": 109.609375,
+            "footprintMiB": 333.172928,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630134109,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382549625,
+            "rssMiB": 40.578125,
+            "footprintMiB": 31.094688,
+            "lifetimePeakFootprintMiB": 31.094688,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.139356458,
+            "rssMiB": 109.609375,
+            "footprintMiB": 333.172928,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.172127,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630134611,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382675,
+            "rssMiB": 38.125,
+            "footprintMiB": 31.110313,
+            "lifetimePeakFootprintMiB": 31.110313,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.141962458,
+            "rssMiB": 108.75,
+            "footprintMiB": 333.219803,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630135112,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382675,
+            "rssMiB": 37.640625,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.144506875,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630135622,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382940958,
+            "rssMiB": 37.59375,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.148382417,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630136119,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.382940958,
+            "rssMiB": 37.59375,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.151396542,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630136618,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.383104208,
+            "rssMiB": 37.609375,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.154741083,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630137122,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.383104208,
+            "rssMiB": 37.609375,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.157736667,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630137618,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.3834065,
+            "rssMiB": 37.609375,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.161694958,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630138122,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.383549792,
+            "rssMiB": 37.640625,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.166713208,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630138616,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.383630292,
+            "rssMiB": 37.640625,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.172270167,
+            "rssMiB": 107.484375,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630139117,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.383630292,
+            "rssMiB": 37.609375,
+            "footprintMiB": 31.172813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.179547333,
+            "rssMiB": 107.875,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630139624,
+          "phase": "settled",
+          "engine": {
+            "pid": 73029,
+            "cpuSeconds": 0.38385,
+            "rssMiB": 37.59375,
+            "footprintMiB": 30.797813,
+            "lifetimePeakFootprintMiB": 31.172813,
+            "idleWakeups": 2
+          },
+          "ui": {
+            "pid": 73088,
+            "cpuSeconds": 4.184112292,
+            "rssMiB": 107.875,
+            "footprintMiB": 333.282303,
+            "lifetimePeakFootprintMiB": 360.31353,
+            "idleWakeups": 37
+          },
+          "harness": [
+            {
+              "pid": 73665,
+              "cpuSeconds": 0.147554708,
+              "rssMiB": 6.984375,
+              "footprintMiB": 6.015877,
+              "lifetimePeakFootprintMiB": 6.172127,
+              "idleWakeups": 8
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "settledObservationSeconds": 30,
+      "summary": {
+        "binarySha256": "1f6c253eec14756da12efdb41ffbe4c4aba31c925f2bf0df7d48ae781bfda3e6",
+        "harness": "claude-code",
+        "mode": "replay",
+        "platform": "darwin",
+        "arch": "arm64",
+        "renderThreads": "default",
+        "frameStats": "0",
+        "submission": "rpc",
+        "replySha256": "cb96ce276ed79aa8d791fc796f56ccf586b29e73d54acc911b42aacf30236f8f",
+        "replyBytes": 210502,
+        "transcriptBytes": 218387,
+        "frames": 175,
+        "phases": {
+          "idle": {
+            "durationSeconds": 9.039,
+            "engine": {
+              "peakFootprintMiB": 22.313416,
+              "endFootprintMiB": 22.313416,
+              "lifetimePeakFootprintMiB": 22.329041,
+              "peakRssMiB": 35.609375,
+              "endRssMiB": 35.609375,
+              "cpuPercent": 0.04349808607146797
+            },
+            "ui": {
+              "peakFootprintMiB": 303.735405,
+              "endFootprintMiB": 298.81353,
+              "lifetimePeakFootprintMiB": 342.266632,
+              "peakRssMiB": 95.78125,
+              "endRssMiB": 95.78125,
+              "cpuPercent": 0.5590699524283659
+            }
+          },
+          "stream": {
+            "durationSeconds": 21.557,
+            "engine": {
+              "peakFootprintMiB": 32.454041,
+              "endFootprintMiB": 32.454041,
+              "lifetimePeakFootprintMiB": 32.454041,
+              "peakRssMiB": 48.15625,
+              "endRssMiB": 41.546875,
+              "cpuPercent": 1.1582558287331264
+            },
+            "ui": {
+              "peakFootprintMiB": 329.75103,
+              "endFootprintMiB": 329.53228,
+              "lifetimePeakFootprintMiB": 342.266632,
+              "peakRssMiB": 114.828125,
+              "endRssMiB": 110.953125,
+              "cpuPercent": 13.029838530407757
+            }
+          },
+          "settled": {
+            "durationSeconds": 29.574,
+            "engine": {
+              "peakFootprintMiB": 35.922791,
+              "endFootprintMiB": 35.094666,
+              "lifetimePeakFootprintMiB": 35.922791,
+              "peakRssMiB": 44.46875,
+              "endRssMiB": 29.53125,
+              "cpuPercent": 0.060375525799688884
+            },
+            "ui": {
+              "peakFootprintMiB": 332.422905,
+              "endFootprintMiB": 332.40728,
+              "lifetimePeakFootprintMiB": 342.266632,
+              "peakRssMiB": 113.3125,
+              "endRssMiB": 99.21875,
+              "cpuPercent": 1.6046579461689334
+            }
+          }
+        },
+        "postCompletionTail": {
+          "durationSeconds": 9.524,
+          "engine": {
+            "endFootprintMiB": 35.094666,
+            "endRssMiB": 29.53125,
+            "cpuPercent": 0.104197291054179
+          },
+          "ui": {
+            "endFootprintMiB": 332.40728,
+            "endRssMiB": 99.21875,
+            "cpuPercent": 0.7998079378412455
+          }
+        }
+      },
+      "samples": [
+        {
+          "at": 1788630382452,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.072139958,
+            "rssMiB": 33.75,
+            "footprintMiB": 22.204041,
+            "lifetimePeakFootprintMiB": 22.204041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.359203542,
+            "rssMiB": 95.203125,
+            "footprintMiB": 303.485405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 76256,
+              "cpuSeconds": 1.677403417,
+              "rssMiB": 611.71875,
+              "footprintMiB": 433.657623,
+              "lifetimePeakFootprintMiB": 654.938873,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76413,
+              "cpuSeconds": 1.194871083,
+              "rssMiB": 156.203125,
+              "footprintMiB": 119.310722,
+              "lifetimePeakFootprintMiB": 119.310722,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76258,
+              "cpuSeconds": 0.022888833,
+              "rssMiB": 31.875,
+              "footprintMiB": 12.423409,
+              "lifetimePeakFootprintMiB": 12.423409,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76301,
+              "cpuSeconds": 0.529438917,
+              "rssMiB": 96.015625,
+              "footprintMiB": 65.547607,
+              "lifetimePeakFootprintMiB": 80.469482,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76359,
+              "cpuSeconds": 1.317999292,
+              "rssMiB": 157.125,
+              "footprintMiB": 121.889168,
+              "lifetimePeakFootprintMiB": 121.889168,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630382950,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.072166667,
+            "rssMiB": 33.75,
+            "footprintMiB": 22.204041,
+            "lifetimePeakFootprintMiB": 22.204041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.360733583,
+            "rssMiB": 95.203125,
+            "footprintMiB": 303.485405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 76256,
+              "cpuSeconds": 1.677928375,
+              "rssMiB": 611.71875,
+              "footprintMiB": 433.313873,
+              "lifetimePeakFootprintMiB": 654.938873,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76413,
+              "cpuSeconds": 1.68554475,
+              "rssMiB": 163.265625,
+              "footprintMiB": 127.046127,
+              "lifetimePeakFootprintMiB": 127.046127,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76258,
+              "cpuSeconds": 0.022888833,
+              "rssMiB": 31.875,
+              "footprintMiB": 12.423409,
+              "lifetimePeakFootprintMiB": 12.423409,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76301,
+              "cpuSeconds": 0.530212333,
+              "rssMiB": 96.03125,
+              "footprintMiB": 65.563232,
+              "lifetimePeakFootprintMiB": 80.469482,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76359,
+              "cpuSeconds": 1.748264458,
+              "rssMiB": 163.046875,
+              "footprintMiB": 128.515244,
+              "lifetimePeakFootprintMiB": 128.515244,
+              "idleWakeups": 0
+            }
+          ]
+        },
+        {
+          "at": 1788630383450,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.0722125,
+            "rssMiB": 33.75,
+            "footprintMiB": 22.204041,
+            "lifetimePeakFootprintMiB": 22.204041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.362567917,
+            "rssMiB": 95.203125,
+            "footprintMiB": 303.485405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 76256,
+              "cpuSeconds": 1.681466708,
+              "rssMiB": 611.71875,
+              "footprintMiB": 433.266998,
+              "lifetimePeakFootprintMiB": 654.938873,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76413,
+              "cpuSeconds": 2.280846042,
+              "rssMiB": 175.328125,
+              "footprintMiB": 140.21965,
+              "lifetimePeakFootprintMiB": 140.21965,
+              "idleWakeups": 1
+            },
+            {
+              "pid": 76258,
+              "cpuSeconds": 0.022888833,
+              "rssMiB": 31.875,
+              "footprintMiB": 12.423409,
+              "lifetimePeakFootprintMiB": 12.423409,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76301,
+              "cpuSeconds": 0.536104958,
+              "rssMiB": 96.578125,
+              "footprintMiB": 65.703857,
+              "lifetimePeakFootprintMiB": 80.469482,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76359,
+              "cpuSeconds": 2.334282292,
+              "rssMiB": 175.03125,
+              "footprintMiB": 141.563766,
+              "lifetimePeakFootprintMiB": 141.563766,
+              "idleWakeups": 2
+            }
+          ]
+        },
+        {
+          "at": 1788630383950,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.073278417,
+            "rssMiB": 35.03125,
+            "footprintMiB": 22.172791,
+            "lifetimePeakFootprintMiB": 22.204041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.365834833,
+            "rssMiB": 95.21875,
+            "footprintMiB": 303.485405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 76256,
+              "cpuSeconds": 1.681858625,
+              "rssMiB": 609.109375,
+              "footprintMiB": 433.266998,
+              "lifetimePeakFootprintMiB": 654.938873,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76413,
+              "cpuSeconds": 2.861820542,
+              "rssMiB": 184.875,
+              "footprintMiB": 150.799286,
+              "lifetimePeakFootprintMiB": 150.799286,
+              "idleWakeups": 2
+            }
+          ]
+        },
+        {
+          "at": 1788630384464,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.07350325,
+            "rssMiB": 35.140625,
+            "footprintMiB": 22.219666,
+            "lifetimePeakFootprintMiB": 22.219666,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.367954333,
+            "rssMiB": 95.21875,
+            "footprintMiB": 303.485405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": [
+            {
+              "pid": 76256,
+              "cpuSeconds": 1.685062542,
+              "rssMiB": 558.9375,
+              "footprintMiB": 433.266998,
+              "lifetimePeakFootprintMiB": 654.938873,
+              "idleWakeups": 0
+            },
+            {
+              "pid": 76413,
+              "cpuSeconds": 3.644228333,
+              "rssMiB": 206.453125,
+              "footprintMiB": 174.364693,
+              "lifetimePeakFootprintMiB": 174.364693,
+              "idleWakeups": 41
+            }
+          ]
+        },
+        {
+          "at": 1788630384968,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.074609292,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.372223292,
+            "rssMiB": 95.5625,
+            "footprintMiB": 303.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630385469,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.074726875,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.376852417,
+            "rssMiB": 95.625,
+            "footprintMiB": 303.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630385975,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.074726875,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.379736708,
+            "rssMiB": 95.625,
+            "footprintMiB": 303.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630386472,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075155917,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.381695417,
+            "rssMiB": 95.625,
+            "footprintMiB": 303.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630386980,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075155917,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.383732583,
+            "rssMiB": 95.625,
+            "footprintMiB": 303.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630387476,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075256083,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.386127917,
+            "rssMiB": 95.625,
+            "footprintMiB": 303.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630387973,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075282167,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.388676542,
+            "rssMiB": 95.625,
+            "footprintMiB": 303.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630388479,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075533042,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.3916135,
+            "rssMiB": 95.640625,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630388981,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075533042,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.394094042,
+            "rssMiB": 95.640625,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630389482,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.0756745,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.396582083,
+            "rssMiB": 95.640625,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630389985,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.0756745,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.399067875,
+            "rssMiB": 95.640625,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630390489,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075933875,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.402015042,
+            "rssMiB": 95.640625,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630390985,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.075933875,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.404992208,
+            "rssMiB": 95.640625,
+            "footprintMiB": 303.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630391491,
+          "phase": "idle",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.07607175,
+            "rssMiB": 35.609375,
+            "footprintMiB": 22.313416,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.409737875,
+            "rssMiB": 95.78125,
+            "footprintMiB": 298.81353,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630391978,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.082986208,
+            "rssMiB": 36.421875,
+            "footprintMiB": 22.329041,
+            "lifetimePeakFootprintMiB": 22.329041,
+            "idleWakeups": 0
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.41464675,
+            "rssMiB": 95.796875,
+            "footprintMiB": 298.81353,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 1
+          },
+          "harness": []
+        },
+        {
+          "at": 1788630392482,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.096137458,
+            "rssMiB": 38.359375,
+            "footprintMiB": 20.391541,
+            "lifetimePeakFootprintMiB": 22.563416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.48134075,
+            "rssMiB": 106.765625,
+            "footprintMiB": 322.172905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 3
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.03155675,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630392990,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.102910708,
+            "rssMiB": 38.71875,
+            "footprintMiB": 20.563416,
+            "lifetimePeakFootprintMiB": 22.563416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.534226208,
+            "rssMiB": 108.015625,
+            "footprintMiB": 323.204155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 3
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.033211375,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630393495,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.107821917,
+            "rssMiB": 38.921875,
+            "footprintMiB": 20.657166,
+            "lifetimePeakFootprintMiB": 22.563416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.604555125,
+            "rssMiB": 108.765625,
+            "footprintMiB": 323.31353,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 4
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.03607225,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630393999,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.113172667,
+            "rssMiB": 39.125,
+            "footprintMiB": 20.735291,
+            "lifetimePeakFootprintMiB": 22.563416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.6818425,
+            "rssMiB": 109.015625,
+            "footprintMiB": 323.50103,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 4
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.0391735,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630394495,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.118204083,
+            "rssMiB": 39.796875,
+            "footprintMiB": 21.407166,
+            "lifetimePeakFootprintMiB": 22.563416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.751119042,
+            "rssMiB": 109.5625,
+            "footprintMiB": 323.84478,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 5
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.041343417,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630394994,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.122257125,
+            "rssMiB": 40.109375,
+            "footprintMiB": 21.688416,
+            "lifetimePeakFootprintMiB": 22.563416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.814082583,
+            "rssMiB": 110.140625,
+            "footprintMiB": 323.954155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 5
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.043443833,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630395496,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.127233333,
+            "rssMiB": 40.984375,
+            "footprintMiB": 22.485291,
+            "lifetimePeakFootprintMiB": 22.563416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.893988042,
+            "rssMiB": 110.375,
+            "footprintMiB": 324.141655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 5
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.046150667,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630395991,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.132056792,
+            "rssMiB": 41.390625,
+            "footprintMiB": 22.891541,
+            "lifetimePeakFootprintMiB": 22.891541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 0.976206625,
+            "rssMiB": 110.546875,
+            "footprintMiB": 324.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.048582167,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630396488,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.13504325,
+            "rssMiB": 42.421875,
+            "footprintMiB": 23.860291,
+            "lifetimePeakFootprintMiB": 23.860291,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.020029542,
+            "rssMiB": 110.9375,
+            "footprintMiB": 324.641655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.050010292,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630396999,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.139476875,
+            "rssMiB": 42.8125,
+            "footprintMiB": 24.250916,
+            "lifetimePeakFootprintMiB": 24.250916,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.08352975,
+            "rssMiB": 111.21875,
+            "footprintMiB": 324.922905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.052404583,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630397504,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.14541475,
+            "rssMiB": 43.5,
+            "footprintMiB": 24.891541,
+            "lifetimePeakFootprintMiB": 24.891541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.156086,
+            "rssMiB": 111.34375,
+            "footprintMiB": 324.610405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 6
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.055092333,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 1
+            }
+          ]
+        },
+        {
+          "at": 1788630398006,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.150636583,
+            "rssMiB": 44.03125,
+            "footprintMiB": 25.407166,
+            "lifetimePeakFootprintMiB": 25.407166,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.219346167,
+            "rssMiB": 112.671875,
+            "footprintMiB": 325.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.058018125,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630398502,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.158204125,
+            "rssMiB": 44.6875,
+            "footprintMiB": 26.063416,
+            "lifetimePeakFootprintMiB": 26.063416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.281930417,
+            "rssMiB": 112.6875,
+            "footprintMiB": 325.43853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.060709125,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630399007,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.163216875,
+            "rssMiB": 44.75,
+            "footprintMiB": 26.125916,
+            "lifetimePeakFootprintMiB": 26.125916,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.346540417,
+            "rssMiB": 112.734375,
+            "footprintMiB": 325.485405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.063601542,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630399501,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.169767958,
+            "rssMiB": 44.90625,
+            "footprintMiB": 26.110291,
+            "lifetimePeakFootprintMiB": 26.125916,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.414794042,
+            "rssMiB": 112.984375,
+            "footprintMiB": 325.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.066338042,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630399998,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.174882417,
+            "rssMiB": 45.046875,
+            "footprintMiB": 26.250916,
+            "lifetimePeakFootprintMiB": 26.250916,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.479259917,
+            "rssMiB": 113.015625,
+            "footprintMiB": 325.766655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.068859375,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630400511,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.181002042,
+            "rssMiB": 45.5,
+            "footprintMiB": 26.657166,
+            "lifetimePeakFootprintMiB": 26.657166,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.540538708,
+            "rssMiB": 113.140625,
+            "footprintMiB": 325.891655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.071555958,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630401003,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.184796875,
+            "rssMiB": 45.5,
+            "footprintMiB": 26.657166,
+            "lifetimePeakFootprintMiB": 26.657166,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.596492333,
+            "rssMiB": 113.15625,
+            "footprintMiB": 325.90728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 8
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.073658375,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630401500,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.190129208,
+            "rssMiB": 45.890625,
+            "footprintMiB": 27.047791,
+            "lifetimePeakFootprintMiB": 27.047791,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.655967833,
+            "rssMiB": 113.171875,
+            "footprintMiB": 325.90728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 9
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.075924625,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630402009,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.195868042,
+            "rssMiB": 46.28125,
+            "footprintMiB": 27.438416,
+            "lifetimePeakFootprintMiB": 27.438416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.732093083,
+            "rssMiB": 113.578125,
+            "footprintMiB": 326.297905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 9
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.079016875,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 3
+            }
+          ]
+        },
+        {
+          "at": 1788630402511,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.2013865,
+            "rssMiB": 46.78125,
+            "footprintMiB": 27.860291,
+            "lifetimePeakFootprintMiB": 27.860291,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.781166208,
+            "rssMiB": 113.609375,
+            "footprintMiB": 325.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 11
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.08066775,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 4
+            }
+          ]
+        },
+        {
+          "at": 1788630403022,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.207089792,
+            "rssMiB": 47.78125,
+            "footprintMiB": 27.907166,
+            "lifetimePeakFootprintMiB": 27.907166,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.8421835,
+            "rssMiB": 114.40625,
+            "footprintMiB": 326.454155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 11
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.08280625,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 4
+            }
+          ]
+        },
+        {
+          "at": 1788630403504,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.212688833,
+            "rssMiB": 48.15625,
+            "footprintMiB": 28.047791,
+            "lifetimePeakFootprintMiB": 28.219666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.909643458,
+            "rssMiB": 114.828125,
+            "footprintMiB": 326.735405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 11
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.085735083,
+              "rssMiB": 9.9375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 4
+            }
+          ]
+        },
+        {
+          "at": 1788630404022,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.218544833,
+            "rssMiB": 35.09375,
+            "footprintMiB": 29.313416,
+            "lifetimePeakFootprintMiB": 29.313416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 1.977662458,
+            "rssMiB": 106.171875,
+            "footprintMiB": 329.141655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 20
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.088757042,
+              "rssMiB": 7.34375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 7
+            }
+          ]
+        },
+        {
+          "at": 1788630404512,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.223836375,
+            "rssMiB": 35.3125,
+            "footprintMiB": 29.329041,
+            "lifetimePeakFootprintMiB": 29.329041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.036475625,
+            "rssMiB": 106.953125,
+            "footprintMiB": 329.141655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 20
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.091306,
+              "rssMiB": 7.34375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 7
+            }
+          ]
+        },
+        {
+          "at": 1788630405013,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.229590542,
+            "rssMiB": 36.25,
+            "footprintMiB": 29.782166,
+            "lifetimePeakFootprintMiB": 29.782166,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.100964375,
+            "rssMiB": 107.25,
+            "footprintMiB": 329.079155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 25
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.09341525,
+              "rssMiB": 7.359375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630405516,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.235860958,
+            "rssMiB": 36.4375,
+            "footprintMiB": 29.735291,
+            "lifetimePeakFootprintMiB": 29.813416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.172182292,
+            "rssMiB": 107.46875,
+            "footprintMiB": 329.110405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 25
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.096416042,
+              "rssMiB": 7.359375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630406018,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.242518,
+            "rssMiB": 36.890625,
+            "footprintMiB": 29.563416,
+            "lifetimePeakFootprintMiB": 29.813416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.253986583,
+            "rssMiB": 107.8125,
+            "footprintMiB": 329.12603,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 26
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.099191208,
+              "rssMiB": 7.359375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630406518,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.246556,
+            "rssMiB": 36.9375,
+            "footprintMiB": 29.563416,
+            "lifetimePeakFootprintMiB": 29.813416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.318942875,
+            "rssMiB": 107.90625,
+            "footprintMiB": 329.18853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 26
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.101161125,
+              "rssMiB": 7.359375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630407018,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.251478542,
+            "rssMiB": 37.1875,
+            "footprintMiB": 29.813416,
+            "lifetimePeakFootprintMiB": 29.813416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.380825083,
+            "rssMiB": 107.984375,
+            "footprintMiB": 329.204155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 27
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.103269792,
+              "rssMiB": 7.359375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630407517,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.260011625,
+            "rssMiB": 37.296875,
+            "footprintMiB": 29.829041,
+            "lifetimePeakFootprintMiB": 29.829041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.443350083,
+            "rssMiB": 108.265625,
+            "footprintMiB": 329.28228,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 27
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.105625208,
+              "rssMiB": 7.375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630408022,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.266869958,
+            "rssMiB": 38.09375,
+            "footprintMiB": 30.407166,
+            "lifetimePeakFootprintMiB": 30.407166,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.521338583,
+            "rssMiB": 108.421875,
+            "footprintMiB": 329.329155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 27
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.108256625,
+              "rssMiB": 7.375,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630408523,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.272138458,
+            "rssMiB": 39.140625,
+            "footprintMiB": 31.422791,
+            "lifetimePeakFootprintMiB": 31.422791,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.572165917,
+            "rssMiB": 109.015625,
+            "footprintMiB": 329.579155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 27
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.110141042,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630409022,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.278083625,
+            "rssMiB": 39.484375,
+            "footprintMiB": 31.766541,
+            "lifetimePeakFootprintMiB": 31.766541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.634231917,
+            "rssMiB": 109.09375,
+            "footprintMiB": 329.610405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 27
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.112222875,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630409523,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.28365825,
+            "rssMiB": 39.53125,
+            "footprintMiB": 31.782166,
+            "lifetimePeakFootprintMiB": 31.782166,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.708970208,
+            "rssMiB": 109.09375,
+            "footprintMiB": 329.610405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 27
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.115157708,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630410029,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.291034625,
+            "rssMiB": 40.15625,
+            "footprintMiB": 32.125916,
+            "lifetimePeakFootprintMiB": 32.266541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.784929292,
+            "rssMiB": 109.3125,
+            "footprintMiB": 329.641655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 27
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.117920208,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630410525,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.29650375,
+            "rssMiB": 40.15625,
+            "footprintMiB": 32.125916,
+            "lifetimePeakFootprintMiB": 32.266541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.854199125,
+            "rssMiB": 109.484375,
+            "footprintMiB": 329.75103,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 28
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.120543083,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630411030,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.303270375,
+            "rssMiB": 40.59375,
+            "footprintMiB": 31.500916,
+            "lifetimePeakFootprintMiB": 32.454041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.917918375,
+            "rssMiB": 109.671875,
+            "footprintMiB": 329.641655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.122605708,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630411520,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.306548625,
+            "rssMiB": 40.59375,
+            "footprintMiB": 31.500916,
+            "lifetimePeakFootprintMiB": 32.454041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 2.968900792,
+            "rssMiB": 109.703125,
+            "footprintMiB": 329.62603,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.1241485,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630412029,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.314701667,
+            "rssMiB": 40.96875,
+            "footprintMiB": 31.875916,
+            "lifetimePeakFootprintMiB": 32.454041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.04248225,
+            "rssMiB": 109.953125,
+            "footprintMiB": 329.516655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.127190167,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630412526,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.321856833,
+            "rssMiB": 41.078125,
+            "footprintMiB": 31.985291,
+            "lifetimePeakFootprintMiB": 32.454041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.096217292,
+            "rssMiB": 110.3125,
+            "footprintMiB": 329.516655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.128905417,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630413032,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.327817208,
+            "rssMiB": 41.484375,
+            "footprintMiB": 32.391541,
+            "lifetimePeakFootprintMiB": 32.454041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.153963625,
+            "rssMiB": 110.921875,
+            "footprintMiB": 329.71978,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.130635042,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630413535,
+          "phase": "stream",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.332671417,
+            "rssMiB": 41.546875,
+            "footprintMiB": 32.454041,
+            "lifetimePeakFootprintMiB": 32.454041,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.223489042,
+            "rssMiB": 110.953125,
+            "footprintMiB": 329.53228,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133012167,
+              "rssMiB": 7.40625,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630414036,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.337628875,
+            "rssMiB": 44.4375,
+            "footprintMiB": 34.500916,
+            "lifetimePeakFootprintMiB": 34.500916,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.317856917,
+            "rssMiB": 113.28125,
+            "footprintMiB": 331.329178,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630414530,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.337682125,
+            "rssMiB": 44.4375,
+            "footprintMiB": 34.500916,
+            "lifetimePeakFootprintMiB": 34.500916,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.445156833,
+            "rssMiB": 113.296875,
+            "footprintMiB": 331.329178,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630415038,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.337952958,
+            "rssMiB": 44.46875,
+            "footprintMiB": 34.516541,
+            "lifetimePeakFootprintMiB": 34.516541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.537215042,
+            "rssMiB": 113.296875,
+            "footprintMiB": 331.329178,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.250252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630415534,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.3380715,
+            "rssMiB": 44.46875,
+            "footprintMiB": 34.516541,
+            "lifetimePeakFootprintMiB": 34.516541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.540681375,
+            "rssMiB": 113.3125,
+            "footprintMiB": 331.28228,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630416028,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.3380715,
+            "rssMiB": 44.46875,
+            "footprintMiB": 34.516541,
+            "lifetimePeakFootprintMiB": 34.516541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.543682083,
+            "rssMiB": 113.3125,
+            "footprintMiB": 331.28228,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630416550,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338260375,
+            "rssMiB": 44.46875,
+            "footprintMiB": 34.516541,
+            "lifetimePeakFootprintMiB": 34.516541,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.546817792,
+            "rssMiB": 112.40625,
+            "footprintMiB": 331.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630417038,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338405292,
+            "rssMiB": 44.40625,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.550676542,
+            "rssMiB": 112.359375,
+            "footprintMiB": 331.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630417543,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338521292,
+            "rssMiB": 44.3125,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.555181042,
+            "rssMiB": 112.09375,
+            "footprintMiB": 331.37603,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630418042,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338521292,
+            "rssMiB": 44.3125,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.561592292,
+            "rssMiB": 112.09375,
+            "footprintMiB": 331.37603,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630418543,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338660708,
+            "rssMiB": 44.3125,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.56793725,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630419040,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338803167,
+            "rssMiB": 44.3125,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.573817,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630419547,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338943583,
+            "rssMiB": 44.3125,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.580285667,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630420047,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.338943583,
+            "rssMiB": 44.3125,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.586592583,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630420554,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339071667,
+            "rssMiB": 44.3125,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.592263417,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630421051,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339071667,
+            "rssMiB": 44.296875,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.597620083,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630421548,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339253458,
+            "rssMiB": 44.296875,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.604107833,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630422055,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339349,
+            "rssMiB": 44.296875,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.610416167,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 29
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630422556,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339480417,
+            "rssMiB": 44.296875,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.616212875,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630423059,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339480417,
+            "rssMiB": 44.296875,
+            "footprintMiB": 34.594666,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.621246958,
+            "rssMiB": 112.09375,
+            "footprintMiB": 330.68853,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630423560,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339656208,
+            "rssMiB": 44.1875,
+            "footprintMiB": 34.297791,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.6250025,
+            "rssMiB": 112.046875,
+            "footprintMiB": 330.704155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630424054,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.339656208,
+            "rssMiB": 44.1875,
+            "footprintMiB": 34.297791,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.627011167,
+            "rssMiB": 112.046875,
+            "footprintMiB": 330.704155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630424563,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.340452292,
+            "rssMiB": 44.1875,
+            "footprintMiB": 34.297791,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.633815625,
+            "rssMiB": 112.046875,
+            "footprintMiB": 330.704155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630425052,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.340452292,
+            "rssMiB": 44.1875,
+            "footprintMiB": 34.297791,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.636158833,
+            "rssMiB": 112.046875,
+            "footprintMiB": 330.704155,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630425562,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.340725375,
+            "rssMiB": 44.1875,
+            "footprintMiB": 34.297791,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.639515667,
+            "rssMiB": 111.984375,
+            "footprintMiB": 330.922905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630426061,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.340725375,
+            "rssMiB": 43.96875,
+            "footprintMiB": 34.407166,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.641993667,
+            "rssMiB": 111.9375,
+            "footprintMiB": 331.110405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.125252,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630426564,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.3408705,
+            "rssMiB": 43.96875,
+            "footprintMiB": 34.407166,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.644887792,
+            "rssMiB": 111.9375,
+            "footprintMiB": 331.110405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630427068,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.340885833,
+            "rssMiB": 43.96875,
+            "footprintMiB": 34.407166,
+            "lifetimePeakFootprintMiB": 34.594666,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.647277875,
+            "rssMiB": 111.9375,
+            "footprintMiB": 331.110405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630427559,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.344451125,
+            "rssMiB": 38.6875,
+            "footprintMiB": 35.688416,
+            "lifetimePeakFootprintMiB": 35.688416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.65067175,
+            "rssMiB": 109.453125,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 30
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630428060,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.344451125,
+            "rssMiB": 38.6875,
+            "footprintMiB": 35.688416,
+            "lifetimePeakFootprintMiB": 35.688416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.654701417,
+            "rssMiB": 109.453125,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 34
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630428580,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.344604625,
+            "rssMiB": 38.6875,
+            "footprintMiB": 35.688416,
+            "lifetimePeakFootprintMiB": 35.688416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.657832333,
+            "rssMiB": 109.453125,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 34
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630429066,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.344613667,
+            "rssMiB": 38.6875,
+            "footprintMiB": 35.688416,
+            "lifetimePeakFootprintMiB": 35.688416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.66098,
+            "rssMiB": 109.453125,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 34
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630429570,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.344946833,
+            "rssMiB": 38.6875,
+            "footprintMiB": 35.688416,
+            "lifetimePeakFootprintMiB": 35.688416,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.667891542,
+            "rssMiB": 109.453125,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 34
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630430076,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.344946833,
+            "rssMiB": 38.609375,
+            "footprintMiB": 35.735291,
+            "lifetimePeakFootprintMiB": 35.735291,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.673945417,
+            "rssMiB": 109.21875,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 35
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630430567,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345093,
+            "rssMiB": 38.609375,
+            "footprintMiB": 35.735291,
+            "lifetimePeakFootprintMiB": 35.735291,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.677278958,
+            "rssMiB": 109.21875,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 35
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630431079,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345093,
+            "rssMiB": 38.609375,
+            "footprintMiB": 35.735291,
+            "lifetimePeakFootprintMiB": 35.735291,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.683859333,
+            "rssMiB": 109.21875,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 35
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630431577,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.34526525,
+            "rssMiB": 38.609375,
+            "footprintMiB": 35.735291,
+            "lifetimePeakFootprintMiB": 35.735291,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.686934792,
+            "rssMiB": 109.21875,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 35
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630432093,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.34526525,
+            "rssMiB": 37.640625,
+            "footprintMiB": 35.735291,
+            "lifetimePeakFootprintMiB": 35.735291,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.692904833,
+            "rssMiB": 108.34375,
+            "footprintMiB": 332.266655,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 35
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 7.53125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630432582,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345357208,
+            "rssMiB": 30.703125,
+            "footprintMiB": 35.922791,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.698403333,
+            "rssMiB": 101.84375,
+            "footprintMiB": 332.360405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 36
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630433087,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.34538725,
+            "rssMiB": 29.59375,
+            "footprintMiB": 35.922791,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 1
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.704554458,
+            "rssMiB": 100.453125,
+            "footprintMiB": 332.360405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 36
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630433578,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345486292,
+            "rssMiB": 29.5625,
+            "footprintMiB": 35.766541,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.711131375,
+            "rssMiB": 100.21875,
+            "footprintMiB": 332.360405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 47
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.109375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630434086,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345560583,
+            "rssMiB": 29.578125,
+            "footprintMiB": 35.766541,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.71624475,
+            "rssMiB": 100.21875,
+            "footprintMiB": 332.360405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 47
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.109375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630434586,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345710458,
+            "rssMiB": 29.578125,
+            "footprintMiB": 35.766541,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.72089225,
+            "rssMiB": 100.21875,
+            "footprintMiB": 332.360405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.109375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630435089,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345710458,
+            "rssMiB": 29.578125,
+            "footprintMiB": 35.766541,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.724108833,
+            "rssMiB": 100.21875,
+            "footprintMiB": 332.360405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.109375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630435574,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345842417,
+            "rssMiB": 29.578125,
+            "footprintMiB": 35.766541,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.725007417,
+            "rssMiB": 100.21875,
+            "footprintMiB": 332.360405,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.109375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630436086,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.345902417,
+            "rssMiB": 27.5625,
+            "footprintMiB": 35.797791,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.727860042,
+            "rssMiB": 98.5625,
+            "footprintMiB": 332.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630436587,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.346036708,
+            "rssMiB": 27.484375,
+            "footprintMiB": 35.797791,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.730171375,
+            "rssMiB": 98.546875,
+            "footprintMiB": 332.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630437088,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.348556167,
+            "rssMiB": 29.359375,
+            "footprintMiB": 34.938416,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.738257417,
+            "rssMiB": 100.078125,
+            "footprintMiB": 332.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630437592,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.348666583,
+            "rssMiB": 29.359375,
+            "footprintMiB": 34.938416,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.74070975,
+            "rssMiB": 100.078125,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630438088,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.349724583,
+            "rssMiB": 29.828125,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.744128083,
+            "rssMiB": 100.09375,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630438595,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.34983025,
+            "rssMiB": 29.828125,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.746731292,
+            "rssMiB": 100.09375,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 48
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630439105,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.34983025,
+            "rssMiB": 29.828125,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.750044833,
+            "rssMiB": 100.125,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 50
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630439593,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.351133458,
+            "rssMiB": 30.0625,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.760152125,
+            "rssMiB": 100.28125,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 50
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.09375,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630440101,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.351338042,
+            "rssMiB": 29.53125,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.7638325,
+            "rssMiB": 99.640625,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 50
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.078125,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630440600,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.351461208,
+            "rssMiB": 29.28125,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.766607333,
+            "rssMiB": 99.46875,
+            "footprintMiB": 332.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 50
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.046875,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630441102,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.351486375,
+            "rssMiB": 29.28125,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.769872333,
+            "rssMiB": 99.453125,
+            "footprintMiB": 332.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 50
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.046875,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630441604,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.351587333,
+            "rssMiB": 29.25,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.772801125,
+            "rssMiB": 99.375,
+            "footprintMiB": 332.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 54
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.046875,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630442097,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.351732583,
+            "rssMiB": 29.265625,
+            "footprintMiB": 34.954041,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.778626583,
+            "rssMiB": 99.375,
+            "footprintMiB": 332.422905,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 54
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.046875,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630442604,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.355362667,
+            "rssMiB": 29.53125,
+            "footprintMiB": 35.094666,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.781223458,
+            "rssMiB": 99.375,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 55
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.046875,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630443105,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.355362667,
+            "rssMiB": 29.53125,
+            "footprintMiB": 35.094666,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.786655542,
+            "rssMiB": 99.25,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 58
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.046875,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        },
+        {
+          "at": 1788630443610,
+          "phase": "settled",
+          "engine": {
+            "pid": 76177,
+            "cpuSeconds": 0.355484333,
+            "rssMiB": 29.53125,
+            "footprintMiB": 35.094666,
+            "lifetimePeakFootprintMiB": 35.922791,
+            "idleWakeups": 3
+          },
+          "ui": {
+            "pid": 76234,
+            "cpuSeconds": 3.792418458,
+            "rssMiB": 99.21875,
+            "footprintMiB": 332.40728,
+            "lifetimePeakFootprintMiB": 342.266632,
+            "idleWakeups": 58
+          },
+          "harness": [
+            {
+              "pid": 76810,
+              "cpuSeconds": 0.133547208,
+              "rssMiB": 6.046875,
+              "footprintMiB": 6.047127,
+              "lifetimePeakFootprintMiB": 6.250252,
+              "idleWakeups": 8
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

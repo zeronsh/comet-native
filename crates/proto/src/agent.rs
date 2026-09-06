@@ -8,6 +8,8 @@ pub enum HarnessId {
     ClaudeCode,
     Codex,
     Cursor,
+    /// Cognition's Devin agent, driven over ACP (`devin acp`).
+    Devin,
     /// xAI's Grok Build agent, driven over ACP (`grok agent stdio`).
     Grok,
     /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).

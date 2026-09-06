@@ -34,6 +34,69 @@ pub(crate) fn delta_text(params: &Value) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Codex streams independent reasoning items and indexed parts without text
+/// separators. Preserve those boundaries before the document folds deltas
+/// together; otherwise adjacent Markdown headings become `**one****two**`.
+/// One instance belongs to one thread, so child activity cannot split a
+/// parent's in-flight paragraph.
+#[derive(Default)]
+pub(crate) struct ReasoningStream {
+    last_part: Option<(String, bool, u64)>,
+    announced_summary: Option<(String, u64)>,
+    trailing_newlines: usize,
+}
+
+impl ReasoningStream {
+    pub(crate) fn map(&mut self, method: &str, params: &Value) -> Vec<AgentEvent> {
+        let id = item_id(params);
+        let summary = method != "item/reasoning/textDelta";
+        let index = field(
+            params,
+            if summary {
+                &["summaryIndex", "summary_index"]
+            } else {
+                &["contentIndex", "content_index"]
+            },
+        )
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            self.announced_summary
+                .as_ref()
+                .filter(|(item, _)| summary && item == &id)
+                .map(|(_, index)| *index)
+        })
+        .unwrap_or(0);
+        if method == "item/reasoning/summaryPartAdded" {
+            self.announced_summary = Some((id, index));
+            return Vec::new();
+        }
+        let Some(text) = delta_text(params) else {
+            return Vec::new();
+        };
+        let part = (id, summary, index);
+        let mut events = Vec::new();
+        if self.last_part.as_ref().is_some_and(|last| last != &part) {
+            let leading_newlines = text.chars().take_while(|&c| c == '\n').count();
+            let missing = 2usize.saturating_sub(self.trailing_newlines + leading_newlines);
+            if missing > 0 {
+                events.push(AgentEvent::ReasoningDelta {
+                    text: "\n".repeat(missing),
+                });
+                self.trailing_newlines += missing;
+            }
+        }
+        let trailing = text.chars().rev().take_while(|&c| c == '\n').count();
+        self.trailing_newlines = if trailing == text.len() {
+            self.trailing_newlines + trailing
+        } else {
+            trailing
+        };
+        self.last_part = Some(part);
+        events.push(AgentEvent::ReasoningDelta { text });
+        events
+    }
+}
+
 pub(crate) fn item_id(params: &Value) -> String {
     str_field(params, &["itemId", "item_id"])
 }
@@ -315,6 +378,7 @@ pub(crate) fn route_child_notification(method: &str) -> ChildRoute {
         | "item/agentMessage/delta"
         | "item/reasoning/textDelta"
         | "item/reasoning/summaryTextDelta"
+        | "item/reasoning/summaryPartAdded"
         | "turn/completed"
         | "turn/failed"
         | "turn/aborted"
@@ -327,7 +391,6 @@ pub(crate) fn route_child_notification(method: &str) -> ChildRoute {
         | "thread/status/changed"
         | "thread/tokenUsage/updated"
         // Child chatter with no consumer on this wire.
-        | "item/reasoning/summaryPartAdded"
         | "item/commandExecution/outputDelta"
         | "item/fileChange/outputDelta"
         | "item/fileChange/patchUpdated"
@@ -352,6 +415,30 @@ pub(crate) fn route_child_notification(method: &str) -> ChildRoute {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn reasoning_parts_preserve_chunking_and_existing_paragraph_breaks() {
+        let mut stream = ReasoningStream::default();
+        let mut text = String::new();
+        for params in [
+            json!({"itemId":"r1", "contentIndex":0, "textDelta":"**First"}),
+            json!({"itemId":"r1", "contentIndex":0, "textDelta":" heading**\n"}),
+            json!({"itemId":"r1", "contentIndex":1, "delta":"\nSecond paragraph.\n\n"}),
+            // An empty delta must not consume the next item's boundary.
+            json!({"itemId":"r2", "contentIndex":0, "delta":""}),
+            json!({"item_id":"r2", "content_index":0, "delta":"Third paragraph."}),
+        ] {
+            for event in stream.map("item/reasoning/textDelta", &params) {
+                if let AgentEvent::ReasoningDelta { text: delta } = event {
+                    text.push_str(&delta);
+                }
+            }
+        }
+        assert_eq!(
+            text,
+            "**First heading**\n\nSecond paragraph.\n\nThird paragraph."
+        );
+    }
 
     #[test]
     fn user_message_text_accepts_both_shapes() {

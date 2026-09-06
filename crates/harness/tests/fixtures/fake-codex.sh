@@ -33,6 +33,18 @@ if has "$line" '"method":"skills/list"'; then
   emit "{\"id\":$(rid "$line"),\"result\":{\"data\":[{\"cwd\":\"/w\",\"skills\":[{\"name\":\"imagegen\",\"description\":\"Model-facing paragraph about images.\",\"interface\":{\"displayName\":\"Image Gen\",\"shortDescription\":\"Generate or edit images\"}},{\"name\":\"bare\",\"description\":\"No interface block\"}]},{\"cwd\":\"/x\",\"skills\":[{\"name\":\"imagegen\",\"description\":\"dupe\",\"interface\":{\"shortDescription\":\"dupe\"}}]}]}}"
   exec sleep 30
 fi
+if has "$line" '"method":"model/list"'; then
+  # Live model discovery: force pagination and put the default model second,
+  # proving the harness consumes nextCursor and honors isDefault.
+  has "$line" '"includeHidden":false' || exit 1
+  has "$line" '"limit":20' || exit 1
+  emit "{\"id\":$(rid "$line"),\"result\":{\"data\":[{\"id\":\"gpt-5.6-terra\",\"model\":\"gpt-5.6-terra\",\"displayName\":\"GPT-5.6-Terra\",\"description\":\"Balanced agentic coding model for everyday work.\",\"hidden\":false,\"supportedReasoningEfforts\":[{\"reasoningEffort\":\"low\"},{\"reasoningEffort\":\"high\"}],\"additionalSpeedTiers\":[],\"serviceTiers\":[],\"defaultServiceTier\":null,\"isDefault\":false},{\"id\":\"gpt-6-astra\",\"model\":\"gpt-6-astra\",\"displayName\":\"GPT-6-Astra\",\"description\":\"Our most capable model for complex, demanding work.\",\"hidden\":false,\"supportedReasoningEfforts\":[{\"reasoningEffort\":\"low\"},{\"reasoningEffort\":\"medium\"},{\"reasoningEffort\":\"high\"},{\"reasoningEffort\":\"xhigh\"},{\"reasoningEffort\":\"max\"},{\"reasoningEffort\":\"ultra\"}],\"additionalSpeedTiers\":[\"fast\"],\"serviceTiers\":[{\"id\":\"priority\",\"name\":\"Fast\"}],\"defaultServiceTier\":null,\"isDefault\":true}],\"nextCursor\":\"page-2\"}}"
+  read -r line || exit 1
+  has "$line" '"method":"model/list"' || exit 1
+  has "$line" '"cursor":"page-2"' || exit 1
+  emit "{\"id\":$(rid "$line"),\"result\":{\"data\":[{\"id\":\"gpt-5.6-sol\",\"model\":\"gpt-5.6-sol\",\"displayName\":\"GPT-5.6-Sol\",\"description\":\"Reliable agentic workhorse for everyday tasks.\",\"hidden\":false,\"supportedReasoningEfforts\":[{\"reasoningEffort\":\"low\"},{\"reasoningEffort\":\"ultra\"}],\"additionalSpeedTiers\":[],\"serviceTiers\":[],\"defaultServiceTier\":null,\"isDefault\":false}],\"nextCursor\":null}}"
+  exec sleep 30
+fi
 if has "$line" '"method":"thread/resume"'; then
   if has "$line" '"threadId":"resume-fail"'; then
     # Missing/foreign rollout: reject, expect the fresh-start fallback.
@@ -54,6 +66,24 @@ read -r turnline || exit 1
 tid=$(rid "$turnline")
 
 case "$turnline" in
+
+*scenario:reasoning*)
+  emit "{\"id\":$tid,\"result\":{\"turn\":{\"id\":\"t-1\"}}}"
+  emit '{"method":"item/started","params":{"threadId":"th-1","item":{"id":"call_alpha","type":"subAgentActivity","kind":"spawned","agentThreadId":"child-1","agentPath":"/root/alpha"}}}'
+  emit '{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"th-1","itemId":"r1","summaryIndex":0}}'
+  emit '{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"th-1","itemId":"r1","summaryIndex":0,"delta":"**Implementing file"}}'
+  emit '{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"child-1","itemId":"r1","summaryIndex":0,"delta":"**Checking"}}'
+  emit '{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"th-1","itemId":"r1","summaryIndex":0,"delta":" badges**"}}'
+  emit '{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"th-1","itemId":"r1","summaryIndex":1}}'
+  emit '{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"th-1","itemId":"r1","summaryIndex":1}}'
+  emit '{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"th-1","itemId":"r1","summaryIndex":1,"delta":"**Preparing fixture screenshots**"}}'
+  emit '{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"child-1","itemId":"r1","summaryIndex":0,"delta":" layout**"}}'
+  emit '{"method":"item/reasoning/summaryPartAdded","params":{"threadId":"child-1","itemId":"r1","summaryIndex":1}}'
+  emit '{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"child-1","itemId":"r1","delta":"Inspecting the output panel."}}'
+  emit '{"method":"item/reasoning/summaryTextDelta","params":{"threadId":"th-1","itemId":"r2","summaryIndex":0,"delta":"Checking the final result."}}'
+  emit '{"method":"turn/completed","params":{"threadId":"child-1","turn":{"id":"ct-1"}}}'
+  emit '{"method":"turn/completed","params":{"threadId":"th-1","turn":{"id":"t-1"}}}'
+  ;;
 
 *scenario:happy*)
   # Verify the turn/start + thread/start params the harness must send.
