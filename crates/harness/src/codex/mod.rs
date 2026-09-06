@@ -3,7 +3,7 @@
 //! uses. Resurrected from the pre-ACP driver and modernized.
 //!
 //! VERSION PIN: the app-server API is EXPERIMENTAL (`capabilities.
-//! experimentalApi`); this driver is validated against codex-cli 0.146.1 —
+//! experimentalApi`); this driver is validated against codex-cli 0.149.0 —
 //! revalidate the method/notification surface when bumping past it.
 //!
 //! - `initialize` handshake (clientInfo + `capabilities.experimentalApi`) then
@@ -53,15 +53,15 @@ use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SlashCommand,
-    SteeringMode, UserInputAnswer, UserInputQuestion,
+    AgentEvent, DoneStatus, HarnessId, Model, ModelOption, ModelOptionChoice, ReasoningLevel,
+    RunRequest, SlashCommand, SteeringMode, UserInputAnswer, UserInputQuestion,
 };
 
 use crate::jsonrpc::{Incoming, RpcClient};
 use crate::{Harness, HarnessError, RunControls};
 use catalog::{REASONING_LEVELS, sandbox_mode, sandbox_policy_value, static_models, to_effort};
 use normalize::{
-    ChildRoute, Phase, delta_text, item_id, item_type, map_item, notification_thread_id,
+    ChildRoute, Phase, ReasoningStream, delta_text, item_id, item_type, map_item, notification_thread_id,
     route_child_notification, turn_error_message, turn_id, usage_event, user_message_text,
 };
 
@@ -217,6 +217,256 @@ impl CodexHarness {
             Err(_) => Err(HarnessError::Protocol("command discovery timed out".into())),
         }
     }
+
+    /// Short-lived live catalog probe. `model/list` is paginated and already
+    /// applies the signed-in account's rollout/visibility policy, so hidden or
+    /// unavailable models (including staged Astra rollouts) never leak into a
+    /// successful picker response.
+    async fn discover_models(&self) -> Result<Vec<Model>, HarnessError> {
+        let exe = self.resolve_executable()?;
+        let mut cmd = Command::new(&exe);
+        cmd.arg("app-server");
+        crate::compose_child_path(&mut cmd, &exe);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        let mut child = cmd.spawn().map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                HarnessError::NotInstalled(exe.display().to_string())
+            } else {
+                HarnessError::Io(e)
+            }
+        })?;
+        let (Some(stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
+            shutdown_child(&mut child, self.kill_grace).await;
+            return Err(HarnessError::Protocol("codex child has no stdio".into()));
+        };
+        let (client, _incoming) = RpcClient::new(stdin, stdout);
+        let discovery = async {
+            client
+                .request(
+                    "initialize",
+                    json!({
+                        "clientInfo": {
+                            "name": "zeron-native",
+                            "title": "Zeron",
+                            "version": env!("CARGO_PKG_VERSION"),
+                        },
+                        "capabilities": { "experimentalApi": true },
+                    }),
+                )
+                .await?;
+            client.notify("initialized", None);
+
+            let mut models = Vec::new();
+            let mut model_ids = HashSet::new();
+            let mut seen_cursors = HashSet::new();
+            let mut cursor: Option<String> = None;
+            let mut default_model_id: Option<String> = None;
+            loop {
+                let mut params = json!({ "limit": 20, "includeHidden": false });
+                if let Some(cursor) = cursor.as_deref() {
+                    params["cursor"] = Value::String(cursor.to_owned());
+                }
+                let page = client.request("model/list", params).await?;
+                let (page_models, next_cursor) = parse_model_list_page(&page);
+                for (model, is_default) in page_models {
+                    if model_ids.insert(model.id.clone()) {
+                        if is_default && default_model_id.is_none() {
+                            default_model_id = Some(model.id.clone());
+                        }
+                        models.push(model);
+                    }
+                }
+                let Some(next) = next_cursor.filter(|next| !next.is_empty()) else {
+                    break;
+                };
+                if !seen_cursors.insert(next.clone()) {
+                    break;
+                }
+                cursor = Some(next);
+            }
+
+            if let Some(default_id) = default_model_id
+                && let Some(index) = models.iter().position(|model| model.id == default_id)
+                && index != 0
+            {
+                let default_model = models.remove(index);
+                models.insert(0, default_model);
+            }
+            Ok::<Vec<Model>, HarnessError>(models)
+        };
+        let result = tokio::time::timeout(Duration::from_secs(10), discovery).await;
+        shutdown_child(&mut child, self.kill_grace).await;
+        match result {
+            Ok(inner) => inner,
+            Err(_) => Err(HarnessError::Protocol("model discovery timed out".into())),
+        }
+    }
+}
+
+fn reasoning_level(value: &str) -> Option<ReasoningLevel> {
+    Some(match value {
+        "minimal" => ReasoningLevel::Minimal,
+        "low" => ReasoningLevel::Low,
+        "medium" => ReasoningLevel::Medium,
+        "high" => ReasoningLevel::High,
+        "xhigh" => ReasoningLevel::XHigh,
+        "max" => ReasoningLevel::Max,
+        "ultra" => ReasoningLevel::Ultra,
+        "ultracode" => ReasoningLevel::Ultracode,
+        "ultrathink" => ReasoningLevel::Ultrathink,
+        _ => return None,
+    })
+}
+
+/// Codex accepts both names, but Zeron has historically persisted `fast`.
+/// Normalize the app server's `priority` id so live and fallback catalogs do
+/// not produce two different settings for the same tier.
+fn normalized_service_tier(value: &str) -> &str {
+    match value {
+        "priority" => "fast",
+        other => other,
+    }
+}
+
+fn service_tier_label(value: &str) -> String {
+    match value {
+        "fast" | "priority" => "Fast".into(),
+        "flex" => "Flex".into(),
+        "ultrafast" => "Ultra Fast".into(),
+        other => other.to_owned(),
+    }
+}
+
+fn model_service_tier(item: &Value) -> Option<ModelOption> {
+    let mut choices = vec![ModelOptionChoice {
+        id: "default".into(),
+        label: "Standard".into(),
+    }];
+    let mut seen = HashSet::from(["default".to_owned()]);
+    for tier in item
+        .get("serviceTiers")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let Some(wire_id) = tier.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let id = normalized_service_tier(wire_id).to_owned();
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let label = tier
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| service_tier_label(wire_id));
+        choices.push(ModelOptionChoice { id, label });
+    }
+    for tier in item
+        .get("additionalSpeedTiers")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        let Some(wire_id) = tier.as_str() else {
+            continue;
+        };
+        let id = normalized_service_tier(wire_id).to_owned();
+        if seen.insert(id.clone()) {
+            choices.push(ModelOptionChoice {
+                id,
+                label: service_tier_label(wire_id),
+            });
+        }
+    }
+    if choices.len() == 1 {
+        return None;
+    }
+    let default_choice = item
+        .get("defaultServiceTier")
+        .and_then(Value::as_str)
+        .map(normalized_service_tier)
+        .filter(|id| seen.contains(*id))
+        .unwrap_or("default")
+        .to_owned();
+    Some(ModelOption {
+        id: "serviceTier".into(),
+        label: "Service Tier".into(),
+        choices,
+        default_choice,
+    })
+}
+
+/// Parse one `model/list` page. Unknown future reasoning levels are ignored
+/// independently instead of invalidating the complete catalog.
+fn parse_model_list_page(result: &Value) -> (Vec<(Model, bool)>, Option<String>) {
+    let mut models = Vec::new();
+    for item in result
+        .get("data")
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+    {
+        if item.get("hidden").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        let Some(id) = item
+            .get("model")
+            .and_then(Value::as_str)
+            .or_else(|| item.get("id").and_then(Value::as_str))
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+        else {
+            continue;
+        };
+        let label = item
+            .get("displayName")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .unwrap_or(id)
+            .to_owned();
+        let description = item
+            .get("description")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|description| !description.is_empty())
+            .map(str::to_owned);
+        let reasoning_levels = item
+            .get("supportedReasoningEfforts")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|effort| {
+                effort
+                    .get("reasoningEffort")
+                    .and_then(Value::as_str)
+                    .or_else(|| effort.as_str())
+                    .and_then(reasoning_level)
+            })
+            .collect();
+        let options = model_service_tier(item).into_iter().collect();
+        models.push((
+            Model {
+                id: id.to_owned(),
+                label,
+                description,
+                reasoning_levels,
+                options,
+            },
+            item.get("isDefault").and_then(Value::as_bool) == Some(true),
+        ));
+    }
+    let next_cursor = result
+        .get("nextCursor")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    (models, next_cursor)
 }
 
 /// `skills/list` result → picker commands. `data` groups skills by cwd; the
@@ -296,13 +546,23 @@ impl Harness for CodexHarness {
         true
     }
 
-    /// The curated static catalog (see [`catalog`]); requires an installed CLI
-    /// so an absent binary surfaces as [`HarnessError::NotInstalled`] here.
-    /// This is the seam for live discovery: a short-lived `codex app-server`
-    /// paging `model/list` (experimentalApi) exactly as codex.ts does.
+    /// The signed-in account's visible `model/list` is authoritative. A
+    /// curated snapshot keeps the picker operational when the experimental
+    /// discovery call is unavailable or temporarily fails; failed probes are
+    /// intentionally not cached so reopening the picker retries rollout state.
     async fn models(&self) -> Result<Vec<Model>, HarnessError> {
         self.resolve_executable()?;
-        Ok(static_models())
+        match self.discover_models().await {
+            Ok(models) if !models.is_empty() => Ok(models),
+            Ok(_) => Ok(static_models()),
+            Err(error) => {
+                tracing::debug!(
+                    target: "zeron_harness::codex",
+                    "model/list discovery failed; using fallback catalog: {error}"
+                );
+                Ok(static_models())
+            }
+        }
     }
 
     /// Skills from a short-lived `skills/list` probe (see
@@ -673,6 +933,7 @@ async fn run_session(session: Session) {
     // Deltas seen per agent-message item, so a model that never streams
     // (item/completed only) still emits its text exactly once.
     let mut streamed_text: HashSet<String> = HashSet::new();
+    let mut reasoning_streams: HashMap<String, ReasoningStream> = HashMap::new();
     // Token usage is held until the turn ends, emitted just before Done.
     let mut pending_usage: Option<AgentEvent> = None;
     // Steers whose `turn/steer` lost the turn-completed race; delivered as the
@@ -760,10 +1021,9 @@ async fn run_session(session: Session) {
                                         .into_iter()
                                         .collect(),
                                     "item/reasoning/textDelta"
-                                    | "item/reasoning/summaryTextDelta" => delta_text(&params)
-                                        .map(|text| AgentEvent::ReasoningDelta { text })
-                                        .into_iter()
-                                        .collect(),
+                                    | "item/reasoning/summaryTextDelta"
+                                    | "item/reasoning/summaryPartAdded" => reasoning_streams
+                                        .entry(nthread.clone()).or_default().map(&method, &params),
                                     "item/started" | "item/completed" => {
                                         let phase = if method == "item/started" {
                                             Phase::Started
@@ -851,11 +1111,14 @@ async fn run_session(session: Session) {
                         }
                     }
 
-                    "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta" => {
-                        if let Some(text) = delta_text(&params)
-                            && !send(&event_tx, AgentEvent::ReasoningDelta { text }).await
+                    "item/reasoning/textDelta" | "item/reasoning/summaryTextDelta"
+                    | "item/reasoning/summaryPartAdded" => {
+                        for event in reasoning_streams.entry(thread_id.clone()).or_default()
+                            .map(&method, &params)
                         {
-                            break 'main;
+                            if !send(&event_tx, event).await {
+                                break 'main;
+                            }
                         }
                     }
 
@@ -1521,6 +1784,47 @@ mod tests {
             &json!({"command": ["git", "push", "--force"]}),
         );
         assert!(q.question.contains("git push --force"));
+    }
+
+    #[test]
+    fn model_page_skips_hidden_and_unknown_efforts() {
+        let page = json!({
+            "data": [
+                {
+                    "id": "hidden",
+                    "model": "hidden",
+                    "displayName": "Hidden",
+                    "hidden": true,
+                    "supportedReasoningEfforts": [{ "reasoningEffort": "high" }]
+                },
+                {
+                    "id": "gpt-6-astra",
+                    "model": "gpt-6-astra",
+                    "displayName": "GPT-6-Astra",
+                    "description": "  Most capable  ",
+                    "hidden": false,
+                    "supportedReasoningEfforts": [
+                        { "reasoningEffort": "high" },
+                        { "reasoningEffort": "future" }
+                    ],
+                    "serviceTiers": [{ "id": "priority", "name": "Fast" }],
+                    "additionalSpeedTiers": ["fast"],
+                    "defaultServiceTier": null,
+                    "isDefault": true
+                }
+            ],
+            "nextCursor": "next"
+        });
+        let (models, cursor) = parse_model_list_page(&page);
+        assert_eq!(cursor.as_deref(), Some("next"));
+        assert_eq!(models.len(), 1);
+        let (astra, is_default) = &models[0];
+        assert_eq!(astra.id, "gpt-6-astra");
+        assert_eq!(astra.description.as_deref(), Some("Most capable"));
+        assert_eq!(astra.reasoning_levels, vec![ReasoningLevel::High]);
+        assert!(*is_default);
+        assert_eq!(astra.options[0].choices.len(), 2);
+        assert_eq!(astra.options[0].choices[1].id, "fast");
     }
 
     #[test]

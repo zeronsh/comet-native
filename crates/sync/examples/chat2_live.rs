@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use futures::future::BoxFuture;
 use loro::{ExportMode, LoroDoc, VersionVector};
 use zeron_sync::SyncError;
-use zeron_sync::chat_client::{ChatClient, ChatDocSink, CheckpointFetcher};
+use zeron_sync::chat_client::{ChatClient, ChatDocSink, CheckpointFetcher, RowImportOutcome};
 
 struct DocSink {
     doc: Mutex<LoroDoc>,
@@ -24,11 +24,14 @@ struct DocSink {
 }
 
 impl ChatDocSink for DocSink {
-    fn apply_row(&self, bytes: &[u8], cursor: u64) {
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome {
         let doc = self.doc.lock().unwrap();
-        doc.import(bytes).expect("row import");
+        if doc.import(bytes).expect("row import").pending.is_some() {
+            return RowImportOutcome::PendingDependencies;
+        }
         self.cursor.store(cursor, Relaxed);
         self.rows_applied.fetch_add(1, Relaxed);
+        RowImportOutcome::Applied
     }
     fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String> {
         let doc = self.doc.lock().unwrap();

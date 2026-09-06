@@ -15,9 +15,9 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gpui::{
-    AnyElement, BorderStyle, Bounds, FontStyle, FontWeight, Hsla, InteractiveText, SharedString,
-    StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point, prelude::*, px, quad,
-    size,
+    AnyElement, BorderStyle, Bounds, Context, FontStyle, FontWeight, Hsla, InteractiveText, Render,
+    SharedString, StyledText, TextRun, UnderlineStyle, Window, canvas, div, font, point,
+    prelude::*, px, quad, size,
 };
 use zeron_syntax::{HighlightKind, HighlightSpan, HighlightedDocument};
 
@@ -36,6 +36,9 @@ pub const CODE_TEXT_SIZE: f32 = 12.5;
 pub const CODE_LINE_HEIGHT: f32 = 18.0;
 pub const CODE_PADDING_X: f32 = 12.0;
 pub const CODE_PADDING_Y: f32 = 10.0;
+const CODE_HEADER_HEIGHT: f32 = 28.0;
+const CODE_ACTION_SIZE: f32 = 22.0;
+const CODE_SCROLLBAR_HIT_HEIGHT: f32 = 10.0;
 
 // Table metrics — a port of mugen-markdown 0.6.2's `TableBlock` under zeron's
 // resolved md theme. The design is frameless ("flat hairline"): 1px horizontal
@@ -82,6 +85,10 @@ pub struct RenderOptions {
     /// Optional owner-provided routing for links that belong inside the app.
     /// Returning true prevents the ordinary external URL opener from running.
     pub link: Option<LinkUi>,
+    /// Agent-transcript-only fence layout controls and tracked horizontal
+    /// scroll state, keyed by the same element discriminator passed to
+    /// [`render_block`]. `None` keeps non-chat Markdown surfaces unchanged.
+    pub code: Option<HashMap<usize, CodeUi>>,
 }
 
 /// Copy-button wiring for one row's code blocks: the handler writes the code
@@ -98,6 +105,65 @@ pub struct LinkUi {
     pub handler: Rc<dyn Fn(&str, &mut Window, &mut gpui::App) -> bool>,
 }
 
+type HoverHandler = Rc<dyn Fn(bool, &mut Window, &mut gpui::App)>;
+type PointerHandler = Rc<dyn Fn(gpui::Pixels, &mut Window, &mut gpui::App)>;
+type ReleaseHandler = Rc<dyn Fn(&mut Window, &mut gpui::App)>;
+
+/// Transcript-owned interaction for the one fenced block represented by a
+/// virtualized Markdown row. The renderer owns only layout/chrome; callbacks
+/// keep durable preference and mutable scroll state in [`crate::transcript`].
+#[derive(Clone)]
+pub struct CodeUi {
+    pub key: SharedString,
+    pub fit_content: bool,
+    pub scroll: gpui::ScrollHandle,
+    pub scrollbar: Option<CodeScrollbarUi>,
+    pub toggle_fit: Rc<dyn Fn(&mut Window, &mut gpui::App)>,
+    pub viewport_hover: HoverHandler,
+    pub drag_move: PointerHandler,
+}
+
+#[derive(Clone)]
+pub struct CodeScrollbarUi {
+    pub metrics: crate::popover::HorizontalScrollbarMetrics,
+    pub active: bool,
+    pub hover: HoverHandler,
+    pub press: PointerHandler,
+    pub release: ReleaseHandler,
+}
+
+#[derive(Clone)]
+struct CodeScrollbarDrag {
+    key: SharedString,
+}
+
+struct CodeScrollbarDragGhost;
+
+impl Render for CodeScrollbarDragGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        gpui::Empty
+    }
+}
+
+struct CodeBlockTooltip(&'static str);
+
+impl Render for CodeBlockTooltip {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let theme = Theme::of(cx);
+        div()
+            .px(px(8.0))
+            .py(px(6.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(theme.border_strong)
+            .bg(theme.surface_raised)
+            .shadow_md()
+            .text_size(px(11.0))
+            .text_color(theme.text)
+            .child(self.0)
+    }
+}
+
 impl RenderOptions {
     /// Options for a completed (non-streaming) row — no veil, no cache.
     pub fn settled(row_key: SharedString) -> Self {
@@ -108,6 +174,7 @@ impl RenderOptions {
             now: Instant::now(),
             copy: None,
             link: None,
+            code: None,
         }
     }
 }
@@ -144,6 +211,13 @@ pub struct CachedCode {
 }
 
 impl RenderCache {
+    /// Keep rows laid out in the previous viewport, including GPUI overdraw.
+    /// Scrolling back regenerates these derived strings and code-line runs.
+    pub(crate) fn retain_rows(&mut self, rows: &std::collections::HashSet<SharedString>) {
+        self.flats.retain(|(row, _, _), _| rows.contains(row));
+        self.code.retain(|(row, _, _), _| rows.contains(row));
+    }
+
     /// Drop every cached entry for `row`.
     pub fn invalidate_row(&mut self, row: &str) {
         self.flats.retain(|(r, _, _), _| r.as_ref() != row);
@@ -203,6 +277,43 @@ pub fn render_tree(
         .into_any_element()
 }
 
+fn quote_child_ix(ix: usize, child_ix: usize) -> usize {
+    ix * 100 + child_ix
+}
+
+fn list_child_ix(ix: usize, item_ix: usize, child_ix: usize) -> usize {
+    ix * 100 + item_ix * 10 + child_ix
+}
+
+/// Element discriminators for every code block below `block`. Transcript rows
+/// use this to provision one independent scroll handle per nested fence before
+/// the renderer recursively reaches it.
+pub(crate) fn code_block_indices(block: &Block, ix: usize) -> Vec<usize> {
+    fn collect(block: &Block, ix: usize, out: &mut Vec<usize>) {
+        match block {
+            Block::CodeBlock { .. } => out.push(ix),
+            Block::BlockQuote { children } => {
+                for (child_ix, child) in children.iter().enumerate() {
+                    collect(child, quote_child_ix(ix, child_ix), out);
+                }
+            }
+            Block::List { items, .. } => {
+                for (item_ix, item) in items.iter().enumerate() {
+                    for (child_ix, child) in item.iter().enumerate() {
+                        collect(child, list_child_ix(ix, item_ix, child_ix), out);
+                    }
+                }
+            }
+            Block::Paragraph { .. } | Block::Heading { .. } | Block::Table { .. } | Block::Rule => {
+            }
+        }
+    }
+
+    let mut indices = Vec::new();
+    collect(block, ix, &mut indices);
+    indices
+}
+
 /// Render one block (top-level or nested). `top_ix` is the enclosing top-level
 /// block index (cache invalidation scope); `ix` the per-element discriminator.
 #[allow(clippy::too_many_arguments)]
@@ -255,7 +366,15 @@ pub fn render_block(
             .gap(px(8.0))
             .text_color(theme.text_muted)
             .children(children.iter().enumerate().map(|(ci, child)| {
-                render_block(child, top_ix, ix * 100 + ci, opts, theme, window, None)
+                render_block(
+                    child,
+                    top_ix,
+                    quote_child_ix(ix, ci),
+                    opts,
+                    theme,
+                    window,
+                    None,
+                )
             }))
             .into_any_element(),
         Block::List {
@@ -306,7 +425,7 @@ pub fn render_block(
                             render_block(
                                 child,
                                 top_ix,
-                                ix * 100 + item_ix * 10 + ci,
+                                list_child_ix(ix, item_ix, ci),
                                 opts,
                                 theme,
                                 window,
@@ -1102,11 +1221,12 @@ fn render_code_block(
         None => Vec::new(),
     };
     let scroll_id: SharedString = format!("{}-code{ix}", opts.row_key).into();
-    // Copy affordance (round 9; no source counterpart — the original block is
-    // header + body only): a small ghost button in the block's top-right,
-    // absolutely overlaid so clicking / the "Copied" flash never shifts
-    // layout. Sits centered in the header when there is one, floats over the
-    // first code line otherwise.
+    let code_ui = opts.code.as_ref().and_then(|code| code.get(&ix)).cloned();
+    let fit_content = code_ui.as_ref().is_some_and(|ui| ui.fit_content);
+
+    // Header actions stay in normal header flow so Fit and Copy never overlap.
+    // The feedback label may widen Copy, but the fixed header height keeps the
+    // virtual row stable.
     let copy_button = opts.copy.clone().map(|copy| {
         let copied = copy.copied_ix == Some(ix);
         let code_text: SharedString = code.to_string().into();
@@ -1114,10 +1234,7 @@ fn render_code_block(
         let fade_key = format!("{}-copy{ix}", opts.row_key);
         div()
             .id(SharedString::from(fade_key.clone()))
-            .absolute()
-            .top(px(3.0))
-            .right(px(5.0))
-            .h(px(20.0))
+            .h(px(CODE_ACTION_SIZE))
             .px(px(6.0))
             .rounded(px(5.0))
             .flex()
@@ -1135,7 +1252,10 @@ fn render_code_block(
             .on_hover(crate::motion::hover_listener(fade_key))
             .text_size(px(10.5))
             .text_color(theme.text_muted)
-            .on_click(move |_, window, cx| handler(ix, code_text.clone(), window, cx))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                handler(ix, code_text.clone(), window, cx);
+            })
             .child(
                 crate::icons::icon(if copied {
                     crate::icons::CHECK
@@ -1147,7 +1267,216 @@ fn render_code_block(
             )
             .when(copied, |el| el.child(SharedString::from("Copied")))
     });
-    div()
+
+    let fit_button = code_ui.as_ref().map(|ui| {
+        let toggle = ui.toggle_fit.clone();
+        let fade_key = format!("{}-fit{ix}", opts.row_key);
+        let base = if fit_content {
+            crate::theme::ink(0.09)
+        } else {
+            gpui::transparent_black()
+        };
+        let hover = crate::theme::ink(if fit_content { 0.13 } else { 0.08 });
+        div()
+            .id(SharedString::from(fade_key.clone()))
+            .size(px(CODE_ACTION_SIZE))
+            .rounded(px(6.0))
+            .flex()
+            .items_center()
+            .justify_center()
+            .cursor_pointer()
+            .bg(crate::motion::hover_blend(&fade_key, base, hover))
+            .on_hover(crate::motion::hover_listener(fade_key))
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                toggle(window, cx);
+            })
+            .tooltip(move |_, cx| {
+                cx.new(move |_| {
+                    CodeBlockTooltip(if fit_content {
+                        "Use horizontal scrolling"
+                    } else {
+                        "Fit content"
+                    })
+                })
+                .into()
+            })
+            .child(
+                crate::icons::icon(crate::icons::WRAP_TEXT)
+                    .size(px(13.0))
+                    .text_color(theme.text_muted),
+            )
+    });
+
+    let show_header = language.is_some() || copy_button.is_some() || fit_button.is_some();
+    let header = show_header.then(|| {
+        div()
+            .h(px(CODE_HEADER_HEIGHT))
+            .pl(px(CODE_PADDING_X))
+            .pr(px(5.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .bg(crate::theme::ink(0.02))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .min_w_0()
+                    .text_size(px(11.0))
+                    .text_color(theme.text_muted)
+                    .children(language.map(|lang| SharedString::from(lang.to_string()))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.0))
+                    .children(fit_button)
+                    .children(copy_button),
+            )
+    });
+
+    let lines = div()
+        .map(|el| {
+            if fit_content {
+                el.w_full().min_w_0()
+            } else {
+                el.min_w_full().flex_none()
+            }
+        })
+        .px(px(CODE_PADDING_X))
+        .py(px(CODE_PADDING_Y))
+        .font_family(theme.font_mono.clone())
+        .text_size(px(CODE_TEXT_SIZE))
+        .line_height(px(CODE_LINE_HEIGHT))
+        .map(|el| {
+            if fit_content {
+                el.whitespace_normal()
+            } else {
+                el.whitespace_nowrap()
+            }
+        })
+        .flex()
+        .flex_col()
+        .children((0..cached.lines.len()).scan(0usize, move |off, li| {
+            let (line, runs) = &cached.lines[li];
+            let start = *off;
+            *off = start + line.len() + 1; // +1 for the '\n'
+            let local = slice_spans(&veil_spans, start, start + line.len());
+            let runs = apply_veil(runs.clone(), &local);
+            Some(
+                div()
+                    .map(|el| {
+                        if fit_content {
+                            el.w_full().min_w_0().min_h(px(CODE_LINE_HEIGHT))
+                        } else {
+                            el.h(px(CODE_LINE_HEIGHT)).flex_none()
+                        }
+                    })
+                    .child(StyledText::new(line.clone()).with_runs(runs)),
+            )
+        }));
+
+    let body: AnyElement = if let Some(ui) = code_ui.as_ref() {
+        if fit_content {
+            div()
+                .w_full()
+                .min_w_0()
+                .overflow_hidden()
+                .child(lines)
+                .into_any_element()
+        } else {
+            let mut scroller = div()
+                .id(scroll_id)
+                .w_full()
+                .min_w_0()
+                .flex()
+                .overflow_x_scroll()
+                .track_scroll(&ui.scroll)
+                .child(lines);
+            // A vertical wheel over code must keep bubbling to the transcript;
+            // only a true horizontal gesture moves this local viewport.
+            scroller.style().restrict_scroll_to_axis = Some(true);
+            scroller.into_any_element()
+        }
+    } else {
+        // Non-transcript previews keep their existing native scroll behavior.
+        div()
+            .id(scroll_id)
+            .w_full()
+            .overflow_x_scroll()
+            .child(lines)
+            .into_any_element()
+    };
+
+    let scrollbar = (!fit_content)
+        .then(|| code_ui.as_ref())
+        .flatten()
+        .and_then(|ui| {
+            let bar = ui.scrollbar.as_ref()?;
+            let metrics = bar.metrics;
+            let hover = bar.hover.clone();
+            let press = bar.press.clone();
+            let release_up = bar.release.clone();
+            let release_out = bar.release.clone();
+            let thumb_height = if bar.active {
+                crate::popover::MENU_SCROLLBAR_HOVER_THUMB_WIDTH
+            } else {
+                crate::popover::MENU_SCROLLBAR_THUMB_WIDTH
+            };
+            Some(
+                div()
+                    .id(SharedString::from(format!("{}-scrollbar", ui.key)))
+                    .absolute()
+                    .left(px(0.0))
+                    .right(px(0.0))
+                    .bottom(px(0.0))
+                    .h(px(CODE_SCROLLBAR_HIT_HEIGHT))
+                    .on_hover(move |hovered, window, cx| hover(*hovered, window, cx))
+                    .on_mouse_down(gpui::MouseButton::Left, move |event, window, cx| {
+                        press(event.position.x, window, cx);
+                    })
+                    .on_drag(
+                        CodeScrollbarDrag {
+                            key: ui.key.clone(),
+                        },
+                        |_, _, _, cx| {
+                            cx.stop_propagation();
+                            cx.new(|_| CodeScrollbarDragGhost)
+                        },
+                    )
+                    .on_mouse_up(gpui::MouseButton::Left, move |_, window, cx| {
+                        release_up(window, cx)
+                    })
+                    .on_mouse_up_out(gpui::MouseButton::Left, move |_, window, cx| {
+                        release_out(window, cx)
+                    })
+                    .child(
+                        div()
+                            .absolute()
+                            .left(px(
+                                crate::popover::MENU_SCROLLBAR_TRACK_INSET + metrics.thumb_left
+                            ))
+                            .bottom(px(2.0))
+                            .w(px(metrics.thumb_width))
+                            .h(px(thumb_height))
+                            .rounded(px(thumb_height / 2.0))
+                            .bg(theme
+                                .text_faint
+                                .opacity(if bar.active { 0.68 } else { 0.5 })),
+                    ),
+            )
+        });
+
+    let mut block = div()
+        .id(SharedString::from(format!(
+            "{}-code-frame{ix}",
+            opts.row_key
+        )))
         .rounded(px(10.0))
         // Faint white wash over the near-black panel ≈ #101010 (zeron's code
         // surface), with the hairline border.
@@ -1156,49 +1485,27 @@ fn render_code_block(
         .border_color(theme.border)
         .overflow_hidden()
         .relative()
-        .when_some(language, |el, lang| {
-            el.child(
-                div()
-                    .px(px(CODE_PADDING_X))
-                    .py(px(5.0))
-                    .border_b_1()
-                    .border_color(theme.border)
-                    // A whisper of tone separation between header and body.
-                    .bg(crate::theme::ink(0.02))
-                    .text_size(px(11.0))
-                    .text_color(theme.text_muted)
-                    .child(SharedString::from(lang.to_string())),
-            )
-        })
-        .child(
-            div()
-                .id(scroll_id)
-                .overflow_x_scroll()
-                .px(px(CODE_PADDING_X))
-                .py(px(CODE_PADDING_Y))
-                .font_family(theme.font_mono.clone())
-                .text_size(px(CODE_TEXT_SIZE))
-                .line_height(px(CODE_LINE_HEIGHT))
-                .whitespace_nowrap()
-                .flex()
-                .flex_col()
-                .children((0..cached.lines.len()).scan(0usize, move |off, li| {
-                    let (line, runs) = &cached.lines[li];
-                    let start = *off;
-                    *off = start + line.len() + 1; // +1 for the '\n'
-                    let local = slice_spans(&veil_spans, start, start + line.len());
-                    let runs = apply_veil(runs.clone(), &local);
-                    Some(
-                        div()
-                            .h(px(CODE_LINE_HEIGHT))
-                            .flex_none()
-                            .child(StyledText::new(line.clone()).with_runs(runs)),
-                    )
-                })),
-        )
-        // Overlay LAST so it paints above the header/body.
-        .children(copy_button)
-        .into_any_element()
+        .children(header)
+        .child(div().w_full().relative().child(body).children(scrollbar));
+    if let Some(ui) = code_ui {
+        let viewport_hover = ui.viewport_hover.clone();
+        let drag_move = ui.drag_move.clone();
+        let drag_key = ui.key;
+        block = block
+            .on_hover(move |hovered, window, cx| viewport_hover(*hovered, window, cx))
+            .on_drag_move(
+                move |event: &gpui::DragMoveEvent<CodeScrollbarDrag>, window, cx| {
+                    let Some(drag) = event.dragged_item().downcast_ref::<CodeScrollbarDrag>()
+                    else {
+                        return;
+                    };
+                    if drag.key == drag_key {
+                        drag_move(event.event.position.x, window, cx);
+                    }
+                },
+            );
+    }
+    block.into_any_element()
 }
 
 /// Paint color for a token class — the soft syntax palette (round 9: the
@@ -1256,7 +1563,19 @@ pub fn runs_for_syntax_line_with_plain(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::markdown::parser::InlineStyle;
+    use crate::markdown::parser::{InlineStyle, parse_full};
+
+    #[test]
+    fn code_block_indices_include_nested_quotes_and_lists() {
+        let quoted = parse_full("> ```rust\n> let x = 1;\n> ```\n");
+        assert_eq!(code_block_indices(&quoted.blocks[0].block, 0), vec![0]);
+
+        let listed = parse_full("- Result:\n\n  ```json\n  {\"ok\":true}\n  ```\n");
+        assert_eq!(code_block_indices(&listed.blocks[0].block, 0), vec![1]);
+
+        let top_level = parse_full("paragraph\n\n```text\nvalue\n```\n");
+        assert_eq!(code_block_indices(&top_level.blocks[1].block, 1), vec![1]);
+    }
 
     /// Model GPUI's upstream affinity at a soft-wrap boundary: byte 5 is
     /// reported at the end of row 0, while byte 6 is after the first glyph on
@@ -1340,6 +1659,78 @@ mod tests {
         assert!(colors.contains(&theme.syntax.keyword));
         assert!(colors.contains(&theme.syntax.macro_name));
         assert!(colors.contains(&theme.syntax.number));
+    }
+
+    #[test]
+    fn affected_language_roles_flow_through_markdown_paint_only() {
+        let cases: &[(&str, &str, &[HighlightKind])] = &[
+            (
+                "typescript",
+                "export function derive(name: string) { return call(name); }",
+                &[
+                    HighlightKind::Keyword,
+                    HighlightKind::Function,
+                    HighlightKind::Parameter,
+                    HighlightKind::TypeBuiltin,
+                ],
+            ),
+            (
+                "tsx",
+                "function card(props: Props): JSX.Element { return <main id={props.id} />; }",
+                &[
+                    HighlightKind::Tag,
+                    HighlightKind::Attribute,
+                    HighlightKind::Type,
+                ],
+            ),
+            (
+                "kotlin",
+                "fun greet(name: String) = println(name)",
+                &[
+                    HighlightKind::Keyword,
+                    HighlightKind::Function,
+                    HighlightKind::Parameter,
+                    HighlightKind::TypeBuiltin,
+                ],
+            ),
+            (
+                "dockerfile",
+                "RUN echo \"hello\"",
+                &[
+                    HighlightKind::Keyword,
+                    HighlightKind::Function,
+                    HighlightKind::String,
+                ],
+            ),
+        ];
+        for &(fence_tag, line, required) in cases {
+            let document = zeron_syntax::highlight(zeron_syntax::HighlightRequest {
+                source: line,
+                path: None,
+                fence_tag: Some(fence_tag),
+            })
+            .unwrap();
+            let kinds = document.lines[0]
+                .iter()
+                .map(|span| span.kind)
+                .collect::<Vec<_>>();
+            for &kind in required {
+                assert!(kinds.contains(&kind), "missing {kind:?} for {fence_tag}");
+            }
+            for theme in [Theme::dark(), Theme::light()] {
+                let mono = font(theme.font_mono.clone());
+                let runs = runs_for_syntax_line(line, &document.lines[0], &mono, &theme);
+                assert_eq!(runs.iter().map(|run| run.len).sum::<usize>(), line.len());
+                assert!(runs.iter().all(|run| run.font == mono));
+                let colors = runs.iter().map(|run| run.color).collect::<Vec<_>>();
+                for &kind in required {
+                    assert!(
+                        colors.contains(&token_color(kind, &theme)),
+                        "missing {kind:?} color for {fence_tag}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
@@ -1494,6 +1885,37 @@ mod tests {
         ];
         let flat = flatten_runs(&runs, &theme, false);
         assert_eq!(flat.links, vec![(0..9, "https://x.dev".to_string())]);
+    }
+
+    #[test]
+    fn viewport_cache_releases_offscreen_paint_data() {
+        let mut cache = RenderCache::default();
+        for row in ["visible", "offscreen"] {
+            cache.flats.insert(
+                (row.into(), 0, 0),
+                Rc::new(FlatText {
+                    text: "text".into(),
+                    runs: Vec::new(),
+                    links: Vec::new(),
+                    code_ranges: Vec::new(),
+                }),
+            );
+            cache.code.insert(
+                (row.into(), 0, 0),
+                Rc::new(CachedCode {
+                    code_len: 0,
+                    hl_key: (0, 0),
+                    lines: Vec::new(),
+                }),
+            );
+        }
+        cache.retain_rows(&std::collections::HashSet::from(["visible".into()]));
+        assert_eq!(cache.flats.len(), 1);
+        assert_eq!(cache.code.len(), 1);
+        assert!(cache.flats.keys().all(|(row, _, _)| row == "visible"));
+        cache.retain_rows(&std::collections::HashSet::new());
+        assert!(cache.flats.is_empty());
+        assert!(cache.code.is_empty());
     }
 
     #[test]

@@ -218,6 +218,7 @@ struct ComposerView: View {
     @State private var uploadError: String?
     @State private var showModelPicker = false
     @State private var showTraitPicker = false
+    @State private var showOptionPicker: ModelOptionInfo?
     /// Live catalog for the chat's harness from its space's device.
     @State private var catalogs: [String: [ModelInfo]] = [:]
 
@@ -228,13 +229,22 @@ struct ComposerView: View {
     }
 
     private var currentModel: ModelInfo {
-        models.first { $0.id == chat.config?.model } ?? HarnessCatalog.defaultModel(for: harness)
+        models.first { $0.id == chat.config?.model }
+            ?? models.first
+            ?? HarnessCatalog.defaultModel(for: harness)
     }
 
     private var currentReasoning: String? {
         guard !currentModel.reasoningLevels.isEmpty else { return nil }
         if let r = chat.config?.reasoning, currentModel.reasoningLevels.contains(r) { return r }
         return HarnessCatalog.defaultReasoning(for: currentModel)
+    }
+
+    private func currentChoice(for option: ModelOptionInfo) -> ModelOptionChoiceInfo {
+        HarnessCatalog.selectedChoice(
+            for: option,
+            selectedId: chat.config?.modelOptions[option.id]?.stringValue
+        )
     }
 
     var body: some View {
@@ -276,7 +286,7 @@ struct ComposerView: View {
                 sendEnabled: true,
                 showStop: runLive,
                 busy: uploading,
-                keepExpanded: showModelPicker || showTraitPicker,
+                keepExpanded: showModelPicker || showTraitPicker || showOptionPicker != nil,
                 onSend: send,
                 onStop: { store.sendInterrupt() },
                 attachments: attachments,
@@ -297,6 +307,11 @@ struct ComposerView: View {
                 if let currentReasoning {
                     ComposerChip(label: HarnessCatalog.reasoningLabel(currentReasoning)) {
                         showTraitPicker = true
+                    }
+                }
+                ForEach(currentModel.options) { option in
+                    ComposerChip(label: currentChoice(for: option).label) {
+                        showOptionPicker = option
                     }
                 }
             }
@@ -331,6 +346,12 @@ struct ComposerView: View {
                 levels: currentModel.reasoningLevels
             )
         }
+        .sheet(item: $showOptionPicker) { option in
+            ModelOptionPickerSheet(option: option, choiceId: Binding(
+                get: { currentChoice(for: option).id },
+                set: { writeOption(option: option, choiceId: $0) }
+            ))
+        }
         .task(id: "\(chat.id)/\(harness)") {
             guard let space = model.space(for: chat) else { return }
             catalogs[harness] = await model.listModels(space: space, harness: harness)
@@ -344,12 +365,37 @@ struct ComposerView: View {
     }
 
     /// Merge a model/effort change into the chat's config row (LWW; the host
-    /// picks it up on the next run dispatch). Copies preserve modelOptions.
+    /// picks it up on the next run dispatch). Compatible model options survive
+    /// edits; changing model prunes traits the destination does not advertise.
     private func writeConfig(model newModel: String?, reasoning newReasoning: String?) {
         var config = chat.config ?? ChatConfig(harness: harness, model: nil,
                                                reasoning: nil, sandbox: "workspace-write")
+        let changedModel = newModel != nil && newModel != config.model
         config.model = newModel
         config.reasoning = newReasoning
+        if changedModel, let newModel,
+           let target = models.first(where: { $0.id == newModel }) {
+            var compatible: [String: JSONValue] = [:]
+            for option in target.options {
+                guard let selected = config.modelOptions[option.id]?.stringValue,
+                      selected != option.defaultChoice,
+                      option.choices.contains(where: { $0.id == selected }) else { continue }
+                compatible[option.id] = .string(selected)
+            }
+            config.modelOptions = compatible
+        }
+        model.setChatConfig(chatId: chat.id, config: config)
+    }
+
+    private func writeOption(option: ModelOptionInfo, choiceId: String) {
+        var config = chat.config ?? ChatConfig(harness: harness, model: currentModel.id,
+                                               reasoning: currentReasoning,
+                                               sandbox: "workspace-write")
+        if choiceId == option.defaultChoice {
+            config.modelOptions.removeValue(forKey: option.id)
+        } else {
+            config.modelOptions[option.id] = .string(choiceId)
+        }
         model.setChatConfig(chatId: chat.id, config: config)
     }
 

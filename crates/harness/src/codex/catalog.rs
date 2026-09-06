@@ -1,11 +1,9 @@
 //! Model catalog + effort mapping for Codex, ported from zeron's
 //! `packages/harness/src/codex.ts`.
 //!
-//! The TS harness discovers models live via the app server's `model/list`
-//! (experimentalApi) and falls back to a curated snapshot; here the snapshot IS
-//! the catalog, and `CodexHarness::models` is the single seam where a
-//! short-lived `codex app-server` + `model/list` pagination can later be
-//! spliced in (same call t3code's Codex provider makes).
+//! The live catalog comes from the app server's paginated `model/list`
+//! (experimentalApi). This snapshot is the failure/offline fallback, kept in
+//! newest-first order so a picker remains useful when discovery cannot run.
 
 use zeron_proto::{Model, ModelOption, ModelOptionChoice, ReasoningLevel, SandboxLevel};
 
@@ -129,14 +127,19 @@ fn model(
     }
 }
 
-/// The curated catalog: a snapshot of codex-cli 0.146's `model/list`, wire
-/// order (newest family first, Daybreak within the current-gen block) —
-/// efforts as the server reports them (gpt-5.6 goes up to `ultra`). Daybreak
-/// Blue reports NO service tiers, so it carries no trait — sending
-/// `serviceTier: priority` for it would be rejected. Mirrors codex.ts's
-/// `CODEX_MODELS` fallback.
+/// The curated fallback catalog: newest family first, with efforts as the
+/// app server reports them. Daybreak Blue reports NO service tiers, so it
+/// carries no trait — sending `serviceTier: priority` for it would be
+/// rejected. The live `model/list` remains authoritative whenever available.
 pub(crate) fn static_models() -> Vec<Model> {
     vec![
+        model(
+            "gpt-6-astra",
+            "GPT-6-Astra",
+            "Our most capable model for complex, demanding work.",
+            ULTRA_LADDER,
+            vec![service_tier()],
+        ),
         model(
             "gpt-5.6-sol",
             "GPT-5.6-Sol",
@@ -213,10 +216,10 @@ mod tests {
     #[test]
     fn catalog_is_newest_first_with_service_tiers() {
         let models = static_models();
-        assert_eq!(models.len(), 8);
-        assert_eq!(models[0].id, "gpt-5.6-sol");
+        assert_eq!(models.len(), 9);
+        assert_eq!(models[0].id, "gpt-6-astra");
         assert!(models[0].reasoning_levels.contains(&ReasoningLevel::Ultra));
-        assert!(!models[4].reasoning_levels.contains(&ReasoningLevel::Max));
+        assert!(!models[5].reasoning_levels.contains(&ReasoningLevel::Max));
         for m in &models {
             let tier = m.options.iter().find(|o| o.id == "serviceTier");
             // Daybreak Blue reports no service tiers on the wire.

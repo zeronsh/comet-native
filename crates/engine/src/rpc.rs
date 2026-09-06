@@ -928,17 +928,22 @@ where
 /// full `reset` first, then only changed entries per commit — the whole-Vec
 /// serialization here was the per-tick cost that scaled with transcript size.
 fn doc_messages_stream(
-    rx: watch::Receiver<Vec<zeron_doc::SessionMessageEntry>>,
+    rx: watch::Receiver<std::sync::Arc<Vec<zeron_doc::SessionMessageEntry>>>,
 ) -> BoxStream<'static, serde_json::Value> {
     use zeron_doc::transcript_delta::{TranscriptFrame, diff_transcript};
     futures::stream::unfold(
-        (rx, None::<Vec<zeron_doc::SessionMessageEntry>>),
+        (
+            rx,
+            None::<std::sync::Arc<Vec<zeron_doc::SessionMessageEntry>>>,
+        ),
         |(mut rx, mut prev)| async move {
             loop {
                 if prev.is_some() {
                     rx.changed().await.ok()?;
                 }
-                let current: Vec<_> = rx.borrow_and_update().clone();
+                // Watchers retain the immutable published snapshot. Each
+                // connection used to deep-copy the entire transcript here.
+                let current = rx.borrow_and_update().clone();
                 let frame = match prev.as_deref() {
                     None => TranscriptFrame::reset(&current),
                     Some(prev) => diff_transcript(prev, &current),

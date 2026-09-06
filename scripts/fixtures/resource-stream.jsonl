@@ -1,0 +1,445 @@
+{"event": {"type": "reasoningDelta", "text": "The user wants"}}
+{"event": {"type": "reasoningDelta", "text": " me to write a detailed tutorial on Rust ownership with exactly 80 numbered sections. Each section needs:\n1. A heading\n2. A paragraph of at least 60 words\n3. A"}}
+{"event": {"type": "reasoningDelta", "text": " short Rust code example\n\nThey explicitly say \"Do not use tools\" and \"Continue through all 80 sections without asking questions.\"\n\nThis is a substantial"}}
+{"event": {"type": "reasoningDelta", "text": " writing task, but the user has made it clear they want me to proceed without asking for clarification. I'll write a comprehensive tutorial covering all"}}
+{"event": {"type": "reasoningDelta", "text": " aspects of Rust ownership, from basics to advanced concepts.\n\nLet me structure this to cover:\n- Introduction to ownership\n- Ownership rules\n- Moving values"}}
+{"event": {"type": "reasoningDelta", "text": "\n- Copying\n- References and borrowing\n- Mutable references\n- Lifetime concepts\n- Common patterns\n- Best practices\n- Edge"}}
+{"event": {"type": "reasoningDelta", "text": " cases\n- And more...\n\nI'll make sure each section has at least 60 words and includes a code example."}}
+{"event": {"type": "textDelta", "text": "# A Comprehensive Tutorial on Rust"}}
+{"event": {"type": "textDelta", "text": " Ownership: 80 Sections\n\n## 1. Introduction to Ownership\n\nRust's ownership system is a set of rules that the compiler checks"}}
+{"event": {"type": "textDelta", "text": " at compile time. Unlike garbage collection or manual memory management, Rust uses ownership to manage memory safely without runtime overhead"}}
+{"event": {"type": "textDelta", "text": ". Understanding ownership is fundamental to writing Rust code effectively. The ownership system prevents common bugs like use-after-free"}}
+{"event": {"type": "textDelta", "text": " and double-free errors. It enables Rust to provide memory safety without needing a garbage collector, making"}}
+{"event": {"type": "textDelta", "text": " Rust both safe and efficient. This tutorial will guide you through every aspect of Rust's ownership model.\n\n```rust\nfn main() {\n    let s"}}
+{"event": {"type": "textDelta", "text": " = String::from(\"hello\");\n    println!(\"{}\", s); // s owns the String\n}\n```\n\n## 2. What is Ownership?\n\nOwnership is"}}
+{"event": {"type": "textDelta", "text": " a system where each value in Rust has a single owner at any given time. When the owner goes out of scope, the value is automatically dropped and"}}
+{"event": {"type": "textDelta", "text": " its memory is freed. This is different from other programming languages where memory management is handled differently. The compiler tracks ownership through static"}}
+{"event": {"type": "textDelta", "text": " analysis, ensuring memory safety. No runtime checks or garbage collection is needed. The ownership rules are enforced at compile time, catching many"}}
+{"event": {"type": "textDelta", "text": " errors before the program runs.\n\n```rust\nfn main() {\n    let s = String::from(\"world\"); // s owns this String\n    // s is the"}}
+{"event": {"type": "textDelta", "text": " owner of the String \"world\"\n} // s goes out of scope here, String is dropped\n```\n\n## 3. The"}}
+{"event": {"type": "textDelta", "text": " First Rule of Ownership\n\nThe first rule of ownership states that each value in Rust has exactly one owner. This means that at any point in time"}}
+{"event": {"type": "textDelta", "text": ", only one variable can own a particular piece of data on the heap. When you assign a value from one variable to another, ownership is transferred to"}}
+{"event": {"type": "textDelta", "text": " the new variable. The original variable no longer has ownership of that value. This rule ensures that memory is managed safely and prevents multiple parts of code"}}
+{"event": {"type": "textDelta", "text": " from trying to free the same memory. Understanding this rule is essential for avoiding conflicts over resource ownership.\n\n```rust\nfn main() {\n    "}}
+{"event": {"type": "textDelta", "text": "let s1 = String::from(\"hello\");\n    let s2 = s1; // ownership moves to s2\n    // println!(\"{}\", s"}}
+{"event": {"type": "textDelta", "text": "1); // error: s1 no longer owns the String\n    println!(\"{}\", s2); // this is fine\n}\n```\n\n## 4. The"}}
+{"event": {"type": "textDelta", "text": " Second Rule of Ownership\n\nThe second rule of ownership states that when the owner goes out of scope, the value will be dropped. This means memory is automatically"}}
+{"event": {"type": "textDelta", "text": " cleaned up when it's no longer needed. Rust calls a special function `drop` (similar to destruct"}}
+{"event": {"type": "textDelta", "text": "ors in C++) when a variable goes out of scope. This automatic cleanup happens for all types of values, whether they're on the stack or the heap. The rule"}}
+{"event": {"type": "textDelta", "text": " eliminates memory leaks because memory is always freed when it's no longer accessible. This is why Rust doesn't need garbage collection."}}
+{"event": {"type": "textDelta", "text": "\n\n```rust\nfn main() {\n    let s = String::from(\"hello\");\n    // s is in scope here\n    println!(\"{}\", s);\n}"}}
+{"event": {"type": "textDelta", "text": " // s goes out of scope here, drop is called automatically\n```\n\n## 5. Stack vs. Heap\n\nUnderstanding the difference between stack and heap storage is crucial for understanding"}}
+{"event": {"type": "textDelta", "text": " ownership. Stack memory is automatically managed and fast, storing values of known fixed size like integers and references. Heap memory"}}
+{"event": {"type": "textDelta", "text": " stores data of unknown or variable size like Strings and collections. When a variable holding heap data goes out of"}}
+{"event": {"type": "textDelta", "text": " scope, Rust deallocates the heap memory. Stack values are automatically cleaned up when they go out of scope. The heap requires explicit management"}}
+{"event": {"type": "textDelta", "text": " through ownership to prevent memory leaks.\n\n```rust\nfn main() {\n    let x = 5; // stack: stored directly"}}
+{"event": {"type": "textDelta", "text": "\n    let s = String::from(\"hello\"); // heap: data stored on heap, reference on stack\n}\n```\n\n## 6. Move"}}
+{"event": {"type": "textDelta", "text": " Semantics\n\nMove semantics is the core behavior of Rust's ownership system. When you assign a value from one variable to another, ownership is transferred in what"}}
+{"event": {"type": "textDelta", "text": "'s called a \"move.\" The original variable can no longer be used because it no longer owns the value. This differs from copying, where"}}
+{"event": {"type": "textDelta", "text": " both variables hold independent copies of the data. Moves are efficient because they don't require copying large amounts of data. Move"}}
+{"event": {"type": "textDelta", "text": " semantics ensure that at most one variable owns a value at any given time.\n\n```rust\nfn main() {\n    let s1 = String::from(\"hello\");\n    let s2 = s"}}
+{"event": {"type": "textDelta", "text": "1; // s1 is moved to s2\n    println!(\"{}\", s2); // okay\n    // println!(\"{}\", s1); // error: s1 was"}}
+{"event": {"type": "textDelta", "text": " moved\n}\n```\n\n## 7. Copy Trait for Stack Values\n\nNot all types use move semantics. Types"}}
+{"event": {"type": "textDelta", "text": " that implement the `Copy` trait are copied instead of moved when assigned to another variable. These include simple types like integers, floats, booleans, and characters"}}
+{"event": {"type": "textDelta", "text": ". When a type implements `Copy`, assigning it to another variable creates an independent copy of the value. Both variables remain"}}
+{"event": {"type": "textDelta", "text": " valid and can be used independently. `Copy` is only valid for types whose values can be safely duplicated by just copying bits"}}
+{"event": {"type": "textDelta", "text": ".\n\n```rust\nfn main() {\n    let x = 5;\n    let y = x; // x is copied to y\n    println!(\"x: {}, y: {}\", x, y);"}}
+{"event": {"type": "textDelta", "text": " // both are still valid\n}\n```\n\n## 8. Implementing Copy for Custom Types\n\nYou can implement the `Copy` trait for your own types, but"}}
+{"event": {"type": "textDelta", "text": " only if they consist entirely of `Copy` types. If a struct contains a `String` or other"}}
+{"event": {"type": "textDelta", "text": " non-`Copy` type, it cannot be `Copy`. The `Copy` trait is usually implemented along with the `Clone` trait. `"}}
+{"event": {"type": "textDelta", "text": "Copy` is a marker trait without methods that tells the compiler the type can be safely copied bit-"}}
+{"event": {"type": "textDelta", "text": "by-bit. Most commonly, you'll derive both `Copy` and `Clone` using attributes.\n\n```rust\n#[derive(Copy, Clone"}}
+{"event": {"type": "textDelta", "text": ")]\nstruct Point {\n    x: i32,\n    y: i32,\n}\n\nfn main() {\n    let p1 = Point { x: 1, y: "}}
+{"event": {"type": "textDelta", "text": "2 };\n    let p2 = p1; // p1 is copied\n    println!(\"p1: {:?}, p2: {:?}\", p1, p2); // both valid"}}
+{"event": {"type": "textDelta", "text": "\n}\n```\n\n## 9. Clone: Explicit Deep Copy\n\nWhile `Copy` is implicit and cheap, `Clone`"}}
+{"event": {"type": "textDelta", "text": " is explicit and can be expensive. The `Clone` trait allows you to create a deep copy of a value. For types like `String`,"}}
+{"event": {"type": "textDelta", "text": " cloning duplicates all the data on the heap, which takes time and memory. You must explicitly call"}}
+{"event": {"type": "textDelta", "text": " `.clone()` to clone a value. This makes expensive operations visible in your code. Cloning is useful"}}
+{"event": {"type": "textDelta", "text": " when you want multiple independent copies of a value.\n\n```rust\nfn main() {\n    let s1 = String::from(\"hello\");\n    let s2 = s"}}
+{"event": {"type": "textDelta", "text": "1.clone(); // explicit deep copy\n    println!(\"s1: {}, s2: {}\", s1, s2); // both are valid\n}\n```\n\n## 10"}}
+{"event": {"type": "textDelta", "text": ". Function Parameters and Ownership\n\nWhen you pass a value to a function, ownership is transferred to the function's parameter. After the function returns, ownership is no longer accessible"}}
+{"event": {"type": "textDelta", "text": " in the calling code unless the function returns ownership back. This is part of move semantics: ass"}}
+{"event": {"type": "textDelta", "text": "igning a value to a function parameter is like assigning it to any other variable. Large values on the heap will"}}
+{"event": {"type": "textDelta", "text": " have their ownership moved into the function. If the function doesn't return the value, it will be dropped at the end of the function.\n\n```"}}
+{"event": {"type": "textDelta", "text": "rust\nfn take_ownership(s: String) {\n    println!(\"{}\", s);\n} // s is dropped here\n\nfn main() {\n    let s"}}
+{"event": {"type": "textDelta", "text": " = String::from(\"hello\");\n    take_ownership(s); // ownership moves to function\n    // println!(\"{}\", s); // error: s is no longer accessible\n}"}}
+{"event": {"type": "textDelta", "text": "\n```\n\n## 11. Function Return Values and Ownership\n\nFunctions can return ownership to the caller by returning a value. The return value's ownership is transferred to whatever receives"}}
+{"event": {"type": "textDelta", "text": " it in the calling code. This allows functions to transfer ownership back after processing. Returning values is a way to give ownership back"}}
+{"event": {"type": "textDelta", "text": " to the caller. A function can take ownership of a parameter and return ownership of a modified value. This is an important pattern for functions"}}
+{"event": {"type": "textDelta", "text": " that need to work with owned values.\n\n```rust\nfn give_ownership() -> String {\n    String::from(\"hello\")\n}\n\nfn main() {\n    let s"}}
+{"event": {"type": "textDelta", "text": " = give_ownership(); // ownership transferred to s\n    println!(\"{}\", s);\n}\n```\n\n## 12. Introduction to References\n\nReferences allow you to refer to a"}}
+{"event": {"type": "textDelta", "text": " value without taking ownership of it. A reference is created using the `&` operator. References are immutable by default, meaning you can't modify"}}
+{"event": {"type": "textDelta", "text": " the value through a reference. References are addresses in memory pointing to owned data. When a reference goes out of scope, nothing happens because"}}
+{"event": {"type": "textDelta", "text": " the reference doesn't own the value. References enable passing values to functions without transferring ownership.\n\n```rust\nfn main() {"}}
+{"event": {"type": "textDelta", "text": "\n    let s = String::from(\"hello\");\n    let r = &s; // create a reference to s\n    println!(\"{}\", r); // dereference the reference"}}
+{"event": {"type": "textDelta", "text": "\n}\n```\n\n## 13. Borrowing: Temporary References\n\nBorrowing is the process of creating a reference to a value you don't own."}}
+{"event": {"type": "textDelta", "text": " When you borrow a value, you're temporarily allowing another part of code to read that value. The borrowed reference"}}
+{"event": {"type": "textDelta", "text": " is only valid as long as the original owner keeps the value alive. Borrowing is cheaper than moving because no data is copied."}}
+{"event": {"type": "textDelta", "text": " Borrowing is immutable by default, preventing accidental modifications.\n\n```rust\nfn print_string(s: &String) {\n    println!(\"{}\", s);\n}"}}
+{"event": {"type": "textDelta", "text": "\n\nfn main() {\n    let s = String::from(\"hello\");\n    print_string(&s); // borrow s\n    println!(\"{}\", s); // s still"}}
+{"event": {"type": "textDelta", "text": " owns the String\n}\n```\n\n## 14. Multiple Immutable References\n\nYou can create multiple immutable references to the same value at the"}}
+{"event": {"type": "textDelta", "text": " same time. This is safe because none of the references can modify the value. The rule states that you can have many immutable references to"}}
+{"event": {"type": "textDelta", "text": " a value, or one mutable reference, but not both. Multiple readers of the same data"}}
+{"event": {"type": "textDelta", "text": " is safe and encouraged. This is a fundamental rule that prevents data races at compile time.\n\n```"}}
+{"event": {"type": "textDelta", "text": "rust\nfn main() {\n    let s = String::from(\"hello\");\n    let r1 = &s;\n    let r2 = &s;\n    let r3 ="}}
+{"event": {"type": "textDelta", "text": " &s;\n    println!(\"{}, {}, {}\", r1, r2, r3); // all valid\n}\n```\n\n## 15. Mutable References\n\nMutable references allow"}}
+{"event": {"type": "textDelta", "text": " you to modify the value you're borrowing. A mutable reference is created using `&mut`. You can only have one mutable reference to a value at a time in"}}
+{"event": {"type": "textDelta", "text": " a given scope. This ensures that modifications through the reference won't surprise other parts of code. Mutable"}}
+{"event": {"type": "textDelta", "text": " references are less common than immutable references but essential for many algorithms. The compiler prevents data races by ensuring exclusive m"}}
+{"event": {"type": "textDelta", "text": "utable access.\n\n```rust\nfn main() {\n    let mut s = String::from(\"hello\");\n    let r = &mut s;\n    r.push_str(\" world\");"}}
+{"event": {"type": "textDelta", "text": "\n    println!(\"{}\", r);\n}\n```\n\n## 16. The Borrowing Rules\n\nThe borrowing rules are simple but powerful"}}
+{"event": {"type": "textDelta", "text": ". You can have either any number of immutable references, or exactly one mutable reference at a time. You cannot have both mutable and immutable references at"}}
+{"event": {"type": "textDelta", "text": " the same time. The compiler enforces these rules statically, preventing data races at compile time. Violating these rules results in a compile error"}}
+{"event": {"type": "textDelta", "text": ". These rules are checked using the concept of scopes and lifetimes.\n\n```rust\nfn main() {\n    let mut s = String::"}}
+{"event": {"type": "textDelta", "text": "from(\"hello\");\n    let r1 = &s;\n    let r2 = &s;\n    // let r3 = &mut s; // error: can"}}
+{"event": {"type": "textDelta", "text": "'t borrow as mutable while immutable borrows exist\n    println!(\"{}, {}\", r1, r2);\n    let"}}
+{"event": {"type": "textDelta", "text": " r3 = &mut s; // now okay, immutable refs are no longer used\n    r3.push_"}}
+{"event": {"type": "textDelta", "text": "str(\" world\");\n    println!(\"{}\", r3);\n}\n```\n\n## 17. Lifetimes: What Are They?\n\nLifetimes are a concept that"}}
+{"event": {"type": "textDelta", "text": " tracks how long references are valid. Every reference in Rust has a lifetime, which is the scope in which the"}}
+{"event": {"type": "textDelta", "text": " reference is valid. The compiler uses lifetimes to ensure that references never outlive the data they point to. Lifetimes are often implicit and"}}
+{"event": {"type": "textDelta", "text": " don't need to be written explicitly. When they can't be inferred, you must annotate them with `'"}}
+{"event": {"type": "textDelta", "text": "a`, `'b`, etc. Lifetimes are a compile-time feature that doesn't affect runtime performance.\n\n```rust\nfn main()"}}
+{"event": {"type": "textDelta", "text": " {\n    let s = String::from(\"hello\");\n    {\n        let r = &s; // r is borrowed here\n        println!(\"{}\", r);\n    } // r's"}}
+{"event": {"type": "textDelta", "text": " lifetime ends here\n    println!(\"{}\", s); // s is still valid\n}\n```\n\n## 18. Explicit Lifetime Annotations\n\nWhen the compiler can't in"}}
+{"event": {"type": "textDelta", "text": "fer lifetimes automatically, you must annotate them explicitly. Lifetime annotations use single quotes followed by a name like"}}
+{"event": {"type": "textDelta", "text": " `'a`. The syntax `&'a String` means \"a reference to a String with lifetime 'a\"."}}
+{"event": {"type": "textDelta", "text": " Lifetime annotations appear in function signatures and struct definitions. They don't change how long a value actually lives. They tell"}}
+{"event": {"type": "textDelta", "text": " the compiler to verify that the actual lifetimes at runtime satisfy the constraints.\n\n```rust\nfn longest<'a>(s1: &'a"}}
+{"event": {"type": "textDelta", "text": " str, s2: &'a str) -> &'a str {\n    if s1.len() > s2.len() { s1 } else { s2 "}}
+{"event": {"type": "textDelta", "text": "}\n}\n\nfn main() {\n    let s1 = \"hello\";\n    let s2 = \"world\";\n    println!(\"{}\", longest(s1, s2));"}}
+{"event": {"type": "textDelta", "text": "\n}\n```\n\n## 19. Lifetime Elision\n\nRust has rules called \"lifetime elision\" that allow you to om"}}
+{"event": {"type": "textDelta", "text": "it lifetime annotations in common cases. If there's only one input reference, its lifetime is assumed to be the output lifetime. If there"}}
+{"event": {"type": "textDelta", "text": "'s a `self` parameter, its lifetime is the output lifetime. These rules were designed to make common patterns erg"}}
+{"event": {"type": "textDelta", "text": "onomic while still requiring annotations when needed. Lifetime elision makes function signatures cleaner and easier to read.\n\n```rust\nfn"}}
+{"event": {"type": "textDelta", "text": " first_word(s: &str) -> &str {\n    // lifetime is elided here\n    let bytes = s.as_bytes();"}}
+{"event": {"type": "textDelta", "text": "\n    for (i, &item) in bytes.iter().enumerate() {\n        if item == b' ' {\n            return &s[0..i];\n        }\n    "}}
+{"event": {"type": "textDelta", "text": "}\n    &s[..]\n}\n\nfn main() {\n    println!(\"{}\", first_word(\"hello world\"));\n}\n```\n\n## 20. Lif"}}
+{"event": {"type": "textDelta", "text": "etimes in Structs\n\nStructs can contain references, but those references must have lifetime annotations. If a struct contains a reference,"}}
+{"event": {"type": "textDelta", "text": " you must specify how long that reference is valid. This prevents creating structs with dangling references. A struct with a reference is associated"}}
+{"event": {"type": "textDelta", "text": " with the lifetime of that reference. This ensures that the struct can't outlive the data it references.\n\n```rust\nstruct Text"}}
+{"event": {"type": "textDelta", "text": "Wrapper<'a> {\n    text: &'a str,\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    let"}}
+{"event": {"type": "textDelta", "text": " wrapper = TextWrapper { text: &s };\n    println!(\"{}\", wrapper.text);\n} // s is dropped here, wrapper is no longer valid\n```\n\n## 21. Lif"}}
+{"event": {"type": "textDelta", "text": "etimes in Methods\n\nMethods in impl blocks can also have lifetime annotations. If a method returns a reference, its lifetime must be connected to a reference"}}
+{"event": {"type": "textDelta", "text": " parameter or `self`. The `self` parameter has an implicit lifetime that determines how long the returned"}}
+{"event": {"type": "textDelta", "text": " reference is valid. Methods often return references with the lifetime of `self`. This ensures that methods can't return"}}
+{"event": {"type": "textDelta", "text": " references that outlive the object.\n\n```rust\nimpl<'a> TextWrapper<'a> {\n    fn get_text(&self) -> &'"}}
+{"event": {"type": "textDelta", "text": "a str {\n        self.text\n    }\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    let wrapper = TextWrapper { text: &s };\n    let"}}
+{"event": {"type": "textDelta", "text": " text = wrapper.get_text();\n    println!(\"{}\", text);\n}\n```\n\n## 22. Static Lifetimes\n\nThe `'static` lifetime means a"}}
+{"event": {"type": "textDelta", "text": " reference is valid for the entire duration of the program. String literals have `'static` lifetime because they're hardcoded into the binary. Any reference with"}}
+{"event": {"type": "textDelta", "text": " a `'static` lifetime can never be a dangling pointer. Only very specific values like string"}}
+{"event": {"type": "textDelta", "text": " literals and other compile-time constants have static lifetimes. A reference with `'static` lifetime can be stored in static variables."}}
+{"event": {"type": "textDelta", "text": "\n\n```rust\nfn main() {\n    let s: &'static str = \"hello\"; // string literals have 'static lifetime\n    println!(\"{}\", s"}}
+{"event": {"type": "textDelta", "text": ");\n}\n\nstatic GREETING: &str = \"hello, world!\";\n\nfn main2() {\n    println!(\"{}\", GREETING);"}}
+{"event": {"type": "textDelta", "text": "\n}\n```\n\n## 23. Dereference Operator\n\nThe dereference operator `*` allows you to access the value a reference points to. For references"}}
+{"event": {"type": "textDelta", "text": " to simple types, you typically don't need to dereference explicitly because of automatic dereferencing."}}
+{"event": {"type": "textDelta", "text": " For references to complex types or when you need to modify the value, dereferencing is necessary. The dereference operator has lower precedence than method"}}
+{"event": {"type": "textDelta", "text": " calls, so `ref.method()` is equivalent to `(*ref).method()`.\n\n```rust\nfn main() {\n    let x = 5;"}}
+{"event": {"type": "textDelta", "text": "\n    let r = &x;\n    println!(\"x: {}, r: {}\", x, *r); // *r dereferences to "}}
+{"event": {"type": "textDelta", "text": "5\n}\n\nfn main2() {\n    let mut s = String::from(\"hello\");\n    let r = &mut s;\n    r.push_str(\" world\");"}}
+{"event": {"type": "textDelta", "text": "\n    println!(\"{}\", r);\n}\n```\n\n## 24. Automatic Dereferencing\n\nRust automatically dereferences references in many contexts, making code cle"}}
+{"event": {"type": "textDelta", "text": "aner and easier to write. When you call a method on a reference, Rust automatically dereferences it as many times as necessary. Automatic"}}
+{"event": {"type": "textDelta", "text": " dereferencing makes working with references feel natural and doesn't require constant use of the `*` operator. This feature is called \"de"}}
+{"event": {"type": "textDelta", "text": "ref coercion\" and applies in method calls and function arguments. It makes references nearly as convenient to use as owned"}}
+{"event": {"type": "textDelta", "text": " values.\n\n```rust\nfn main() {\n    let s = String::from(\"hello\");\n    let r = &s;\n    // Both of these work due"}}
+{"event": {"type": "textDelta", "text": " to automatic dereferencing\n    println!(\"{}\", r.len());\n    println!(\"{}\", (*r).len());\n}\n```\n\n## 25. References to References"}}
+{"event": {"type": "textDelta", "text": "\n\nYou can create references to references, creating multiple levels of indirection. A reference to a reference is created by taking the address of an existing reference using"}}
+{"event": {"type": "textDelta", "text": " `&`. Dereferencing a reference to a reference requires using the `*` operator multiple times or relying on automatic dereferencing. Multiple"}}
+{"event": {"type": "textDelta", "text": " levels of references are rarely used in practice but can be useful in some situations. Rust handles them correctly"}}
+{"event": {"type": "textDelta", "text": " through its type system.\n\n```rust\nfn main() {\n    let x = 5;\n    let r1 = &x;\n    let"}}
+{"event": {"type": "textDelta", "text": " r2 = &r1;\n    println!(\"x: {}, r1: {}, r2: {}\", x, *r1, **r2);\n}\n```\n\n## 26"}}
+{"event": {"type": "textDelta", "text": ". Slices: References to Collections\n\nSlices are references to a contiguous sequence of elements in a collection. Unlike ow"}}
+{"event": {"type": "textDelta", "text": "ning a String or Vec, a slice borrows a portion of a collection. String slices `&str` and"}}
+{"event": {"type": "textDelta", "text": " vector slices `&[T]` are common examples. Slices are created using range syntax like `&s[0..5]`"}}
+{"event": {"type": "textDelta", "text": " to get a slice of the first five elements. Slices are fat pointers that contain both the address and length of the data."}}
+{"event": {"type": "textDelta", "text": " Slices are immutable references that prevent accidental modification of the collection.\n\n```rust\nfn main() {\n    let s = \"hello world\";\n    let hello"}}
+{"event": {"type": "textDelta", "text": " = &s[0..5];\n    let world = &s[6..11];\n    println!(\"{} {}\", hello, world);\n}"}}
+{"event": {"type": "textDelta", "text": "\n\nfn main2() {\n    let v = vec![1, 2, 3, 4, 5];\n    let slice = &v[1..4];\n    println!(\"{:"}}
+{"event": {"type": "textDelta", "text": "?}\", slice); // [2, 3, 4]\n}\n```\n\n## 27. Mutable Slices\n\nMutable slices allow you to b"}}
+{"event": {"type": "textDelta", "text": "orrow a portion of a collection and modify its elements. A mutable slice is created using `&mut collection[range]` syntax. You can modify elements"}}
+{"event": {"type": "textDelta", "text": " through a mutable slice without affecting other parts of the collection. Mutable slices follow the same borrowing rules as mutable references: only one"}}
+{"event": {"type": "textDelta", "text": " mutable borrow at a time. Mutable slices are useful for operations like sorting or modifying elements in bulk"}}
+{"event": {"type": "textDelta", "text": ".\n\n```rust\nfn main() {\n    let mut v = vec![1, 2, 3, 4, 5];\n    let slice = &mut v[1..4"}}
+{"event": {"type": "textDelta", "text": "];\n    slice[0] = 10;\n    println!(\"{:?}\", v); // [1, 10, 3, 4, 5]\n}\n```"}}
+{"event": {"type": "textDelta", "text": "\n\n## 28. Ownership and Functions Revisited\n\nUnderstanding how ownership works with functions is crucial for writing correct Rust code. Each function owns its parameters during execution"}}
+{"event": {"type": "textDelta", "text": ". When a function returns, ownership of the return value is transferred to the caller. If a function needs to work with a value without"}}
+{"event": {"type": "textDelta", "text": " taking ownership, you pass a reference instead. This design encourages thinking about who should own each piece"}}
+{"event": {"type": "textDelta", "text": " of data. It makes memory management explicit and predictable.\n\n```rust\nfn takes_ownership(s: String) {\n    println!(\"{}\", s);\n}\n\nfn"}}
+{"event": {"type": "textDelta", "text": " borrows(s: &String) {\n    println!(\"{}\", s);\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    takes_ownership(s);"}}
+{"event": {"type": "textDelta", "text": " // s is moved\n    // println!(\"{}\", s); // error\n\n    let s = String::from(\"world\");\n    borrows(&s); // s is borrowed"}}
+{"event": {"type": "textDelta", "text": "\n    println!(\"{}\", s); // s is still valid\n}\n```\n\n## 29. Returning Ownership from Functions\n\nFunctions often need to return ownership of data to the caller. This"}}
+{"event": {"type": "textDelta", "text": " can be done by returning the value directly or by taking and returning references. When a function takes ownership and returns something, you"}}
+{"event": {"type": "textDelta", "text": " can choose what to return. Some functions transform data and return the result. Others return the input to"}}
+{"event": {"type": "textDelta", "text": " allow the caller to use it further.\n\n```rust\nfn add_world(mut s: String) -> String {\n    s.push"}}
+{"event": {"type": "textDelta", "text": "_str(\" world\");\n    s\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    let s = add_world(s); // ownership returned"}}
+{"event": {"type": "textDelta", "text": "\n    println!(\"{}\", s);\n}\n```\n\n## 30. Ownership Patterns: Working with Multiple Values\n\nWhen working with multiple owned"}}
+{"event": {"type": "textDelta", "text": " values, ownership becomes more complex. You might have tuples containing owned values, vectors of owned values, or structs with owned fields"}}
+{"event": {"type": "textDelta", "text": ". Ownership rules still apply: each value has exactly one owner. When the owner is moved or dropped, all"}}
+{"event": {"type": "textDelta", "text": " owned values are moved or dropped as well. This ensures that cleanup happens correctly for nested structures.\n\n```rust\nfn main() {\n    let s1 = String::from(\"hello"}}
+{"event": {"type": "textDelta", "text": "\");\n    let s2 = String::from(\"world\");\n    let tuple = (s1, s2);\n    println!(\"{}, {}\", tuple.0, tuple.1);\n    "}}
+{"event": {"type": "textDelta", "text": "// s1 and s2 are no longer accessible, moved into tuple\n}\n```\n\n## 31. Vectors"}}
+{"event": {"type": "textDelta", "text": " and Ownership\n\nVectors own their elements, which are stored on the heap. When a vector is dropped, all its elements are also"}}
+{"event": {"type": "textDelta", "text": " dropped. Each element in a vector is owned by the vector. You can move values into a vector, but once there, their ownership belongs"}}
+{"event": {"type": "textDelta", "text": " to the vector. You can borrow elements from a vector as immutable or mutable references. Vectors automatically grow as needed to accommodate new elements.\n\n```rust"}}
+{"event": {"type": "textDelta", "text": "\nfn main() {\n    let v = vec![String::from(\"a\"), String::from(\"b\")];\n    // v owns both strings\n    for s in &"}}
+{"event": {"type": "textDelta", "text": "v {\n        println!(\"{}\", s);\n    }\n} // when v is dropped, both strings are dropped\n```\n\n## 32. Iterating Over Owned Collections"}}
+{"event": {"type": "textDelta", "text": "\n\nDifferent ways of iterating over collections interact differently with ownership. Using `for x in vec` consumes the vector and"}}
+{"event": {"type": "textDelta", "text": " its elements. Using `for x in &vec` borrows the vector and yields immutable references. Using `for x in &mut vec` borrows mut"}}
+{"event": {"type": "textDelta", "text": "ably and yields mutable references. The choice affects whether you can use the collection after the loop. This flexibility allows optimizing for different use cases"}}
+{"event": {"type": "textDelta", "text": ".\n\n```rust\nfn main() {\n    let v = vec![1, 2, 3];\n    \n    for x in &v { // b"}}
+{"event": {"type": "textDelta", "text": "orrow immutably\n        println!(\"{}\", x);\n    }\n    println!(\"{:?}\", v); // v is still accessible\n    \n    for"}}
+{"event": {"type": "textDelta", "text": " x in v { // consume v\n        println!(\"{}\", x);\n    }\n    // println!(\"{:?}\", v); // error: v is consumed"}}
+{"event": {"type": "textDelta", "text": "\n}\n```\n\n## 33. Moving Out of Collections\n\nSometimes you need to extract ownership from a collection. Using pattern matching with"}}
+{"event": {"type": "textDelta", "text": " `move` or consuming iterators allows taking ownership of elements. The `Vec::into_iter()` method consumes the vector and yields"}}
+{"event": {"type": "textDelta", "text": " owned values. The `Vec::iter()` method yields immutable references. The `Vec::iter_mut()` method yields mutable references. Choosing the right method"}}
+{"event": {"type": "textDelta", "text": " depends on whether you need to take ownership.\n\n```rust\nfn main() {\n    let v = vec![String::from(\"a\"), String::from(\"b\")];\n    for s"}}
+{"event": {"type": "textDelta", "text": " in v { // v is consumed\n        println!(\"{}\", s);\n    }\n}\n```\n\n## 34. Ownership in Collections with References"}}
+{"event": {"type": "textDelta", "text": "\n\nIf a collection contains references, those references must be valid for as long as the collection exists. This is enforced through lifetimes in"}}
+{"event": {"type": "textDelta", "text": " the collection's type. A `Vec<&'a str>` can only hold"}}
+{"event": {"type": "textDelta", "text": " references valid for at least `'a`. This prevents creating collections with dangling references. The compiler"}}
+{"event": {"type": "textDelta", "text": " verifies that all references in a collection are valid.\n\n```rust\nfn main() {\n    let s1 = String::from(\"hello\");\n    let s"}}
+{"event": {"type": "textDelta", "text": "2 = String::from(\"world\");\n    let v: Vec<&String> = vec![&s1, &s2];\n    println!(\"{:"}}
+{"event": {"type": "textDelta", "text": "?}\", v);\n} // s1 and s2 are dropped here\n```\n\n## 35. Smart Pointers: Box\n\n`Box` is a"}}
+{"event": {"type": "textDelta", "text": " smart pointer that allocates values on the heap and owns them. Boxing a value moves it from the stack to the heap. When the `Box` is"}}
+{"event": {"type": "textDelta", "text": " dropped, the boxed value is also dropped. `Box` is useful for trait objects, recursive types, and when you need a known fixed-"}}
+{"event": {"type": "textDelta", "text": "size pointer to heap data. `Box` implements `Deref`, allowing automatic dereferencing."}}
+{"event": {"type": "textDelta", "text": "\n\n```rust\nfn main() {\n    let b = Box::new(5);\n    println!(\"{}\", *b);\n    println!(\"{}\", b); // deref co"}}
+{"event": {"type": "textDelta", "text": "ercion makes this work\n}\n\nenum List {\n    Cons(i32, Box<List>),\n    Nil,\n}\n\nfn"}}
+{"event": {"type": "textDelta", "text": " main2() {\n    let list = List::Cons(1, Box::new(List::Cons(2, Box::new(List::Nil))));\n}\n```\n\n## 36. Reference"}}
+{"event": {"type": "textDelta", "text": " Counting with Rc\n\n`Rc` (Reference Counted Pointer) allows multiple ownership of the same value. When you"}}
+{"event": {"type": "textDelta", "text": " clone an `Rc`, you get a new pointer to the same data, and the reference count increases. When an `Rc`"}}
+{"event": {"type": "textDelta", "text": " is dropped, the reference count decreases. When the count reaches zero, the data is dropped. `Rc` is useful when you need multiple"}}
+{"event": {"type": "textDelta", "text": " owners of heap data. `Rc` is single-threaded; for multi-threaded code, use `Arc`.\n\n```rust"}}
+{"event": {"type": "textDelta", "text": "\nuse std::rc::Rc;\n\nfn main() {\n    let s = Rc::new(String::from(\"hello\"));\n    let s2 = Rc::clone"}}
+{"event": {"type": "textDelta", "text": "(&s);\n    let s3 = Rc::clone(&s);\n    println!(\"strong count: {}\", Rc::strong_count(&s));"}}
+{"event": {"type": "textDelta", "text": " // 3\n}\n```\n\n## 37. Interior Mutability with RefCell\n\n`RefCell` allows you to mutate values inside an immutable reference"}}
+{"event": {"type": "textDelta", "text": " through interior mutability. Borrowing rules are checked at runtime instead of compile time. `RefCell` should be used only"}}
+{"event": {"type": "textDelta", "text": " when compile-time borrow checking is overly restrictive. Runtime borrow checking panics if rules are violated. `RefCell` is useful for cached"}}
+{"event": {"type": "textDelta", "text": " values or other patterns where compile-time checking is insufficient.\n\n```rust\nuse std::cell::RefCell;\n\nfn main() {\n    let x = RefCell::"}}
+{"event": {"type": "textDelta", "text": "new(5);\n    *x.borrow_mut() = 10;\n    println!(\"{}\", x.borrow());\n}\n```\n\n## 38. Combining Rc"}}
+{"event": {"type": "textDelta", "text": " and RefCell\n\nCombining `Rc` and `RefCell` allows multiple ownership with interior mutability. `Rc<RefCell<T>>` pattern enables multiple m"}}
+{"event": {"type": "textDelta", "text": "utable owners. This is useful for shared mutable state in single-threaded code. Each owner can mutably borrow the value"}}
+{"event": {"type": "textDelta", "text": " through `borrow_mut()`. Runtime checks ensure that only one mutable borrow exists at a time.\n\n```rust\nuse std::rc::"}}
+{"event": {"type": "textDelta", "text": "Rc;\nuse std::cell::RefCell;\n\nfn main() {\n    let s = Rc::new(RefCell::new(String::from(\"hello\")));\n    let s2 = Rc::"}}
+{"event": {"type": "textDelta", "text": "clone(&s);\n    s2.borrow_mut().push_str(\" world\");\n    println!(\"{}\", s.borrow());\n}\n```\n\n## 39. Atomic Reference"}}
+{"event": {"type": "textDelta", "text": " Counting with Arc\n\n`Arc` (Atomic Reference Counted Pointer) is the thread-safe version of `Rc`. It allows multiple threads"}}
+{"event": {"type": "textDelta", "text": " to own the same value. Cloning an `Arc` increments an atomic reference count. `Arc` uses atomic operations ensuring"}}
+{"event": {"type": "textDelta", "text": " thread safety. When the reference count reaches zero, the data is dropped. `Arc` is essential for multi-threaded Rust programs.\n\n```rust\nuse std::sync::Arc"}}
+{"event": {"type": "textDelta", "text": ";\nuse std::thread;\n\nfn main() {\n    let s = Arc::new(String::from(\"hello\"));\n    let s2 = Arc::clone(&s);\n    thread"}}
+{"event": {"type": "textDelta", "text": "::spawn(move || {\n        println!(\"{}\", s2);\n    });\n    println!(\"{}\", s);\n}\n```\n\n## 40. Combining"}}
+{"event": {"type": "textDelta", "text": " Arc and Mutex\n\n`Arc<Mutex<T>>` allows multiple threads to share mutable access to data. Each thread owns an"}}
+{"event": {"type": "textDelta", "text": " `Arc` pointing to the same `Mutex`. Only one thread can hold the lock at a time, preventing data races. This pattern is essential"}}
+{"event": {"type": "textDelta", "text": " for thread-safe shared mutable state. The `Mutex` provides exclusive access, while `Arc` enables multiple ownership.\n\n```rust"}}
+{"event": {"type": "textDelta", "text": "\nuse std::sync::{Arc, Mutex};\nuse std::thread;\n\nfn main() {\n    let counter = Arc::new(Mutex::new(0));\n    let counter"}}
+{"event": {"type": "textDelta", "text": "2 = Arc::clone(&counter);\n    thread::spawn(move || {\n        *counter2.lock().unwrap() += 1;\n    });\n    *counter.lock()."}}
+{"event": {"type": "textDelta", "text": "unwrap() += 1;\n}\n```\n\n## 41. Ownership and Match Expressions\n\nMatch expressions interact with ownership in interesting ways."}}
+{"event": {"type": "textDelta", "text": " Matching on a value moves or borrows depending on the pattern. Matching on an immutable reference"}}
+{"event": {"type": "textDelta", "text": " yields immutable references to fields. Matching on a mutable reference yields mutable references to fields. Matching on an owned value consumes it and"}}
+{"event": {"type": "textDelta", "text": " allows destructuring. This gives fine-grained control over ownership in pattern matching.\n\n```rust\nfn main() {\n    let x = Some(String::from"}}
+{"event": {"type": "textDelta", "text": "(\"hello\"));\n    match &x {\n        Some(s) => println!(\"{}\", s),\n        None => println!(\"none\"),\n    }\n    println"}}
+{"event": {"type": "textDelta", "text": "!(\"{:?}\", x); // x is still accessible\n}\n```\n\n## 42. Destructuring and Ownership\n\nDestructuring allows you to extract values from"}}
+{"event": {"type": "textDelta", "text": " complex types. When destructuring owned values, ownership is transferred to the bindings. When destructuring references, you get references to the fields. The"}}
+{"event": {"type": "textDelta", "text": " `ref` keyword in patterns creates references instead of moving. The `ref mut` keyword creates mutable references."}}
+{"event": {"type": "textDelta", "text": " Destructuring makes working with complex types convenient.\n\n```rust\nfn main() {\n    let point = (1, 2, 3);"}}
+{"event": {"type": "textDelta", "text": "\n    let (x, y, z) = point; // point is moved\n    println!(\"{}, {}, {}\", x, y, z);\n\n    let s = Some(String::from"}}
+{"event": {"type": "textDelta", "text": "(\"hello\"));\n    match s {\n        Some(ref text) => println!(\"{}\", text),\n        None => println!(\"none\"),\n    }\n    println!(\"{:"}}
+{"event": {"type": "textDelta", "text": "?}\", s); // s is still accessible\n}\n```\n\n## 43. Partial Moves\n\nIn some cases, you can move part of a value while"}}
+{"event": {"type": "textDelta", "text": " leaving other parts intact. If you move a field out of a struct, you can still access other fields. This only works if other fields implement `Copy`"}}
+{"event": {"type": "textDelta", "text": " or if you're careful about use-after-move. Partial moves give flexibility but require careful attention to ensure safety. Not"}}
+{"event": {"type": "textDelta", "text": " all types support partial moves.\n\n```rust\nfn main() {\n    let s = (String::from(\"hello\"), 5);\n    let (text, num) ="}}
+{"event": {"type": "textDelta", "text": " s; // s is moved\n    // Can't use s anymore because text was moved\n}\n\n// With tuple"}}
+{"event": {"type": "textDelta", "text": " unpacking:\nstruct Point {\n    x: i32,\n    y: String,\n}\n\nfn main2() {\n    let p"}}
+{"event": {"type": "textDelta", "text": " = Point { x: 1, y: String::from(\"a\") };\n    let Point { x, y } = p; // p is moved\n}\n```\n\n## 44. N"}}
+{"event": {"type": "textDelta", "text": "LL: Non-Lexical Lifetimes\n\nRust uses non-lexical lifetimes (NLL),"}}
+{"event": {"type": "textDelta", "text": " meaning lifetimes are based on actual usage rather than scopes. A reference's lifetime ends when it's last"}}
+{"event": {"type": "textDelta", "text": " used, not when it goes out of scope. This makes code more flexible and allows patterns that would otherwise be rejected. NLL makes"}}
+{"event": {"type": "textDelta", "text": " many patterns naturally work without explicit lifetime annotations. It's an important feature that makes Rust feel less restrictive."}}
+{"event": {"type": "textDelta", "text": "\n\n```rust\nfn main() {\n    let mut s = String::from(\"hello\");\n    let r = &s;\n    println!(\"{}\", r); // r's lifetime ends here"}}
+{"event": {"type": "textDelta", "text": "\n    let r2 = &mut s; // now allowed\n    r2.push_str(\" world\");\n}\n```\n\n## 45."}}
+{"event": {"type": "textDelta", "text": " Reborrowing\n\nReborrowing allows you to create a new reference from an existing reference. When you pass a reference to a function that takes a reference"}}
+{"event": {"type": "textDelta", "text": ", reborrowing happens implicitly. Reborrowing allows nested borrows without violating borrowing rules. This is useful for temporary"}}
+{"event": {"type": "textDelta", "text": " borrowed values in function arguments. Reborrowing makes working with references seamless.\n\n```rust\nfn print_len(s: &"}}
+{"event": {"type": "textDelta", "text": "str) {\n    println!(\"{}\", s.len());\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    let r = &s;\n    print_len(r"}}
+{"event": {"type": "textDelta", "text": "); // reborrow happens implicitly\n}\n```\n\n## 46. Splitting Borrows\n\nYou can sometimes split a mutable b"}}
+{"event": {"type": "textDelta", "text": "orrow into multiple mutable borrows of different fields. The compiler understands that borrows of different parts of a struct don"}}
+{"event": {"type": "textDelta", "text": "'t conflict. This allows having multiple mutable references to different fields simultaneously. Splitting works because the fields don't overlap"}}
+{"event": {"type": "textDelta", "text": " in memory. This gives you more flexibility with mutable borrows.\n\n```rust\nfn main() {\n    struct Point { x: i32, y: i"}}
+{"event": {"type": "textDelta", "text": "32 }\n    let mut p = Point { x: 1, y: 2 };\n    let x_ref = &mut p.x;\n    let y_ref = &"}}
+{"event": {"type": "textDelta", "text": "mut p.y;\n    *x_ref += 1;\n    *y_ref += 1;\n    println!(\"{}, {}\", p.x, p.y);\n}\n```"}}
+{"event": {"type": "textDelta", "text": "\n\n## 47. Ownership and Closures\n\nClosures capture variables from their environment, which affects ownership"}}
+{"event": {"type": "textDelta", "text": ". By default, closures capture by immutable reference. The `move` keyword makes closures take ownership of captured variables. Capturing"}}
+{"event": {"type": "textDelta", "text": " by mutable reference allows modification. The compiler infers which capturing mode to use based on how variables are used. This"}}
+{"event": {"type": "textDelta", "text": " makes closures flexible and optimized by default.\n\n```rust\nfn main() {\n    let x = String::from(\"hello\");\n    let c1"}}
+{"event": {"type": "textDelta", "text": " = || println!(\"{}\", x); // capture by reference\n    c1();\n    println!(\"{}\", x); // x still accessible"}}
+{"event": {"type": "textDelta", "text": "\n\n    let x = String::from(\"hello\");\n    let c2 = move || println!(\"{}\", x); // take ownership\n    c2();\n    // println"}}
+{"event": {"type": "textDelta", "text": "!(\"{}\", x); // error: x is moved\n}\n```\n\n## 48. Closures and Trait Bounds\n\nClosures implement the `Fn`,"}}
+{"event": {"type": "textDelta", "text": " `FnMut`, or `FnOnce` trait depending on how they capture. `Fn` closures capture by immutable reference and"}}
+{"event": {"type": "textDelta", "text": " can be called multiple times. `FnMut` closures capture by mutable reference and can be called multiple times. `FnOnce` closures take ownership and can only"}}
+{"event": {"type": "textDelta", "text": " be called once. These traits allow higher-order functions to work with closures. The compiler chooses the most restrictive trait that works"}}
+{"event": {"type": "textDelta", "text": ".\n\n```rust\nfn apply<F>(f: F, x: i32) -> i32\nwhere\n    F: Fn(i32) -> i32,\n{\n    f(x"}}
+{"event": {"type": "textDelta", "text": ")\n}\n\nfn main() {\n    let add_one = |x| x + 1;\n    println!(\"{}\", apply(add_one, 5));\n}\n```"}}
+{"event": {"type": "textDelta", "text": "\n\n## 49. Leaking Memory: Intentional and Unintentional\n\nRust's ownership system prevents most memory leaks, but they"}}
+{"event": {"type": "textDelta", "text": "'re still possible through cycles and `Box::leak`. Creating a reference cycle with `Rc`"}}
+{"event": {"type": "textDelta", "text": " can cause memory leaks. `Box::leak` intentionally converts a `Box` to a `'static` reference, le"}}
+{"event": {"type": "textDelta", "text": "aking memory. Most memory leaks in Rust are deliberate optimizations. Rust makes accidental memory leaks nearly impossible through its"}}
+{"event": {"type": "textDelta", "text": " type system.\n\n```rust\nuse std::mem;\n\nfn main() {\n    let b = Box::new(5);\n    let r: &'static i"}}
+{"event": {"type": "textDelta", "text": "32 = Box::leak(b);\n    println!(\"{}\", r);\n}\n```\n\n## 50. Ownership and Error Handling\n\nOwnership interacts with error handling"}}
+{"event": {"type": "textDelta", "text": " in important ways. Functions can transfer ownership of values in the error case. Result<T, E> gives ownership of either"}}
+{"event": {"type": "textDelta", "text": " the success or error value. The `?` operator propagates ownership of error values up the call stack. Error handling patterns"}}
+{"event": {"type": "textDelta", "text": " must respect ownership rules. This makes error handling explicit and safe.\n\n```rust\nfn parse_int(s: &str) -> Result<i32,"}}
+{"event": {"type": "textDelta", "text": " String> {\n    s.parse().map_err(|_| String::from(\"parse error\"))\n}\n\nfn main() {\n    match parse_int(\"42\") {"}}
+{"event": {"type": "textDelta", "text": "\n        Ok(n) => println!(\"{}\", n),\n        Err(e) => println!(\"error: {}\", e),\n    }\n}\n```\n\n## 51. Implementing Drop"}}
+{"event": {"type": "textDelta", "text": " Manually\n\nYou can implement the `Drop` trait to run custom code when values are dropped. The `drop` method is called automatically when a value goes out of scope."}}
+{"event": {"type": "textDelta", "text": " This is useful for cleanup like closing files or releasing resources. Most types don't need custom `Drop` implementations. The standard library handles"}}
+{"event": {"type": "textDelta", "text": " dropping for most types automatically.\n\n```rust\nstruct MyType {\n    name: String,\n}\n\nimpl Drop for MyType {\n    fn drop(&mut self)"}}
+{"event": {"type": "textDelta", "text": " {\n        println!(\"dropping: {}\", self.name);\n    }\n}\n\nfn main() {\n    let m = MyType { name: String::from(\"hello\") };\n    "}}
+{"event": {"type": "textDelta", "text": "println!(\"before drop\");\n} // m is dropped here\n```\n\n## 52. Early Drops with std::mem::drop\n\nSometimes"}}
+{"event": {"type": "textDelta", "text": " you need to drop a value before it goes out of scope. The `std::mem::drop` function takes ownership of a value and immediately drops it. This"}}
+{"event": {"type": "textDelta", "text": " is useful when you want to release resources early. Explicitly calling `drop` makes your intentions clear to other developers. This is different"}}
+{"event": {"type": "textDelta", "text": " from consuming the value in other ways.\n\n```rust\nfn main() {\n    let s = String::from(\"hello\");\n    println!(\"{}\", s);"}}
+{"event": {"type": "textDelta", "text": "\n    drop(s);\n    // println!(\"{}\", s); // error: s is dropped\n}\n```\n\n## 53. Ownership and Trait Objects\n\nTrait"}}
+{"event": {"type": "textDelta", "text": " objects enable dynamic dispatch and require ownership or references. A `Box<dyn Trait>"}}
+{"event": {"type": "textDelta", "text": "` owns the concrete type and allows calling trait methods. A `&dyn Trait` reference borrows the concrete type"}}
+{"event": {"type": "textDelta", "text": " through the trait interface. Trait objects work with ownership just like regular values. Using trait objects trades some performance for flexibility.\n\n```rust\ntrait Animal {\n    fn"}}
+{"event": {"type": "textDelta", "text": " speak(&self);\n}\n\nstruct Dog;\nimpl Animal for Dog {\n    fn speak(&self) { println!(\"woof\"); }\n}\n\nfn main() {"}}
+{"event": {"type": "textDelta", "text": "\n    let animal: Box<dyn Animal> = Box::new(Dog);\n    animal.speak();\n}\n```\n\n## 54. Ownership in Collections with"}}
+{"event": {"type": "textDelta", "text": " Trait Objects\n\nCollections of trait objects require careful lifetime management. A `Vec<Box<dyn Trait>>` owns a vector of boxed trait objects."}}
+{"event": {"type": "textDelta", "text": " The vector is responsible for dropping the trait objects when it's dropped. This works seamlessly with Rust's ownership system. The compiler ensures that objects aren"}}
+{"event": {"type": "textDelta", "text": "'t used after being dropped.\n\n```rust\ntrait Shape {\n    fn area(&self) -> f64;\n}\n\nstruct Circle { radius: f64"}}
+{"event": {"type": "textDelta", "text": " }\nimpl Shape for Circle {\n    fn area(&self) -> f64 { 3.14 * self.radius * self.radius }\n}\n\nfn main() {\n    let shapes"}}
+{"event": {"type": "textDelta", "text": ": Vec<Box<dyn Shape>> = vec![Box::new(Circle { radius: 1.0 })];\n    println!(\"{}\", shapes[0].area());\n}"}}
+{"event": {"type": "textDelta", "text": "\n```\n\n## 55. Ownership and Lifetime Bounds\n\nGeneric types can have lifetime bounds that relate lifetimes to other parameters"}}
+{"event": {"type": "textDelta", "text": ". `T: 'a` means \"T can only contain references with lifetime 'a"}}
+{"event": {"type": "textDelta", "text": " or longer\". Lifetime bounds ensure that owned values don't contain references that outlive them. This is important for sound"}}
+{"event": {"type": "textDelta", "text": "ness of programs with mixed ownership. The compiler verifies lifetime bounds automatically.\n\n```rust\nfn takes_ref<'a,"}}
+{"event": {"type": "textDelta", "text": " T: 'a>(t: &T) -> &T {\n    t\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    let r = takes"}}
+{"event": {"type": "textDelta", "text": "_ref(&s);\n    println!(\"{}\", r);\n}\n```\n\n## 56. RAII Pattern (Resource Acquisition Is Initialization)\n\nThe RAII"}}
+{"event": {"type": "textDelta", "text": " pattern ties resource management to object lifetimes. When a value is created, resources are acquired. When the value is dropped, resources are"}}
+{"event": {"type": "textDelta", "text": " released. Rust's ownership system naturally implements RAII. File handles, database connections, and locks are acquired and released automatically. RAII makes resource management safe"}}
+{"event": {"type": "textDelta", "text": " and automatic.\n\n```rust\nuse std::fs::File;\n\nfn main() {\n    {\n        let _file = File::create(\"test.txt\");"}}
+{"event": {"type": "textDelta", "text": "\n        // file is open here\n    } // file is automatically closed here\n}\n```\n\n## 57. Ownership and Builder"}}
+{"event": {"type": "textDelta", "text": " Pattern\n\nThe builder pattern works naturally with Rust's ownership system. Builders take ownership of the value being built and return ownership of the built result. This ensures"}}
+{"event": {"type": "textDelta", "text": " safe construction of complex objects. Builder methods typically take `self` and return `Self` or"}}
+{"event": {"type": "textDelta", "text": " another type. The ownership flow makes builder code clear and safe.\n\n```rust\nstruct Query {\n    sql: String,\n}\n\nimpl Query"}}
+{"event": {"type": "textDelta", "text": " {\n    fn new() -> Self {\n        Query { sql: String::new() }\n    }\n    \n    fn select(mut self, fields: &"}}
+{"event": {"type": "textDelta", "text": "str) -> Self {\n        self.sql = format!(\"SELECT {}\", fields);\n        self\n    }\n}\n\nfn main() {\n    let q = Query::new()."}}
+{"event": {"type": "textDelta", "text": "select(\"id, name\");\n}\n```\n\n## 58. Ownership and Strings\n\nStrings in Rust have complex ownership semantics to consider. `"}}
+{"event": {"type": "textDelta", "text": "String` owns its data and can be modified. `&str` is a borrowed string slice that can reference `String` or"}}
+{"event": {"type": "textDelta", "text": " string literals. String slices are immutable and don't own data. Functions should accept `&str` to be"}}
+{"event": {"type": "textDelta", "text": " flexible about what strings they accept. This design encourages borrowing over ownership transfers.\n\n```rust\nfn print_string(s"}}
+{"event": {"type": "textDelta", "text": ": &str) {\n    println!(\"{}\", s);\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    print_string(&s);\n    let"}}
+{"event": {"type": "textDelta", "text": " s2 = \"hello\";\n    print_string(s2);\n}\n```\n\n## 59. Ownership and String Slicing\n\nString slices allow borrow"}}
+{"event": {"type": "textDelta", "text": "ing portions of strings. Slicing works with byte indices, so you must be careful with multi"}}
+{"event": {"type": "textDelta", "text": "-byte characters. Slicing is zero-copy: it doesn't allocate new memory. Slices are immutable references preventing modification"}}
+{"event": {"type": "textDelta", "text": ". The compiler ensures that slice indices are valid.\n\n```rust\nfn main() {\n    let s = \"hello world\";\n    let hello = &"}}
+{"event": {"type": "textDelta", "text": "s[0..5];\n    let world = &s[6..11];\n    println!(\"{} {}\", hello, world);\n}\n```\n\n## 60. Ownership and Collections"}}
+{"event": {"type": "textDelta", "text": " Overview\n\nDifferent collection types handle ownership differently. `Vec<T>` owns elements and stores them on the heap. `HashMap<K, V>` owns"}}
+{"event": {"type": "textDelta", "text": " keys and values. `BTreeMap<K, V>` owns keys and values in sorted order. Collections implement `Drop` to clean up all"}}
+{"event": {"type": "textDelta", "text": " elements when dropped. The compiler tracks ownership through the collection types.\n\n```rust\nfn main() {\n    let mut map = std::collections::HashMap"}}
+{"event": {"type": "textDelta", "text": "::new();\n    map.insert(String::from(\"key\"), String::from(\"value\"));\n    // map owns both the"}}
+{"event": {"type": "textDelta", "text": " key and value\n}\n```\n\n## 61. Ownership and Iterators\n\nIterators in Rust interact with ownership in several ways. `iter()` yields immutable references without"}}
+{"event": {"type": "textDelta", "text": " taking ownership. `iter_mut()` yields mutable references without taking ownership. `into_iter()` takes ownership and yields owned"}}
+{"event": {"type": "textDelta", "text": " values. Choosing the right iterator affects whether you can use the collection afterward. Iterators are lazy and compos"}}
+{"event": {"type": "textDelta", "text": "able.\n\n```rust\nfn main() {\n    let v = vec![1, 2, 3];\n    let squared: Vec<_> = v.iter().map("}}
+{"event": {"type": "textDelta", "text": "|x| x * x).collect();\n    println!(\"{:?}\", v); // v still accessible\n    \n    let v = vec![1"}}
+{"event": {"type": "textDelta", "text": ", 2, 3];\n    let doubled: Vec<_> = v.into_iter().map(|x| x * 2).collect();\n    // println"}}
+{"event": {"type": "textDelta", "text": "!(\"{:?}\", v); // error: v is consumed\n}\n```\n\n## 62. Ownership and Adapter Functions\n\nAdapter functions transform collections"}}
+{"event": {"type": "textDelta", "text": " while respecting ownership. Functions like `map`, `filter`, and `fold` consume iterators and return transformed results. These functions enable"}}
+{"event": {"type": "textDelta", "text": " functional-style programming in Rust. Adapters are composable and lazy, making them efficient. Adapters interact properly with"}}
+{"event": {"type": "textDelta", "text": " Rust's ownership system.\n\n```rust\nfn main() {\n    let v = vec![1, 2, 3, 4, 5];\n    let result:"}}
+{"event": {"type": "textDelta", "text": " i32 = v.iter()\n        .filter(|x| x % 2 == 0)\n        .map(|x| x * x"}}
+{"event": {"type": "textDelta", "text": ")\n        .sum();\n    println!(\"{}\", result); // 4 + 16 = 20\n}\n```\n\n## 63. Ownership and Type"}}
+{"event": {"type": "textDelta", "text": " System Interactions\n\nRust's type system enforces ownership rules at compile time. Each type has ownership semantics determining whether it's `Copy`, takes"}}
+{"event": {"type": "textDelta", "text": " ownership, or requires references. Generic types inherit ownership semantics from type parameters. Trait bounds can constrain ownership requirements"}}
+{"event": {"type": "textDelta", "text": ". The type system makes ownership explicit and verifiable.\n\n```rust\nfn takes_string(s: String) {\n    println!(\"{}\", s);\n}\n\nfn takes"}}
+{"event": {"type": "textDelta", "text": "_debug<T: std::fmt::Debug>(t: T) {\n    println!(\"{:?}\", t);\n}\n\nfn main() {\n    let s = String::from(\""}}
+{"event": {"type": "textDelta", "text": "hello\");\n    takes_string(s);\n    \n    let n = 42;\n    takes_debug(n);\n}\n```\n\n## 64. Ownership and Generics\n\nGeneric"}}
+{"event": {"type": "textDelta", "text": " functions and types work with ownership just like concrete ones. Generic type parameters can be `Copy` or require owned types. Generic functions"}}
+{"event": {"type": "textDelta", "text": " can take ownership, references, or mutable references. Trait bounds specify ownership requirements for generic parameters."}}
+{"event": {"type": "textDelta", "text": " Generics enable code reuse while respecting ownership rules.\n\n```rust\nfn first<T>(v: &[T]) -> Option<&"}}
+{"event": {"type": "textDelta", "text": "T> {\n    v.first()\n}\n\nfn main() {\n    let v = vec![1, 2, 3];\n    println!(\"{:?}\", first(&v));"}}
+{"event": {"type": "textDelta", "text": "\n}\n```\n\n## 65. Ownership and Associated Types\n\nAssociated types in traits can represent owned or borrowed data"}}
+{"event": {"type": "textDelta", "text": ". A trait can specify associated types that are owned or referenced. Implementers choose the"}}
+{"event": {"type": "textDelta", "text": " concrete type for associated types. This allows flexible ownership semantics in trait implementations. Associated types enable patterns that would be difficult with"}}
+{"event": {"type": "textDelta", "text": " just generic parameters.\n\n```rust\ntrait Container {\n    type Item;\n    fn get(&self) -> Self::Item;\n}\n\nimpl Container"}}
+{"event": {"type": "textDelta", "text": " for Vec<i32> {\n    type Item = i32;\n    fn get(&self) -> i32 {\n        self.get(0).copied().unwrap_or"}}
+{"event": {"type": "textDelta", "text": "(0)\n    }\n}\n```\n\n## 66. Ownership and Where Clauses\n\nWhere clauses can specify complex ownership requirements. You can express constraints like \"T must live"}}
+{"event": {"type": "textDelta", "text": " at least as long as 'a\". Where clauses make generic ownership requirements explicit and understandable. Complex"}}
+{"event": {"type": "textDelta", "text": " ownership relationships are better expressed in where clauses than inline. Where clauses enable advanced generic patterns.\n\n```rust\nfn function"}}
+{"event": {"type": "textDelta", "text": "<'a, T>(r: &'a T) -> &'a str\nwhere\n    T: std::fmt::Display + "}}
+{"event": {"type": "textDelta", "text": "'a,\n{\n    \"hello\"\n}\n\nfn main() {\n    let s = String::from(\"world\");\n    println!(\"{}\", function(&s));\n}\n```\n\n## 67"}}
+{"event": {"type": "textDelta", "text": ". Ownership and Default Trait\n\nThe `Default` trait defines default values for types. Default implementations can involve owned types"}}
+{"event": {"type": "textDelta", "text": " or references. Implementing `Default` allows types to be created with no arguments. Default values can be useful for initialization. The trait"}}
+{"event": {"type": "textDelta", "text": " integrates well with ownership semantics.\n\n```rust\nstruct Config {\n    name: String,\n    value: i32,\n}\n\nimpl Default for Config {\n    fn default()"}}
+{"event": {"type": "textDelta", "text": " -> Self {\n        Config {\n            name: String::from(\"default\"),\n            value: 0,\n        }\n    }\n}\n\nfn main() {\n    let config = Config::default"}}
+{"event": {"type": "textDelta", "text": "();\n}\n```\n\n## 68. Ownership and From/Into Traits\n\nThe `From` and `Into` traits enable type conversions while"}}
+{"event": {"type": "textDelta", "text": " handling ownership. `From<T>` converts an owned value to another type. `Into<T>` converts a value into another"}}
+{"event": {"type": "textDelta", "text": " type. These traits are inverses of each other. Conversions can move ownership or clone data depending on the types."}}
+{"event": {"type": "textDelta", "text": " The traits integrate smoothly with the ownership system.\n\n```rust\nimpl From<&str> for String {\n    fn from(s: &str) -> String {\n        String"}}
+{"event": {"type": "textDelta", "text": "::from(s)\n    }\n}\n\nfn main() {\n    let s: String = \"hello\".into();\n    println!(\"{}\", s);\n}\n```\n\n## 69"}}
+{"event": {"type": "textDelta", "text": ". Ownership and Deref Trait\n\nThe `Deref` trait enables dereferencing smart pointers and custom types. Implementing `Deref` allows derefer"}}
+{"event": {"type": "textDelta", "text": "encing with the `*` operator. Deref enables automatic dereferencing in many contexts. Deref coercion makes working"}}
+{"event": {"type": "textDelta", "text": " with smart pointers convenient. The trait enables custom dereference behavior.\n\n```rust\nuse std::ops::Deref;\n\nstruct MyString"}}
+{"event": {"type": "textDelta", "text": "(String);\n\nimpl Deref for MyString {\n    type Target = String;\n    fn deref(&self) -> &String {\n        &self.0\n    }\n}"}}
+{"event": {"type": "textDelta", "text": "\n\nfn main() {\n    let ms = MyString(String::from(\"hello\"));\n    println!(\"{}\", ms.len());\n}\n```\n\n## 70. Ownership"}}
+{"event": {"type": "textDelta", "text": " and DerefMut Trait\n\nThe `DerefMut` trait enables mutable dereferencing of smart pointers. Implementing `DerefMut` allows dereferencing with the"}}
+{"event": {"type": "textDelta", "text": " `*` operator for mutation. DerefMut requires Deref to also be implemented. Mutable dereferencing enables mutation"}}
+{"event": {"type": "textDelta", "text": " through smart pointers. The trait integrates with Rust's borrow checker.\n\n```rust\nuse std::ops::{Deref, DerefMut};\n\nstruct"}}
+{"event": {"type": "textDelta", "text": " MyValue(i32);\n\nimpl Deref for MyValue {\n    type Target = i32;\n    fn deref(&self) -> &i32 { &self.0"}}
+{"event": {"type": "textDelta", "text": " }\n}\n\nimpl DerefMut for MyValue {\n    fn deref_mut(&mut self) -> &mut i32 { &mut self.0 }\n}\n\nfn main() {\n    "}}
+{"event": {"type": "textDelta", "text": "let mut mv = MyValue(5);\n    *mv = 10;\n    println!(\"{}\", *mv);\n}\n```\n\n## 71. Ownership and AsRef/AsMut"}}
+{"event": {"type": "textDelta", "text": " Traits\n\nThe `AsRef` and `AsMut` traits provide flexible borrowing conversions. `AsRef<T>` converts to a reference of"}}
+{"event": {"type": "textDelta", "text": " type T. Functions can accept `impl AsRef<str>` to accept both `&str` and `String"}}
+{"event": {"type": "textDelta", "text": "`. These traits enable flexible APIs. The traits work with the ownership system.\n\n```rust\nfn takes_str<S: AsRef<str>>(s"}}
+{"event": {"type": "textDelta", "text": ": S) {\n    println!(\"{}\", s.as_ref());\n}\n\nfn main() {\n    let s1 = String::from(\"hello\");\n    takes_str(&s1);"}}
+{"event": {"type": "textDelta", "text": "\n    \n    let s2 = \"world\";\n    takes_str(s2);\n}\n```\n\n## 72. Ownership and Borrow Trait\n\nThe `"}}
+{"event": {"type": "textDelta", "text": "Borrow` trait provides borrowing similar to `AsRef`. `Borrow<T>` enables borrowing as type T. B"}}
+{"event": {"type": "textDelta", "text": "orrow is primarily used for key-based lookups in collections. Using `Borrow` allows different"}}
+{"event": {"type": "textDelta", "text": " key types in maps. The trait respects ownership constraints.\n\n```rust\nuse std::collections::HashMap;\nuse std::borrow::B"}}
+{"event": {"type": "textDelta", "text": "orrow;\n\nfn main() {\n    let mut map = HashMap::new();\n    map.insert(String::from(\"key\"), 42);\n    \n    let key = \""}}
+{"event": {"type": "textDelta", "text": "key\"; // &str\n    println!(\"{}\", map.get(key).unwrap()); // works due to Borrow"}}
+{"event": {"type": "textDelta", "text": "\n}\n```\n\n## 73. Ownership and Pin/Unpin\n\n`Pin` ensures that a value won't be moved"}}
+{"event": {"type": "textDelta", "text": " in memory. Pinned values can't be moved even if ownership is transferred. `Pin` is required for creating"}}
+{"event": {"type": "textDelta", "text": " self-referential structs and async functions. Most types are `Unpin`, meaning they can be safely moved. Pin is"}}
+{"event": {"type": "textDelta", "text": " advanced and rarely needed in everyday code.\n\n```rust\nuse std::pin::Pin;\n\nfn main() {\n    let v = vec"}}
+{"event": {"type": "textDelta", "text": "![1, 2, 3];\n    let pinned = Pin::new(&v);\n    // pinned prevents v from being moved\n}"}}
+{"event": {"type": "textDelta", "text": "\n```\n\n## 74. Ownership and Async/Await\n\nAsync code complicates ownership with futures and lifetimes."}}
+{"event": {"type": "textDelta", "text": " Futures must capture owned values or borrows valid for the future's lifetime. The `'"}}
+{"event": {"type": "textDelta", "text": "static` lifetime is common in async code. Async blocks capture variables from their environment. Lifetimes in async code require"}}
+{"event": {"type": "textDelta", "text": " careful consideration.\n\n```rust\nasync fn fetch_data(s: String) -> String {\n    println!(\"{}\", s);\n    s"}}
+{"event": {"type": "textDelta", "text": "\n}\n\nfn main() {\n    let s = String::from(\"hello\");\n    let future = fetch_data(s);\n}\n```\n\n## 75."}}
+{"event": {"type": "textDelta", "text": " Ownership and Thread Safety\n\nOwnership interacts with thread safety through `Send` and `Sync` traits. Values must be `"}}
+{"event": {"type": "textDelta", "text": "Send` to move between threads. Values must be `Sync` for shared access from multiple threads. Most types are automatically `Send` and `Sync`. Some"}}
+{"event": {"type": "textDelta", "text": " types like `Rc` are neither. The compiler enforces thread safety through these traits.\n\n```rust\nuse std::thread"}}
+{"event": {"type": "textDelta", "text": ";\nuse std::sync::Arc;\n\nfn main() {\n    let v = Arc::new(vec![1, 2, 3]);\n    let v2 = Arc"}}
+{"event": {"type": "textDelta", "text": "::clone(&v);\n    \n    thread::spawn(move || {\n        println!(\"{:?}\", v2);\n    });\n    println!(\"{:"}}
+{"event": {"type": "textDelta", "text": "?}\", v);\n}\n```\n\n## 76. Ownership Anti-patterns\n\nSeveral patterns in Rust go against ownership principles. Excessive cl"}}
+{"event": {"type": "textDelta", "text": "oning can indicate ownership problems. Creating cycles with `Rc` causes memory leaks. Overly complicated lifetime annotations may indicate design"}}
+{"event": {"type": "textDelta", "text": " issues. Using `unsafe` to bypass borrowing rules hides problems. Recognizing anti-patterns helps write better Rust code.\n\n```rust\n//"}}
+{"event": {"type": "textDelta", "text": " Anti-pattern: excessive cloning\nfn bad_pattern(s: String) -> String {\n    let s2 = s."}}
+{"event": {"type": "textDelta", "text": "clone();\n    s2\n}\n\n// Better: just take ownership\nfn good_pattern(s: String) -> String {\n    s\n}\n\nfn"}}
+{"event": {"type": "textDelta", "text": " main() {\n    let s = String::from(\"hello\");\n    let result = good_pattern(s);\n    println!(\"{}\", result);\n}\n```\n\n## 77."}}
+{"event": {"type": "textDelta", "text": " Ownership Best Practices\n\nSeveral practices help write idiomatic Rust code. Prefer taking `&str` over `&"}}
+{"event": {"type": "textDelta", "text": "String` in function parameters. Prefer returning references over taking ownership. Use `impl Trait`"}}
+{"event": {"type": "textDelta", "text": " to avoid exposing complex lifetime annotations. Avoid unnecessary `clone()` calls. Design APIs that make ownership"}}
+{"event": {"type": "textDelta", "text": " clear. These practices make code more flexible and efficient.\n\n```rust\n// Better API\nfn first_word(s: &str)"}}
+{"event": {"type": "textDelta", "text": " -> &str {\n    let bytes = s.as_bytes();\n    for (i, &item) in bytes.iter().enumerate() {\n        if item == b'"}}
+{"event": {"type": "textDelta", "text": " ' { return &s[0..i]; }\n    }\n    s\n}\n\nfn main() {\n    let s = String::from(\"hello world"}}
+{"event": {"type": "textDelta", "text": "\");\n    println!(\"{}\", first_word(&s));\n}\n```\n\n## 78. Ownership and Future Improvements\n\nRust's ownership system continues to"}}
+{"event": {"type": "textDelta", "text": " evolve. Lifetime improvements like GATs (Generic Associated Types) enable more expressive code. Trait refinements allow more complex"}}
+{"event": {"type": "textDelta", "text": " ownership patterns. The `for<'a>` syntax enables higher-rank trait bounds. Research into linear"}}
+{"event": {"type": "textDelta", "text": " types may influence future versions. The ownership system remains Rust's most distinctive feature.\n\n```rust\n// Example of advanced ownership pattern"}}
+{"event": {"type": "textDelta", "text": "\ntrait LoanedValue<'a> {\n    type Borrowed: 'a;\n    fn borrow(&'"}}
+{"event": {"type": "textDelta", "text": "a self) -> Self::Borrowed;\n}\n\nfn main() {\n    println!(\"Rust ownership continues"}}
+{"event": {"type": "textDelta", "text": " to evolve!\");\n}\n```\n\n## 79. Ownership Mindset\n\nThinking about ownership becomes natural with practice. Every value"}}
+{"event": {"type": "textDelta", "text": " should have a clear owner responsible for cleanup. Functions should make ownership semantics explicit in their signatures. Ownership enables"}}
+{"event": {"type": "textDelta", "text": " fearless concurrency and memory safety. Understanding ownership is the key to mastering Rust. Developing an ownership mindset takes practice but is essential."}}
+{"event": {"type": "textDelta", "text": "\n\n```rust\n// Think about ownership at design time\nstruct Database {\n    connection: String, // owns connection string"}}
+{"event": {"type": "textDelta", "text": "\n}\n\nimpl Database {\n    fn new(url: &str) -> Self {\n        Database { connection: String::from(url) }\n    }\n    \n    fn query"}}
+{"event": {"type": "textDelta", "text": "(&self, sql: &str) -> String {\n        format!(\"Querying: {}\", sql)\n    }\n}\n\nfn main() {\n    let db = Database::new"}}
+{"event": {"type": "textDelta", "text": "(\"localhost\");\n    println!(\"{}\", db.query(\"SELECT *\"));\n}\n```\n\n## 80. Conclusion: Ownership Mastery\n\nMas"}}
+{"event": {"type": "textDelta", "text": "tering Rust's ownership system unlocks the language's full potential. Ownership enables memory safety without garbage collection. The rules"}}
+{"event": {"type": "textDelta", "text": " are simple but powerful: each value has one owner, move ownership when needed, and borrow when possible. Ownership prevents entire classes of bugs at"}}
+{"event": {"type": "textDelta", "text": " compile time. With practice, ownership becomes intuitive and empowering. Congratulations on completing this comprehensive ownership tutorial!\n\n```rust\n// The journey of ownership mastery"}}
+{"event": {"type": "textDelta", "text": "\nfn main() {\n    let message = String::from(\"You now understand Rust ownership!\");\n    println!(\"{}\", message);\n    //"}}
+{"event": {"type": "textDelta", "text": " When main ends, message is safely dropped\n}\n```"}}
+{"event": {"type": "done", "status": "completed"}}

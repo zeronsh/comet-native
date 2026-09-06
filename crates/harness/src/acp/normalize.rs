@@ -276,6 +276,21 @@ fn typed_call(update: &Value) -> ToolCall {
                 .unwrap_or_else(|| "Agent".into()),
             input: raw.cloned(),
         },
+        // Devin's run_subagent tool uses a coarse ACP kind; its private meta
+        // field is the stable identity across pending/in-progress frames.
+        _ if update
+            .get("_meta")
+            .and_then(|m| m.get("cognition.ai/inferenceToolName"))
+            .and_then(Value::as_str)
+            == Some("run_subagent") =>
+        {
+            ToolCall::Unknown {
+                name: raw_str("title")
+                    .map(|d| format!("Agent: {d}"))
+                    .unwrap_or_else(|| "Agent".into()),
+                input: raw.cloned(),
+            }
+        }
         // opencode's subagent spawn (`task` tool — rawInput carries
         // description/prompt/subagent_type): same naming as grok's, so the
         // chip and its subagent tab say what the agent is doing.
