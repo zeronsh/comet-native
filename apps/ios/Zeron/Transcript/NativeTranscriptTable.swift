@@ -49,7 +49,11 @@ final class TranscriptViewport: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        table.frame = bounds
+        // Clipping alone cannot reveal virtualized rows outside the table.
+        // Extend its actual viewport behind the bar; the inset keeps resting
+        // content and runway aligned with the visible area below the header.
+        let top = window.map { max(0, convert(bounds, to: $0).minY) } ?? 0
+        table.setViewport(size: bounds.size, topInset: top)
     }
 
     override var accessibilityElements: [Any]? {
@@ -97,6 +101,7 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
         keyboardDismissMode = .interactive
         alwaysBounceVertical = true
         clipsToBounds = false
+        topEdgeEffect.isHidden = true // SessionView owns the color fade, without blur.
         runway.backgroundColor = .clear
         runway.frame.size.height = bottomSpacing
         tableFooterView = runway
@@ -108,6 +113,29 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
         addGestureRecognizer(tap)
     }
 
+    private var viewportHeight: CGFloat { max(0, bounds.height - contentInset.top) }
+
+    func setViewport(size: CGSize, topInset: CGFloat) {
+        let nextFrame = CGRect(x: 0, y: -topInset, width: size.width, height: size.height + topInset)
+        // UIKit reconstructs frame from bounds/center. Fractional safe-area
+        // values can differ by floating-point noise; resetting an unchanged
+        // offset here would cancel the native send animation.
+        guard abs(frame.minY - nextFrame.minY) > 0.01
+            || abs(frame.width - nextFrame.width) > 0.01
+            || abs(frame.height - nextFrame.height) > 0.01
+            || abs(contentInset.top - topInset) > 0.01 else { return }
+        let logicalOffset = contentOffset.y + contentInset.top
+        updating = true
+        frame = nextFrame
+        contentInset.top = topInset
+        verticalScrollIndicatorInsets.top = topInset
+        let target = min(max(-topInset, logicalOffset - topInset),
+                         max(-topInset, contentSize.height - bounds.height))
+        setContentOffset(CGPoint(x: 0, y: target), animated: false)
+        updating = false
+        setNeedsLayout()
+    }
+
     override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
         let step: CGFloat
         switch direction {
@@ -115,8 +143,8 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
         case .down, .previous: step = -1
         default: return false
         }
-        let target = min(max(0, contentOffset.y + step * max(44, bounds.height - 80)),
-                         max(0, contentSize.height - bounds.height))
+        let target = min(max(-contentInset.top, contentOffset.y + step * max(44, viewportHeight - 80)),
+                         max(-contentInset.top, contentSize.height - bounds.height))
         guard abs(target - contentOffset.y) > 0.5 else { return false }
         animatingFollow = false
         follow.interactionEpoch &+= 1
@@ -221,7 +249,7 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
         guard let index = rows.firstIndex(where: { $0.id == anchor.id }) else { return }
         let rect = rectForRow(at: IndexPath(row: index, section: 0))
         let visibleOffset = max(anchor.offset, -max(0, rect.height - 44))
-        let target = min(max(0, rect.minY - visibleOffset), max(0, contentSize.height - bounds.height))
+        let target = min(max(-contentInset.top, rect.minY - visibleOffset), max(-contentInset.top, contentSize.height - bounds.height))
         setContentOffset(CGPoint(x: 0, y: target), animated: false)
     }
 
@@ -231,7 +259,7 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
             let start = rectForRow(at: IndexPath(row: index, section: 0)).minY
             let end = rectForRow(at: IndexPath(row: rows.count - 1, section: 0)).maxY
             let turnHeight = end - start
-            height = max(bottomSpacing, bounds.height + expansionHeight - turnHeight)
+            height = max(bottomSpacing, viewportHeight + expansionHeight - turnHeight)
         }
         guard height.isFinite, abs(runway.frame.height - height) > 0.5 else { return }
         runway.frame.size.height = height
@@ -239,7 +267,7 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
     }
 
     private func alignBottom(animated: Bool) {
-        let target = max(0, contentSize.height - bounds.height)
+        let target = max(-contentInset.top, contentSize.height - bounds.height)
         guard abs(contentOffset.y - target) > 0.5 else {
             animatingFollow = false
             return
@@ -323,8 +351,8 @@ final class TranscriptTableView: UITableView, UITableViewDataSource, UITableView
     }
 
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
-        let geometry = TranscriptGeometry(contentHeight: contentSize.height, viewportHeight: bounds.height,
-            offset: contentOffset.y, bottom: contentSize.height - contentOffset.y - bounds.height)
+        let geometry = TranscriptGeometry(contentHeight: contentSize.height, viewportHeight: viewportHeight,
+            offset: contentOffset.y + contentInset.top, bottom: contentSize.height - contentOffset.y - bounds.height)
         follow.observe(old: lastGeometry, new: geometry)
         lastGeometry = geometry
     }

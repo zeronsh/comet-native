@@ -96,6 +96,7 @@ final class MobilePolishTests: XCTestCase {
             XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
         }
         for cycle in 0..<3 {
+            waitUntilHittable(app.keyboards.firstMatch)
             waitForVisibleReply()
             capture("stream-keyboard-\(cycle)")
             visibleReply()!.tap()

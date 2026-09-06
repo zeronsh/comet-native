@@ -50,8 +50,7 @@ struct SessionView: View {
         .navigationTitle(chat?.displayTitle ?? "Session")  // feeds the back menu
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(removing: .title)  // the leading header owns the bar
-        .toolbarBackground(.regularMaterial, for: .navigationBar)
-        .toolbarBackground(.visible, for: .navigationBar)
+        .toolbarBackground(.hidden, for: .navigationBar)
         .toolbar {
             if let chat {
                 // Static, left-aligned session header — model/effort changes
@@ -149,6 +148,24 @@ struct SessionView: View {
             }
         }
         .background(Theme.bg.ignoresSafeArea())
+        .overlay {
+            GeometryReader { geometry in
+                let fadeHeight = min(64, geometry.safeAreaInsets.top)
+                VStack(spacing: 0) {
+                    Theme.bg.frame(height: geometry.safeAreaInsets.top - fadeHeight)
+                    LinearGradient(stops: [
+                        .init(color: Theme.bg, location: 0),
+                        .init(color: Theme.bg.opacity(0.96), location: 0.5),
+                        .init(color: Theme.bg.opacity(0.8), location: 0.75),
+                        .init(color: Theme.bg.opacity(0), location: 1),
+                    ], startPoint: .top, endPoint: .bottom)
+                        .frame(height: fadeHeight)
+                }
+                .offset(y: -geometry.safeAreaInsets.top)
+            }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
         .motionAnimation(Motion.fadeQuick, value: store.openInputRequest?.requestId)
     }
 

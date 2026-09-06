@@ -302,7 +302,7 @@ struct UserBubble: View {
                 }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.bubbleRadius))
+                    .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
                     .frame(maxWidth: TranscriptView.maxContentWidth * 0.8, alignment: .trailing)
                     .contextMenu {
                         Button {

@@ -135,6 +135,20 @@ final class TranscriptLayoutTests: XCTestCase {
         }
     }
 
+    func testRowsRemainRealizedBeneathTopSafeArea() async {
+        await mount(turns: 600)
+        let table = harness.scroll.nativeScrollView as! TranscriptTableView
+        let viewport = table.superview!
+        let visibleTop = viewport.convert(viewport.bounds, to: window).minY
+        XCTAssertGreaterThan(visibleTop, 0)
+        XCTAssertEqual(table.convert(table.bounds, to: window).minY, 0, accuracy: 0.01)
+        XCTAssertEqual(table.contentInset.top, visibleTop, accuracy: 0.01)
+        let earliestRow = table.visibleCells.map { table.convert($0.frame, to: window).minY }.min()!
+        XCTAssertLessThan(earliestRow, visibleTop,
+            "The table must realize rows behind the header, not stop at the safe-area edge")
+        assertTailVisible()
+    }
+
     func testPendingSendAnimatesAndRetainsRunwayThroughAdoptionAndReopen() async {
         await mount(turns: 600, offline: false)
         func findScroll(_ view: UIView) -> UIScrollView? {
@@ -150,6 +164,10 @@ final class TranscriptLayoutTests: XCTestCase {
         var previous = CACurrentMediaTime()
         for _ in 0..<28 {
             try? await Task.sleep(for: .milliseconds(16))
+            // A parent layout pass with unchanged fractional geometry must
+            // not reset the offset and cancel the running UIKit animation.
+            native.superview?.setNeedsLayout()
+            native.superview?.layoutIfNeeded()
             let now = CACurrentMediaTime()
             intervals.append((now - previous) * 1000)
             previous = now

@@ -11,7 +11,7 @@ Follow intent changes only on a real user drag, accessibility page navigation,
 an explicit send/jump, or a user-message expansion. Keyboard and composer
 resizing do not release it. The composer occupies sibling layout space so the
 last row rests above it, while the transcript can draw outside its viewport
-under the glass composer and material header during scrolling. Compact
+under the glass composer and fading header during scrolling. Compact
 landscape uses a horizontal composer to preserve usable transcript space.
 
 A local submission reserves one viewport beneath the prompt. The reply consumes
@@ -20,6 +20,13 @@ navigation, including optimistic-message adoption. Long output naturally hands
 over to following the tail. Remote user entries do not create a local runway.
 Native scroll animation replaces delayed SwiftUI scroll-target retries; hosted
 tests sample intermediate presentation offsets instead of only the end state.
+
+The navigation bar has no material background. A noninteractive background-color
+fade lies within the top safe area, so text disappears beneath the title. The
+native table extends into that area and uses a top content inset to preserve its
+resting position while keeping rows realized behind the bar. UIKit’s automatic
+top-edge blur is disabled. User bubbles and their loading placeholders use
+22pt continuous corners.
 
 Existing streaming text starts fully visible when its row is reattached. Only
 newly appended text fades, and the frame ticker stops after that fade settles.
@@ -62,7 +69,10 @@ are enabled only by these tests and compile to no-ops in release builds.
 Coverage includes warm and delayed 600-turn histories, burst appends, a large
 shrink, repeated warm reopens, composer/keyboard viewport changes, narrow and
 landscape sizes, accessibility text resizing and paging, runway retention/overflow,
-immediate history scrolling, and streaming during rapid keyboard resizes.
+immediate history scrolling, and streaming during rapid keyboard resizes. A
+header regression checks that actual cells remain realized above the safe-area
+edge. The animation test also relays out the parent on every sample to catch
+fractional-inset rounding that could otherwise cancel the native scroll.
 
 `ZeronUITests/MobilePolishTests` exercises actual project selection/dismissal,
 session navigation, scroll gestures, jump-to-latest, keyboard/composer changes,
@@ -71,8 +81,11 @@ cancelled back swipes while streaming, user-message folding, and device rotation
 attachments are retained in the `.xcresult` bundle for visual review.
 
 The follow-up passed 73 unit/hosted-layout tests and nine UI scenarios on both
-iPhone 16e and iPhone 17 Pro (iOS 26.3.1 Simulator). The final disclosure-only
-refinement was rerun on both devices. A Release simulator build passed. Video
+iPhone 16e and iPhone 17 Pro (iOS 26.3.1 Simulator). The disclosure refinement was rerun on both devices. The header/squircle
+follow-up then passed all 16 hosted-layout checks and five focused UI scenarios
+on both sizes, with send/rotation and streaming/back-swipe checks repeated after
+the fractional-inset animation fix. Streaming captures explicitly wait for a
+hittable onscreen keyboard. A Release simulator build passed. Video
 frames from three partial back swipes were also reviewed while the reply streamed.
 The original 67-unit/six-UI pass did not cover the rapid transitions that exposed
 these regressions; the added checks specifically exercise those transitions.
@@ -87,7 +100,8 @@ coverage beyond the existing protocol tests.
 | --- | --- | --- |
 | ![Show more](screenshots/mobile-transcript-recovery/user-collapsed.png) | ![Show less after reopening](screenshots/mobile-transcript-recovery/user-expanded-reopen.png) | ![Visible streaming transcript](screenshots/mobile-transcript-recovery/stream-keyboard.png) |
 
-Additional captures: [expanded text beneath the glass composer](screenshots/mobile-transcript-recovery/user-expanded.png),
+Additional captures: [text fading beneath the header](screenshots/mobile-transcript-recovery/header-fade.png),
+[expanded text beneath the glass composer](screenshots/mobile-transcript-recovery/user-expanded.png),
 [multiline composer](screenshots/mobile-transcript-recovery/multiline-composer.png),
 [fast scrolling after reopen](screenshots/mobile-transcript-recovery/early-scroll.png), and
 [cancelled back swipe](screenshots/mobile-transcript-recovery/cancelled-back-swipe.png), and
