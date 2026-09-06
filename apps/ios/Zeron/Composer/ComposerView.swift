@@ -39,6 +39,8 @@ struct ComposerShell<Chips: View>: View {
     var autoFocus = false
     @ViewBuilder var chips: Chips
 
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    private var compact: Bool { verticalSizeClass == .compact }
     @FocusState private var focused: Bool
 
     private var expanded: Bool {
@@ -57,7 +59,7 @@ struct ComposerShell<Chips: View>: View {
     // the compact↔expanded flip — an if/else here would tear down and rebuild
     // the TextField, dropping keyboard focus mid-type.
     private var shellLayout: AnyLayout {
-        expanded
+        expanded && !compact
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
             : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
     }
@@ -91,7 +93,8 @@ struct ComposerShell<Chips: View>: View {
                 .padding(.leading, expanded ? 4 : 13)
                 .padding(.trailing, expanded ? 4 : 0)
                 .padding(.vertical, expanded ? 4 : 5)
-                .frame(minHeight: expanded ? 64 : nil, alignment: .topLeading)
+                .frame(minWidth: compact ? 140 : nil,
+                       minHeight: expanded && !compact ? 64 : nil, alignment: .topLeading)
             if expanded {
                 HStack(spacing: 8) {
                     if onAttach != nil {
@@ -107,7 +110,7 @@ struct ComposerShell<Chips: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     actionButton
                 }
-                .padding(.top, 8)
+                .padding(.top, compact ? 0 : 8)
             } else {
                 actionButton
             }
@@ -131,10 +134,11 @@ struct ComposerShell<Chips: View>: View {
 
     private var input: some View {
         TextField(placeholder, text: $draft, axis: .vertical)
-            .font(Theme.sans(16))
+            .accessibilityIdentifier("composer-input")
+            .font(Theme.sans(17))
             .foregroundStyle(Theme.text)
             .tint(Theme.text)
-            .lineLimit(1...7)
+            .lineLimit(1...(compact ? 2 : 7))
             .focused($focused)
     }
 
@@ -145,13 +149,14 @@ struct ComposerShell<Chips: View>: View {
             Image(systemName: "plus")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
-                .frame(width: 40, height: 40)
+                .frame(width: 44, height: 44)
                 .background(whiteAlpha(0.06), in: Circle())
                 .overlay(Circle().strokeBorder(whiteAlpha(0.08), lineWidth: 1))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(busy)
+        .accessibilityLabel("Attach photos")
     }
 
     /// Attachments count as content: an image-only send is a send, never a stop.
@@ -184,12 +189,14 @@ struct ComposerShell<Chips: View>: View {
                         .foregroundStyle(buttonActive ? Theme.bg : Theme.textFaint)
                 }
             }
-            .frame(width: 40, height: 40)
+            .frame(width: 44, height: 44)
             .background(buttonActive ? AnyShapeStyle(Theme.text) : AnyShapeStyle(whiteAlpha(0.10)),
                         in: Circle())
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(showStop && !hasContent ? "Stop response" : (showStop ? "Steer response" : "Send message"))
+        .accessibilityIdentifier("composer-send")
         .disabled(!buttonActive)
         .motionAnimation(Motion.fadeQuick, value: showStop)
     }
