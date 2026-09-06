@@ -44,3 +44,29 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: UI and headless layout regressions
         run: cargo test --release --locked -p zeron-ui --lib -- --test-threads=1
+
+  macos-frame-recovery:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            frame-source-tests
+      - name: Check macOS application
+        run: cargo check --release --locked -p zeron
+      - name: Check out pinned GPUI for native frame-source tests
+        shell: bash
+        run: |
+          rev=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["dependencies"]["gpui"]["rev"])')
+          git init frame-source-tests
+          git -C frame-source-tests remote add origin https://github.com/zeronsh/zui
+          git -C frame-source-tests fetch --depth=1 origin "$rev"
+          git -C frame-source-tests checkout --detach FETCH_HEAD
+      - name: Native frame-source recovery regression
+        working-directory: frame-source-tests
+        run: cargo test --release --locked -p gpui_macos --lib display_link::tests -- --test-threads=1
