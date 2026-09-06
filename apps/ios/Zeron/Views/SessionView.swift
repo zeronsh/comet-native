@@ -6,6 +6,7 @@ import SwiftUI
 
 struct SessionView: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     let chatId: String
 
     /// Width the nav bar's own controls need around a LEADING title — the
@@ -19,9 +20,7 @@ struct SessionView: View {
     /// toolbar item (its container proposes an unbounded width).
     @State private var viewWidth: CGFloat = 0
 
-    /// Shared with TranscriptView; owned here so the composer inset (which
-    /// this view composes) can report its global top edge — the measured
-    /// bottom boundary TranscriptView's correctPin re-pins against.
+    /// Follow intent belongs to the session, independent of composer focus.
     @State private var scroll = ScrollState()
 
 
@@ -51,30 +50,25 @@ struct SessionView: View {
         .navigationTitle(chat?.displayTitle ?? "Session")  // feeds the back menu
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(removing: .title)  // the leading header owns the bar
-        .toolbarBackground(.hidden, for: .navigationBar)
+        .toolbarBackground(Theme.bg, for: .navigationBar)
+        .toolbarBackground(.visible, for: .navigationBar)
         .toolbar {
             if let chat {
                 // Static, left-aligned session header — model/effort changes
                 // moved into the composer's picker chips.
                 ToolbarItem(placement: .topBarLeading) {
-                    // Badge OUTSIDE the text stack so the subtitle starts
-                    // under the title's text, not under the harness mark.
-                    HStack(alignment: .top, spacing: 6) {
-                        HarnessBadge(harness: chat.config?.harness ?? "claude-code", size: 12)
-                            .padding(.top, 2)  // optically on the title line
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(chat.displayTitle)
-                                .font(Theme.sans(13, weight: .medium))
-                                .foregroundStyle(Theme.text)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(chat.displayTitle)
+                            .font(Theme.sans(15, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(Theme.sans(12))
+                                .foregroundStyle(Theme.textMuted.opacity(0.6))
                                 .lineLimit(1)
-                                .truncationMode(.tail)
-                            if let subtitle {
-                                Text(subtitle)
-                                    .font(Theme.sans(10.5))
-                                    .foregroundStyle(Theme.textMuted.opacity(0.6))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
+                                .truncationMode(.middle)
                         }
                     }
                     // A FIXED width, not a max: iOS 26 proposes leading items
@@ -111,101 +105,51 @@ struct SessionView: View {
 
     private func content(chat: Chat, store: SessionStore) -> some View {
         let status = liveStatus(chat: chat)
-        // The composer is a bottom SAFE-AREA INSET on the transcript, not a
-        // VStack sibling: the scroll view then spans the full height down to
-        // the keyboard, which is what lets UIKit's interactive
-        // keyboard-dismiss (scrollDismissesKeyboard(.interactively) in
-        // TranscriptView) track a downward drag — with a sibling composer the
-        // scroll view ends above the keyboard and the pan never engages it.
-        return TranscriptView(store: store, chatId: chat.id, scroll: scroll)
-            // The registry row says this session HAS messages; an empty
-            // transcript is therefore still hydrating (no disk snapshot yet,
-            // checkpoint in flight) — show the pulse, not a black void. This
-            // was "the session is blank when I open it" on a phone that had
-            // never cached the doc.
-            .overlay {
-                if store.entries.isEmpty, store.pendingSends.isEmpty,
-                   chat.lastMessageAt != nil {
-                    TranscriptSkeleton()
-                        .background(Theme.bg)
+        // The composer owns real layout space. The transcript's viewport ends
+        // above it, so keyboard and glass morphs cannot cover the last row.
+        return VStack(spacing: 0) {
+            TranscriptView(store: store, chatId: chat.id, scroll: scroll)
+                .overlay {
+                    if store.entries.isEmpty, store.pendingSends.isEmpty,
+                       chat.lastMessageAt != nil {
+                        TranscriptSkeleton().background(Theme.bg)
+                    }
                 }
-            }
-            .motionAnimation(Motion.fadeQuick, value: store.entries.isEmpty)
-            // The keyboard's own transition bounds the transcript's no-correct
-            // window; didShow/didHide land the single measured glide.
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
-                // Re-arm the pin while the numbers are still honest (the
-                // keyboard inset hasn't applied yet): a few points of
-                // scroll-up breaks the pin though the feed still reads as
-                // at-bottom, and the didShow correction only lifts a PINNED
-                // feed — that near-bottom feed was left parked behind the
-                // keyboard. Same 70pt band as the re-engage rule.
-                if !scroll.userScrolling,
-                   scroll.distanceFromBottom <= TranscriptView.stickThreshold {
-                    scroll.pinned = true
-                }
-                scroll.keyboardTransitioning = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidShowNotification)) { _ in
-                scroll.keyboardTransitioning = false
-                scroll.requestCorrection()
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
-                scroll.keyboardTransitioning = true
-            }
-            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardDidHideNotification)) { _ in
-                scroll.keyboardTransitioning = false
-                scroll.requestCorrection()
-            }
-            .safeAreaInset(edge: .bottom, spacing: 0) {
-                VStack(spacing: 0) {
-                    // The strip reserves its 24pt whether or not a run is
-                    // live, so the composer never shifts. It sits on the
-                    // solid floor right where the transcript's fade completes.
-                    // Hit-testing stays off except for the retry affordance.
+                .motionAnimation(Motion.fadeQuick, value: store.entries.isEmpty)
+            VStack(spacing: 0) {
+                if verticalSizeClass != .compact || status == .working || status == .errored
+                    || model.sendState(for: chat) != nil {
                     statusStrip(chat: chat, status: status, store: store)
                         .allowsHitTesting(model.sendState(for: chat) == .failed)
-                    Group {
-                        if let request = store.openInputRequest {
-                            QuestionPanel(requestId: request.requestId, questions: request.questions) { requestId, answers in
-                                store.respondInput(requestId: requestId, answers: answers)
-                            }
-                        } else {
-                            ComposerView(store: store, chat: chat, runLive: status == .working)
+                }
+                Group {
+                    if let request = store.openInputRequest {
+                        QuestionPanel(requestId: request.requestId, questions: request.questions) { requestId, answers in
+                            store.respondInput(requestId: requestId, answers: answers)
                         }
+                    } else {
+                        ComposerView(store: store, chat: chat, runLive: status == .working)
                     }
-                    .padding(.bottom, 8)
                 }
-                // Report the inset's global top edge — the visual line the
-                // transcript's bottom pad should meet while pinned. Global
-                // frames stay honest when the keyboard's inset math doesn't
-                // (see TranscriptView.correctPin).
-                .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY } action: { [scroll] new in
-                    scroll.insetTopGlobalY = new
-                    scroll.insetTopChangedAt = Date().timeIntervalSinceReferenceDate
-                }
-                // One continuous dissolve: starts 44pt above the strip and
-                // reaches full bg only at the PHYSICAL bottom edge, so rows
-                // stay faintly visible sliding beneath the glass shell
-                // instead of vanishing at the composer's top. `.container`
-                // keeps it off the keyboard's safe-area region.
-                .background {
-                    LinearGradient(
-                        stops: [
-                            .init(color: Theme.bg.opacity(0), location: 0),
-                            .init(color: Theme.bg.opacity(0.45), location: 0.25),
-                            .init(color: Theme.bg.opacity(0.72), location: 0.6),
-                            .init(color: Theme.bg, location: 1),
-                        ],
-                        startPoint: .top, endPoint: .bottom
-                    )
-                    .padding(.top, -44)  // ramp begins above the strip
-                    .ignoresSafeArea(.container, edges: .bottom)
-                    .allowsHitTesting(false)
-                }
+                .padding(.bottom, 8)
             }
-            .background(Theme.bg.ignoresSafeArea())
-            .motionAnimation(Motion.fadeQuick, value: store.openInputRequest?.requestId)
+            .background {
+                LinearGradient(
+                    stops: [
+                        .init(color: Theme.bg.opacity(0), location: 0),
+                        .init(color: Theme.bg.opacity(0.45), location: 0.25),
+                        .init(color: Theme.bg.opacity(0.72), location: 0.6),
+                        .init(color: Theme.bg, location: 1),
+                    ],
+                    startPoint: .top, endPoint: .bottom
+                )
+                .padding(.top, verticalSizeClass == .compact ? 0 : -24)
+                .ignoresSafeArea(.container, edges: .bottom)
+                .allowsHitTesting(false)
+            }
+        }
+        .background(Theme.bg.ignoresSafeArea())
+        .motionAnimation(Motion.fadeQuick, value: store.openInputRequest?.requestId)
     }
 
     private func liveStatus(chat: Chat) -> SessionStatus? {

@@ -46,13 +46,6 @@ final class SessionStore {
     /// row builder memoizes on it, so a body re-eval that was triggered by
     /// something else (scrolling) costs O(1) instead of re-deriving every row.
     private(set) var revision: UInt64 = 0
-    /// Whether this chat's transcript has already been revealed once.
-    ///
-    /// Lives on the store, not the view: the reveal gate is `@State`, so any
-    /// re-creation of TranscriptView reset it to "hidden" and blanked an
-    /// already-visible transcript until the settle loop finished. The store is
-    /// cached per chat, so it outlives that churn.
-    @ObservationIgnored var hasRevealed = false
     /// Transcript parse/row cache — store-owned so parses survive view
     /// churn, and prewarmed off-main whenever a projection lands so opening
     /// the chat never parses markdown inside the first body pass.
@@ -60,6 +53,8 @@ final class SessionStore {
     private(set) var connected = false
     /// Client-minted ids of sends the host hasn't materialized yet.
     private(set) var pendingSends: [PendingSend] = []
+    /// Local submission only; remote user entries never pull a reader to a new turn.
+    private(set) var lastSubmittedMessageId: String?
 
     let doc = LoroDoc()
     /// The chat2 room cursor — the last server row seq folded into `doc`.
@@ -525,6 +520,7 @@ final class SessionStore {
                  worktree: WorktreeSpec? = nil) {
         if offline {
             demoResponder?(prompt)
+            lastSubmittedMessageId = entries.last(where: { $0.role == .user })?.id
             return
         }
         let messageId = UUID().uuidString.lowercased()
@@ -544,12 +540,14 @@ final class SessionStore {
         ])
         let now = nowMs()
         pendingSends.append(PendingSend(messageId: messageId, text: prompt, at: now, started: now))
+        lastSubmittedMessageId = messageId
         revision &+= 1
     }
 
     func sendSteer(prompt: String) {
         if offline {
             demoResponder?(prompt)
+            lastSubmittedMessageId = entries.last(where: { $0.role == .user })?.id
             return
         }
         let messageId = UUID().uuidString.lowercased()
@@ -560,6 +558,7 @@ final class SessionStore {
         ])
         let now = nowMs()
         pendingSends.append(PendingSend(messageId: messageId, text: prompt, at: now, started: now))
+        lastSubmittedMessageId = messageId
         revision &+= 1
     }
 
