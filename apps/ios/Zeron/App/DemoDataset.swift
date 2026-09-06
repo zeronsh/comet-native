@@ -181,7 +181,18 @@ final class DemoDataset {
     func sessionStore(for chatId: String) -> SessionStore {
         if let existing = stores[chatId] { return existing }
         let store = SessionStore(chatId: chatId, config: Self.dummyConfig, offline: true)
-        store.setEntries(Self.transcript(for: chatId))
+        if ProcessInfo.processInfo.arguments.contains("-longprompt") {
+            store.setEntries([
+                MessageEntry(id: "long-prompt", role: .user,
+                    parts: [.text(id: "t0", text: (1...18).map { "Requirement \($0): keep the transcript visible through every keyboard, streaming, and navigation transition." }.joined(separator: "\n"))],
+                    createdAt: nowMs(), deviceId: "demo", status: .complete, continuationOf: nil),
+                MessageEntry(id: "short-reply", role: .assistant,
+                    parts: [.text(id: "t0", text: "I’ll verify all of those transitions.")],
+                    createdAt: nowMs(), deviceId: "demo", status: .complete, continuationOf: nil)
+            ])
+        } else {
+            store.setEntries(Self.transcript(for: chatId))
+        }
         store.demoResponder = { [weak self, weak store] prompt in
             guard let self, let store else { return }
             self.simulateTurn(store: store, chatId: chatId, prompt: prompt)
@@ -328,7 +339,9 @@ final class DemoDataset {
                 guard let last = current.indices.last, current[last].id == liveId else { return }
                 current[last].parts = [.text(id: "t0", text: text)]
                 store.setEntries(current)
-                try? await Task.sleep(nanoseconds: UInt64.random(in: 30_000_000...140_000_000))
+                let delay: UInt64 = ProcessInfo.processInfo.arguments.contains("-slowstream")
+                    ? 400_000_000 : UInt64.random(in: 30_000_000...140_000_000)
+                try? await Task.sleep(nanoseconds: delay)
             }
             guard let self, let store else { return }
             var current = store.entries

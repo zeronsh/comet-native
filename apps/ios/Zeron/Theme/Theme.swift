@@ -53,7 +53,7 @@ enum Theme {
     static let tokenNumber = oklch(0.780, 0.120, 80.0)    // soft amber
 
     // ---- numbers drive layout (pt) ----
-    static let bubbleRadius: CGFloat = 16
+    static let bubbleRadius: CGFloat = 22
     static let panelRadius: CGFloat = 10
     static let controlRadius: CGFloat = 6
     static let spaceXS: CGFloat = 4

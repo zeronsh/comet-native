@@ -29,7 +29,88 @@ final class MobilePolishTests: XCTestCase {
 
     private var composer: XCUIElement { app.descendants(matching: .any)["composer-input"].firstMatch }
     private var tail: XCUIElement {
-        app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Landed the pass-599")).firstMatch
+        app.otherElements["transcript"].cells["a599#t1.0"].staticTexts.firstMatch
+    }
+
+    func testImmediateScrollAfterRepeatedSessionOpens() {
+        launch(["-route", "chat:chat-tabs", "-huge"])
+        let transcript = app.otherElements["transcript"]
+        for cycle in 0..<3 {
+            if cycle > 0 {
+                app.navigationBars.buttons.firstMatch.tap()
+                app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Tool group header colors")).firstMatch.tap()
+            }
+            for direction in [1.0, -1.0, 1.0, -1.0] {
+                let start = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: direction > 0 ? 0.3 : 0.8))
+                let end = transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.55, dy: direction > 0 ? 0.8 : 0.3))
+                start.press(forDuration: 0.01, thenDragTo: end, withVelocity: .fast, thenHoldForDuration: 0)
+                let viewport = transcript.frame
+                let visible = transcript.staticTexts.allElementsBoundByIndex.filter {
+                    $0.frame.intersects(viewport) && $0.frame.height > 0
+                }
+                XCTAssertGreaterThan(visible.map { min($0.frame.maxY, viewport.maxY) }.max() ?? 0,
+                                     viewport.midY, "A scroll must not leave the lower half of the transcript blank")
+            }
+            capture("early-scroll-\(cycle)")
+        }
+    }
+
+    func testLongUserMessageShowMoreAndLess() {
+        launch(["-route", "chat:chat-tabs", "-longprompt"])
+        let more = app.buttons["Show more"]
+        XCTAssertTrue(more.waitForExistence(timeout: 5))
+        capture("user-message-collapsed")
+        more.tap()
+        let less = app.buttons["Show less"]
+        capture("user-message-expanded")
+        for _ in 0..<5 where !less.isHittable { app.otherElements["transcript"].swipeUp() }
+        waitUntilHittable(less)
+        less.tap()
+        waitUntilHittable(more)
+        capture("user-message-recollapsed")
+        more.tap()
+        app.navigationBars.buttons.firstMatch.tap()
+        app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Tool group header colors")).firstMatch.tap()
+        waitUntilHittable(less)
+        capture("user-message-expanded-reopen")
+        less.tap()
+        waitUntilHittable(more)
+    }
+
+    func testStreamingComposerAndCancelledBackSwipeKeepTranscriptVisible() {
+        launch(["-route", "chat:chat-tabs", "-slowstream"])
+        composer.tap()
+        composer.typeText("Check keyboard and navigation transitions.")
+        app.buttons["composer-send"].tap()
+        let reply = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Here’s how")).firstMatch
+        XCTAssertTrue(reply.waitForExistence(timeout: 8))
+        func visibleReply() -> XCUIElement? {
+            app.otherElements["transcript"].staticTexts.allElementsBoundByIndex.last {
+                $0.label != "Check keyboard and navigation transitions." && $0.isHittable
+            }
+        }
+        func waitForVisibleReply() {
+            let visible = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                visibleReply() != nil
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: 5), .completed)
+        }
+        for cycle in 0..<3 {
+            waitUntilHittable(app.keyboards.firstMatch)
+            waitForVisibleReply()
+            capture("stream-keyboard-\(cycle)")
+            visibleReply()!.tap()
+            // A slow, short edge swipe is cancelled, returning to this session.
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.005, dy: 0.5))
+                .press(forDuration: 0.05,
+                       thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.22, dy: 0.5)),
+                       withVelocity: .slow, thenHoldForDuration: 0.4)
+            XCTAssertTrue(composer.exists)
+            waitForVisibleReply()
+            capture("cancelled-back-swipe-\(cycle)")
+            composer.tap()
+            waitForVisibleReply()
+        }
     }
 
     func testGlassProjectSelectorSelectionAndDismissal() {
@@ -66,7 +147,7 @@ final class MobilePolishTests: XCTestCase {
         capture("multiline-composer")
         // Read history and return with the real scroll gesture / jump button.
         tail.tap() // Dismiss keyboard before measuring a history drag.
-        let transcript = app.scrollViews["transcript"]
+        let transcript = app.otherElements["transcript"]
         for _ in 0..<2 {
             transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.35))
                 .press(forDuration: 0.05, thenDragTo: transcript.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)))
@@ -150,9 +231,9 @@ final class MobilePolishTests: XCTestCase {
         let send = app.buttons["composer-send"]
         waitUntilHittable(send)
         XCTAssertLessThanOrEqual(send.frame.maxY, app.keyboards.firstMatch.frame.minY + 2)
-        XCTAssertGreaterThan(app.scrollViews["transcript"].frame.height, 20)
-        XCTAssertGreaterThan(completedTail.frame.maxY, app.scrollViews["transcript"].frame.minY)
-        XCTAssertLessThanOrEqual(completedTail.frame.maxY, app.scrollViews["transcript"].frame.maxY + 2)
+        XCTAssertGreaterThan(app.otherElements["transcript"].frame.height, 20)
+        XCTAssertGreaterThan(completedTail.frame.maxY, app.otherElements["transcript"].frame.minY)
+        XCTAssertLessThanOrEqual(completedTail.frame.maxY, app.otherElements["transcript"].frame.maxY + 2)
         capture("landscape-streaming")
         XCUIDevice.shared.orientation = .portrait
         let portrait = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
