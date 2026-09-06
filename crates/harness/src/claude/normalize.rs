@@ -185,6 +185,7 @@ fn is_synthetic_user_text(text: &str) -> bool {
 /// resume turns them into the done→Working→done wake.
 pub(crate) struct Normalizer {
     saw_init: bool,
+    last_model: Option<String>,
     /// Background-agent ids (`task_started.task_id`) → the spawning Agent
     /// tool_use id. `SendMessage` steers address the AGENT id; this map
     /// re-keys them onto the spawn chip's feed (the wire never echoes the
@@ -209,6 +210,7 @@ impl Normalizer {
     pub fn new() -> Self {
         Self {
             saw_init: false,
+            last_model: None,
             agent_tasks: std::collections::HashMap::new(),
             agent_spawn_tools: std::collections::HashSet::new(),
             assistant_message_id: new_message_id(),
@@ -443,6 +445,27 @@ impl Normalizer {
                         std::iter::once(call).chain(opening).chain(steer)
                     })
                     .collect();
+                self.last_model = f.message.model.clone().or(self.last_model.take());
+                if let Some(usage) = &f.message.usage {
+                    let fields = [
+                        "input_tokens",
+                        "cache_read_input_tokens",
+                        "cache_creation_input_tokens",
+                    ];
+                    if fields
+                        .iter()
+                        .any(|key| usage.get(*key).and_then(Value::as_u64).is_some())
+                    {
+                        let tokens = fields
+                            .iter()
+                            .filter_map(|key| usage.get(*key).and_then(Value::as_u64))
+                            .fold(0u64, u64::saturating_add);
+                        out.push(AgentEvent::ContextUsage {
+                            tokens: Some(tokens),
+                            window: None,
+                        });
+                    }
+                }
                 // A failed turn (usage limit, billing, auth, overloaded, …)
                 // carries a terse `error` code here — often with empty content
                 // and no `result` error — so surface it visibly.
@@ -525,6 +548,26 @@ impl Normalizer {
             }
 
             Frame::Result(f) => {
+                let model_usage = self
+                    .last_model
+                    .as_ref()
+                    .and_then(|model| {
+                        f.model_usage.get(model).or_else(|| {
+                            f.model_usage.values().find(|entry| {
+                                entry.get("canonicalModel").and_then(Value::as_str)
+                                    == Some(model.as_str())
+                            })
+                        })
+                    })
+                    .or_else(|| {
+                        (f.model_usage.len() == 1)
+                            .then(|| f.model_usage.values().next())
+                            .flatten()
+                    });
+                let window = model_usage
+                    .and_then(|entry| entry.get("contextWindow"))
+                    .and_then(Value::as_u64)
+                    .filter(|n| *n > 0);
                 if let Some(id) = &f.session_id {
                     self.session_id = Some(id.clone());
                 }
@@ -593,7 +636,15 @@ impl Normalizer {
                         session_id: f.session_id,
                     }
                 };
-                vec![usage, done]
+                let mut out = Vec::new();
+                if let Some(window) = window {
+                    out.push(AgentEvent::ContextUsage {
+                        tokens: None,
+                        window: Some(window),
+                    });
+                }
+                out.extend([usage, done]);
+                out
             }
 
             // Control frames are handled by the run loop, not normalized.
@@ -1101,5 +1152,37 @@ mod tests {
             }
             other => panic!("unexpected event: {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    #[test]
+    fn context_counts_cached_prompt_and_matches_primary_model() {
+        let mut normalizer = Normalizer::new();
+        let events = normalizer.normalize(super::super::wire::parse_frame(r#"{"type":"assistant","message":{"model":"primary","content":[],"usage":{"input_tokens":200,"cache_read_input_tokens":40000,"cache_creation_input_tokens":1800,"output_tokens":100}}}"#).unwrap(), false);
+        assert!(events.contains(&AgentEvent::ContextUsage {
+            tokens: Some(42000),
+            window: None
+        }));
+        let events = normalizer.normalize(super::super::wire::parse_frame(r#"{"type":"assistant","parent_tool_use_id":"child","message":{"model":"child","content":[],"usage":{"input_tokens":999999}}}"#).unwrap(), false);
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, AgentEvent::ContextUsage { .. }))
+        );
+        let events = normalizer.normalize(super::super::wire::parse_frame(r#"{"type":"result","subtype":"success","usage":{"input_tokens":999999},"modelUsage":{"primary":{"contextWindow":200000},"child":{"contextWindow":1000000}}}"#).unwrap(), false);
+        assert!(events.contains(&AgentEvent::ContextUsage {
+            tokens: None,
+            window: Some(200000)
+        }));
+        assert!(!events.iter().any(|e| matches!(
+            e,
+            AgentEvent::ContextUsage {
+                tokens: Some(_),
+                ..
+            }
+        )));
     }
 }

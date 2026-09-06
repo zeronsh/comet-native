@@ -204,7 +204,11 @@ async fn happy_path_maps_chunks_tools_diffs_plans_and_commands() {
         },
     }));
 
-    // usage_update maps to nothing (context gauge, not per-turn tokens).
+    // Context occupancy has a dedicated event; billing usage stays separate.
+    assert!(events.contains(&AgentEvent::ContextUsage {
+        tokens: Some(1200),
+        window: Some(500000)
+    }));
     assert!(!events.iter().any(|e| matches!(e, AgentEvent::Usage { .. })));
 
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);

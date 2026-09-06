@@ -14,6 +14,17 @@ use serde::{Deserialize, Serialize};
 use crate::parts::MessagePart;
 use crate::schema::SessionMessageEntry;
 
+/// Transcript changes and the current host-owned context snapshot travel together.
+/// Older readers ignore `contextUsage`; older hosts decode as unknown usage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptUpdate {
+    #[serde(flatten)]
+    pub frame: TranscriptFrame,
+    #[serde(default)]
+    pub context_usage: Option<zeron_proto::ContextUsage>,
+}
+
 /// One `WatchDocMessages` stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -411,5 +422,29 @@ mod tests {
         };
         let mut current = Vec::new();
         assert!(apply_transcript_frame(&mut current, frame).is_err());
+    }
+}
+
+#[cfg(test)]
+mod context_update_tests {
+    use super::*;
+    #[test]
+    fn usage_envelope_is_compatible_with_old_hosts_and_readers() {
+        let old = serde_json::json!({"reset": []});
+        let update: TranscriptUpdate = serde_json::from_value(old).unwrap();
+        assert_eq!(update.context_usage, None);
+        let value = serde_json::to_value(TranscriptUpdate {
+            frame: TranscriptFrame::reset(&[]),
+            context_usage: Some(zeron_proto::ContextUsage {
+                tokens: Some(0),
+                window: Some(200000),
+            }),
+        })
+        .unwrap();
+        assert_eq!(value["contextUsage"]["tokens"], 0);
+        assert!(matches!(
+            serde_json::from_value::<TranscriptFrame>(value).unwrap(),
+            TranscriptFrame::Reset { .. }
+        ));
     }
 }

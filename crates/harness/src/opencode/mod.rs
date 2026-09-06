@@ -662,8 +662,15 @@ struct Provider {
 
 #[derive(Debug, serde::Deserialize)]
 struct ProviderModel {
+    #[serde(default)]
+    limit: ProviderLimit,
     name: Option<String>,
     variants: Option<std::collections::BTreeMap<String, serde::de::IgnoredAny>>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ProviderLimit {
+    context: Option<u64>,
 }
 
 /// Decode large catalogs without collecting a second, full HTTP body first.
@@ -967,6 +974,23 @@ async fn run_session(session: Session) {
     let variant = model.as_ref().and_then(|(provider, model_id)| {
         pick_variant(&providers, provider, model_id, request.reasoning)
     });
+    let context_windows: HashMap<String, u64> = providers
+        .all
+        .iter()
+        .flatten()
+        .flat_map(|provider| {
+            provider
+                .models
+                .iter()
+                .flat_map(|models| models.iter())
+                .filter_map(|(id, model)| {
+                    Some((
+                        format!("{}/{}", provider.id.as_deref()?, id),
+                        model.limit.context.filter(|n| *n > 0)?,
+                    ))
+                })
+        })
+        .collect();
     drop(providers);
 
     let mut assistant_message_id = new_message_id();
@@ -1335,6 +1359,7 @@ async fn run_session(session: Session) {
                             unbound_children: &mut unbound_children,
                             turn: &mut turn,
                             pending_usage: &mut pending_usage,
+                            context_windows: &context_windows,
                         }).await;
                         match outcome {
                             BusOutcome::Continue => {}
@@ -1362,6 +1387,37 @@ async fn create_session(server: &Server, dir: Option<&str>) -> Result<String, Ha
         .and_then(Value::as_str)
         .map(str::to_owned)
         .ok_or_else(|| HarnessError::Protocol("opencode session create returned no id".into()))
+}
+
+fn context_usage_event(info: &Value, context_windows: &HashMap<String, u64>) -> Option<AgentEvent> {
+    let tokens = info.get("tokens")?;
+    let counts: Vec<u64> = [
+        tokens.get("input"),
+        tokens.get("output"),
+        tokens.pointer("/cache/read"),
+        tokens.pointer("/cache/write"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_u64)
+    .collect();
+    let tokens = tokens
+        .get("total")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+        .or_else(|| {
+            (!counts.is_empty()).then(|| counts.into_iter().fold(0u64, u64::saturating_add))
+        });
+    // New assistant placeholders carry zero counters before the request runs.
+    if tokens == Some(0) && info.pointer("/time/completed").is_none() {
+        return None;
+    }
+    let window = info
+        .get("providerID")
+        .and_then(Value::as_str)
+        .zip(info.get("modelID").and_then(Value::as_str))
+        .and_then(|(provider, model)| context_windows.get(&format!("{provider}/{model}")).copied());
+    (tokens.is_some() || window.is_some()).then_some(AgentEvent::ContextUsage { tokens, window })
 }
 
 /// The requested effort as a variant id the model actually advertises.
@@ -1528,6 +1584,7 @@ struct BusCtx<'a> {
     unbound_children: &'a mut HashMap<String, String>,
     turn: &'a mut TurnState,
     pending_usage: &'a mut Option<AgentEvent>,
+    context_windows: &'a HashMap<String, u64>,
 }
 
 /// Wrap an event as subagent-attributed traffic.
@@ -1578,6 +1635,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         unbound_children,
         turn,
         pending_usage,
+        context_windows,
     } = ctx;
     // Envelope styles: /global/event wraps ({payload: {...}}); a bare
     // /event feed (tests) delivers the payload directly.
@@ -1728,6 +1786,11 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                 if role == "assistant"
                     && let Some(tokens) = info.get("tokens")
                 {
+                    if let Some(usage) = context_usage_event(info, context_windows)
+                        && !send(event_tx, usage).await
+                    {
+                        return BusOutcome::ConsumerGone;
+                    }
                     let input = tokens.get("input").and_then(Value::as_u64).unwrap_or(0);
                     let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
                     if input > 0 || output > 0 {
@@ -2558,3 +2621,36 @@ async fn stream_bus(tx: &mpsc::Sender<BusMsg>, resp: reqwest::Response) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    #[test]
+    fn context_includes_cache_and_uses_reported_model_limit() {
+        let windows = HashMap::from([("provider/model".into(), 200000)]);
+        let info = json!({"providerID":"provider","modelID":"model", "tokens": {
+            "input": 200, "output": 100, "reasoning": 50, "cache": {"read":40000,"write":1800}
+        }});
+        assert_eq!(
+            context_usage_event(&info, &windows),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(42100),
+                window: Some(200000)
+            })
+        );
+        assert_eq!(
+            context_usage_event(&json!({"tokens":{"input":0,"output":0}}), &windows),
+            None
+        );
+        assert_eq!(
+            context_usage_event(
+                &json!({"time":{"completed":1},"tokens":{"input":0,"output":0}}),
+                &windows
+            ),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(0),
+                window: None
+            })
+        );
+    }
+}
