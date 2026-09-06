@@ -41,7 +41,8 @@ struct ComposerShell<Chips: View>: View {
 
     @Environment(\.verticalSizeClass) private var verticalSizeClass
     private var compact: Bool { verticalSizeClass == .compact }
-    @FocusState private var focused: Bool
+    @State private var focused = false
+    @State private var editor = ComposerEditorController()
 
     private var expanded: Bool {
         alwaysExpanded || keepExpanded || focused || !attachments.isEmpty
@@ -69,7 +70,7 @@ struct ComposerShell<Chips: View>: View {
             // Focus-widen: margins pull in slightly while typing (chat-session.tsx).
             .padding(.horizontal, focused ? 10 : 16)
             .motionAnimation(Motion.resize, value: focused)
-            .motionAnimation(Motion.collapse, value: expanded)
+            .motionAnimation(Motion.resize, value: expanded)
             .onAppear {
                 guard autoFocus else { return }
                 Task { @MainActor in
@@ -133,13 +134,17 @@ struct ComposerShell<Chips: View>: View {
     }
 
     private var input: some View {
-        TextField(placeholder, text: $draft, axis: .vertical)
-            .accessibilityIdentifier("composer-input")
-            .font(Theme.sans(17))
-            .foregroundStyle(Theme.text)
-            .tint(Theme.text)
-            .lineLimit(1...(compact ? 2 : 7))
-            .focused($focused)
+        ComposerEditor(text: $draft, focused: $focused, placeholder: placeholder,
+                       maxLines: compact ? 2 : 7, controller: editor)
+            .overlay(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text(placeholder)
+                        .font(Theme.sans(17))
+                        .foregroundStyle(Theme.text.opacity(0.3))
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
     }
 
     private var attachButton: some View {
@@ -171,7 +176,9 @@ struct ComposerShell<Chips: View>: View {
                 onStop()
             } else {
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                editor.commit()
                 onSend()
+                editor.apply(text: draft)
             }
         } label: {
             Group {
@@ -431,13 +438,14 @@ struct ComposerView: View {
     }
 
     private func send() {
-        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedText = text
+        let prompt = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = attachments
         guard !prompt.isEmpty || !staged.isEmpty else { return }
 
         if staged.isEmpty {
             deliver(content: prompt, paths: [])
-            clearDraft()
+            clearDraft(matching: submittedText)
             return
         }
         if model.hostSupportsQueuedAttachments(chat) {
@@ -460,7 +468,7 @@ struct ComposerView: View {
             store.sendWithTransfers(prompt: prompt, chat: chat, live: runLive,
                                     transfers: transfers)
             attachments = []
-            clearDraft()
+            clearDraft(matching: submittedText)
             return
         }
         // Legacy host-staged flow (host < 0.2.12): upload first, send after —
@@ -491,7 +499,7 @@ struct ComposerView: View {
                 }
                 deliver(content: withAttachments(text: prompt, paths: paths), paths: paths)
                 attachments = []
-                clearDraft()
+                clearDraft(matching: submittedText)
             } catch {
                 uploadError = "Attachment upload failed — \(error.localizedDescription)"
             }
@@ -506,16 +514,10 @@ struct ComposerView: View {
         }
     }
 
-    private func clearDraft() {
+    private func clearDraft(matching submittedText: String) {
+        // A legacy attachment upload can finish after the user edits the draft.
+        guard text == submittedText else { return }
         text = ""
-        // The clear above is unconditional, so a prompt left sitting in the
-        // composer after a successful send is not this path failing to run —
-        // it is the text view writing the pre-send string back. A focused
-        // multiline TextField commits pending autocorrect/marked text through
-        // the binding AFTER a programmatic change, which restores the prompt.
-        // Re-clear once that has drained; a keystroke can't land inside the
-        // same main-actor turn, so this can never eat real input.
-        Task { @MainActor in text = "" }
     }
 }
 

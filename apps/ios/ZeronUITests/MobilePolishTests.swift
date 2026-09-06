@@ -113,6 +113,26 @@ final class MobilePolishTests: XCTestCase {
         }
     }
 
+    func testSendClearsComposerAndKeepsTheNextDraft() {
+        launch(["-route", "chat:chat-tabs", "-slowstream"])
+        composer.tap()
+        for (cycle, prompt) in ["Fix teh flicker", "A multiline draft\nwith another line", "Keep emoji 👋🏽 and 你好"].enumerated() {
+            composer.typeText(prompt)
+            XCTAssertEqual(composer.value as? String, prompt)
+            app.buttons["composer-send"].tap()
+            let cleared = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                (self.composer.value as? String ?? "").isEmpty
+            }, object: nil)
+            XCTAssertEqual(XCTWaiter.wait(for: [cleared], timeout: 3), .completed)
+            waitUntilHittable(app.keyboards.firstMatch)
+            let next = "Next draft \(cycle)"
+            composer.typeText(next)
+            XCTAssertEqual(composer.value as? String, next)
+            capture("sent-cleared-next-draft-\(cycle)")
+            composer.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: next.count))
+        }
+    }
+
     func testGlassProjectSelectorSelectionAndDismissal() {
         launch()
         let filter = app.buttons["space-filter"]

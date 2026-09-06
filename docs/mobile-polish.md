@@ -100,6 +100,56 @@ All interaction data is the offline demo dataset. This pass does not claim
 physical-device performance, live host/edge delivery, or attachment transfer
 coverage beyond the existing protocol tests.
 
+## Streaming, keyboard motion, and draft clearing
+
+Streaming chunks are registered with the row's fade clock before constructing
+Text. Previously an appended suffix could paint opaque, then be registered by
+`onChange` and darken on the next frame. Fade clocks now survive replacement of
+a hosted cell and use monotonic time. Reopening the transcript still seeds
+existing text as visible. Regression tests check first-render registration and
+monotonic opacity across bursts and Markdown length changes. A block-append
+regression also verifies that a chunk finishing a paragraph and starting a new
+block refreshes both rows; inserting only the new row left the paragraph
+without its final words until reuse.
+
+The native table renders a screen-height area anchored to the bottom of the
+logical transcript viewport. This keeps rows realized across the keyboard's
+swept area. Its presentation position and runway offset share the viewport's
+actual Core Animation springs and start times, including overlapping springs
+when direction reverses; internal self-sizing layout runs
+without a second animation. History resizing preserves a measured row anchor,
+including when extra rows replace estimated heights. The header fade, glass
+composer, and native animated send runway remain in place.
+
+The composer uses one stable UITextView for selection, marked text, and keyboard
+ownership. Sending commits composition, delivers the captured draft, and clears
+that same native storage synchronously. A delayed delegate callback reads the
+current storage instead of restoring the sent string. There is no asynchronous
+second clear that could consume the next draft. Legacy attachment completion
+clears only a draft still matching the submitted text.
+
+Motion checks sample presentation frames every 16ms while the real keyboard
+opens, closes, and rapidly reverses, while a short reply streams into a runway, and while reading
+history. They assert relative anchor error below 4pt throughout the samples,
+in addition to settled visibility. Controlled composer resizing reproduced a
+44pt transient separation before the fix; the real-keyboard check reproduced
+a roughly 300pt jump. These are simulator geometry measurements, not a claim
+about physical-device frame rate or equivalence to another app.
+
+Validation on iOS 26.3.1 Simulator: the final iPhone 17 Pro pass completed
+83 unit/hosted-layout tests and all ten UI scenarios. The iPhone 16e full pass
+completed 82 unit/layout tests and ten UI scenarios; after the paragraph fix,
+all 27 affected unit/layout checks and the send and streaming/back-swipe UI
+checks passed again. The stricter per-sample realization checks also passed on
+both sizes. The 16e temporarily stopped responding to orientation requests;
+a simulator restart restored rotation and two unchanged send/landscape runs
+passed consecutively. Screenshots and streaming video frames were reviewed.
+The arm64 Release simulator build passed.
+
+| Streaming with keyboard open | Sent text cleared; next draft retained | Multiline composer |
+| --- | --- | --- |
+| ![Streaming keyboard](screenshots/mobile-stream-keyboard/streaming-keyboard.png) | ![Next draft after sending](screenshots/mobile-stream-keyboard/next-draft-after-send.png) | ![Multiline composer](screenshots/mobile-stream-keyboard/multiline-composer.png) |
+
 ## Follow-up screenshots
 
 | Five-line user preview | Expansion retained after reopening | Streaming with keyboard open |
