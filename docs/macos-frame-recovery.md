@@ -37,10 +37,12 @@ transcript scrolling or runway geometry.
 ## Validation
 
 The PR's macOS CI job compiles the application and runs the native
-`stopped_frame_source_allows_invalidation_to_restart_it` regression in the
-pinned dependency. It creates a real dispatch source and checks that stopping
-it without a subscription clears the latch, allowing subsequent invalidation
-to schedule another restart. The old stop implementation leaves the latch set.
+`frame_source_recovery` integration test in the pinned dependency. Its custom
+harness runs on the native main thread, creates a real dispatch source, and
+checks that stopping it clears the latch. It then forces two real CoreVideo
+subscription failures with an invalid display ID and verifies that each failure
+allows the next invalidation to request a restart. The old implementation
+leaves the latch set.
 
 The existing Linux UI suite covers the transcript changes. Its recordings are
 linked in [transcript-selection-regressions.md](transcript-selection-regressions.md);

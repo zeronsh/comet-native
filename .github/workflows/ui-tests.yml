@@ -52,13 +52,6 @@ jobs:
       - uses: actions/checkout@v4
       - name: Rust toolchain
         run: rustup show active-toolchain || rustup toolchain install
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: |
-            .
-            frame-source-tests
-      - name: Check macOS application
-        run: cargo check --release --locked -p zeron
       - name: Check out pinned GPUI for native frame-source tests
         shell: bash
         run: |
@@ -67,6 +60,13 @@ jobs:
           git -C frame-source-tests remote add origin https://github.com/zeronsh/zui
           git -C frame-source-tests fetch --depth=1 origin "$rev"
           git -C frame-source-tests checkout --detach FETCH_HEAD
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            frame-source-tests
+      - name: Check macOS application
+        run: cargo check --release --locked -p zeron
       - name: Native frame-source recovery regression
         working-directory: frame-source-tests
-        run: cargo test --release --locked -p gpui_macos --lib display_link::tests -- --test-threads=1
+        run: cargo test --release --locked -p gpui_macos --test frame_source_recovery
