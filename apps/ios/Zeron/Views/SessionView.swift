@@ -57,24 +57,18 @@ struct SessionView: View {
                 // Static, left-aligned session header — model/effort changes
                 // moved into the composer's picker chips.
                 ToolbarItem(placement: .topBarLeading) {
-                    // Badge OUTSIDE the text stack so the subtitle starts
-                    // under the title's text, not under the harness mark.
-                    HStack(alignment: .top, spacing: 6) {
-                        HarnessBadge(harness: chat.config?.harness ?? "claude-code", size: 12)
-                            .padding(.top, 2)  // optically on the title line
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(chat.displayTitle)
-                                .font(Theme.sans(15, weight: .medium))
-                                .foregroundStyle(Theme.text)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(chat.displayTitle)
+                            .font(Theme.sans(15, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if let subtitle {
+                            Text(subtitle)
+                                .font(Theme.sans(12))
+                                .foregroundStyle(Theme.textMuted.opacity(0.6))
                                 .lineLimit(1)
-                                .truncationMode(.tail)
-                            if let subtitle {
-                                Text(subtitle)
-                                    .font(Theme.sans(12))
-                                    .foregroundStyle(Theme.textMuted.opacity(0.6))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
+                                .truncationMode(.middle)
                         }
                     }
                     // A FIXED width, not a max: iOS 26 proposes leading items
