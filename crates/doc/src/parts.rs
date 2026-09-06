@@ -444,6 +444,7 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         // subagent sink writes it), never a part of the assistant message.
         AgentEvent::AssistantMessageCompleted { .. }
         | AgentEvent::Usage { .. }
+        | AgentEvent::ContextUsage { .. }
         | AgentEvent::AvailableCommands { .. }
         | AgentEvent::UserMessage { .. } => {}
     }
