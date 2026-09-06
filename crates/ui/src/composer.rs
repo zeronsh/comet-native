@@ -6306,7 +6306,6 @@ impl Render for Composer {
                         .w_full()
                         .flex()
                         .items_center()
-                        .gap(px(8.0))
                         .child(div().flex_1().min_w_0().children(footer))
                         .child(div().pr(px(10.0)).mb(px(-8.0)).child(
                             crate::context_usage::render(usage, self.state.clone(), &theme),
