@@ -39,10 +39,12 @@ transcript scrolling or runway geometry.
 The PR's macOS CI job compiles the application and runs the native
 `frame_source_recovery` integration test in the pinned dependency. Its custom
 harness runs on the native main thread, creates a real dispatch source, and
-checks that stopping it clears the latch. It then forces two real CoreVideo
-subscription failures with an invalid display ID and verifies that each failure
-allows the next invalidation to request a restart. The old implementation
-leaves the latch set.
+checks that stopping it clears the latch. The test executable overrides the
+imported `CVDisplayLinkStart` symbol to force two start errors while using real
+CoreVideo links and dispatch sources. It verifies that each failure allows the
+next invalidation to request a restart, and that the retry calls CoreVideo
+again. The old implementation leaves the latch set. A null display ID was
+initially tried as a fault injector, but CoreVideo accepted it on the CI runner.
 
 The existing Linux UI suite covers the transcript changes. Its recordings are
 linked in [transcript-selection-regressions.md](transcript-selection-regressions.md);
