@@ -266,6 +266,7 @@ struct HomeView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 1, leading: 12, bottom: 1, trailing: 12))
+                .sessionPinAction(chat: chat, model: model)
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button {
                         // withAnimation, not a value-keyed .animation: the row
@@ -374,11 +375,18 @@ struct ChatRow: View {
             }
 
             // Line 2: the session title.
-            Text(chat.displayTitle)
-                .font(Theme.sans(17, weight: .medium))
-                .foregroundStyle(Theme.text)
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                if model.isPinned(chatId: chat.id) {
+                    Image(systemName: "pin.fill")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Theme.textMuted)
+                }
+                Text(chat.displayTitle)
+                    .font(Theme.sans(17, weight: .medium))
+                    .foregroundStyle(Theme.text)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
 
             // Line 3: harness brand mark, then the branch when the engine
             // stamped one; the Working spinner rides bottom-right.
@@ -415,6 +423,23 @@ struct ChatRow: View {
             ?? chat.cwd.map { ($0 as NSString).lastPathComponent }
             ?? "?"
         return "\(space) @ \(model.deviceName(chat.deviceId))"
+    }
+}
+
+extension View {
+    func sessionPinAction(chat: Chat, model: AppModel) -> some View {
+        swipeActions(edge: .leading, allowsFullSwipe: true) {
+            let pinned = model.isPinned(chatId: chat.id)
+            Button {
+                withAnimation(Motion.resort) {
+                    model.setPinned(chatId: chat.id, pinned: !pinned)
+                }
+            } label: {
+                Label(pinned ? "Unpin" : "Pin", systemImage: pinned ? "pin.slash" : "pin")
+            }
+            .tint(Theme.accent)
+            .disabled(!model.pinsReady)
+        }
     }
 }
 
