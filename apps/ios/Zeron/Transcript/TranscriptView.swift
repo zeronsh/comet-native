@@ -11,7 +11,7 @@ struct TranscriptView: View {
     static let stickThreshold: CGFloat = 70
     static let jumpThreshold: CGFloat = 140
     @State private var veils = VeilStore()
-    @State private var folds: [String: Bool] = [:]
+    @State var folds = ToolGroupFolds()
     @State private var userExpansionHeights: [String: CGFloat] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -26,7 +26,7 @@ struct TranscriptView: View {
             expansionHeight: runway.flatMap { userExpansionHeights[$0] } ?? 0,
             bottomSpacing: verticalSizeClass == .compact ? 8 : 24,
             reduceMotion: reduceMotion,
-            configurationID: folds.hashValue ^ store.expandedUserMessages.hashValue ^ dynamicTypeSize.hashValue) { row in
+            configurationID: store.expandedUserMessages.hashValue ^ dynamicTypeSize.hashValue) { row in
                 AnyView(rowView(row)
                     .modifier(TranscriptTailProbe(rowID: row.id,
                         isTail: row.id == rows.last?.id || (row.entryId == runway && row.turnStart),
@@ -81,12 +81,8 @@ struct TranscriptView: View {
             case .markdown(let block, let streaming):
                 MarkdownRowView(row: row, block: block, streaming: streaming, veils: veils)
             case .toolGroup(let tools, let autoOpen):
-                ToolGroupView(tools: tools, open: folds[row.id] ?? autoOpen,
-                              userToggled: folds[row.id] != nil, toggle: {
-                    withAnimation(reduceMotion ? nil : Motion.resize) {
-                        folds[row.id] = !(folds[row.id] ?? autoOpen)
-                    }
-                }, onDetailChanged: { scroll.refreshLayout?() })
+                HostedToolGroup(id: row.id, tools: tools, autoOpen: autoOpen,
+                                folds: folds, onResize: { scroll.refreshLayout?() })
             case .inputChip(let header, let resolved):
                 InputChipView(header: header, resolved: resolved)
             case .errorChip(let message):
@@ -399,12 +395,56 @@ struct MarkdownRowView: View {
 
 // MARK: - Tool group (transcript.rs render_tool_group)
 
+/// Read fold state inside the hosting view, so a toggle preserves that view's
+/// animation and identity instead of reconfiguring every visible table cell.
+@Observable
+final class ToolGroupFolds {
+    var values: [String: Bool] = [:]
+}
+
+private struct HostedToolGroup: View {
+    let id: String
+    let tools: [ToolItem]
+    let autoOpen: Bool
+    let folds: ToolGroupFolds
+    let onResize: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let open = folds.values[id] ?? autoOpen
+        ToolGroupView(tools: tools, open: open, userToggled: folds.values[id] != nil,
+            toggle: {
+                withAnimation(reduceMotion ? nil : Motion.resize) { folds.values[id] = !open }
+            }, onDetailChanged: onResize)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in onResize() }
+    }
+}
+
+/// Interpolate actual layout height, not just the painted position of children.
+/// The native table can then keep following and reading anchors on every frame.
+private struct ToolRevealLayout: Layout, Animatable {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
+        return CGSize(width: size.width, height: size.height * min(1, max(0, progress)))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                             proposal: ProposedViewSize(width: bounds.width, height: nil))
+    }
+}
+
 struct ToolGroupView: View {
     let tools: [ToolItem]
     let open: Bool
     let userToggled: Bool
     let toggle: () -> Void
     var onDetailChanged: () -> Void = {}
+    @State private var retainingDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -428,11 +468,23 @@ struct ToolGroupView: View {
             .accessibilityValue(open ? "Expanded" : "Collapsed")
             .accessibilityHint("Shows or hides tool activity")
 
-            if open {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(tools.enumerated()), id: \.offset) { index, tool in
-                        ToolChipRow(tool: tool, continues: index < tools.count - 1, onResize: onDetailChanged)
+            ToolRevealLayout(progress: open ? 1 : 0) {
+                if open || retainingDetails {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(tools.enumerated()), id: \.offset) { index, tool in
+                            ToolChipRow(tool: tool, continues: index < tools.count - 1, onResize: onDetailChanged)
+                        }
                     }
+                }
+            }
+            .clipped()
+            .allowsHitTesting(open)
+            .accessibilityHidden(!open)
+            .task(id: open) {
+                if open { retainingDetails = true }
+                else {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if !Task.isCancelled { retainingDetails = false }
                 }
             }
         }
