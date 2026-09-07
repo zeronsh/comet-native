@@ -13,7 +13,8 @@ Zeron bundles the following syntax-highlighting components. Unless noted otherwi
 | Tree-sitter TOML, Markdown, YAML, Swift, SQL, Lua, Nix, Make and Containerfile grammars and queries | pinned in `Cargo.lock` | MIT-compatible; see each crate | Crate repositories recorded in `Cargo.lock` |
 | Tree-sitter Kotlin grammar | 1.1.0 | MIT | https://github.com/tree-sitter-grammars/tree-sitter-kotlin |
 
-The full Zeron distribution remains licensed under the terms in `LICENSE`.
+Zeron's own source code is licensed under the terms in `LICENSE`. Bundled
+third-party components retain their respective licenses and notices.
 
 ## Bundled theme palette adaptations
 
