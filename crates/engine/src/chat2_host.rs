@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use futures::future::BoxFuture;
 use zeron_doc::SessionDoc;
-use zeron_sync::chat_client::{ChatDocSink, CheckpointFetcher};
+use zeron_sync::chat_client::{ChatDocSink, CheckpointFetcher, RowImportOutcome};
 use zeron_sync::{DocsStore, SyncError};
 
 use crate::doc_host::EdgeConfig;
@@ -74,20 +74,19 @@ impl EngineChatSink {
 }
 
 impl ChatDocSink for EngineChatSink {
-    fn apply_row(&self, bytes: &[u8], cursor: u64) {
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome {
         let Some(doc) = self.doc.upgrade() else {
-            return;
+            return RowImportOutcome::Applied;
         };
         match doc.doc().import(bytes) {
             Ok(status) => {
                 if status.pending.is_some() {
-                    // Missing causal deps: loro parked these ops invisibly.
-                    // The client's cursor contiguity rule keeps `cursor`
-                    // honest (it never jumps a gap), so persisting is safe —
-                    // this warn is the tripwire that the 2026-08-19
-                    // empty-doc/advanced-cursor wedge shape was seen live.
+                    // Room sequence contiguity does not prove causal history
+                    // is present. Snapshot export omits parked operations;
+                    // advancing its cursor would lose them after restart.
                     tracing::warn!(chat = %self.chat_id, cursor,
-                        "chat2 sink: row parked on missing deps (gap repair should follow)");
+                        "chat2 sink: row parked on missing deps; requesting repair");
+                    return RowImportOutcome::PendingDependencies;
                 }
             }
             Err(err) => {
@@ -99,13 +98,18 @@ impl ChatDocSink for EngineChatSink {
             }
         }
         self.persist_with_cursor(cursor);
+        RowImportOutcome::Applied
     }
 
     fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String> {
         let doc = self.doc.upgrade().ok_or("doc evicted")?;
-        doc.doc()
+        let status = doc
+            .doc()
             .import(bytes)
             .map_err(|e| format!("checkpoint import: {e}"))?;
+        if status.pending.is_some() {
+            return Err("checkpoint is missing causal dependencies".into());
+        }
         self.persist_with_cursor(cursor);
         Ok(())
     }
@@ -251,7 +255,6 @@ impl CheckpointFetcher for EdgeCheckpointFetcher {
     }
 }
 
-
 /// Plain-HTTPS chat pull/push (the airplane-wifi transport): GET/POST
 /// `/chat2/{id}/rows` with the same bearer auth the checkpoint fetcher uses.
 pub struct EdgeChatTransport {
@@ -304,7 +307,10 @@ impl zeron_sync::chat_client::ChatTransport for EdgeChatTransport {
                 .await
                 .map_err(|e| SyncError::WebSocket(e.to_string()))?;
             if !res.status().is_success() {
-                return Err(SyncError::Protocol(format!("chat pull http {}", res.status())));
+                return Err(SyncError::Protocol(format!(
+                    "chat pull http {}",
+                    res.status()
+                )));
             }
             let bytes = res
                 .bytes()
@@ -337,7 +343,10 @@ impl zeron_sync::chat_client::ChatTransport for EdgeChatTransport {
                 .await
                 .map_err(|e| SyncError::WebSocket(e.to_string()))?;
             if !res.status().is_success() {
-                return Err(SyncError::Protocol(format!("chat push http {}", res.status())));
+                return Err(SyncError::Protocol(format!(
+                    "chat push http {}",
+                    res.status()
+                )));
             }
             res.text()
                 .await
@@ -388,13 +397,61 @@ mod frontier_tests {
         );
         // A real, contained frontier still short-circuits the fetch — the
         // doc needs actual ops, or its own frontier is the vacuous-empty one.
-        doc.doc()
-            .get_map("meta")
-            .insert("k", "v")
-            .expect("insert");
+        doc.doc().get_map("meta").insert("k", "v").expect("insert");
         doc.doc().commit();
         let vv = doc.doc().oplog_vv().encode();
         assert!(sink.contains_frontier(&vv));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parked_rows_do_not_persist_a_cursor_until_their_history_arrives() {
+        let source = SessionDoc::init("chat").unwrap();
+        let text = source.doc().get_text("body");
+        text.insert(0, "parent").unwrap();
+        source.doc().commit();
+        let checkpoint = source.export_snapshot().unwrap();
+        let frontier = source.doc().oplog_vv();
+        text.insert(6, " child").unwrap();
+        source.doc().commit();
+        let row = source
+            .doc()
+            .export(loro::ExportMode::updates(&frontier))
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(DocsStore::open(dir.path()).unwrap());
+        let target = Arc::new(SessionDoc::from_doc(loro::LoroDoc::new()));
+        let sink = EngineChatSink::new(&target, store.clone(), "chat");
+        sink.persist_with_cursor(0);
+        assert_eq!(
+            sink.apply_row(&row, 1),
+            RowImportOutcome::PendingDependencies
+        );
+        let (_, cursor, _) = store.load_snapshot_with_cursor("chat").unwrap().unwrap();
+        assert_eq!(cursor, 0, "a restart must retry the invisible update");
+
+        sink.apply_checkpoint(&checkpoint, 0).unwrap();
+        assert_eq!(sink.apply_row(&row, 1), RowImportOutcome::Applied);
+        let (snapshot, cursor, _) = store.load_snapshot_with_cursor("chat").unwrap().unwrap();
+        assert_eq!(cursor, 1);
+        let restored = loro::LoroDoc::new();
+        restored.import(&snapshot).unwrap();
+        assert_eq!(restored.get_text("body").to_string(), "parent child");
+
+        let incomplete = Arc::new(SessionDoc::from_doc(loro::LoroDoc::new()));
+        let incomplete_sink = EngineChatSink::new(&incomplete, store.clone(), "incomplete");
+        assert!(incomplete_sink.apply_checkpoint(&row, 1).is_err());
+        assert!(
+            store
+                .load_snapshot_with_cursor("incomplete")
+                .unwrap()
+                .is_none()
+        );
     }
 }

@@ -153,9 +153,16 @@ fn model(
 pub fn static_models() -> Vec<Model> {
     vec![
         model(
+            "claude-fable-5-1",
+            "Fable 5.1",
+            "Most intelligent model for building agents",
+            FULL_LADDER,
+            vec![context_window()],
+        ),
+        model(
             "claude-fable-5",
             "Fable 5",
-            "Most intelligent model for building agents",
+            "Previous generation Fable",
             FULL_LADDER,
             vec![context_window()],
         ),
@@ -229,6 +236,7 @@ mod tests {
     #[test]
     fn xhigh_family_matching() {
         assert!(supports_xhigh("claude-fable-5"));
+        assert!(supports_xhigh("claude-fable-5-1"));
         assert!(supports_xhigh("claude-opus-5"));
         assert!(supports_xhigh("claude-opus-5[1m]"));
         assert!(supports_xhigh("claude-opus-4-7-20260101"));

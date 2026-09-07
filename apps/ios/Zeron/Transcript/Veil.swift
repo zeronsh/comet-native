@@ -22,19 +22,22 @@ final class RowVeil {
         var durationMs: Double
     }
 
+    private let clock: () -> Double
     private var spans: [Span] = []
     private var settledLength: Int
     private var emaMs: Double = RowVeil.emaSeedMs
     private var lastAppendMs: Double?
 
-    init(seededLength: Int = 0) {
+    init(seededLength: Int = 0,
+         clock: @escaping () -> Double = { ProcessInfo.processInfo.systemUptime * 1000 }) {
         settledLength = seededLength
+        self.clock = clock
     }
 
     /// Register growth to `newLength`; the delta becomes a fading span.
     func noteLength(_ newLength: Int) {
         guard newLength > settledLength + spans.map(\.range.count).reduce(0, +) else { return }
-        let now = Date().timeIntervalSince1970 * 1000
+        let now = clock()
         if let last = lastAppendMs {
             let gap = min(now - last, Self.gapClampMs)
             emaMs = emaMs * 0.7 + gap * 0.3
@@ -65,7 +68,7 @@ final class RowVeil {
     }
 
     var isFading: Bool {
-        let now = Date().timeIntervalSince1970 * 1000
+        let now = clock()
         return spans.contains { now - $0.startMs < $0.durationMs }
     }
 
@@ -80,7 +83,7 @@ final class RowVeil {
     /// Drives the Text-concatenation render path (rounded code washes need
     /// per-segment Text pieces, not AttributedString mutation).
     func segments(totalLength: Int) -> [(range: Range<Int>, alpha: Double)] {
-        let now = Date().timeIntervalSince1970 * 1000
+        let now = clock()
         var out: [(Range<Int>, Double)] = []
         var cursor = 0
         for span in spans.sorted(by: { $0.range.lowerBound < $1.range.lowerBound }) {
@@ -104,7 +107,7 @@ final class RowVeil {
     /// Multiply fading alphas into an AttributedString whose characters map
     /// 1:1 onto the veiled source range starting at `sourceOffset`.
     func apply(to attr: inout AttributedString, sourceOffset: Int) {
-        let now = Date().timeIntervalSince1970 * 1000
+        let now = clock()
         let length = attr.characters.count
         for span in spans {
             let progress = min(max((now - span.startMs) / span.durationMs, 0), 1)

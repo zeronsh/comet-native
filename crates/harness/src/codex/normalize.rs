@@ -5,8 +5,8 @@
 //! (`delta`/`textDelta`, `exitCode`/`exit_code`, camelCase/snake_case item
 //! types) are accepted, and unknown item types map to nothing.
 
-use zeron_proto::{AgentEvent, TodoItem, ToolCall};
 use serde_json::Value;
+use zeron_proto::{AgentEvent, TodoItem, ToolCall};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -32,6 +32,69 @@ pub(crate) fn delta_text(params: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+/// Codex streams independent reasoning items and indexed parts without text
+/// separators. Preserve those boundaries before the document folds deltas
+/// together; otherwise adjacent Markdown headings become `**one****two**`.
+/// One instance belongs to one thread, so child activity cannot split a
+/// parent's in-flight paragraph.
+#[derive(Default)]
+pub(crate) struct ReasoningStream {
+    last_part: Option<(String, bool, u64)>,
+    announced_summary: Option<(String, u64)>,
+    trailing_newlines: usize,
+}
+
+impl ReasoningStream {
+    pub(crate) fn map(&mut self, method: &str, params: &Value) -> Vec<AgentEvent> {
+        let id = item_id(params);
+        let summary = method != "item/reasoning/textDelta";
+        let index = field(
+            params,
+            if summary {
+                &["summaryIndex", "summary_index"]
+            } else {
+                &["contentIndex", "content_index"]
+            },
+        )
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            self.announced_summary
+                .as_ref()
+                .filter(|(item, _)| summary && item == &id)
+                .map(|(_, index)| *index)
+        })
+        .unwrap_or(0);
+        if method == "item/reasoning/summaryPartAdded" {
+            self.announced_summary = Some((id, index));
+            return Vec::new();
+        }
+        let Some(text) = delta_text(params) else {
+            return Vec::new();
+        };
+        let part = (id, summary, index);
+        let mut events = Vec::new();
+        if self.last_part.as_ref().is_some_and(|last| last != &part) {
+            let leading_newlines = text.chars().take_while(|&c| c == '\n').count();
+            let missing = 2usize.saturating_sub(self.trailing_newlines + leading_newlines);
+            if missing > 0 {
+                events.push(AgentEvent::ReasoningDelta {
+                    text: "\n".repeat(missing),
+                });
+                self.trailing_newlines += missing;
+            }
+        }
+        let trailing = text.chars().rev().take_while(|&c| c == '\n').count();
+        self.trailing_newlines = if trailing == text.len() {
+            self.trailing_newlines + trailing
+        } else {
+            trailing
+        };
+        self.last_part = Some(part);
+        events.push(AgentEvent::ReasoningDelta { text });
+        events
+    }
 }
 
 pub(crate) fn item_id(params: &Value) -> String {
@@ -72,6 +135,28 @@ pub(crate) fn usage_event(params: &Value) -> Option<AgentEvent> {
         input_tokens: count(&["inputTokens", "input_tokens"]),
         output_tokens: count(&["outputTokens", "output_tokens"]),
     })
+}
+
+pub(crate) fn context_usage_event(params: &Value) -> Option<AgentEvent> {
+    let usage = field(params, &["tokenUsage", "token_usage"])?;
+    let last = usage.get("last");
+    let tokens = last
+        .and_then(|last| field(last, &["totalTokens", "total_tokens"]).and_then(Value::as_u64))
+        .or_else(|| {
+            let last = last?;
+            let input = field(last, &["inputTokens", "input_tokens"])?.as_u64()?;
+            Some(
+                input.saturating_add(
+                    field(last, &["outputTokens", "output_tokens"])
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ),
+            )
+        });
+    let window = field(usage, &["modelContextWindow", "model_context_window"])
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0);
+    (tokens.is_some() || window.is_some()).then_some(AgentEvent::ContextUsage { tokens, window })
 }
 
 /// Tool-shaped Codex items must always close the lifecycle they open: started
@@ -315,6 +400,7 @@ pub(crate) fn route_child_notification(method: &str) -> ChildRoute {
         | "item/agentMessage/delta"
         | "item/reasoning/textDelta"
         | "item/reasoning/summaryTextDelta"
+        | "item/reasoning/summaryPartAdded"
         | "turn/completed"
         | "turn/failed"
         | "turn/aborted"
@@ -327,7 +413,6 @@ pub(crate) fn route_child_notification(method: &str) -> ChildRoute {
         | "thread/status/changed"
         | "thread/tokenUsage/updated"
         // Child chatter with no consumer on this wire.
-        | "item/reasoning/summaryPartAdded"
         | "item/commandExecution/outputDelta"
         | "item/fileChange/outputDelta"
         | "item/fileChange/patchUpdated"
@@ -352,6 +437,30 @@ pub(crate) fn route_child_notification(method: &str) -> ChildRoute {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn reasoning_parts_preserve_chunking_and_existing_paragraph_breaks() {
+        let mut stream = ReasoningStream::default();
+        let mut text = String::new();
+        for params in [
+            json!({"itemId":"r1", "contentIndex":0, "textDelta":"**First"}),
+            json!({"itemId":"r1", "contentIndex":0, "textDelta":" heading**\n"}),
+            json!({"itemId":"r1", "contentIndex":1, "delta":"\nSecond paragraph.\n\n"}),
+            // An empty delta must not consume the next item's boundary.
+            json!({"itemId":"r2", "contentIndex":0, "delta":""}),
+            json!({"item_id":"r2", "content_index":0, "delta":"Third paragraph."}),
+        ] {
+            for event in stream.map("item/reasoning/textDelta", &params) {
+                if let AgentEvent::ReasoningDelta { text: delta } = event {
+                    text.push_str(&delta);
+                }
+            }
+        }
+        assert_eq!(
+            text,
+            "**First heading**\n\nSecond paragraph.\n\nThird paragraph."
+        );
+    }
 
     #[test]
     fn user_message_text_accepts_both_shapes() {
@@ -565,5 +674,36 @@ mod tests {
         );
         assert_eq!(turn_error_message(&json!({"turn": {"id": "t"}})), None);
         assert_eq!(turn_error_message(&json!({"turn": {"error": null}})), None);
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn context_uses_latest_call_not_thread_total() {
+        assert_eq!(
+            context_usage_event(&json!({"tokenUsage": {
+                "last": {"totalTokens": 42000}, "total": {"totalTokens": 900000}, "modelContextWindow": 200000
+            }})),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(42000),
+                window: Some(200000)
+            })
+        );
+        assert_eq!(
+            context_usage_event(&json!({"token_usage": {
+                "last": {"input_tokens": 0, "output_tokens": 0}, "model_context_window": 0
+            }})),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(0),
+                window: None
+            })
+        );
+        assert_eq!(
+            context_usage_event(&json!({"tokenUsage": {"total": {"totalTokens": 100}}})),
+            None
+        );
     }
 }

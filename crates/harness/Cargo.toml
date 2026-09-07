@@ -10,7 +10,7 @@ zeron-proto.workspace = true
 base64 = "0.22"
 reqwest.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["io-util"] }
 uuid.workspace = true
 futures.workspace = true
 async-trait.workspace = true

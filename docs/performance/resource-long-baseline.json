@@ -1,0 +1,75 @@
+{
+  "sourceRevision": "f1d4bad36b77eed5cf4432bb68291840987ebeb5",
+  "binary": "/tmp/zeron-resource-profile/zeron-release-baseline",
+  "binarySha256": "3329082b8e76b4e4dec263c15077f1cf7f30b989ede851a9dde26f2441ab9995",
+  "harness": "claude-code",
+  "mode": "replay",
+  "renderThreads": "1",
+  "frameStats": "0",
+  "submission": "rpc",
+  "prompt": "Do not use tools. Write a detailed tutorial of Rust ownership in exactly 80 numbered sections. Each section should have a heading, a paragraph of at least 60 words and a short Rust code example. Continue through all 80 sections without asking questions.",
+  "replySha256": "5963799b9710ff90f7ab11ddb78f78b3f8cd2bdc0dbbafc4a4b141f507603286",
+  "replyBytes": 526258,
+  "transcriptBytes": 545037,
+  "frames": 298,
+  "phases": {
+    "idle": {
+      "durationSeconds": 9.011,
+      "engine": {
+        "peakRssMiB": 159.96484375,
+        "endRssMiB": 159.96484375,
+        "cpuPercent": 3.4402397070247477,
+        "mainCpuPercent": 0
+      },
+      "ui": {
+        "peakRssMiB": 171.1953125,
+        "endRssMiB": 171.1484375,
+        "cpuPercent": 19.64265897236711,
+        "mainCpuPercent": 0.6658528465209189
+      }
+    },
+    "stream": {
+      "durationSeconds": 36.018,
+      "engine": {
+        "peakRssMiB": 179.5546875,
+        "endRssMiB": 179.5546875,
+        "cpuPercent": 1.6103059581320454,
+        "mainCpuPercent": 0
+      },
+      "ui": {
+        "peakRssMiB": 218.578125,
+        "endRssMiB": 218.578125,
+        "cpuPercent": 110.69465267366319,
+        "mainCpuPercent": 10.411460936198567
+      }
+    },
+    "settled": {
+      "durationSeconds": 44.585,
+      "engine": {
+        "peakRssMiB": 180.55859375,
+        "endRssMiB": 180.55859375,
+        "cpuPercent": 0.2691488168666592,
+        "mainCpuPercent": 0
+      },
+      "ui": {
+        "peakRssMiB": 219.81640625,
+        "endRssMiB": 219.7421875,
+        "cpuPercent": 92.63205113827519,
+        "mainCpuPercent": 4.239093865649882
+      }
+    }
+  },
+  "postCompletionTail": {
+    "durationSeconds": 9.518,
+    "engine": {
+      "endRssMiB": 180.55859375,
+      "cpuPercent": 0.2101281781886953,
+      "mainCpuPercent": 0
+    },
+    "ui": {
+      "endRssMiB": 219.7421875,
+      "cpuPercent": 92.56146249212021,
+      "mainCpuPercent": 3.9924353855852064
+    }
+  }
+}

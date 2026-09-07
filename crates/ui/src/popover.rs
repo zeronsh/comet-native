@@ -1372,6 +1372,155 @@ impl MenuScrollbarState {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Horizontal floating scrollbar — the same quiet rail used by menus, rotated
+// for local code planes. Kept separate from `MenuScrollbarState` so a code
+// fence can own one state per stable block while existing menu callers retain
+// their vertical API.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HorizontalScrollbarMetrics {
+    pub track_width: f32,
+    pub thumb_left: f32,
+    pub thumb_width: f32,
+    pub max_scroll: f32,
+}
+
+impl HorizontalScrollbarMetrics {
+    pub fn travel(self) -> f32 {
+        (self.track_width - self.thumb_width).max(0.0)
+    }
+
+    pub fn from_viewport(
+        viewport_width: f32,
+        max_scroll: f32,
+        current_scroll: f32,
+    ) -> Option<Self> {
+        let max_scroll = max_scroll.max(0.0);
+        if viewport_width <= 0.0 || max_scroll <= 0.0 {
+            return None;
+        }
+        let track_width = (viewport_width - MENU_SCROLLBAR_TRACK_INSET * 2.0).max(0.0);
+        if track_width <= 0.0 {
+            return None;
+        }
+        let content_width = viewport_width + max_scroll;
+        let thumb_width = (track_width * viewport_width / content_width)
+            .max(MENU_SCROLLBAR_MIN_THUMB)
+            .min(track_width);
+        let current_scroll = current_scroll.clamp(0.0, max_scroll);
+        let travel = (track_width - thumb_width).max(0.0);
+        Some(Self {
+            track_width,
+            thumb_left: travel * current_scroll / max_scroll,
+            thumb_width,
+            max_scroll,
+        })
+    }
+}
+
+/// Hover/drag state for one horizontal code viewport. Geometry comes from the
+/// same tracked [`gpui::ScrollHandle`] that moves the code, so the thumb always
+/// represents the block's real local overflow (virtual transcript height is
+/// irrelevant here).
+#[derive(Default)]
+pub struct HorizontalScrollbarState {
+    viewport_hovered: bool,
+    bar_hovered: bool,
+    grab: Option<f32>,
+}
+
+impl HorizontalScrollbarState {
+    pub fn metrics(&self, scroll: &gpui::ScrollHandle) -> Option<HorizontalScrollbarMetrics> {
+        let bounds = scroll.bounds();
+        let max_scroll = f32::from(scroll.max_offset().x).max(0.0);
+        let current_scroll = (-f32::from(scroll.offset().x)).clamp(0.0, max_scroll);
+        HorizontalScrollbarMetrics::from_viewport(
+            f32::from(bounds.size.width),
+            max_scroll,
+            current_scroll,
+        )
+    }
+
+    pub fn visible(&self) -> bool {
+        self.viewport_hovered || self.grab.is_some()
+    }
+
+    pub fn active(&self) -> bool {
+        self.bar_hovered || self.grab.is_some()
+    }
+
+    pub fn set_viewport_hovered(&mut self, hovered: bool) -> bool {
+        if self.viewport_hovered == hovered {
+            return false;
+        }
+        self.viewport_hovered = hovered;
+        if !hovered && self.grab.is_none() {
+            self.bar_hovered = false;
+        }
+        true
+    }
+
+    pub fn set_bar_hovered(&mut self, hovered: bool) -> bool {
+        let active = hovered || self.grab.is_some();
+        if self.bar_hovered == active {
+            return false;
+        }
+        self.bar_hovered = active;
+        true
+    }
+
+    pub fn begin_press(&mut self, scroll: &gpui::ScrollHandle, pointer_x: Pixels) -> bool {
+        let Some(metrics) = self.metrics(scroll) else {
+            return false;
+        };
+        let pointer_in_track = self.pointer_in_track(scroll, pointer_x);
+        let grab_offset = if (metrics.thumb_left..=metrics.thumb_left + metrics.thumb_width)
+            .contains(&pointer_in_track)
+        {
+            pointer_in_track - metrics.thumb_left
+        } else {
+            metrics.thumb_width / 2.0
+        };
+        self.grab = Some(grab_offset);
+        self.drag_to(scroll, pointer_x);
+        true
+    }
+
+    pub fn drag_to(&self, scroll: &gpui::ScrollHandle, pointer_x: Pixels) -> bool {
+        let Some(grab_offset) = self.grab else {
+            return false;
+        };
+        let Some(metrics) = self.metrics(scroll) else {
+            return false;
+        };
+        let thumb_left =
+            (self.pointer_in_track(scroll, pointer_x) - grab_offset).clamp(0.0, metrics.travel());
+        let scroll_to = if metrics.travel() <= 0.0 {
+            0.0
+        } else {
+            thumb_left / metrics.travel() * metrics.max_scroll
+        };
+        let offset = scroll.offset();
+        scroll.set_offset(gpui::Point::new(px(-scroll_to), offset.y));
+        true
+    }
+
+    pub fn end_press(&mut self) -> bool {
+        self.grab = None;
+        if !self.viewport_hovered && self.bar_hovered {
+            self.bar_hovered = false;
+            return true;
+        }
+        false
+    }
+
+    fn pointer_in_track(&self, scroll: &gpui::ScrollHandle, pointer_x: Pixels) -> f32 {
+        f32::from(pointer_x - scroll.bounds().left()) - MENU_SCROLLBAR_TRACK_INSET
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1520,5 +1669,27 @@ mod tests {
         // Negative offsets clamp to the top.
         let m = MenuScrollbarMetrics::from_viewport(100.0, 9900.0, -3.0).unwrap();
         assert_eq!(m.thumb_top, 0.0);
+    }
+
+    #[test]
+    fn horizontal_scrollbar_metrics_match_the_vertical_treatment() {
+        let m = HorizontalScrollbarMetrics::from_viewport(300.0, 300.0, 150.0).unwrap();
+        assert_eq!(m.track_width, 292.0);
+        assert_eq!(m.thumb_width, 146.0);
+        assert_eq!(m.travel(), 146.0);
+        assert_eq!(m.thumb_left, 73.0);
+        assert_eq!(m.max_scroll, 300.0);
+    }
+
+    #[test]
+    fn horizontal_scrollbar_hides_without_overflow_and_clamps_position() {
+        assert_eq!(
+            HorizontalScrollbarMetrics::from_viewport(300.0, 0.0, 0.0),
+            None
+        );
+        let m = HorizontalScrollbarMetrics::from_viewport(100.0, 9900.0, 99_999.0).unwrap();
+        assert_eq!(m.thumb_left, 92.0 - MENU_SCROLLBAR_MIN_THUMB);
+        let m = HorizontalScrollbarMetrics::from_viewport(100.0, 9900.0, -3.0).unwrap();
+        assert_eq!(m.thumb_left, 0.0);
     }
 }

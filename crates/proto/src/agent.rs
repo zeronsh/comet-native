@@ -8,6 +8,8 @@ pub enum HarnessId {
     ClaudeCode,
     Codex,
     Cursor,
+    /// Cognition's Devin agent, driven over ACP (`devin acp`).
+    Devin,
     /// xAI's Grok Build agent, driven over ACP (`grok agent stdio`).
     Grok,
     /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
@@ -368,6 +370,13 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<ToolDiff>,
     },
+    /// Latest context occupancy, independent of cumulative billing usage.
+    /// Missing fields preserve the previous measurement; zero tokens is valid.
+    #[serde(rename_all = "camelCase")]
+    ContextUsage {
+        tokens: Option<u64>,
+        window: Option<u64>,
+    },
     /// Kept as a harness passthrough (rate-limit probes); never persisted to docs.
     #[serde(rename_all = "camelCase")]
     Usage {
@@ -549,5 +558,19 @@ mod tests {
             serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
             "\"claude-code\""
         );
+    }
+}
+
+/// Host-owned context snapshot, replicated with the chat document.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub tokens: Option<u64>,
+    pub window: Option<u64>,
+}
+
+impl ContextUsage {
+    pub fn fraction(self) -> Option<f64> {
+        Some(self.tokens? as f64 / self.window.filter(|n| *n > 0)? as f64)
     }
 }

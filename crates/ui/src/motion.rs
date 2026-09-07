@@ -59,8 +59,31 @@ const PULSE_LEASE: Duration = Duration::from_millis(300);
 
 struct PulseClock {
     epoch: Instant,
-    leases: HashMap<EntityId, Instant>,
+    leases: HashMap<EntityId, PulseLease>,
+    tick: u64,
     running: bool,
+}
+
+struct PulseLease {
+    until: Instant,
+    stride: u64,
+}
+
+impl PulseLease {
+    fn renew(&mut self, now: Instant, stride: u64) {
+        self.until = now + PULSE_LEASE;
+        self.stride = self.stride.min(stride);
+    }
+
+    fn take_tick(&mut self, tick: u64) -> bool {
+        if !tick.is_multiple_of(self.stride) {
+            return false;
+        }
+        // Each paint re-establishes the fastest mounted animation. A retired
+        // 30Hz animation must not permanently pull a 15Hz loader up to 30Hz.
+        self.stride = u64::MAX;
+        true
+    }
 }
 
 impl Global for PulseClock {}
@@ -70,6 +93,7 @@ impl Default for PulseClock {
         Self {
             epoch: Instant::now(),
             leases: HashMap::new(),
+            tick: 0,
             running: false,
         }
     }
@@ -81,13 +105,45 @@ impl Default for PulseClock {
 /// loaders stay phase-locked. Reduced motion returns a static 0 and schedules
 /// nothing.
 pub fn pulse_delta(spec: &MotionSpec, view: EntityId, cx: &mut App) -> f32 {
+    pulse_delta_every(spec, view, 1, cx)
+}
+
+/// Coarser cell loaders on the shell need only 15Hz; their wall-clock period
+/// and phase stay identical. Text dissolves still use the full 30Hz clock.
+pub fn pulse_delta_slow(spec: &MotionSpec, view: EntityId, cx: &mut App) -> f32 {
+    pulse_delta_every(spec, view, 2, cx)
+}
+
+fn pulse_delta_every(spec: &MotionSpec, view: EntityId, stride: u64, cx: &mut App) -> f32 {
     if cx.reduce_motion() {
         return 0.0;
     }
+    pulse_lease_every(view, stride, cx);
     let clock = cx.default_global::<PulseClock>();
-    clock.leases.insert(view, Instant::now() + PULSE_LEASE);
-    let period = spec.total().as_secs_f32();
-    let phase = (clock.epoch.elapsed().as_secs_f32() / period).fract();
+    (clock.epoch.elapsed().as_secs_f32() / spec.total().as_secs_f32()).fract()
+}
+
+/// Schedule cosmetic animation through the same bounded clock as loaders.
+/// Renew only while painting an active animation; the clock parks after the
+/// last lease expires, including when a view is hidden or removed.
+pub fn pulse_lease(view: EntityId, cx: &mut App) {
+    pulse_lease_every(view, 1, cx);
+}
+
+fn pulse_lease_every(view: EntityId, stride: u64, cx: &mut App) {
+    if cx.reduce_motion() {
+        return;
+    }
+    let clock = cx.default_global::<PulseClock>();
+    let now = Instant::now();
+    clock
+        .leases
+        .entry(view)
+        .or_insert(PulseLease {
+            until: now + PULSE_LEASE,
+            stride,
+        })
+        .renew(now, stride);
     if !clock.running {
         clock.running = true;
         cx.spawn(async move |cx| {
@@ -96,12 +152,18 @@ pub fn pulse_delta(spec: &MotionSpec, view: EntityId, cx: &mut App) -> f32 {
                 let parked = cx.update(|cx| {
                     let clock = cx.default_global::<PulseClock>();
                     let now = Instant::now();
-                    clock.leases.retain(|_, until| *until > now);
+                    clock.leases.retain(|_, lease| lease.until > now);
                     if clock.leases.is_empty() {
                         clock.running = false;
                         return true;
                     }
-                    let views: Vec<EntityId> = clock.leases.keys().copied().collect();
+                    clock.tick = clock.tick.wrapping_add(1);
+                    let tick = clock.tick;
+                    let views: Vec<EntityId> = clock
+                        .leases
+                        .iter_mut()
+                        .filter_map(|(view, lease)| lease.take_tick(tick).then_some(*view))
+                        .collect();
                     for view in views {
                         cx.notify(view);
                     }
@@ -114,7 +176,6 @@ pub fn pulse_delta(spec: &MotionSpec, view: EntityId, cx: &mut App) -> f32 {
         })
         .detach();
     }
-    phase
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +703,30 @@ pub fn reduced_motion(cx: &App) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn pulse_stride_reestablishes_after_each_paint() {
+        let now = Instant::now();
+        let mut lease = PulseLease {
+            until: now + PULSE_LEASE,
+            stride: 2,
+        };
+        assert!(!lease.take_tick(1), "slow loader skips odd ticks");
+        assert!(lease.take_tick(2));
+        lease.renew(now, 2);
+        lease.renew(now, 1);
+        assert!(lease.take_tick(3), "fast animation wins while mounted");
+        lease.renew(now, 2);
+        assert!(lease.take_tick(4));
+        lease.renew(now, 2);
+        assert!(
+            !lease.take_tick(5),
+            "retired fast animation leaves no sticky stride"
+        );
+        assert!(lease.take_tick(6));
+        assert!(!lease.take_tick(7), "unpainted view cannot renew itself");
+        assert!(lease.until <= now + PULSE_LEASE);
+    }
+
     #[test]
     fn eval_never_escapes_unit_interval_dense_sweep() {
         // Regression: f32 rounding produced 1.000000119 near the tail of
