@@ -15,11 +15,13 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+use futures::{StreamExt, stream};
 use sha2::{Digest, Sha256};
 
 use zeron_proto::{
-    DriveEntry, FileSearchMatch, FolderEntry, FolderListing, GitHistoryCommit, GitHistoryPage,
-    GitHistoryRef, GitHistoryRefKind, Repo, RepoRef, Worktree,
+    DriveEntry, FileSearchMatch, FolderEntry, FolderListing, GitHistoryCommit,
+    GitHistoryComparison, GitHistoryPage, GitHistoryRef, GitHistoryRefKind, Repo, RepoRef,
+    Worktree,
 };
 
 use crate::EngineError;
@@ -39,6 +41,7 @@ const DRIVE_LIST_MAX_ENTRIES: usize = 50;
 const FILE_SEARCH_MAX_RESULTS: usize = 8;
 /// A dead network mount must not leave the composer search spinning forever.
 const FILE_SEARCH_TIMEOUT: Duration = Duration::from_secs(6);
+const GITHUB_AVATAR_TIMEOUT: Duration = Duration::from_secs(6);
 const FILE_INDEX_TTL: Duration = Duration::from_secs(10);
 const FILE_INDEX_MAX_ENTRIES: usize = 250_000;
 const RANK_BUFFER: usize = 1_024;
@@ -93,6 +96,9 @@ struct ReposInner {
     device_id: String,
     worktrees_root: PathBuf,
     file_searches: std::sync::Mutex<HashMap<PathBuf, std::sync::Weak<tokio::sync::Mutex<()>>>>,
+    http: reqwest::Client,
+    github_avatars: std::sync::Mutex<HashMap<String, String>>,
+    github_avatar_pages: std::sync::Mutex<HashSet<String>>,
     file_index: FileIndexCache,
 }
 
@@ -129,6 +135,13 @@ impl Repos {
                 device_id: device_id.to_string(),
                 worktrees_root,
                 file_searches: std::sync::Mutex::new(HashMap::new()),
+                http: reqwest::Client::builder()
+                    .timeout(GITHUB_AVATAR_TIMEOUT)
+                    .user_agent("Comet-Git-History")
+                    .build()
+                    .unwrap_or_else(|_| reqwest::Client::new()),
+                github_avatars: std::sync::Mutex::new(HashMap::new()),
+                github_avatar_pages: std::sync::Mutex::new(HashSet::new()),
                 file_index: std::sync::Mutex::new(HashMap::new()),
             }),
         }
@@ -514,10 +527,12 @@ impl Repos {
         if head_sha.is_none() && refs_by_sha.is_empty() {
             return Ok(GitHistoryPage {
                 commits: Vec::new(),
+                branch_tips: Vec::new(),
                 head_sha: None,
                 next_cursor: None,
                 total_count: Some(0),
                 head_commit_count: Some(0),
+                comparison: None,
             });
         }
 
@@ -543,6 +558,30 @@ impl Repos {
         let has_next = commits.len() > limit;
         commits.truncate(limit);
 
+        // Branch tips are deliberately independent from history pagination.
+        // `--no-walk` resolves every local/remote tip while deduplicating refs
+        // that point at the same commit. Include HEAD as a useful anchor for a
+        // detached checkout, but do not let tags seed extra overview rows.
+        let branch_tips = if cursor == 0 {
+            let mut tip_args = vec![
+                "log",
+                "--no-walk=sorted",
+                "--no-color",
+                "--no-decorate",
+                "--no-show-signature",
+                "--no-patch",
+                "--format=%H%x00%P%x00%s%x00%an%x00%ae%x00%aI%x00",
+            ];
+            if head_sha.is_some() {
+                tip_args.push("HEAD");
+            }
+            tip_args.extend(["--branches", "--remotes"]);
+            let tips = self.git(&tip_args, Some(repo_path)).await?;
+            parse_history_log(&tips, &refs_by_sha)
+        } else {
+            Vec::new()
+        };
+
         let total_count = if cursor == 0 {
             let mut count_args = vec!["rev-list", "--count"];
             if head_sha.is_some() {
@@ -564,14 +603,369 @@ impl Repos {
         } else {
             None
         };
+        let comparison = if cursor == 0 && head_sha.is_some() {
+            self.history_comparison(repo_path).await
+        } else {
+            None
+        };
 
         Ok(GitHistoryPage {
             next_cursor: has_next.then_some(cursor + commits.len()),
             commits,
+            branch_tips,
             head_sha,
             total_count,
             head_commit_count,
+            comparison,
         })
+    }
+
+    /// Compare the checked-out branch with the best locally available
+    /// integration ref. This deliberately never talks to the network: `Fetch
+    /// all` refreshes remote-tracking refs, then the next History load sees
+    /// those new counts.
+    async fn history_comparison(&self, repo_path: &Path) -> Option<GitHistoryComparison> {
+        // Detached checkouts do not have a branch relationship to present.
+        self.git(
+            &["symbolic-ref", "--quiet", "--short", "HEAD"],
+            Some(repo_path),
+        )
+        .await
+        .ok()?;
+
+        // An integration remote is more useful than the branch's push/tracking
+        // ref: a feature usually tracks origin/feature, whereas the status the
+        // user needs in History is its relationship to upstream/main.
+        let mut candidates = Vec::new();
+        for remote in ["upstream", "origin"] {
+            let remote_head = format!("refs/remotes/{remote}/HEAD");
+            if let Ok(base) = self
+                .git(
+                    &["symbolic-ref", "--quiet", "--short", &remote_head],
+                    Some(repo_path),
+                )
+                .await
+                && !base.is_empty()
+            {
+                candidates.push(base);
+            }
+        }
+        // A remote HEAD is not guaranteed to have been configured locally.
+        // Conventional default names keep the result useful in that case.
+        candidates.extend([
+            "upstream/main".to_string(),
+            "origin/main".to_string(),
+            "upstream/master".to_string(),
+            "origin/master".to_string(),
+        ]);
+        // Fall back to the configured tracking ref only after integration
+        // defaults. This still gives sensible data in a single-remote repo.
+        if let Ok(base) = self
+            .git(
+                &[
+                    "rev-parse",
+                    "--abbrev-ref",
+                    "--symbolic-full-name",
+                    "@{upstream}",
+                ],
+                Some(repo_path),
+            )
+            .await
+            && !base.is_empty()
+        {
+            candidates.push(base);
+        }
+
+        let mut seen = HashSet::new();
+        for base in candidates
+            .into_iter()
+            .filter(|base| seen.insert(base.clone()))
+        {
+            let commit_ref = format!("{base}^{{commit}}");
+            if self
+                .git(
+                    &["rev-parse", "--verify", "--quiet", &commit_ref],
+                    Some(repo_path),
+                )
+                .await
+                .is_err()
+            {
+                continue;
+            }
+            let range = format!("HEAD...{base}");
+            let Ok(counts) = self
+                .git(
+                    &["rev-list", "--left-right", "--count", &range],
+                    Some(repo_path),
+                )
+                .await
+            else {
+                continue;
+            };
+            let mut counts = counts.split_whitespace();
+            let (Some(ahead), Some(behind)) = (counts.next(), counts.next()) else {
+                continue;
+            };
+            let (Ok(ahead), Ok(behind)) = (ahead.parse(), behind.parse()) else {
+                continue;
+            };
+            return Some(GitHistoryComparison {
+                base,
+                ahead,
+                behind,
+            });
+        }
+        None
+    }
+
+    /// Fuzzy subject / SHA search across the complete public history. Results
+    /// stay in `--topo-order`; fuzzy score decides inclusion, never row order,
+    /// so the client can keep rendering a meaningful commit graph.
+    pub async fn search_history(
+        &self,
+        repo_path: &Path,
+        query: &str,
+        cursor: usize,
+        limit: usize,
+    ) -> Result<GitHistoryPage, EngineError> {
+        let query = query.trim();
+        if query.is_empty() {
+            return Ok(GitHistoryPage {
+                commits: Vec::new(),
+                branch_tips: Vec::new(),
+                head_sha: None,
+                next_cursor: None,
+                total_count: Some(0),
+                head_commit_count: None,
+                comparison: None,
+            });
+        }
+        let limit = limit.clamp(1, GIT_HISTORY_MAX_LIMIT);
+        let head_sha = self
+            .git(&["rev-parse", "--verify", "HEAD^{commit}"], Some(repo_path))
+            .await
+            .ok()
+            .filter(|sha| !sha.is_empty());
+        let refs_out = self
+            .git(
+                &[
+                    "for-each-ref",
+                    "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)%00%(symref)%00",
+                    "refs/heads",
+                    "refs/remotes",
+                    "refs/tags",
+                ],
+                Some(repo_path),
+            )
+            .await?;
+        let refs_by_sha = parse_history_refs(&refs_out);
+        if head_sha.is_none() && refs_by_sha.is_empty() {
+            return Ok(GitHistoryPage {
+                commits: Vec::new(),
+                branch_tips: Vec::new(),
+                head_sha: None,
+                next_cursor: None,
+                total_count: Some(0),
+                head_commit_count: None,
+                comparison: None,
+            });
+        }
+
+        let mut log_args = vec![
+            "log",
+            "--topo-order",
+            "--no-color",
+            "--no-decorate",
+            "--no-show-signature",
+            "--no-patch",
+            "--format=%H%x00%P%x00%s%x00%an%x00%ae%x00%aI%x00",
+        ];
+        if head_sha.is_some() {
+            log_args.push("HEAD");
+        }
+        log_args.extend(["--branches", "--remotes", "--tags"]);
+        let log = self.git(&log_args, Some(repo_path)).await?;
+        let all_commits = parse_history_log(&log, &refs_by_sha);
+        let visible: HashSet<String> = all_commits
+            .iter()
+            .filter(|commit| git_history_matches(query, commit))
+            .map(|commit| commit.sha.clone())
+            .collect();
+        let matches = compact_history_commits(&all_commits, &visible);
+        let total_count = matches.len();
+        let start = cursor.min(total_count);
+        let end = start.saturating_add(limit).min(total_count);
+        let commits = matches[start..end].to_vec();
+
+        Ok(GitHistoryPage {
+            commits,
+            branch_tips: Vec::new(),
+            head_sha,
+            next_cursor: (end < total_count).then_some(end),
+            total_count: Some(total_count),
+            head_commit_count: None,
+            comparison: None,
+        })
+    }
+
+    /// Best-effort GitHub profile images for the authors in one history page.
+    /// Git itself only stores names and emails, so this resolves the hosting
+    /// metadata separately and caches it by both commit and normalized email.
+    pub async fn history_avatar_urls(
+        &self,
+        repo_path: &Path,
+        authors: &[(String, String)],
+        cursor: usize,
+        limit: usize,
+    ) -> HashMap<String, String> {
+        let Ok(remote) = self
+            .git(&["remote", "get-url", "origin"], Some(repo_path))
+            .await
+        else {
+            return HashMap::new();
+        };
+        let Some((owner, repo)) = parse_github_remote(&remote) else {
+            return HashMap::new();
+        };
+        let repo_key = format!("{owner}/{repo}").to_ascii_lowercase();
+        let per_page = limit.clamp(1, 100);
+        let page = cursor / per_page + 1;
+        let page_key = format!("{repo_key}|{page}|{per_page}");
+        let should_fetch = self
+            .inner
+            .github_avatar_pages
+            .lock()
+            .map(|mut pages| pages.insert(page_key.clone()))
+            .unwrap_or(false);
+
+        if should_fetch {
+            let url = format!("https://api.github.com/repos/{owner}/{repo}/commits");
+            let mut request = self.inner.http.get(url).query(&[
+                ("per_page", per_page.to_string()),
+                ("page", page.to_string()),
+            ]);
+            if let Some(token) = std::env::var("GITHUB_TOKEN")
+                .ok()
+                .filter(|token| !token.is_empty())
+                .or_else(|| {
+                    std::env::var("GH_TOKEN")
+                        .ok()
+                        .filter(|token| !token.is_empty())
+                })
+            {
+                request = request.bearer_auth(token);
+            }
+
+            let rows = match request.send().await {
+                Ok(response) if response.status().is_success() => {
+                    response.json::<Vec<GitHubCommitAvatar>>().await.ok()
+                }
+                _ => None,
+            };
+            if let Some(rows) = rows {
+                let mut identities_by_url: HashMap<String, Vec<(String, String)>> = HashMap::new();
+                for row in rows {
+                    let Some(author) = row.author else {
+                        continue;
+                    };
+                    if !author.avatar_url.starts_with("https://") {
+                        continue;
+                    }
+                    let avatar_url = if author.avatar_url.contains('?') {
+                        format!("{}&s=40", author.avatar_url)
+                    } else {
+                        format!("{}?s=40", author.avatar_url)
+                    };
+                    identities_by_url.entry(avatar_url).or_default().push((
+                        row.sha.to_ascii_lowercase(),
+                        row.commit.author.email.trim().to_ascii_lowercase(),
+                    ));
+                }
+                let downloads = stream::iter(identities_by_url.into_iter().map(
+                    |(url, identities)| async move {
+                        self.cache_github_avatar(&url)
+                            .await
+                            .map(|path| (identities, path))
+                    },
+                ))
+                .buffer_unordered(8)
+                .filter_map(|download| async move { download })
+                .collect::<Vec<_>>()
+                .await;
+                if let Ok(mut cache) = self.inner.github_avatars.lock() {
+                    for (identities, path) in downloads {
+                        for (sha, email) in identities {
+                            cache.insert(format!("{repo_key}|sha|{sha}"), path.clone());
+                            if !email.is_empty() {
+                                cache.insert(format!("{repo_key}|email|{email}"), path.clone());
+                            }
+                        }
+                    }
+                }
+            } else if let Ok(mut pages) = self.inner.github_avatar_pages.lock() {
+                // A transient network/auth failure may be retried on refresh.
+                pages.remove(&page_key);
+            }
+        }
+
+        let Ok(cache) = self.inner.github_avatars.lock() else {
+            return HashMap::new();
+        };
+        authors
+            .iter()
+            .filter_map(|(sha, email)| {
+                let avatar = cache
+                    .get(&format!("{repo_key}|sha|{}", sha.to_ascii_lowercase()))
+                    .or_else(|| {
+                        cache.get(&format!(
+                            "{repo_key}|email|{}",
+                            email.trim().to_ascii_lowercase()
+                        ))
+                    })?;
+                Some((email.trim().to_ascii_lowercase(), avatar.clone()))
+            })
+            .collect()
+    }
+
+    async fn cache_github_avatar(&self, url: &str) -> Option<String> {
+        const MAX_AVATAR_BYTES: u64 = 2 * 1024 * 1024;
+
+        let digest = Sha256::digest(url.as_bytes());
+        let cache_dir = self.inner.data_dir.join("cache").join("git-avatars");
+        let path = cache_dir.join(format!("{}.img", hex(&digest[..16])));
+        if tokio::fs::metadata(&path)
+            .await
+            .ok()
+            .is_some_and(|metadata| metadata.len() > 0)
+        {
+            return Some(path.to_string_lossy().into_owned());
+        }
+        tokio::fs::create_dir_all(&cache_dir).await.ok()?;
+        let response = self.inner.http.get(url).send().await.ok()?;
+        if !response.status().is_success()
+            || response
+                .content_length()
+                .is_some_and(|size| size > MAX_AVATAR_BYTES)
+        {
+            return None;
+        }
+        let bytes = response.bytes().await.ok()?;
+        if bytes.is_empty() || bytes.len() as u64 > MAX_AVATAR_BYTES {
+            return None;
+        }
+        let temporary = cache_dir.join(format!(
+            ".{}.{}.tmp",
+            hex(&digest[..8]),
+            uuid::Uuid::new_v4()
+        ));
+        tokio::fs::write(&temporary, &bytes).await.ok()?;
+        if tokio::fs::rename(&temporary, &path).await.is_err() {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            if !path.is_file() {
+                return None;
+            }
+        }
+        Some(path.to_string_lossy().into_owned())
     }
 
     /// Whether `candidate` is the repository root or one of its linked
@@ -1165,6 +1559,164 @@ fn unescape_mount_point(raw: &str) -> String {
     out
 }
 
+/// Case-insensitive subsequence score. Lower is better: adjacent and earlier
+/// characters win, while still allowing `cmp rs` to find `composer.rs`.
+fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
+    let candidate = candidate.to_lowercase();
+    query
+        .split_whitespace()
+        .map(str::to_lowercase)
+        .try_fold(0usize, |total, term| {
+            let mut at = 0;
+            let mut score = 0usize;
+            let mut previous_end = None;
+            for needle in term.chars() {
+                let found = candidate[at..].find(needle)? + at;
+                score += found;
+                if previous_end == Some(found) {
+                    score = score.saturating_sub(2);
+                }
+                at = found + needle.len_utf8();
+                previous_end = Some(at);
+            }
+            Some(total.saturating_add(score))
+        })
+}
+
+/// Match a history commit using the same semantics as the history UI.
+///
+/// This remains the shared entry point so RPC filtering and client-side
+/// filtering cannot disagree about Unicode case normalization.
+pub fn git_history_matches(query: &str, commit: &GitHistoryCommit) -> bool {
+    let query = query.trim();
+    if query.is_empty() {
+        return true;
+    }
+    let normalized = query.to_ascii_lowercase();
+    commit.sha.to_ascii_lowercase().starts_with(&normalized)
+        || fuzzy_score(query, &format!("{} {}", commit.sha, commit.subject)).is_some()
+}
+
+/// Contract hidden commits to their nearest visible ancestors. Search results
+/// remain sparse without leaving graph lanes aimed at rows that are absent.
+fn compact_history_commits(
+    commits: &[GitHistoryCommit],
+    visible: &HashSet<String>,
+) -> Vec<GitHistoryCommit> {
+    let by_sha: HashMap<_, _> = commits
+        .iter()
+        .map(|commit| (commit.sha.as_str(), commit))
+        .collect();
+
+    /// Resolve a hidden commit to its nearest visible ancestors without using
+    /// the call stack. Completed nodes are cached across visible commits so a
+    /// shared hidden branch is contracted only once.
+    fn nearest_visible_parents(
+        sha: &str,
+        visible: &HashSet<String>,
+        by_sha: &HashMap<&str, &GitHistoryCommit>,
+        memo: &mut HashMap<String, Vec<String>>,
+    ) -> Vec<String> {
+        if visible.contains(sha) || !by_sha.contains_key(sha) {
+            return vec![sha.to_string()];
+        }
+        if let Some(cached) = memo.get(sha) {
+            return cached.clone();
+        }
+
+        struct Frame {
+            sha: String,
+            next_parent: usize,
+            resolved: Vec<String>,
+            seen: HashSet<String>,
+        }
+
+        impl Frame {
+            fn new(sha: String) -> Self {
+                Self {
+                    sha,
+                    next_parent: 0,
+                    resolved: Vec::new(),
+                    seen: HashSet::new(),
+                }
+            }
+
+            fn extend(&mut self, parents: &[String]) {
+                for parent in parents {
+                    if self.seen.insert(parent.clone()) {
+                        self.resolved.push(parent.clone());
+                    }
+                }
+            }
+        }
+
+        let mut visiting = HashSet::from([sha.to_string()]);
+        let mut stack = vec![Frame::new(sha.to_string())];
+        loop {
+            let next_parent = {
+                let frame = stack.last_mut().expect("history traversal frame");
+                let parents = &by_sha[frame.sha.as_str()].parent_shas;
+                (frame.next_parent < parents.len()).then(|| {
+                    let parent = parents[frame.next_parent].clone();
+                    frame.next_parent += 1;
+                    parent
+                })
+            };
+
+            let Some(parent) = next_parent else {
+                let frame = stack.pop().expect("history traversal frame");
+                visiting.remove(&frame.sha);
+                let resolved = frame.resolved;
+                memo.insert(frame.sha, resolved.clone());
+                if let Some(caller) = stack.last_mut() {
+                    caller.extend(&resolved);
+                    continue;
+                }
+                return resolved;
+            };
+
+            let resolved = if visible.contains(&parent) || !by_sha.contains_key(parent.as_str()) {
+                Some(vec![parent.clone()])
+            } else if let Some(cached) = memo.get(&parent) {
+                Some(cached.clone())
+            } else if visiting.contains(&parent) {
+                // Git commit graphs are acyclic, but keep malformed input from
+                // looping forever just as the previous `visiting` guard did.
+                Some(Vec::new())
+            } else {
+                None
+            };
+
+            if let Some(resolved) = resolved {
+                stack
+                    .last_mut()
+                    .expect("history traversal frame")
+                    .extend(&resolved);
+            } else {
+                visiting.insert(parent.clone());
+                stack.push(Frame::new(parent));
+            }
+        }
+    }
+
+    let mut memo = HashMap::new();
+    commits
+        .iter()
+        .filter(|commit| visible.contains(&commit.sha))
+        .cloned()
+        .map(|mut commit| {
+            let mut seen = HashSet::new();
+            commit.parent_shas = commit
+                .parent_shas
+                .iter()
+                .flat_map(|parent| nearest_visible_parents(parent, visible, &by_sha, &mut memo))
+                .filter(|parent| seen.insert(parent.clone()))
+                .collect();
+            commit
+        })
+        .collect()
+}
+
 type RankedFileMatch = (Option<usize>, u32, String, bool);
 
 fn compare_file_matches(
@@ -1432,6 +1984,55 @@ fn bounded_field(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
+#[derive(serde::Deserialize)]
+struct GitHubCommitAvatar {
+    sha: String,
+    author: Option<GitHubAvatarUser>,
+    commit: GitHubCommitMetadata,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubAvatarUser {
+    avatar_url: String,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubCommitMetadata {
+    author: GitHubCommitAuthor,
+}
+
+#[derive(serde::Deserialize)]
+struct GitHubCommitAuthor {
+    email: String,
+}
+
+fn parse_github_remote(remote: &str) -> Option<(String, String)> {
+    let remote = remote.trim();
+    let path = remote
+        .strip_prefix("https://github.com/")
+        .or_else(|| remote.strip_prefix("http://github.com/"))
+        .or_else(|| remote.strip_prefix("ssh://git@github.com/"))
+        .or_else(|| remote.strip_prefix("git@github.com:"))?;
+    let path = path.trim_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let mut parts = path.split('/');
+    let owner = parts.next()?;
+    let repo = parts.next()?;
+    if owner.is_empty()
+        || repo.is_empty()
+        || parts.next().is_some()
+        || !owner
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+        || !repo.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
+    {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
 fn parse_history_log(
     output: &str,
     refs_by_sha: &HashMap<String, Vec<GitHistoryRef>>,
@@ -1543,6 +2144,18 @@ pub(crate) fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn history_commit(sha: String, parent_sha: Option<String>) -> GitHistoryCommit {
+        GitHistoryCommit {
+            subject: sha.clone(),
+            sha,
+            parent_shas: parent_sha.into_iter().collect(),
+            author_name: "Test".into(),
+            author_email: "test@example.com".into(),
+            authored_at: "2026-08-20T12:00:00Z".into(),
+            refs: Vec::new(),
+        }
+    }
+
     fn score(query: &str, candidate: &str) -> Option<u32> {
         let mut matcher = nucleo_matcher::Matcher::new({
             let mut config = nucleo_matcher::Config::DEFAULT;
@@ -1558,6 +2171,58 @@ mod tests {
             nucleo_matcher::Utf32String::from(candidate).slice(..),
             &mut matcher,
         )
+    }
+
+    #[test]
+    fn parses_common_github_remote_forms() {
+        let expected = Some(("openai".to_string(), "codex".to_string()));
+        assert_eq!(
+            parse_github_remote("https://github.com/openai/codex.git"),
+            expected
+        );
+        assert_eq!(
+            parse_github_remote("git@github.com:openai/codex.git"),
+            expected
+        );
+        assert_eq!(parse_github_remote("https://gitlab.com/openai/codex"), None);
+    }
+
+    #[tokio::test]
+    async fn github_avatar_downloads_once_into_the_local_cache() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let bytes = b"\xff\xd8\xffavatar".to_vec();
+        let served = bytes.clone();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await.unwrap();
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        served.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+            socket.write_all(&served).await.unwrap();
+        });
+
+        let data = tempfile::tempdir().unwrap();
+        let repos =
+            Repos::with_worktrees_root(data.path(), "device", data.path().join("worktrees"));
+        let url = format!("http://{address}/avatar.jpg");
+        let first = repos.cache_github_avatar(&url).await.expect("downloaded");
+        server.await.unwrap();
+        assert_eq!(tokio::fs::read(&first).await.unwrap(), bytes);
+        assert_eq!(
+            repos.cache_github_avatar(&url).await.as_deref(),
+            Some(first.as_str())
+        );
     }
 
     #[test]
@@ -1649,6 +2314,39 @@ tmpfs /run tmpfs rw 0 0
         assert!(score("cmp rs", "crates/ui/src/composer.rs").is_some());
         assert!(score("composer crates", "crates/ui/src/composer.rs").is_some());
         assert!(score("xyzq", "crates/ui/src/composer.rs").is_none());
+    }
+
+    #[test]
+    fn git_history_matches_unicode_case_insensitively() {
+        let mut candidate = history_commit("a1b2c3d4".into(), None);
+        candidate.subject = "RÉPARER la recherche".into();
+
+        assert!(git_history_matches("réparer", &candidate));
+    }
+
+    #[test]
+    fn history_compaction_handles_a_twenty_thousand_commit_gap() {
+        const DEPTH: usize = 20_000;
+        let commits = (0..DEPTH)
+            .rev()
+            .map(|index| {
+                history_commit(
+                    format!("c{index:05}"),
+                    (index > 0).then(|| format!("c{:05}", index - 1)),
+                )
+            })
+            .collect::<Vec<_>>();
+        let newest = format!("c{:05}", DEPTH - 1);
+        let oldest = "c00000".to_string();
+        let visible = HashSet::from([newest.clone(), oldest.clone()]);
+
+        let compact = compact_history_commits(&commits, &visible);
+
+        assert_eq!(compact.len(), 2);
+        assert_eq!(compact[0].sha, newest);
+        assert_eq!(compact[0].parent_shas, vec![oldest.clone()]);
+        assert_eq!(compact[1].sha, oldest);
+        assert!(compact[1].parent_shas.is_empty());
     }
 
     #[test]
