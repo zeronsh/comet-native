@@ -1,0 +1,76 @@
+{
+  "sourceRevision": "b09b37963cf9c78e1aa6acd5195f8a4427dfe21f",
+  "binary": "/tmp/zeron-cpu-round2/zeron-final",
+  "binarySha256": "f4b91201706962a9a29a52dfbe89ccc959870132d28ff8cf1a6b964dbd1dbe20",
+  "harness": "claude-code",
+  "mode": "live",
+  "renderThreads": "4",
+  "frameStats": "1",
+  "submission": "composer",
+  "prompt": "Run pwd using the shell tool. Then write a tutorial on Rust ownership in 20 numbered sections, each with a heading, a paragraph, and a short Rust code block. Do not create or modify any files.",
+  "replySha256": "c665755f852c296481a13bffffd4d584202165993436424e29d8e085502fb4cb",
+  "replyBytes": 10902,
+  "transcriptBytes": 12132,
+  "frames": 100,
+  "phases": {
+    "idle": {
+      "durationSeconds": 9.013,
+      "engine": {
+        "peakRssMiB": 30.8203125,
+        "endRssMiB": 30.8203125,
+        "cpuPercent": 0.7766559414179518,
+        "mainCpuPercent": 0
+      },
+      "ui": {
+        "peakRssMiB": 175.19140625,
+        "endRssMiB": 175.18359375,
+        "cpuPercent": 7.10085432153556,
+        "mainCpuPercent": 0.6657050926439587
+      }
+    },
+    "stream": {
+      "durationSeconds": 34.546,
+      "engine": {
+        "peakRssMiB": 32.6640625,
+        "endRssMiB": 32.6640625,
+        "cpuPercent": 0.4920974931974758,
+        "mainCpuPercent": 0
+      },
+      "ui": {
+        "peakRssMiB": 197.06640625,
+        "endRssMiB": 196.17578125,
+        "cpuPercent": 131.7663405314653,
+        "mainCpuPercent": 10.855091761709026
+      }
+    },
+    "settled": {
+      "durationSeconds": 14.525,
+      "engine": {
+        "peakRssMiB": 32.76953125,
+        "endRssMiB": 32.76953125,
+        "cpuPercent": 0.27538726333907043,
+        "mainCpuPercent": 0
+      },
+      "ui": {
+        "peakRssMiB": 196.48828125,
+        "endRssMiB": 196.37109375,
+        "cpuPercent": 9.63855421686746,
+        "mainCpuPercent": 0.9638554216867509
+      }
+    }
+  },
+  "postCompletionTail": {
+    "durationSeconds": 9.518,
+    "engine": {
+      "endRssMiB": 32.76953125,
+      "cpuPercent": 0.3151922672830424,
+      "mainCpuPercent": 0
+    },
+    "ui": {
+      "endRssMiB": 196.37109375,
+      "cpuPercent": 9.876024374868646,
+      "mainCpuPercent": 0.8405127127547812
+    }
+  },
+  "notes": "Functional verification: authenticated Haiku 4.5 composer submission, successful pwd tool call, and targeted perf sampling. Not a matched CPU comparison. Sidebar, scroll-away/return, selected-text copy/paste, resize and the model menu were checked in the real window, with the saved transcript reopened for the final interaction checks."
+}

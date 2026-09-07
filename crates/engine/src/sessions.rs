@@ -1282,6 +1282,9 @@ async fn drive_run(
     let harness_id = harness.id();
     let user_prompt = request.prompt.clone();
     let run_cwd = request.cwd.clone();
+    if request.resume.is_none() {
+        let _ = doc.clear_context_usage();
+    }
     // Kept whole for the startup-crash retry (same user entry; dispatch
     // re-injects the stored resume id). Option so the retry branch (inside
     // the event loop) can take ownership.
@@ -1743,6 +1746,13 @@ async fn drive_run(
                 );
                 continue;
             }
+        }
+        // Capacity/occupancy can settle after Done; updating it must not reopen a turn.
+        if let AgentEvent::ContextUsage { tokens, window } = &event {
+            if let Err(err) = doc_ref.update_context_usage(*tokens, *window) {
+                tracing::warn!(%chat_id, error = %err, "context usage write failed");
+            }
+            continue;
         }
         // PARKED: a steer boundary, a terminal Done, or SELF-CONTINUED OUTPUT
         // re-opens the session; everything else stays gated. The ACP child

@@ -1346,6 +1346,8 @@ pub struct ComposerInput {
     last_lines: Vec<WrappedLine>,
     line_starts: Vec<usize>,
     last_bounds: Option<Bounds<Pixels>>,
+    text_size: f32,
+    configured_line_height: f32,
     line_height: Pixels,
     content_height: f32,
     max_line_width: f32,
@@ -1422,6 +1424,8 @@ impl ComposerInput {
             last_lines: Vec::new(),
             line_starts: vec![0],
             last_bounds: None,
+            text_size: INPUT_TEXT_SIZE,
+            configured_line_height: INPUT_LINE_HEIGHT,
             line_height: px(INPUT_LINE_HEIGHT),
             content_height: INPUT_LINE_HEIGHT,
             max_line_width: 0.0,
@@ -1445,6 +1449,16 @@ impl ComposerInput {
             mention_tooltip_task: None,
             mention_tooltip_view: None,
         }
+    }
+
+    /// Override the text metrics for compact one-line surfaces such as
+    /// toolbar searches without changing the main composer typography.
+    pub fn with_text_metrics(mut self, text_size: f32, line_height: f32) -> Self {
+        self.text_size = text_size;
+        self.configured_line_height = line_height;
+        self.line_height = px(line_height);
+        self.content_height = line_height;
+        self
     }
 
     /// Reset the caret blink phase (solid again) — called on every edit and
@@ -2544,7 +2558,7 @@ impl ComposerInput {
             (SharedString::from(self.projection.display.clone()), false)
         };
         let font_size = style.font_size.to_pixels(window.rem_size());
-        self.line_height = px(INPUT_LINE_HEIGHT);
+        self.line_height = px(self.configured_line_height);
 
         // Chips read as inline code: the markdown renderer's recipe (mono font
         // + the spectrum's `code_text`) over the rounded `code_wash` beneath.
@@ -3222,8 +3236,8 @@ impl Render for ComposerInput {
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .w_full()
-            .text_size(crate::typography::ui_rems(INPUT_TEXT_SIZE))
-            .line_height(px(INPUT_LINE_HEIGHT))
+            .text_size(crate::typography::ui_rems(self.text_size))
+            .line_height(px(self.configured_line_height))
             .text_color(text_color)
             .font_family(theme.font_sans.clone())
             .child(ComposerTextElement {
@@ -6348,10 +6362,25 @@ impl Render for Composer {
         let footer = self
             .pickers
             .update(cx, |pickers, cx| pickers.render_footer(cx));
-        let container = match footer {
-            Some(footer) => container.child(footer),
-            None => container,
-        };
+        let container =
+            if !new_chat {
+                let usage = self.state.read(cx).context_usage;
+                container.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .child(div().flex_1().min_w_0().children(footer))
+                        .child(div().pr(px(10.0)).mb(px(-8.0)).child(
+                            crate::context_usage::render(usage, self.state.clone(), &theme),
+                        )),
+                )
+            } else {
+                match footer {
+                    Some(footer) => container.child(footer),
+                    None => container,
+                }
+            };
         // Full-size preview of a staged thumbnail (AttachmentPreviewDialog).
         if let Some(preview) = self.preview.clone() {
             if std::mem::take(&mut self.preview_focus_pending) {

@@ -21,6 +21,7 @@ async fn cli_on_login_shell_path_only_is_resolved() {
     let dir = tempfile::tempdir().unwrap();
     let shell_bin = dir.path().join("shell-bin");
     std::fs::create_dir(&shell_bin).unwrap();
+    write_executable(&shell_bin.join("devin"), "#!/bin/sh\nexit 0\n");
     write_executable(&shell_bin.join("hermes"), "#!/bin/sh\nexit 0\n");
     write_executable(&shell_bin.join("pi-acp"), "#!/bin/sh\nexit 0\n");
     write_executable(&shell_bin.join("claude"), "#!/bin/sh\nexit 0\n");
@@ -46,6 +47,7 @@ async fn cli_on_login_shell_path_only_is_resolved() {
         std::env::set_var("SHELL", &fake_shell);
         std::env::set_var("HOME", dir.path());
         std::env::set_var("PATH", "/usr/bin:/bin");
+        std::env::remove_var("DEVIN_EXECUTABLE");
         std::env::remove_var("HERMES_EXECUTABLE");
         std::env::remove_var("PI_ACP_EXECUTABLE");
         std::env::remove_var("CLAUDE_CODE_EXECUTABLE");
@@ -67,6 +69,10 @@ async fn cli_on_login_shell_path_only_is_resolved() {
         zeron_harness::ClaudeHarness::new().installed(),
         "claude resolves via login-shell PATH"
     );
+    let devin = AcpHarness::devin()
+        .launch_program()
+        .expect("devin resolves via login-shell PATH");
+    assert_eq!(devin, shell_bin.join("devin"), "{devin:?}");
     let hermes = AcpHarness::hermes()
         .launch_program()
         .expect("hermes resolves via login-shell PATH");

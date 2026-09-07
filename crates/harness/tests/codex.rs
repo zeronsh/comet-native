@@ -89,6 +89,30 @@ async fn run_to_end(
 }
 
 #[tokio::test]
+async fn reasoning_preserves_summary_parts_and_item_boundaries_per_thread() {
+    let (controls, _steer, _token) = controls("Yes");
+    let events = run_to_end(&harness(), request("scenario:reasoning"), controls).await;
+    let mut parent = String::new();
+    let mut child = String::new();
+    for event in &events {
+        match event {
+            AgentEvent::ReasoningDelta { text } => parent.push_str(text),
+            AgentEvent::Subagent { event, .. } => {
+                if let AgentEvent::ReasoningDelta { text } = event.as_ref() {
+                    child.push_str(text);
+                }
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        parent,
+        "**Implementing file badges**\n\n**Preparing fixture screenshots**\n\nChecking the final result."
+    );
+    assert_eq!(child, "**Checking layout**\n\nInspecting the output panel.");
+}
+
+#[tokio::test]
 async fn happy_path_maps_deltas_items_usage_and_done() {
     let (controls, _steer, _token) = controls("Yes");
     let mut req = request("scenario:happy");
@@ -579,16 +603,31 @@ async fn missing_binary_is_not_installed() {
 }
 
 #[tokio::test]
-async fn models_returns_curated_catalog() {
+async fn models_discovers_visible_catalog_with_pagination() {
     let models = harness().models().await.expect("models");
-    assert_eq!(models.len(), 7);
-    assert_eq!(models[0].id, "gpt-5.6-sol");
+    assert_eq!(models.len(), 3);
+    assert_eq!(models[0].id, "gpt-6-astra");
+    assert_eq!(models[1].id, "gpt-5.6-terra");
+    assert_eq!(models[2].id, "gpt-5.6-sol");
     assert!(models[0].reasoning_levels.contains(&ReasoningLevel::Ultra));
-    assert!(
-        models
-            .iter()
-            .all(|m| m.options.iter().any(|o| o.id == "serviceTier"))
-    );
+    assert!(models.iter().any(|m| m.id == "gpt-5.6-sol"));
+    let tier = models[0]
+        .options
+        .iter()
+        .find(|option| option.id == "serviceTier")
+        .expect("Astra service tier");
+    assert_eq!(tier.choices[0].id, "default");
+    assert_eq!(tier.choices[1].id, "fast");
+    assert_eq!(tier.choices.len(), 2, "priority and fast dedupe");
+
+    // A failed probe stays useful and includes the new model in the fallback.
+    let fallback = CodexHarness::new()
+        .with_executable("/bin/false")
+        .models()
+        .await
+        .expect("fallback models");
+    assert_eq!(fallback.len(), 9);
+    assert_eq!(fallback[0].id, "gpt-6-astra");
 
     let missing = CodexHarness::new().with_executable("/nonexistent/codex-nowhere");
     // models() requires a resolvable binary… but with_executable trusts the

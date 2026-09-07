@@ -1,0 +1,595 @@
+{
+  "baselineCommit": "d97f4c2ba2c6ff1595acd204f4a76082d1468794",
+  "rendererCommit": "36ca993fb5663ae496acd1d4d19f556d6350eae8",
+  "hardware": "M4 Pro, 24 GiB, Mac16,7",
+  "os": "macOS 26.0.1 (25A362)",
+  "windowPoints": [
+    1320,
+    880
+  ],
+  "scaleFactor": 2,
+  "runs": [
+    {
+      "binarySha256": "73ba5007ca9461d386e9b3fd10c4a13349efb5bb27ab3e05d8c8323315955434",
+      "harness": "claude-code",
+      "mode": "replay",
+      "platform": "darwin",
+      "arch": "arm64",
+      "renderThreads": "default",
+      "frameStats": "1",
+      "submission": "composer",
+      "turns": 1,
+      "backgroundChats": 50,
+      "prompt": "Replay fixture.",
+      "replySha256": "87f610ae8e3be4c4a6eb3ce6655e2f2728e532115fd3b4c5a2db00a0e0ac73fb",
+      "replyBytes": 52624,
+      "transcriptBytes": 54829,
+      "frames": 151,
+      "phases": {
+        "idle": {
+          "durationSeconds": 9.018,
+          "engine": {
+            "peakFootprintMiB": 23.891518,
+            "endFootprintMiB": 23.891518,
+            "lifetimePeakFootprintMiB": 23.891518,
+            "peakRssMiB": 34.65625,
+            "endRssMiB": 34.4375,
+            "cpuPercent": 0.02931266356176531,
+            "peakTwoSecondCpuPercent": 0.08113568956994564
+          },
+          "ui": {
+            "peakFootprintMiB": 308.344757,
+            "endFootprintMiB": 303.329132,
+            "lifetimePeakFootprintMiB": 347.094757,
+            "peakRssMiB": 102.546875,
+            "endRssMiB": 102.546875,
+            "cpuPercent": 0.6622237081392764,
+            "peakTwoSecondCpuPercent": 1.0849148129675803
+          }
+        },
+        "stream": {
+          "durationSeconds": 19.549,
+          "engine": {
+            "peakFootprintMiB": 27.204018,
+            "endFootprintMiB": 27.204018,
+            "lifetimePeakFootprintMiB": 27.204018,
+            "peakRssMiB": 47.671875,
+            "endRssMiB": 47.671875,
+            "cpuPercent": 0.5998936416184972,
+            "peakTwoSecondCpuPercent": 1.2776613273453097
+          },
+          "ui": {
+            "peakFootprintMiB": 330.06353,
+            "endFootprintMiB": 330.047905,
+            "lifetimePeakFootprintMiB": 347.094757,
+            "peakRssMiB": 131.25,
+            "endRssMiB": 131.25,
+            "cpuPercent": 17.97159978515525,
+            "peakTwoSecondCpuPercent": 20.360686976047905
+          }
+        },
+        "settled": {
+          "durationSeconds": 14.552,
+          "engine": {
+            "peakFootprintMiB": 28.266518,
+            "endFootprintMiB": 28.266518,
+            "lifetimePeakFootprintMiB": 28.266518,
+            "peakRssMiB": 49.140625,
+            "endRssMiB": 45.375,
+            "cpuPercent": 0.06726910390324349,
+            "peakTwoSecondCpuPercent": 0.22880859413810167
+          },
+          "ui": {
+            "peakFootprintMiB": 330.813553,
+            "endFootprintMiB": 330.813553,
+            "lifetimePeakFootprintMiB": 347.094757,
+            "peakRssMiB": 132.171875,
+            "endRssMiB": 132.125,
+            "cpuPercent": 1.0732210349092899,
+            "peakTwoSecondCpuPercent": 1.7759559600997554
+          }
+        }
+      },
+      "postCompletionTail": {
+        "durationSeconds": 9.534,
+        "engine": {
+          "endFootprintMiB": 28.266518,
+          "endRssMiB": 45.375,
+          "cpuPercent": 0.048525445773022806
+        },
+        "ui": {
+          "endFootprintMiB": 330.813553,
+          "endRssMiB": 132.125,
+          "cpuPercent": 1.1330335221313192
+        }
+      },
+      "build": "v0.2.39",
+      "workload": "normal"
+    },
+    {
+      "binarySha256": "73ba5007ca9461d386e9b3fd10c4a13349efb5bb27ab3e05d8c8323315955434",
+      "harness": "claude-code",
+      "mode": "replay",
+      "platform": "darwin",
+      "arch": "arm64",
+      "renderThreads": "default",
+      "frameStats": "1",
+      "submission": "composer",
+      "turns": 1,
+      "backgroundChats": 50,
+      "prompt": "Replay fixture.",
+      "replySha256": "87f610ae8e3be4c4a6eb3ce6655e2f2728e532115fd3b4c5a2db00a0e0ac73fb",
+      "replyBytes": 52624,
+      "transcriptBytes": 54829,
+      "frames": 151,
+      "phases": {
+        "idle": {
+          "durationSeconds": 9.036,
+          "engine": {
+            "peakFootprintMiB": 26.985291,
+            "endFootprintMiB": 25.063416,
+            "lifetimePeakFootprintMiB": 27.016541,
+            "peakRssMiB": 36.671875,
+            "endRssMiB": 25.34375,
+            "cpuPercent": 0.06182861885790172,
+            "peakTwoSecondCpuPercent": 0.11815149105367752
+          },
+          "ui": {
+            "peakFootprintMiB": 309.09478,
+            "endFootprintMiB": 304.09478,
+            "lifetimePeakFootprintMiB": 348.110382,
+            "peakRssMiB": 101.921875,
+            "endRssMiB": 92.4375,
+            "cpuPercent": 0.7121758410801244,
+            "peakTwoSecondCpuPercent": 1.1197100349475788
+          }
+        },
+        "stream": {
+          "durationSeconds": 19.533,
+          "engine": {
+            "peakFootprintMiB": 29.079041,
+            "endFootprintMiB": 29.079041,
+            "lifetimePeakFootprintMiB": 29.079041,
+            "peakRssMiB": 43.046875,
+            "endRssMiB": 43.046875,
+            "cpuPercent": 0.6173716684585061,
+            "peakTwoSecondCpuPercent": 1.3996370333499257
+          },
+          "ui": {
+            "peakFootprintMiB": 330.782303,
+            "endFootprintMiB": 330.782303,
+            "lifetimePeakFootprintMiB": 348.110382,
+            "peakRssMiB": 127.015625,
+            "endRssMiB": 127.015625,
+            "cpuPercent": 18.51762423590846,
+            "peakTwoSecondCpuPercent": 21.225371229467395
+          }
+        },
+        "settled": {
+          "durationSeconds": 14.531,
+          "engine": {
+            "peakFootprintMiB": 29.438416,
+            "endFootprintMiB": 29.438416,
+            "lifetimePeakFootprintMiB": 29.438416,
+            "peakRssMiB": 45.15625,
+            "endRssMiB": 45.125,
+            "cpuPercent": 0.08448231367421374,
+            "peakTwoSecondCpuPercent": 0.23202071892161663
+          },
+          "ui": {
+            "peakFootprintMiB": 331.501076,
+            "endFootprintMiB": 331.235451,
+            "lifetimePeakFootprintMiB": 348.110382,
+            "peakRssMiB": 128.25,
+            "endRssMiB": 127.375,
+            "cpuPercent": 0.9121765535751141,
+            "peakTwoSecondCpuPercent": 1.5138757242757408
+          }
+        }
+      },
+      "postCompletionTail": {
+        "durationSeconds": 9.517,
+        "engine": {
+          "endFootprintMiB": 29.438416,
+          "endRssMiB": 45.125,
+          "cpuPercent": 0.07467120941473163
+        },
+        "ui": {
+          "endFootprintMiB": 331.235451,
+          "endRssMiB": 127.375,
+          "cpuPercent": 1.068479205632023
+        }
+      },
+      "build": "v0.2.39",
+      "workload": "normal"
+    },
+    {
+      "binarySha256": "487e657b3154f30ee0cdb0078f55c80c2c51ce6dbc0e7fc1a02bae29bcabf0b4",
+      "harness": "claude-code",
+      "mode": "replay",
+      "platform": "darwin",
+      "arch": "arm64",
+      "renderThreads": "default",
+      "frameStats": "1",
+      "submission": "composer",
+      "turns": 1,
+      "backgroundChats": 50,
+      "prompt": "Replay fixture.",
+      "replySha256": "87f610ae8e3be4c4a6eb3ce6655e2f2728e532115fd3b4c5a2db00a0e0ac73fb",
+      "replyBytes": 52624,
+      "transcriptBytes": 54829,
+      "frames": 151,
+      "phases": {
+        "idle": {
+          "durationSeconds": 9.042,
+          "engine": {
+            "peakFootprintMiB": 25.157143,
+            "endFootprintMiB": 23.922768,
+            "lifetimePeakFootprintMiB": 25.282143,
+            "peakRssMiB": 36.40625,
+            "endRssMiB": 30.21875,
+            "cpuPercent": 0.04794385091793855,
+            "peakTwoSecondCpuPercent": 0.09424374999999971
+          },
+          "ui": {
+            "peakFootprintMiB": 298.750984,
+            "endFootprintMiB": 298.704109,
+            "lifetimePeakFootprintMiB": 316.907234,
+            "peakRssMiB": 101.21875,
+            "endRssMiB": 101.109375,
+            "cpuPercent": 0.7073656270736565,
+            "peakTwoSecondCpuPercent": 1.035233682634732
+          }
+        },
+        "stream": {
+          "durationSeconds": 19.542,
+          "engine": {
+            "peakFootprintMiB": 24.625893,
+            "endFootprintMiB": 24.625893,
+            "lifetimePeakFootprintMiB": 25.563393,
+            "peakRssMiB": 41.15625,
+            "endRssMiB": 41.15625,
+            "cpuPercent": 0.607785794698598,
+            "peakTwoSecondCpuPercent": 1.3802348129675814
+          },
+          "ui": {
+            "peakFootprintMiB": 307.391678,
+            "endFootprintMiB": 307.391678,
+            "lifetimePeakFootprintMiB": 316.907234,
+            "peakRssMiB": 126.453125,
+            "endRssMiB": 126.453125,
+            "cpuPercent": 16.575827704431482,
+            "peakTwoSecondCpuPercent": 19.164050274314214
+          }
+        },
+        "settled": {
+          "durationSeconds": 14.533,
+          "engine": {
+            "peakFootprintMiB": 27.141518,
+            "endFootprintMiB": 27.141518,
+            "lifetimePeakFootprintMiB": 27.141518,
+            "peakRssMiB": 38.75,
+            "endRssMiB": 36.40625,
+            "cpuPercent": 0.06853941374802176,
+            "peakTwoSecondCpuPercent": 0.11828572003218009
+          },
+          "ui": {
+            "peakFootprintMiB": 310.610451,
+            "endFootprintMiB": 310.001076,
+            "lifetimePeakFootprintMiB": 316.907234,
+            "peakRssMiB": 123.625,
+            "endRssMiB": 122.046875,
+            "cpuPercent": 0.7882293745269376,
+            "peakTwoSecondCpuPercent": 0.986444339152122
+          }
+        }
+      },
+      "postCompletionTail": {
+        "durationSeconds": 9.528,
+        "engine": {
+          "endFootprintMiB": 27.141518,
+          "endRssMiB": 36.40625,
+          "cpuPercent": 0.04038666036943741
+        },
+        "ui": {
+          "endFootprintMiB": 310.001076,
+          "endRssMiB": 122.046875,
+          "cpuPercent": 0.8331636649874025
+        }
+      },
+      "build": "candidate",
+      "workload": "normal"
+    },
+    {
+      "binarySha256": "928ea3fabc5f3b127463aad7bb2a0c9a29684214a17e684357515d5138b12c19",
+      "harness": "claude-code",
+      "mode": "replay",
+      "platform": "darwin",
+      "arch": "arm64",
+      "renderThreads": "default",
+      "frameStats": "1",
+      "submission": "composer",
+      "turns": 1,
+      "backgroundChats": 50,
+      "prompt": "Replay fixture.",
+      "replySha256": "87f610ae8e3be4c4a6eb3ce6655e2f2728e532115fd3b4c5a2db00a0e0ac73fb",
+      "replyBytes": 52624,
+      "transcriptBytes": 54829,
+      "frames": 151,
+      "phases": {
+        "idle": {
+          "durationSeconds": 9.034,
+          "engine": {
+            "peakFootprintMiB": 26.735291,
+            "endFootprintMiB": 26.641541,
+            "lifetimePeakFootprintMiB": 26.735291,
+            "peakRssMiB": 35.671875,
+            "endRssMiB": 29.796875,
+            "cpuPercent": 0.04198214522913438,
+            "peakTwoSecondCpuPercent": 0.08460233134920618
+          },
+          "ui": {
+            "peakFootprintMiB": 298.438484,
+            "endFootprintMiB": 298.360359,
+            "lifetimePeakFootprintMiB": 334.500984,
+            "peakRssMiB": 101.796875,
+            "endRssMiB": 101.625,
+            "cpuPercent": 0.5885137591321675,
+            "peakTwoSecondCpuPercent": 0.7755530439121748
+          }
+        },
+        "stream": {
+          "durationSeconds": 19.522,
+          "engine": {
+            "peakFootprintMiB": 26.375916,
+            "endFootprintMiB": 25.563416,
+            "lifetimePeakFootprintMiB": 26.735291,
+            "peakRssMiB": 42.09375,
+            "endRssMiB": 42.09375,
+            "cpuPercent": 0.6115696393812109,
+            "peakTwoSecondCpuPercent": 0.7596848530144491
+          },
+          "ui": {
+            "peakFootprintMiB": 307.03228,
+            "endFootprintMiB": 307.03228,
+            "lifetimePeakFootprintMiB": 334.500984,
+            "peakRssMiB": 129.8125,
+            "endRssMiB": 129.8125,
+            "cpuPercent": 17.240564281323635,
+            "peakTwoSecondCpuPercent": 18.463919380619377
+          }
+        },
+        "settled": {
+          "durationSeconds": 14.532,
+          "engine": {
+            "peakFootprintMiB": 27.688416,
+            "endFootprintMiB": 27.688416,
+            "lifetimePeakFootprintMiB": 27.688416,
+            "peakRssMiB": 45.65625,
+            "endRssMiB": 45.65625,
+            "cpuPercent": 0.07925755573905874,
+            "peakTwoSecondCpuPercent": 0.24826350947158565
+          },
+          "ui": {
+            "peakFootprintMiB": 307.969803,
+            "endFootprintMiB": 307.719803,
+            "lifetimePeakFootprintMiB": 334.500984,
+            "peakRssMiB": 131.125,
+            "endRssMiB": 131.125,
+            "cpuPercent": 1.0147608175061924,
+            "peakTwoSecondCpuPercent": 1.3899975087195087
+          }
+        }
+      },
+      "postCompletionTail": {
+        "durationSeconds": 9.518,
+        "engine": {
+          "endFootprintMiB": 27.688416,
+          "endRssMiB": 45.65625,
+          "cpuPercent": 0.06231306997268349
+        },
+        "ui": {
+          "endFootprintMiB": 307.719803,
+          "endRssMiB": 131.125,
+          "cpuPercent": 0.9589059361210388
+        }
+      },
+      "build": "candidate",
+      "workload": "normal"
+    },
+    {
+      "binarySha256": "73ba5007ca9461d386e9b3fd10c4a13349efb5bb27ab3e05d8c8323315955434",
+      "harness": "claude-code",
+      "mode": "replay",
+      "platform": "darwin",
+      "arch": "arm64",
+      "renderThreads": "default",
+      "frameStats": "1",
+      "submission": "composer",
+      "turns": 1,
+      "backgroundChats": 50,
+      "prompt": "Replay fixture.",
+      "replySha256": "cb96ce276ed79aa8d791fc796f56ccf586b29e73d54acc911b42aacf30236f8f",
+      "replyBytes": 210502,
+      "transcriptBytes": 218149,
+      "frames": 179,
+      "phases": {
+        "idle": {
+          "durationSeconds": 9.037,
+          "engine": {
+            "peakFootprintMiB": 27.282143,
+            "endFootprintMiB": 26.141518,
+            "lifetimePeakFootprintMiB": 27.282143,
+            "peakRssMiB": 37.515625,
+            "endRssMiB": 30.140625,
+            "cpuPercent": 0.033253114971782724,
+            "peakTwoSecondCpuPercent": 0.08401776674938007
+          },
+          "ui": {
+            "peakFootprintMiB": 308.329132,
+            "endFootprintMiB": 303.141632,
+            "lifetimePeakFootprintMiB": 347.297882,
+            "peakRssMiB": 101.890625,
+            "endRssMiB": 101.890625,
+            "cpuPercent": 0.6946050569879382,
+            "peakTwoSecondCpuPercent": 1.143658715139442
+          }
+        },
+        "stream": {
+          "durationSeconds": 21.53,
+          "engine": {
+            "peakFootprintMiB": 28.547768,
+            "endFootprintMiB": 27.813393,
+            "lifetimePeakFootprintMiB": 28.625893,
+            "peakRssMiB": 55.609375,
+            "endRssMiB": 55.609375,
+            "cpuPercent": 0.8672586716209941,
+            "peakTwoSecondCpuPercent": 1.0480175736395412
+          },
+          "ui": {
+            "peakFootprintMiB": 334.235451,
+            "endFootprintMiB": 333.907326,
+            "lifetimePeakFootprintMiB": 347.297882,
+            "peakRssMiB": 136.8125,
+            "endRssMiB": 136.8125,
+            "cpuPercent": 19.03858298653042,
+            "peakTwoSecondCpuPercent": 19.890009195402314
+          }
+        },
+        "settled": {
+          "durationSeconds": 14.537,
+          "engine": {
+            "peakFootprintMiB": 30.360268,
+            "endFootprintMiB": 30.360268,
+            "lifetimePeakFootprintMiB": 30.360268,
+            "peakRssMiB": 59.578125,
+            "endRssMiB": 59.578125,
+            "cpuPercent": 0.06252694503680269,
+            "peakTwoSecondCpuPercent": 0.16479312063808554
+          },
+          "ui": {
+            "peakFootprintMiB": 334.579224,
+            "endFootprintMiB": 333.610474,
+            "lifetimePeakFootprintMiB": 347.297882,
+            "peakRssMiB": 137.78125,
+            "endRssMiB": 137.75,
+            "cpuPercent": 0.8881320079796334,
+            "peakTwoSecondCpuPercent": 1.2441201097804504
+          }
+        }
+      },
+      "postCompletionTail": {
+        "durationSeconds": 9.512,
+        "engine": {
+          "endFootprintMiB": 30.360268,
+          "endRssMiB": 59.578125,
+          "cpuPercent": 0.056135229184188194
+        },
+        "ui": {
+          "endFootprintMiB": 333.610474,
+          "endRssMiB": 137.75,
+          "cpuPercent": 0.8541552775441511
+        }
+      },
+      "build": "v0.2.39",
+      "workload": "fast"
+    },
+    {
+      "binarySha256": "928ea3fabc5f3b127463aad7bb2a0c9a29684214a17e684357515d5138b12c19",
+      "harness": "claude-code",
+      "mode": "replay",
+      "platform": "darwin",
+      "arch": "arm64",
+      "renderThreads": "default",
+      "frameStats": "1",
+      "submission": "composer",
+      "turns": 1,
+      "backgroundChats": 50,
+      "prompt": "Replay fixture.",
+      "replySha256": "cb96ce276ed79aa8d791fc796f56ccf586b29e73d54acc911b42aacf30236f8f",
+      "replyBytes": 210502,
+      "transcriptBytes": 218149,
+      "frames": 178,
+      "phases": {
+        "idle": {
+          "durationSeconds": 9.032,
+          "engine": {
+            "peakFootprintMiB": 20.688416,
+            "endFootprintMiB": 20.250916,
+            "lifetimePeakFootprintMiB": 24.688416,
+            "peakRssMiB": 35.859375,
+            "endRssMiB": 29.71875,
+            "cpuPercent": 0.0463181908768822,
+            "peakTwoSecondCpuPercent": 0.09264584999999978
+          },
+          "ui": {
+            "peakFootprintMiB": 298.844757,
+            "endFootprintMiB": 298.813507,
+            "lifetimePeakFootprintMiB": 317.016632,
+            "peakRssMiB": 102.28125,
+            "endRssMiB": 102.109375,
+            "cpuPercent": 0.6225102413640394,
+            "peakTwoSecondCpuPercent": 1.2295922161626178
+          }
+        },
+        "stream": {
+          "durationSeconds": 21.542,
+          "engine": {
+            "peakFootprintMiB": 30.704041,
+            "endFootprintMiB": 28.266541,
+            "lifetimePeakFootprintMiB": 31.063416,
+            "peakRssMiB": 51.390625,
+            "endRssMiB": 51.390625,
+            "cpuPercent": 0.8754622736978922,
+            "peakTwoSecondCpuPercent": 0.9855405797101447
+          },
+          "ui": {
+            "peakFootprintMiB": 311.266701,
+            "endFootprintMiB": 311.126076,
+            "lifetimePeakFootprintMiB": 317.016632,
+            "peakRssMiB": 136.875,
+            "endRssMiB": 136.875,
+            "cpuPercent": 18.287930168972238,
+            "peakTwoSecondCpuPercent": 18.998321730482335
+          }
+        },
+        "settled": {
+          "durationSeconds": 14.543,
+          "engine": {
+            "peakFootprintMiB": 31.329041,
+            "endFootprintMiB": 31.329041,
+            "lifetimePeakFootprintMiB": 31.329041,
+            "peakRssMiB": 55.515625,
+            "endRssMiB": 55.515625,
+            "cpuPercent": 0.0815469641752046,
+            "peakTwoSecondCpuPercent": 0.20040773839241202
+          },
+          "ui": {
+            "peakFootprintMiB": 312.376099,
+            "endFootprintMiB": 312.219849,
+            "lifetimePeakFootprintMiB": 317.016632,
+            "peakRssMiB": 138.40625,
+            "endRssMiB": 138.40625,
+            "cpuPercent": 0.9328388228013466,
+            "peakTwoSecondCpuPercent": 1.245192307692305
+          }
+        }
+      },
+      "postCompletionTail": {
+        "durationSeconds": 9.527,
+        "engine": {
+          "endFootprintMiB": 31.329041,
+          "endRssMiB": 55.515625,
+          "cpuPercent": 0.07708355201007644
+        },
+        "ui": {
+          "endFootprintMiB": 312.219849,
+          "endRssMiB": 138.40625,
+          "cpuPercent": 0.8596191455862252
+        }
+      },
+      "build": "candidate",
+      "workload": "fast"
+    }
+  ]
+}

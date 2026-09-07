@@ -50,6 +50,102 @@ pub const SAVE_DEBOUNCE_MS: u64 = 400;
 
 const FILE_NAME: &str = "ui-settings.json";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GitHistoryColumns {
+    pub author: bool,
+    pub date: bool,
+    pub sha: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GitHistoryColumn {
+    Author,
+    Date,
+    Sha,
+}
+
+/// Stable order for the optional Git History columns. Hidden columns remain in
+/// the sequence so showing one again restores the position chosen by the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GitHistoryColumnOrder(pub Vec<GitHistoryColumn>);
+
+impl GitHistoryColumnOrder {
+    pub fn normalized(mut self) -> Self {
+        let mut columns = Vec::with_capacity(3);
+        for column in self.0.drain(..) {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        }
+        for column in [
+            GitHistoryColumn::Author,
+            GitHistoryColumn::Date,
+            GitHistoryColumn::Sha,
+        ] {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        }
+        Self(columns)
+    }
+}
+
+impl Default for GitHistoryColumnOrder {
+    fn default() -> Self {
+        Self(vec![
+            GitHistoryColumn::Author,
+            GitHistoryColumn::Date,
+            GitHistoryColumn::Sha,
+        ])
+    }
+}
+
+/// Persisted widths for the fixed Git History data columns. The commit column
+/// remains elastic and occupies the space left after these columns and the
+/// topology graph, so resizing its first divider adjusts the adjacent column.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GitHistoryColumnWidths {
+    pub author: f32,
+    pub date: f32,
+    pub sha: f32,
+}
+
+impl GitHistoryColumnWidths {
+    pub const AUTHOR_MIN: f32 = 44.0;
+    pub const AUTHOR_MAX: f32 = 220.0;
+    pub const DATE_MIN: f32 = 68.0;
+    pub const DATE_MAX: f32 = 180.0;
+    pub const SHA_MIN: f32 = 58.0;
+    pub const SHA_MAX: f32 = 140.0;
+
+    pub fn clamped(mut self) -> Self {
+        let defaults = Self::default();
+        self.author = clamp_or(
+            self.author,
+            Self::AUTHOR_MIN,
+            Self::AUTHOR_MAX,
+            defaults.author,
+        );
+        self.date = clamp_or(self.date, Self::DATE_MIN, Self::DATE_MAX, defaults.date);
+        self.sha = clamp_or(self.sha, Self::SHA_MIN, Self::SHA_MAX, defaults.sha);
+        self
+    }
+}
+
+impl Default for GitHistoryColumnWidths {
+    fn default() -> Self {
+        Self {
+            author: 88.0,
+            date: 88.0,
+            sha: 74.0,
+        }
+    }
+}
+
 /// Whether a settings mutation should wait for the normal coalescing window or
 /// reach disk before returning to the event loop.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,6 +164,10 @@ pub struct SettingsStore {
     data_dir: PathBuf,
     revision: u64,
     saved_revision: u64,
+    /// In-process invalidation token for transcript code-fence layout. Unlike
+    /// the persisted revision, this advances only when the global Fit choice
+    /// changes, including a change back to its previous value.
+    code_fences_generation: u64,
     save_task: Option<Task<()>>,
 }
 
@@ -82,6 +182,20 @@ impl SettingsStore {
         self.saved_revision = self.saved_revision.max(revision);
         self.saved_revision == self.revision
     }
+
+    fn update_current(&mut self, mutate: impl FnOnce(&mut UiSettings)) -> bool {
+        let before = self.current.clone();
+        mutate(&mut self.current);
+        self.current = self.current.clone().clamped();
+        if self.current == before {
+            return false;
+        }
+        if self.current.code_fences_fit_content != before.code_fences_fit_content {
+            self.code_fences_generation = self.code_fences_generation.wrapping_add(1);
+        }
+        self.revision = self.revision.wrapping_add(1);
+        true
+    }
 }
 
 pub fn init(settings: UiSettings, data_dir: impl Into<PathBuf>, cx: &mut App) {
@@ -90,6 +204,7 @@ pub fn init(settings: UiSettings, data_dir: impl Into<PathBuf>, cx: &mut App) {
         data_dir: data_dir.into(),
         revision: 0,
         saved_revision: 0,
+        code_fences_generation: 0,
         save_task: None,
     });
 }
@@ -101,18 +216,22 @@ pub fn current(cx: &App) -> UiSettings {
         .unwrap_or_default()
 }
 
+/// Monotonic id of the global code-fence layout choice. Every transcript
+/// compares this during render so inactive subagent tabs can observe all mode
+/// transitions when they next become visible.
+pub fn code_fences_generation(cx: &App) -> u64 {
+    cx.try_global::<SettingsStore>()
+        .map(|store| store.code_fences_generation)
+        .unwrap_or_default()
+}
+
 pub fn update(policy: SavePolicy, cx: &mut App, mutate: impl FnOnce(&mut UiSettings)) -> bool {
-    let Some(store) = cx.try_global::<SettingsStore>() else {
-        return false;
-    };
-    let before = store.current.clone();
-    let store = cx.global_mut::<SettingsStore>();
-    mutate(&mut store.current);
-    store.current = store.current.clone().clamped();
-    if store.current == before {
+    if !cx.has_global::<SettingsStore>() {
         return false;
     }
-    store.revision = store.revision.wrapping_add(1);
+    if !cx.global_mut::<SettingsStore>().update_current(mutate) {
+        return false;
+    }
     schedule(policy, cx);
     true
 }
@@ -137,6 +256,24 @@ fn schedule(policy: SavePolicy, cx: &mut App) {
             cx.global_mut::<SettingsStore>().save_task = Some(task);
         }
     }
+}
+
+impl Default for GitHistoryColumns {
+    fn default() -> Self {
+        Self {
+            author: true,
+            date: true,
+            sha: true,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GitHistoryAuthorDisplay {
+    #[default]
+    Avatar,
+    Name,
 }
 
 /// Persist the latest revision. Safe to call at shutdown.
@@ -249,6 +386,14 @@ pub struct UiSettings {
     pub escape_stops_active_agent: bool,
     /// Light/dark preference. Defaults to following the OS.
     pub appearance: crate::appearance::AppearanceMode,
+    /// Optional columns shown in every Git History pane.
+    pub git_history_columns: GitHistoryColumns,
+    /// User-adjusted widths for the resizable Git History columns.
+    pub git_history_column_widths: GitHistoryColumnWidths,
+    /// User-selected order for the optional Git History columns.
+    pub git_history_column_order: GitHistoryColumnOrder,
+    /// How authors are represented in Git History rows.
+    pub git_history_author_display: GitHistoryAuthorDisplay,
     /// Interface and conversational-prose family. Device-local by design.
     pub ui_font_family: crate::typography::UiFontFamily,
     /// Base size for interface and conversational prose. Code-related surfaces
@@ -258,6 +403,11 @@ pub struct UiSettings {
     pub theme_selection: zeron_theme::ThemeSelection,
     /// Changes pane: side-by-side diffs instead of the unified stack.
     pub diff_split: bool,
+    /// Changes pane: wrap long source lines instead of scrolling horizontally.
+    pub diff_wrap: bool,
+    /// Agent-sent Markdown fences: wrap long lines to the chat width instead
+    /// of exposing their horizontal scroll plane.
+    pub code_fences_fit_content: bool,
     /// Interactive identity overlay; imported themes default to their own accent.
     pub accent: zeron_theme::AccentSelection,
     /// Glass policy, independent from the selected appearance, theme, and accent.
@@ -294,10 +444,16 @@ impl Default for UiSettings {
             keymap: KeymapConfig::default(),
             escape_stops_active_agent: false,
             appearance: crate::appearance::AppearanceMode::default(),
+            git_history_columns: GitHistoryColumns::default(),
+            git_history_column_widths: GitHistoryColumnWidths::default(),
+            git_history_column_order: GitHistoryColumnOrder::default(),
+            git_history_author_display: GitHistoryAuthorDisplay::default(),
             ui_font_family: crate::typography::UiFontFamily::default(),
             ui_font_size: crate::typography::UiFontSize::default(),
             theme_selection: zeron_theme::ThemeSelection::default(),
             diff_split: false,
+            diff_wrap: false,
+            code_fences_fit_content: false,
             accent: zeron_theme::AccentSelection::default(),
             surface: zeron_theme::SurfacePreference::default(),
             legacy_accent_color: None,
@@ -699,6 +855,8 @@ impl UiSettings {
             TERMINAL_ABS_MAX_HEIGHT,
             TERMINAL_DEFAULT_HEIGHT,
         );
+        self.git_history_column_widths = self.git_history_column_widths.clamped();
+        self.git_history_column_order = self.git_history_column_order.normalized();
         self.ui_font_size = self.ui_font_size.normalized();
         self.keymap.heal_jump_slots();
         self
@@ -797,6 +955,22 @@ mod tests {
             },
             escape_stops_active_agent: true,
             appearance: crate::appearance::AppearanceMode::Light,
+            git_history_columns: GitHistoryColumns {
+                author: false,
+                date: true,
+                sha: false,
+            },
+            git_history_column_widths: GitHistoryColumnWidths {
+                author: 132.0,
+                date: 104.0,
+                sha: 82.0,
+            },
+            git_history_column_order: GitHistoryColumnOrder(vec![
+                GitHistoryColumn::Sha,
+                GitHistoryColumn::Author,
+                GitHistoryColumn::Date,
+            ]),
+            git_history_author_display: GitHistoryAuthorDisplay::Name,
             ui_font_family: crate::typography::UiFontFamily::Installed("Arial".into()),
             ui_font_size: crate::typography::UiFontSize::ALL[5],
             theme_selection: zeron_theme::ThemeSelection {
@@ -804,12 +978,17 @@ mod tests {
                 dark: "catppuccin-mocha".into(),
             },
             diff_split: true,
+            diff_wrap: true,
+            code_fences_fit_content: true,
             accent: zeron_theme::AccentSelection::Preset(zeron_theme::AccentPreset::Cyan),
             surface: zeron_theme::SurfacePreference::Frosted,
             legacy_accent_color: None,
         };
         settings.save(dir.path()).unwrap();
+        let json = std::fs::read_to_string(UiSettings::path(dir.path())).unwrap();
+        assert!(json.contains(r#""diffWrap": true"#));
         assert_eq!(UiSettings::load(dir.path()), settings);
+        assert!(json.contains(r#""codeFencesFitContent": true"#));
     }
 
     #[test]
@@ -820,6 +999,7 @@ mod tests {
             data_dir: dir.path().to_path_buf(),
             revision: 0,
             saved_revision: 0,
+            code_fences_generation: 0,
             save_task: None,
         };
 
@@ -841,6 +1021,30 @@ mod tests {
             reloaded.ui_font_family,
             crate::typography::UiFontFamily::Installed("Arial".into())
         );
+    }
+
+    #[test]
+    fn code_fence_generation_tracks_every_mode_transition_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = SettingsStore {
+            current: UiSettings::default(),
+            data_dir: dir.path().to_path_buf(),
+            revision: 0,
+            saved_revision: 0,
+            code_fences_generation: 0,
+            save_task: None,
+        };
+
+        assert!(store.update_current(|settings| settings.sidebar_width = 300.0));
+        assert_eq!(store.code_fences_generation, 0);
+
+        assert!(store.update_current(|settings| settings.code_fences_fit_content = true));
+        assert_eq!(store.code_fences_generation, 1);
+        assert!(store.update_current(|settings| settings.code_fences_fit_content = false));
+        assert_eq!(store.code_fences_generation, 2);
+
+        assert!(!store.update_current(|settings| settings.code_fences_fit_content = false));
+        assert_eq!(store.code_fences_generation, 2);
     }
 
     #[test]
@@ -887,6 +1091,26 @@ mod tests {
             !loaded.escape_stops_active_agent,
             "preference files default Escape stopping off"
         );
+        assert_eq!(
+            loaded.git_history_columns,
+            GitHistoryColumns::default(),
+            "pre-column files show the complete History table"
+        );
+        assert_eq!(
+            loaded.git_history_column_widths,
+            GitHistoryColumnWidths::default(),
+            "pre-resize files use the original History column widths"
+        );
+        assert_eq!(
+            loaded.git_history_column_order,
+            GitHistoryColumnOrder::default(),
+            "pre-reorder files use the original History column order"
+        );
+        assert_eq!(
+            loaded.git_history_author_display,
+            GitHistoryAuthorDisplay::Avatar,
+            "pre-author-display files default to avatars"
+        );
     }
 
     #[test]
@@ -918,6 +1142,7 @@ mod tests {
         );
         assert_eq!(loaded.sidebar_width, 300.0);
         assert!(!loaded.sound_enabled);
+        assert!(!loaded.diff_wrap);
         assert_eq!(
             loaded.ui_font_size,
             crate::typography::UiFontSize::default()
@@ -972,6 +1197,38 @@ mod tests {
         let loaded = UiSettings::load(dir.path());
         assert_eq!(loaded.sidebar_width, SIDEBAR_MAX);
         assert_eq!(loaded.right_pane_width, RIGHT_PANE_MIN);
+        assert!(!loaded.code_fences_fit_content);
+    }
+
+    #[test]
+    fn git_history_column_widths_are_clamped_and_nan_heals() {
+        let widths = GitHistoryColumnWidths {
+            author: 10_000.0,
+            date: f32::NAN,
+            sha: 1.0,
+        }
+        .clamped();
+        assert_eq!(widths.author, GitHistoryColumnWidths::AUTHOR_MAX);
+        assert_eq!(widths.date, GitHistoryColumnWidths::default().date);
+        assert_eq!(widths.sha, GitHistoryColumnWidths::SHA_MIN);
+    }
+
+    #[test]
+    fn git_history_column_order_deduplicates_and_restores_missing_columns() {
+        let order = GitHistoryColumnOrder(vec![
+            GitHistoryColumn::Sha,
+            GitHistoryColumn::Sha,
+            GitHistoryColumn::Author,
+        ])
+        .normalized();
+        assert_eq!(
+            order,
+            GitHistoryColumnOrder(vec![
+                GitHistoryColumn::Sha,
+                GitHistoryColumn::Author,
+                GitHistoryColumn::Date,
+            ])
+        );
     }
 
     #[test]
