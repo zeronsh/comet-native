@@ -150,6 +150,21 @@ fn input_max_scroll(content_height: f32, viewport_height: f32) -> f32 {
     (content_height - viewport_height).max(0.0)
 }
 
+/// Only settled overflow gets a scroll fade. The animated viewport can be
+/// smaller for a few frames while an otherwise fitting draft grows into it.
+fn input_overflow_edges(
+    content_height: f32,
+    settled_height: f32,
+    visible_height: f32,
+    scroll_top: f32,
+) -> (bool, bool) {
+    if input_max_scroll(content_height, settled_height) <= 1.0 {
+        return (false, false);
+    }
+    let max_scroll = input_max_scroll(content_height, visible_height);
+    (scroll_top > 1.0, scroll_top < max_scroll - 1.0)
+}
+
 /// Apply GPUI's wheel delta to a top-origin input offset. Positive deltas mean
 /// scrolling toward the start, matching gpui's built-in list/div behavior.
 fn input_scroll_offset(
@@ -1320,6 +1335,8 @@ pub struct ComposerInput {
     scroll_top: f32,
     /// Visible content budget supplied by the animated composer.
     viewport_height: Option<f32>,
+    /// Final content budget, excluding temporary overflow during a resize.
+    settled_viewport_height: Option<f32>,
     needs_measure: bool,
     /// Normally keeps the caret visible through edits and rewraps. Manual
     /// wheel scrolling pauses it until the next caret move or edit.
@@ -1401,6 +1418,7 @@ impl ComposerInput {
             drag_autoscroll_active: false,
             scroll_top: 0.0,
             viewport_height: None,
+            settled_viewport_height: None,
             needs_measure: true,
             follow_cursor: true,
             last_lines: Vec::new(),
@@ -3105,79 +3123,60 @@ impl gpui::Element for ComposerTextElement {
             )
         });
 
-        // Read overflow after prepaint has clamped scrolling for this frame.
-        let max_scroll = input_max_scroll(
-            self.input.read(cx).content_height,
-            f32::from(bounds.size.height),
-        );
-        let fade = gpui::EdgeFade {
-            bounds,
-            // Match the sidebar/transcript ramp: a 12px band is shorter than
-            // a text row and still reads as a hard cutoff while scrolling.
-            band: px(Theme::TRANSCRIPT_FADE_BAND),
-            band_top: None,
-            band_bottom: None,
-            top: scroll > 1.0,
-            bottom: scroll < max_scroll - 1.0,
-            left: false,
-            right: false,
-        };
-        window.with_edge_fade(Some(fade), |window| {
-            window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-                for quad in prepaint.mention_quads.drain(..) {
-                    window.paint_quad(quad);
-                }
-                for quad in prepaint.selection_quads.drain(..) {
-                    window.paint_quad(quad);
-                }
-                let mut y = bounds.top() - px(scroll);
-                for line in &lines {
-                    let height = line.size(line_height).height;
-                    let _ = line.paint(
-                        point(bounds.left(), y),
-                        line_height,
-                        gpui::TextAlign::Left,
-                        Some(bounds),
-                        window,
-                        cx,
-                    );
-                    y += height;
-                }
-                if let Some((ghost_origin, ghost)) = prepaint.ghost.take() {
-                    let style = window.text_style();
-                    let font_size = style.font_size.to_pixels(window.rem_size());
-                    let run = TextRun {
-                        len: ghost.len(),
-                        font: style.font(),
-                        color: Theme::of(cx).text_faint,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    };
-                    let line = window
-                        .text_system()
-                        .shape_line(ghost, font_size, &[run], None);
-                    // (Clipping comes from the surrounding content mask.)
-                    let _ = line.paint(
-                        ghost_origin,
-                        line_height,
-                        gpui::TextAlign::Left,
-                        None,
-                        window,
-                        cx,
-                    );
-                }
-                // Caret only when this input is actually focused in an active
-                // window (Electron hides it on window deactivation too), and only
-                // in the "on" blink phase — solid while typing, ~500ms blink idle.
-                if self
-                    .input
-                    .update(cx, |input, cx| input.caret_shown(window, cx))
-                    && let Some(cursor) = prepaint.cursor.take()
-                {
-                    window.paint_quad(cursor);
-                }
-            });
+        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+            for quad in prepaint.mention_quads.drain(..) {
+                window.paint_quad(quad);
+            }
+            for quad in prepaint.selection_quads.drain(..) {
+                window.paint_quad(quad);
+            }
+            let mut y = bounds.top() - px(scroll);
+            for line in &lines {
+                let height = line.size(line_height).height;
+                let _ = line.paint(
+                    point(bounds.left(), y),
+                    line_height,
+                    gpui::TextAlign::Left,
+                    Some(bounds),
+                    window,
+                    cx,
+                );
+                y += height;
+            }
+            if let Some((ghost_origin, ghost)) = prepaint.ghost.take() {
+                let style = window.text_style();
+                let font_size = style.font_size.to_pixels(window.rem_size());
+                let run = TextRun {
+                    len: ghost.len(),
+                    font: style.font(),
+                    color: Theme::of(cx).text_faint,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let line = window
+                    .text_system()
+                    .shape_line(ghost, font_size, &[run], None);
+                // (Clipping comes from the surrounding content mask.)
+                let _ = line.paint(
+                    ghost_origin,
+                    line_height,
+                    gpui::TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
+            }
+            // Caret only when this input is actually focused in an active
+            // window (Electron hides it on window deactivation too), and only
+            // in the "on" blink phase — solid while typing, ~500ms blink idle.
+            if self
+                .input
+                .update(cx, |input, cx| input.caret_shown(window, cx))
+                && let Some(cursor) = prepaint.cursor.take()
+            {
+                window.paint_quad(cursor);
+            }
         });
         self.input.update(cx, |input, _| {
             input.last_lines = lines;
@@ -3242,13 +3241,37 @@ impl Render for ComposerInput {
             .line_height(px(INPUT_LINE_HEIGHT))
             .text_color(text_color)
             .font_family(theme.font_sans.clone())
-            .child(ComposerTextElement {
-                input: cx.entity(),
-                // Internal scrolling once content exceeds the 260px textarea
-                // box minus its `pt-4 pb-1` padding.
-                max_content_height: self
-                    .viewport_height
-                    .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
+            .child({
+                let input = cx.entity();
+                crate::edge_fade::edge_faded(
+                    Theme::TRANSCRIPT_FADE_BAND,
+                    true,
+                    true,
+                    ComposerTextElement {
+                        input: input.clone(),
+                        max_content_height: self
+                            .viewport_height
+                            .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
+                    },
+                )
+                // Like the transcript's titlebar inset, reach zero inside the
+                // clip boundary. One text row also covers GPUI's baseline-based
+                // glyph fade sampling, so the clip cannot slice visible ink.
+                .inset_top(INPUT_LINE_HEIGHT)
+                .fade_overflow_y_with(move |cx| {
+                    let input = input.read(cx);
+                    let visible_height = input
+                        .last_bounds
+                        .map_or(0.0, |bounds| f32::from(bounds.size.height));
+                    input_overflow_edges(
+                        input.content_height,
+                        input
+                            .settled_viewport_height
+                            .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
+                        visible_height,
+                        input.scroll_top,
+                    )
+                })
             })
     }
 }
@@ -6163,8 +6186,16 @@ impl Render for Composer {
             } else {
                 INPUT_LINE_HEIGHT
             };
-            if input.viewport_height != Some(height) {
+            let settled_height = if expanded {
+                base_height - PILL_BORDER_V - ACTIONS_ROW_HEIGHT - TEXTAREA_PAD_V
+            } else {
+                INPUT_LINE_HEIGHT
+            };
+            if input.viewport_height != Some(height)
+                || input.settled_viewport_height != Some(settled_height)
+            {
                 input.viewport_height = Some(height);
+                input.settled_viewport_height = Some(settled_height);
                 cx.notify();
             }
         });
@@ -6909,6 +6940,34 @@ mod tests {
             flip_morph_step(Some(m), false, 124.0, 300.0, false, false),
             None
         );
+    }
+
+    #[test]
+    fn scroll_fade_ignores_temporary_resize_overflow() {
+        for visible_height in [0.0, 20.0, 60.0, 100.0, 160.0] {
+            let scroll = input_max_scroll(160.0, visible_height);
+            assert_eq!(
+                input_overflow_edges(160.0, 160.0, visible_height, scroll),
+                (false, false)
+            );
+        }
+        // Deleting a capped draft disables fading immediately, even while
+        // its scroll position and outer height are still settling.
+        assert_eq!(
+            input_overflow_edges(100.0, 100.0, 240.0, 80.0),
+            (false, false)
+        );
+    }
+
+    #[test]
+    fn scroll_fade_tracks_real_overflow_edges() {
+        for (scroll, top, bottom) in [(0.0, false, true), (80.0, true, true), (160.0, true, false)]
+        {
+            assert_eq!(
+                input_overflow_edges(400.0, 240.0, 240.0, scroll),
+                (top, bottom)
+            );
+        }
     }
 
     #[test]
