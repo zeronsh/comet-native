@@ -1583,7 +1583,11 @@ fn fuzzy_score(query: &str, candidate: &str) -> Option<usize> {
         })
 }
 
-fn git_history_matches(query: &str, commit: &GitHistoryCommit) -> bool {
+/// Match a history commit using the same semantics as the history UI.
+///
+/// This remains the shared entry point so RPC filtering and client-side
+/// filtering cannot disagree about Unicode case normalization.
+pub fn git_history_matches(query: &str, commit: &GitHistoryCommit) -> bool {
     let query = query.trim();
     if query.is_empty() {
         return true;
@@ -2310,6 +2314,14 @@ tmpfs /run tmpfs rw 0 0
         assert!(score("cmp rs", "crates/ui/src/composer.rs").is_some());
         assert!(score("composer crates", "crates/ui/src/composer.rs").is_some());
         assert!(score("xyzq", "crates/ui/src/composer.rs").is_none());
+    }
+
+    #[test]
+    fn git_history_matches_unicode_case_insensitively() {
+        let mut candidate = history_commit("a1b2c3d4".into(), None);
+        candidate.subject = "RÉPARER la recherche".into();
+
+        assert!(git_history_matches("réparer", &candidate));
     }
 
     #[test]

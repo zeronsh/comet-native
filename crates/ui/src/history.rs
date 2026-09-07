@@ -17,6 +17,7 @@ use gpui::{
     SharedString, Subscription, Task, Window, canvas, container_query, div, img, list, point,
     prelude::*, px,
 };
+use zeron_engine::repos::git_history_matches;
 use zeron_proto::{
     GitHistoryCommit, GitHistoryComparison, GitHistoryPage, GitHistoryRef, GitHistoryRefKind,
 };
@@ -929,28 +930,6 @@ fn compact_commits_to_visible(
             commit
         })
         .collect()
-}
-
-fn history_search_matches(commit: &GitHistoryCommit, query: &str) -> bool {
-    let query = query.trim().to_ascii_lowercase();
-    if query.is_empty() {
-        return true;
-    }
-    let sha = commit.sha.to_ascii_lowercase();
-    if sha.starts_with(&query) {
-        return true;
-    }
-    let haystack = format!("{} {}", sha, commit.subject.to_ascii_lowercase());
-    query.split_whitespace().all(|term| {
-        let mut from = 0;
-        term.chars().all(|needle| {
-            let Some(offset) = haystack[from..].find(needle) else {
-                return false;
-            };
-            from += offset + needle.len_utf8();
-            true
-        })
-    })
 }
 
 fn responsive_graph_geometry(
@@ -2184,7 +2163,7 @@ impl GitHistory {
             let source = self.search_results.as_ref().unwrap_or(&self.commits);
             let visible: HashSet<_> = source
                 .iter()
-                .filter(|commit| history_search_matches(commit, &self.search_query))
+                .filter(|commit| git_history_matches(&self.search_query, commit))
                 .map(|commit| commit.sha.clone())
                 .collect();
             self.visible_commits = compact_commits_to_visible(source, &visible);
@@ -4586,9 +4565,33 @@ mod tests {
         let mut candidate = commit("a1b2c3d4", &[]);
         candidate.subject = "Polish the history graph".into();
 
-        assert!(history_search_matches(&candidate, "plsh grph"));
-        assert!(history_search_matches(&candidate, "A1B2"));
-        assert!(!history_search_matches(&candidate, "terminal"));
+        assert!(git_history_matches("plsh grph", &candidate));
+        assert!(git_history_matches("A1B2", &candidate));
+        assert!(!git_history_matches("terminal", &candidate));
+    }
+
+    #[test]
+    fn history_search_keeps_unicode_engine_result_visible() {
+        let mut app = gpui::TestApp::new();
+
+        app.update(|cx| {
+            let state = cx.new(|_| AppState::new());
+            let history = cx.new(|cx| GitHistory::new(state, cx));
+            let mut candidate = commit("a1b2c3d4", &[]);
+            candidate.subject = "RÉPARER la recherche".into();
+
+            // Simulate the page returned by the engine for this query. The UI
+            // must not discard a result that the shared matcher accepted.
+            assert!(git_history_matches("réparer", &candidate));
+            history.update(cx, |history, _cx| {
+                history.search_query = "réparer".into();
+                history.search_results = Some(vec![candidate]);
+                history.recompute_view();
+
+                assert_eq!(history.visible_commits.len(), 1);
+                assert_eq!(history.visible_commits[0].subject, "RÉPARER la recherche");
+            });
+        });
     }
 
     #[test]
