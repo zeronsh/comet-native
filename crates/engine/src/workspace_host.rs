@@ -1662,6 +1662,35 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn sidebar_preferences_watch_preserves_explicit_empty_state() {
+        use super::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(DocsStore::open(dir.path()).unwrap()),
+            WorkspaceHostConfig {
+                device_id: "test-device".into(),
+                device_name: "Test device".into(),
+                platform: "macos".into(),
+                org_id: "test-org".into(),
+                user_id: "test-user".into(),
+                edge: None,
+            },
+        )
+        .unwrap();
+        let mut preferences = host.watch_sidebar_preferences();
+        assert!(!preferences.borrow().initialized);
+
+        host.set_sidebar_pinned_sessions(&[]).unwrap();
+        host.inner.publish();
+        assert!(preferences.has_changed().unwrap());
+        let state = preferences.borrow_and_update();
+        assert!(state.initialized);
+        assert!(!state.synced);
+        assert!(state.pinned_session_ids.is_empty());
+    }
+
     #[test]
     fn boot_repairs_the_legacy_unknown_device_sentinel() {
         assert_eq!(

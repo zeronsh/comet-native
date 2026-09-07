@@ -242,8 +242,9 @@ pub struct UiSettings {
     /// Sidebar session filter: a space id, or `None` for "All spaces".
     #[serde(skip_serializing_if = "Option::is_none")]
     pub space_filter: Option<String>,
-    /// Device-local pinned sessions in visual order, isolated by workspace
-    /// profile. This preference is presentation-only and never synchronized.
+    /// Device-local pins and one-time migration source for synced profiles.
+    /// Once a remote preferences row exists, synced profiles no longer read
+    /// or write this map.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub sidebar_pinned_session_ids_by_profile: HashMap<String, Vec<String>>,
     /// Legacy: per-space tab order, from when tabs were the selected space's

@@ -243,13 +243,19 @@ mod pinned_session_tests {
     }
 
     #[test]
-    fn pinned_drag_snapshot_requires_every_original_pin() {
+    fn pinned_drag_snapshot_requires_the_same_remote_order() {
         let snapshot = ids(&["a", "b"]);
-        let current = HashSet::from(["new".to_string(), "a".to_string(), "b".to_string()]);
-        assert!(pinned_drag_snapshot_is_valid("a", &snapshot, &current));
-
-        let missing = HashSet::from(["a".to_string()]);
-        assert!(!pinned_drag_snapshot_is_valid("a", &snapshot, &missing));
+        assert!(pinned_drag_snapshot_is_valid("a", &snapshot, &snapshot));
+        assert!(!pinned_drag_snapshot_is_valid(
+            "a",
+            &snapshot,
+            &ids(&["b", "a"])
+        ));
+        assert!(!pinned_drag_snapshot_is_valid(
+            "a",
+            &snapshot,
+            &ids(&["a"])
+        ));
     }
 }
 
@@ -271,10 +277,10 @@ pub(super) fn pinned_drag_scroll_step(
 pub(super) fn pinned_drag_snapshot_is_valid(
     dragged_id: &str,
     snapshot_ids: &[String],
-    current_ids: &HashSet<String>,
+    current_ids: &[String],
 ) -> bool {
     snapshot_ids.iter().any(|id| id == dragged_id)
-        && snapshot_ids.iter().all(|id| current_ids.contains(id))
+        && snapshot_ids == current_ids
 }
 
 struct ActiveChatRow {
@@ -862,13 +868,8 @@ impl Shell {
         {
             return false;
         }
-        let pinned: HashSet<&str> = self
-            .settings
-            .sidebar_pins(&drag.profile_key)
-            .iter()
-            .map(String::as_str)
-            .collect();
-        let current_ids: HashSet<String> = self
+        let current_pins = self.sidebar_pins_for_profile(&drag.profile_key, cx);
+        let visible_ids: HashSet<String> = self
             .state
             .read(cx)
             .overview_chats(Utc::now())
@@ -877,9 +878,13 @@ impl Shell {
                 Some(space_id) => chat.space_id.as_deref() == Some(space_id.as_str()),
                 None => true,
             })
-            .filter(|(_, chat)| pinned.contains(chat.id.as_str()))
             .map(|(_, chat)| chat.id.clone())
             .collect();
+        let current_ids = current_pins
+            .iter()
+            .filter(|id| visible_ids.contains(id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
         pinned_drag_snapshot_is_valid(&drag.chat_id, drag.visible_ids.as_ref(), &current_ids)
     }
 
@@ -917,16 +922,13 @@ impl Shell {
             return;
         };
         let to = drag.over.min(drag.visible_ids.len().saturating_sub(1));
-        let saved_pins = self.settings.sidebar_pins(&drag.profile_key);
-        let next = reorder_visible_pins(saved_pins, drag.visible_ids.as_ref(), from, to);
+        let saved_pins = self.sidebar_pins_for_profile(&drag.profile_key, cx);
+        let next = reorder_visible_pins(&saved_pins, drag.visible_ids.as_ref(), from, to);
         if next != saved_pins {
-            self.settings
-                .sidebar_pinned_session_ids_by_profile
-                .insert(drag.profile_key, next);
+            self.replace_sidebar_pins(drag.profile_key, next, cx);
             self.sidebar_prev_order.clear();
             self.sidebar_resort.clear();
             self.sidebar_new_keys.clear();
-            self.schedule_save(cx);
         }
         cx.notify();
     }
@@ -1590,10 +1592,7 @@ impl Shell {
     pub(super) fn sidebar_visible_order(&self, cx: &Context<Self>) -> Vec<String> {
         let filter = self.settings.space_filter.clone();
         let profile_key = self.active_sidebar_pin_profile_key(cx);
-        let saved_pins = profile_key
-            .as_deref()
-            .map(|key| self.settings.sidebar_pins(key).to_vec())
-            .unwrap_or_default();
+        let saved_pins = self.active_sidebar_pins(cx);
         let frozen_pinned = self
             .pinned_session_drag
             .as_ref()
@@ -1644,10 +1643,7 @@ impl Shell {
         let now = Utc::now();
         let filter = self.settings.space_filter.clone();
         let profile_key = self.active_sidebar_pin_profile_key(cx);
-        let saved_pins = profile_key
-            .as_deref()
-            .map(|key| self.settings.sidebar_pins(key).to_vec())
-            .unwrap_or_default();
+        let saved_pins = self.active_sidebar_pins(cx);
         let frozen_pinned = self
             .pinned_session_drag
             .as_ref()
