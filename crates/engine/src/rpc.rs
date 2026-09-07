@@ -408,6 +408,7 @@ pub struct EngineRpc {
     links: Option<std::sync::Arc<LinkCache>>,
     updater: Option<zeron_update::Updater>,
     local_import: Option<crate::local_import::LocalImporter>,
+    vault: Option<crate::vault::VaultService>,
     engine_info: EngineInfo,
 }
 
@@ -445,8 +446,21 @@ impl EngineRpc {
             links: None,
             updater: None,
             local_import: None,
+            vault: None,
             engine_info,
         }
+    }
+
+    /// Attach the encrypted-sync vault service (account-scoped runtimes).
+    pub fn with_vault(mut self, vault: crate::vault::VaultService) -> Self {
+        self.vault = Some(vault);
+        self
+    }
+
+    fn vault(&self) -> Result<&crate::vault::VaultService, RpcError> {
+        self.vault
+            .as_ref()
+            .ok_or_else(|| RpcError::Failed("vault unavailable".into()))
     }
 
     /// Attach the auth service (AuthStatus + AuthRpc mutations).
@@ -1975,6 +1989,115 @@ impl RpcService for EngineRpc {
                     .await
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&serde_json::json!({ "text": text }))
+            }
+            // ── encrypted-sync vault ────────────────────────────────────
+            methods::VAULT_STATUS => {
+                Ok(RpcReply::Stream(watch_stream(self.vault()?.watch_status())))
+            }
+            methods::VAULT_REFRESH => {
+                let status = self
+                    .vault()?
+                    .refresh()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&status)
+            }
+            methods::VAULT_SETUP => {
+                let kit = self
+                    .vault()?
+                    .setup()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&kit)
+            }
+            methods::VAULT_REQUEST_ENROLLMENT => {
+                let (request_id, pairing_code) = self
+                    .vault()?
+                    .request_enrollment()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({
+                    "requestId": request_id,
+                    "pairingCode": pairing_code,
+                }))
+            }
+            methods::VAULT_CANCEL_ENROLLMENT => {
+                self.vault()?
+                    .cancel_enrollment()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::VAULT_PENDING_REQUESTS => {
+                let requests = self
+                    .vault()?
+                    .pending_requests()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "requests": requests }))
+            }
+            methods::VAULT_APPROVE => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    request_id: String,
+                    code: String,
+                }
+                let p: P = parse_params(params)?;
+                self.vault()?
+                    .approve(&p.request_id, &p.code)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::VAULT_REJECT => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    request_id: String,
+                }
+                let p: P = parse_params(params)?;
+                self.vault()?
+                    .reject(&p.request_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::VAULT_REVOKE => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    device_id: String,
+                }
+                let p: P = parse_params(params)?;
+                self.vault()?
+                    .revoke(&p.device_id)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
+            methods::VAULT_RECOVER => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    kit: String,
+                    #[serde(default)]
+                    genesis_hash: Option<String>,
+                }
+                let p: P = parse_params(params)?;
+                let genesis = match p.genesis_hash {
+                    Some(hex) => Some(
+                        crate::vault::store::Hex(hex)
+                            .decode::<32>()
+                            .ok_or_else(|| RpcError::BadParams("genesisHash".into()))?,
+                    ),
+                    None => None,
+                };
+                self.vault()?
+                    .recover(&p.kit, genesis)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             other => Err(RpcError::UnknownMethod(other.to_string())),
         }

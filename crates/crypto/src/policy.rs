@@ -38,6 +38,8 @@ pub const MAX_DEVICES: usize = 64;
 const MEMBERSHIP_DOMAIN: &[u8] = b"zeron/membership/v1\0";
 const PROFILE_DOMAIN: &[u8] = b"zeron/profile/v1\0";
 const RECOVERY_ID_DOMAIN: &[u8] = b"zeron/recovery-id/v1\0";
+const ENROLL_DOMAIN: &[u8] = b"zeron/enroll/v1\0";
+const PAIRING_DOMAIN: &[u8] = b"zeron/pairing-code/v1\0";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PolicyError {
@@ -238,6 +240,76 @@ pub fn recovery_authority_id(recovery_signing_key: &[u8; 32]) -> [u8; 16] {
     let mut id = [0; 16];
     id.copy_from_slice(&digest[..16]);
     id
+}
+
+/// An enrollment request: the pending device's public identity, bound to
+/// the vault it wants to join. The proof is an ordinary Ed25519 signature by
+/// the device's signing key over [`enrollment_proof_input`]; it proves key
+/// possession to the bootstrap service, never membership.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EnrollmentRequest {
+    pub vault_id: [u8; 16],
+    pub request_id: [u8; 16],
+    pub device_id: [u8; 16],
+    pub signing_key: [u8; 32],
+    pub encryption_key: [u8; 32],
+}
+
+impl EnrollmentRequest {
+    pub fn proof_input(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(ENROLL_DOMAIN.len() + 112);
+        out.extend_from_slice(ENROLL_DOMAIN);
+        out.extend_from_slice(&self.vault_id);
+        out.extend_from_slice(&self.request_id);
+        out.extend_from_slice(&self.device_id);
+        out.extend_from_slice(&self.signing_key);
+        out.extend_from_slice(&self.encryption_key);
+        out
+    }
+
+    pub fn sign(&self, signer: &DeviceSigner) -> Result<[u8; 64], PolicyError> {
+        if *signer.author_id() != self.device_id
+            || signer.public_key() != self.signing_key.as_slice()
+        {
+            return Err(PolicyError::UnknownAuthor);
+        }
+        Ok(signer.sign_bytes(&self.proof_input())?)
+    }
+
+    pub fn verify(&self, proof: &[u8]) -> Result<(), PolicyError> {
+        if !crate::ed25519_point_encoding_precheck(&self.signing_key)
+            || self.encryption_key.iter().all(|byte| *byte == 0)
+            || self.device_id == POLICY_OBJECT_ID
+        {
+            return Err(PolicyError::InvalidDeviceSet);
+        }
+        crate::verify_ed25519(&self.signing_key, &self.proof_input(), proof)?;
+        Ok(())
+    }
+
+    /// The human-comparison code (RFC §6.2): both the pending device and the
+    /// approving device derive it from the request they each hold plus the
+    /// genesis hash of the vault they each see, so a relay that substitutes
+    /// keys OR presents a different vault produces a mismatch the user can
+    /// see. Eight decimal digits as "NNNN-NNNN".
+    pub fn pairing_code(&self, genesis_hash: &[u8; 32]) -> String {
+        let digest = sha256(&[
+            PAIRING_DOMAIN,
+            &self.proof_input()[ENROLL_DOMAIN.len()..],
+            genesis_hash,
+        ]);
+        let value = u32::from_be_bytes([digest[0], digest[1], digest[2], digest[3]]) % 100_000_000;
+        format!("{:04}-{:04}", value / 10_000, value % 10_000)
+    }
+
+    pub fn device_entry(&self) -> DeviceEntry {
+        DeviceEntry {
+            device_id: self.device_id,
+            signing_key: self.signing_key,
+            encryption_key: self.encryption_key,
+            status: DeviceStatus::Active,
+        }
+    }
 }
 
 /// Wrapper binding for a policy record at `epoch` authored by `author_id`

@@ -86,6 +86,18 @@ pub mod methods {
     /// Readiness barrier for the engine runtime. The call completes once stores
     /// and journals are assembled, or fails with the assembly error.
     pub const ENGINE_READY: &str = "EngineReady";
+    // Encrypted-sync vault (RFC 0001 §4, §6, §11): explicit lifecycle
+    // operations; none of them exports private keys.
+    pub const VAULT_STATUS: &str = "VaultStatus";
+    pub const VAULT_REFRESH: &str = "VaultRefresh";
+    pub const VAULT_SETUP: &str = "VaultSetup";
+    pub const VAULT_REQUEST_ENROLLMENT: &str = "VaultRequestEnrollment";
+    pub const VAULT_CANCEL_ENROLLMENT: &str = "VaultCancelEnrollment";
+    pub const VAULT_PENDING_REQUESTS: &str = "VaultPendingRequests";
+    pub const VAULT_APPROVE: &str = "VaultApprove";
+    pub const VAULT_REJECT: &str = "VaultReject";
+    pub const VAULT_REVOKE: &str = "VaultRevoke";
+    pub const VAULT_RECOVER: &str = "VaultRecover";
     /// Ask a headless IPC owner to drain its runtime and exit successfully.
     /// Headed IPC owners do not implement this method: closing another app's
     /// engine behind its windows would leave that process unusable.

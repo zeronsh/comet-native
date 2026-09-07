@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex};
 use futures::future::BoxFuture;
 use loro::{ExportMode, LoroDoc, VersionVector};
 use zeron_sync::SyncError;
-use zeron_sync::chat_client::{ChatClient, ChatDocSink, CheckpointFetcher, RowImportOutcome};
+use zeron_sync::chat_client::{ApplyOutcome, ChatClient, ChatDocSink, CheckpointFetcher};
 
 struct DocSink {
     doc: Mutex<LoroDoc>,
@@ -24,21 +24,23 @@ struct DocSink {
 }
 
 impl ChatDocSink for DocSink {
-    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome {
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome {
         let doc = self.doc.lock().unwrap();
         if doc.import(bytes).expect("row import").pending.is_some() {
-            return RowImportOutcome::PendingDependencies;
+            return ApplyOutcome::PendingDependencies;
         }
         self.cursor.store(cursor, Relaxed);
         self.rows_applied.fetch_add(1, Relaxed);
-        RowImportOutcome::Applied
+        ApplyOutcome::Applied
     }
-    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String> {
+    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome {
         let doc = self.doc.lock().unwrap();
-        doc.import(bytes).map_err(|e| e.to_string())?;
+        if doc.import(bytes).is_err() {
+            return ApplyOutcome::StorageFailed;
+        }
         self.cursor.store(cursor, Relaxed);
         self.checkpoint_applied.store(true, Relaxed);
-        Ok(())
+        ApplyOutcome::Applied
     }
     fn contains_frontier(&self, frontier: &[u8]) -> bool {
         if frontier.is_empty() {

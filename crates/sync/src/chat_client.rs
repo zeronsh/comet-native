@@ -102,16 +102,50 @@ pub enum ChatEvent {
     /// next posts a checkpoint — the C3 host should treat this event as a
     /// checkpoint trigger, not a shrug.
     PushRejected,
+    /// A remote row/checkpoint could not be verified or opened; the cursor
+    /// holds and inbound application is paused until [`ChatClient::resume`].
+    /// Pushes and presence continue. The host decides the recovery action
+    /// (refresh keys, require upgrade, surface "sync paused").
+    SyncPaused(ApplyOutcome),
+    /// Inbound application resumed (a backfill from the honest cursor follows).
+    SyncResumed,
 }
 
 // ── engine-facing traits ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RowImportOutcome {
+/// The explicit verified/durable result of applying remote bytes (RFC 0001
+/// §8). Only `Applied` lets the cursor advance; every other outcome holds
+/// the honest cursor so the row is re-delivered once the cause is fixed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ApplyOutcome {
+    /// Doc and cursor committed atomically (or the row was a tolerated
+    /// no-op under the sink's own policy).
+    #[default]
     Applied,
+    /// The row is authentic-looking but this device lacks its key/epoch:
+    /// keep the data, refresh keys, do not advance.
+    KeyUnavailable,
+    /// Signature/context/AEAD verification failed: pause, do not advance.
+    AuthenticationFailed,
+    /// Unknown format/version: an upgrade is required; do not advance.
+    Unsupported,
+    /// Import or storage failed transiently: preserve last good state and
+    /// let the transport retry (redial / refetch).
+    StorageFailed,
     /// The update is buffered in memory until missing causal history arrives.
     /// It is not represented in an exported snapshot yet.
     PendingDependencies,
+}
+
+impl ApplyOutcome {
+    /// Outcomes that pause the session until the host resolves them (a
+    /// redial cannot fix them and would loop).
+    pub fn pauses(self) -> bool {
+        matches!(
+            self,
+            Self::KeyUnavailable | Self::AuthenticationFailed | Self::Unsupported
+        )
+    }
 }
 
 /// Where remote bytes land. The engine implements this over its doc handle;
@@ -120,14 +154,22 @@ pub enum RowImportOutcome {
 pub trait ChatDocSink: Send + Sync + 'static {
     /// Import one remote update row with a proposed contiguous cursor. A
     /// pending import must not persist that cursor; the client repairs it.
-    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome;
+    /// Import one remote update row; `cursor` is the row's seq. The cursor
+    /// is only committed by the client when this returns `Applied`.
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome;
     /// Replace/merge from a checkpoint blob; `cursor` is its checkpointSeq.
-    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String>;
+    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome;
     /// Client-side precision (replaces the server VV diff): is the server
-    /// checkpoint's frontier already contained in the local doc?
+    /// checkpoint's frontier already contained in the local doc? A frontier
+    /// that cannot be verified must answer `false` (fetch), never `true`.
     fn contains_frontier(&self, frontier: &[u8]) -> bool;
     /// An own-write ack advanced the cursor with no content change.
     fn advance_cursor(&self, cursor: u64);
+    /// The server durably accepted `batch_id` (sealed outbox entries may be
+    /// retired now). Default: nothing to retire.
+    fn acknowledged(&self, _batch_id: &str) {}
+    /// The server permanently rejected `batch_id`.
+    fn rejected(&self, _batch_id: &str) {}
 }
 
 /// `GET /chat2/{chatId}/checkpoint` over HTTP. Implementations should resume
@@ -313,11 +355,24 @@ struct Shared {
     needs_checkpoint: bool,
     /// Prevent an overlapping HTTP/socket catch-up from clearing a newer gap.
     causal_gap_generation: u64,
+    /// Inbound application is paused (RFC 0001 §8): a row or checkpoint
+    /// returned a non-`Applied` outcome that a redial cannot fix. While set,
+    /// remote rows are dropped (they sit above the honest cursor and are
+    /// refetched on resume) and pushes continue.
+    paused: Option<ApplyOutcome>,
 }
 
-fn apply_remote_row(shared: &Mutex<Shared>, sink: &dyn ChatDocSink, bytes: &[u8], seq: u64) {
+fn apply_remote_row(
+    shared: &Mutex<Shared>,
+    sink: &dyn ChatDocSink,
+    bytes: &[u8],
+    seq: u64,
+) -> ApplyOutcome {
     let cursor = {
         let mut shared = lock(shared);
+        if let Some(outcome) = shared.paused {
+            return outcome;
+        }
         if seq > shared.cursor.saturating_add(1) {
             shared.gap_repair = true;
             shared.cursor
@@ -330,8 +385,8 @@ fn apply_remote_row(shared: &Mutex<Shared>, sink: &dyn ChatDocSink, bytes: &[u8]
     let outcome = sink.apply_row(bytes, cursor);
     let mut shared = lock(shared);
     match outcome {
-        RowImportOutcome::Applied => shared.cursor = shared.cursor.max(cursor),
-        RowImportOutcome::PendingDependencies => {
+        ApplyOutcome::Applied => shared.cursor = shared.cursor.max(cursor),
+        ApplyOutcome::PendingDependencies => {
             shared.needs_checkpoint = true;
             shared.causal_gap_generation = shared.causal_gap_generation.wrapping_add(1);
             tracing::warn!(
@@ -340,7 +395,10 @@ fn apply_remote_row(shared: &Mutex<Shared>, sink: &dyn ChatDocSink, bytes: &[u8]
                 "chat2: missing causal history; holding cursor and refreshing checkpoint"
             );
         }
+        ApplyOutcome::StorageFailed => shared.gap_repair = true,
+        _ => {}
     }
+    outcome
 }
 
 /// `zeron sync` surface (plan: cursor / headSeq / floorLag / pendingPushes).
@@ -368,6 +426,8 @@ pub struct ChatStatsSnapshot {
     /// Times a hello found the server behind our cursor (room reset/wiped).
     /// Nonzero means the host owes the room a re-seed checkpoint.
     pub server_resets: u64,
+    /// Inbound application is paused on this outcome (see `ChatEvent::SyncPaused`).
+    pub paused: Option<ApplyOutcome>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -384,6 +444,7 @@ pub struct ChatClient {
     nudge: mpsc::Sender<()>,
     probe: mpsc::Sender<()>,
     redial: mpsc::Sender<()>,
+    resume: mpsc::Sender<()>,
     presence_out: mpsc::Sender<(i64, Vec<u8>)>,
     flags: Arc<Flags>,
     task: Option<tokio::task::JoinHandle<()>>,
@@ -505,6 +566,7 @@ impl ChatClient {
         let (nudge_tx, nudge_rx) = mpsc::channel(1);
         let (probe_tx, probe_rx) = mpsc::channel(1);
         let (redial_tx, redial_rx) = mpsc::channel(1);
+        let (resume_tx, resume_rx) = mpsc::channel(1);
         let (presence_tx, presence_rx) = mpsc::channel(4);
         let shared = Arc::new(Mutex::new(Shared {
             cursor: initial_cursor,
@@ -524,6 +586,7 @@ impl ChatClient {
             nudge_rx,
             probe_rx,
             redial_rx,
+            resume_rx,
             presence_rx,
             flags: flags.clone(),
             resumed: false,
@@ -541,6 +604,7 @@ impl ChatClient {
                 nudge: nudge_tx,
                 probe: probe_tx,
                 redial: redial_tx,
+                resume: resume_tx,
                 presence_out: presence_tx,
                 flags,
                 task: Some(task),
@@ -587,6 +651,37 @@ impl ChatClient {
             });
         }
         let _ = self.nudge.try_send(());
+    }
+
+    /// Queue an already-sealed, already-persisted batch under ITS batch id
+    /// (the encrypted outbox contract: identical bytes on every retry; the
+    /// sink's `acknowledged` retires the durable copy). Duplicate ids are
+    /// ignored so an outbox replay after reconnect cannot double-queue.
+    pub fn enqueue_sealed(&self, batch_id: String, bytes: Vec<u8>) {
+        if bytes.len() > MAX_PUSH_BYTES {
+            use std::sync::atomic::Ordering::Relaxed;
+            tracing::error!(
+                bytes = bytes.len(),
+                "chat2: sealed batch exceeds the row cap"
+            );
+            self.flags.rejected.fetch_add(1, Relaxed);
+            let _ = self.events.send(ChatEvent::PushRejected);
+            return;
+        }
+        {
+            let mut shared = lock(&self.shared);
+            if shared.pending.iter().any(|p| p.batch_id == batch_id) {
+                return;
+            }
+            shared.pending.push_back(PendingPush { batch_id, bytes });
+        }
+        let _ = self.nudge.try_send(());
+    }
+
+    /// The host resolved whatever paused inbound application (keys arrived,
+    /// policy refreshed): clear the pause and backfill from the honest cursor.
+    pub fn resume(&self) {
+        let _ = self.resume.try_send(());
     }
 
     /// Publish this device's presence beat with an opaque payload (cursor
@@ -649,6 +744,7 @@ impl ChatClient {
             disconnects: self.flags.disconnects.load(Relaxed),
             rejected: self.flags.rejected.load(Relaxed),
             server_resets: self.flags.server_resets.load(Relaxed),
+            paused: shared.paused,
         }
     }
 
@@ -683,6 +779,7 @@ struct Actor {
     nudge_rx: mpsc::Receiver<()>,
     probe_rx: mpsc::Receiver<()>,
     redial_rx: mpsc::Receiver<()>,
+    resume_rx: mpsc::Receiver<()>,
     presence_rx: mpsc::Receiver<(i64, Vec<u8>)>,
     flags: Arc<Flags>,
     /// Once-per-actor cursor amnesty (see run_session): a cursor above the
@@ -1035,26 +1132,38 @@ impl Actor {
                     }
                 }
             };
-            if let Err(err) = self.sink.apply_checkpoint(&bytes, state.checkpoint_seq) {
-                tracing::warn!(error = %err, "chat2: checkpoint import failed");
-                return SessionEnd::Reconnect;
+            match self.sink.apply_checkpoint(&bytes, state.checkpoint_seq) {
+                ApplyOutcome::Applied => {
+                    let mut shared = lock(&self.shared);
+                    shared.cursor = shared.cursor.max(state.checkpoint_seq);
+                    drop(shared);
+                    let _ = self.events.send(ChatEvent::Applied);
+                }
+                ApplyOutcome::StorageFailed | ApplyOutcome::PendingDependencies => {
+                    tracing::warn!("chat2: checkpoint import failed");
+                    return SessionEnd::Reconnect;
+                }
+                outcome => {
+                    // Unverifiable checkpoint: a redial would refetch the
+                    // same bytes forever. Pause instead; the host resolves
+                    // keys/policy and calls `resume`, which refetches.
+                    self.pause(outcome);
+                    lock(&self.shared).needs_checkpoint = true;
+                }
             }
-            let mut shared = lock(&self.shared);
-            shared.cursor = shared.cursor.max(state.checkpoint_seq);
-            drop(shared);
-            let _ = self.events.send(ChatEvent::Applied);
         }
         // A new full catch-up may resolve a prior causal gap. Imports below
         // re-arm repair if any history is still missing.
         {
             let mut shared = lock(&self.shared);
-            if shared.causal_gap_generation == repair_generation {
+            if shared.paused.is_none() && shared.causal_gap_generation == repair_generation {
                 shared.needs_checkpoint = false;
             }
         }
         // Frames buffered during the fetch replay first, then the live socket
         // finishes the backfill — one pass, same ROWS_DONE terminator either
-        // way.
+        // way. (While paused, rows are dropped by `handle_frame` and the
+        // server still terminates the backfill with ROWS_DONE.)
         let mut head_seq: Option<u64> = None;
         for frame in buffered.drain(..) {
             if head_seq.is_none() && frame.kind == frame_type::ROWS_DONE {
@@ -1167,6 +1276,18 @@ impl Actor {
                     tracing::info!("chat2: redial requested");
                     return SessionEnd::Reconnect;
                 }
+                _ = self.resume_rx.recv() => {
+                    let was_paused = lock(&self.shared).paused.take().is_some();
+                    if was_paused {
+                        tracing::info!("chat2: inbound application resumed; backfilling");
+                        let _ = self.events.send(ChatEvent::SyncResumed);
+                        lock(&self.shared).gap_repair = true;
+                        gap_repairs = 0;
+                        if !self.maybe_repair_gap(&mut pipe, &mut gap_repairs).await {
+                            return SessionEnd::Reconnect;
+                        }
+                    }
+                }
                 // Transient (quota) rejection: probe with the HEAD batch on
                 // a short clock (see `Shared::quota_blocked`); acks re-arm
                 // the clock so the queue drains one-per-grant.
@@ -1192,6 +1313,17 @@ impl Actor {
                     }
                 }
             }
+        }
+    }
+
+    /// Enter the paused state on a non-`Applied` outcome (idempotent).
+    fn pause(&self, outcome: ApplyOutcome) {
+        let mut shared = lock(&self.shared);
+        if shared.paused.is_none() {
+            shared.paused = Some(outcome);
+            drop(shared);
+            tracing::warn!(?outcome, "chat2: inbound application paused; cursor held");
+            let _ = self.events.send(ChatEvent::SyncPaused(outcome));
         }
     }
 
@@ -1261,7 +1393,11 @@ impl Actor {
                             if let (Some(b), Some(seq)) = (v["batchId"].as_str(), v["seq"].as_u64())
                             {
                                 let mut sh = lock(&shared);
+                                let retired = sh.pending.iter().any(|p| p.batch_id == b);
                                 sh.pending.retain(|p| p.batch_id != b);
+                                if retired {
+                                    sink.acknowledged(b);
+                                }
                                 // Contiguity rule (see handle_frame ACK): an
                                 // own-push ack proves the server has rows up
                                 // to `seq`, not that WE have the interleaved
@@ -1330,11 +1466,26 @@ impl Actor {
                             tokio::time::timeout(CHECKPOINT_FETCH_DEADLINE, fetcher.fetch()).await;
                         match fetched {
                             Ok(Ok(bytes)) => {
-                                if sink.apply_checkpoint(&bytes, state.checkpoint_seq).is_err() {
-                                    busy.store(false, Relaxed);
-                                    return;
+                                match sink.apply_checkpoint(&bytes, state.checkpoint_seq) {
+                                    ApplyOutcome::Applied => {
+                                        let mut sh = lock(&shared);
+                                        sh.cursor = sh.cursor.max(after);
+                                        drop(sh);
+                                        let _ = events.send(ChatEvent::Applied);
+                                    }
+                                    outcome => {
+                                        if outcome.pauses() {
+                                            let mut sh = lock(&shared);
+                                            if sh.paused.is_none() {
+                                                sh.paused = Some(outcome);
+                                                drop(sh);
+                                                let _ = events.send(ChatEvent::SyncPaused(outcome));
+                                            }
+                                        }
+                                        busy.store(false, Relaxed);
+                                        return;
+                                    }
                                 }
-                                let _ = events.send(ChatEvent::Applied);
                             }
                             _ => {
                                 busy.store(false, Relaxed);
@@ -1372,8 +1523,18 @@ impl Actor {
                         // contiguous — but hold the rule anyway: a jump
                         // (trimmed log, server surprise) must not stamp the
                         // cursor over rows the doc never saw.
-                        apply_remote_row(&shared, sink.as_ref(), &frame.payload, row.seq);
-                        applied = true;
+                        match apply_remote_row(&shared, sink.as_ref(), &frame.payload, row.seq) {
+                            ApplyOutcome::Applied => applied = true,
+                            outcome => {
+                                let mut sh = lock(&shared);
+                                if outcome.pauses() && sh.paused.is_none() {
+                                    sh.paused = Some(outcome);
+                                    drop(sh);
+                                    let _ = events.send(ChatEvent::SyncPaused(outcome));
+                                }
+                                break;
+                            }
+                        }
                     }
                     frame_type::ROWS_DONE => {}
                     _ => {}
@@ -1394,6 +1555,9 @@ impl Actor {
         const MAX_GAP_REPAIRS_PER_SESSION: u32 = 3;
         let (repair, after) = {
             let mut shared = lock(&self.shared);
+            if shared.paused.is_some() {
+                return true;
+            }
             if shared.needs_checkpoint {
                 // A row backfill cannot restore dependencies already trimmed
                 // into the checkpoint. Redial through the bounded backoff and
@@ -1465,15 +1629,31 @@ impl Actor {
                 // gap means rows we never received (live broadcast mid-join)
                 // — apply the bytes (loro parks dependents harmlessly), keep
                 // the honest cursor, and ask for a backfill repair.
-                apply_remote_row(&self.shared, self.sink.as_ref(), &frame.payload, row.seq);
-                let _ = self.events.send(ChatEvent::Applied);
+                if lock(&self.shared).paused.is_some() {
+                    return true; // above the honest cursor; refetched on resume
+                }
+                match apply_remote_row(&self.shared, self.sink.as_ref(), &frame.payload, row.seq) {
+                    ApplyOutcome::Applied => {
+                        let _ = self.events.send(ChatEvent::Applied);
+                    }
+                    outcome => {
+                        // The row did not land: the cursor may not claim it.
+                        if outcome.pauses() {
+                            self.pause(outcome);
+                        }
+                    }
+                }
             }
             frame_type::ACK => {
                 let Ok(ack) = serde_json::from_value::<wire::AckHeader>(frame.header) else {
                     return false;
                 };
                 let mut shared = lock(&self.shared);
+                let retired = shared.pending.iter().any(|p| p.batch_id == ack.batch_id);
                 shared.pending.retain(|p| p.batch_id != ack.batch_id);
+                if retired {
+                    self.sink.acknowledged(&ack.batch_id);
+                }
                 // Same contiguity rule as ROW: our own batch landing at
                 // `seq` proves rows up to seq exist server-side, not that we
                 // HAVE the interleaved ones from other devices.
@@ -1540,6 +1720,7 @@ impl Actor {
                                 "chat2: batch permanently rejected — retired \
                                  from the replay queue"
                             );
+                            self.sink.rejected(batch_id);
                             let _ = self.events.send(ChatEvent::PushRejected);
                         }
                     }

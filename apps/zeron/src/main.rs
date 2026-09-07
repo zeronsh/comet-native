@@ -5,6 +5,7 @@
 mod auth_cli;
 mod daemon;
 mod update_cli;
+mod vault_cli;
 
 use clap::{Parser, Subcommand};
 
@@ -42,6 +43,34 @@ enum Command {
         #[arg(long)]
         check: bool,
     },
+    /// End-to-end encrypted sync: status, setup, pairing, recovery
+    /// (docs/rfc-0001-encrypted-sync.txt). Talks to the running engine.
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum VaultCommand {
+    /// Show this device's vault state and the approved devices.
+    Status,
+    /// Create this account's vault with this device as its first member and
+    /// print the recovery kit (once).
+    Setup,
+    /// Ask an approved device to admit this one; prints the comparison code
+    /// and waits for the decision.
+    Pair,
+    /// List devices waiting for approval (with their comparison codes).
+    Requests,
+    /// Approve a waiting device. `code` is the code shown ON THAT DEVICE.
+    Approve { request_id: String, code: String },
+    /// Reject a waiting device.
+    Reject { request_id: String },
+    /// Remove a device and rotate the vault's keys.
+    Revoke { device_id: String },
+    /// Rejoin with the recovery key (argument, or stdin when omitted).
+    Recover { kit: Option<String> },
 }
 
 #[derive(Subcommand)]
@@ -188,6 +217,26 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Update { check }) => {
             let runtime = tokio::runtime::Runtime::new()?;
             runtime.block_on(update_cli::update(&edge_url_from_env(), check))
+        }
+        Some(Command::Vault { command }) => {
+            let runtime = tokio::runtime::Runtime::new()?;
+            let port = engine_config_from_env().ipc_port;
+            runtime.block_on(async move {
+                match command {
+                    VaultCommand::Status => vault_cli::status(port).await,
+                    VaultCommand::Setup => vault_cli::setup(port).await,
+                    VaultCommand::Pair => vault_cli::pair(port).await,
+                    VaultCommand::Requests => vault_cli::requests(port).await,
+                    VaultCommand::Approve { request_id, code } => {
+                        vault_cli::approve(port, &request_id, &code).await
+                    }
+                    VaultCommand::Reject { request_id } => {
+                        vault_cli::reject(port, &request_id).await
+                    }
+                    VaultCommand::Revoke { device_id } => vault_cli::revoke(port, &device_id).await,
+                    VaultCommand::Recover { kit } => vault_cli::recover(port, kit).await,
+                }
+            })
         }
         Some(Command::Daemon { command }) => match command {
             DaemonCommand::Install => daemon::install(&engine_config_from_env().data_dir),

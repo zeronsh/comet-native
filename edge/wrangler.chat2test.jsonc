@@ -17,13 +17,15 @@
       { "name": "SESSION_ROOMS", "class_name": "SessionRoom" },
       { "name": "DEVICE_ROOMS", "class_name": "DeviceRoom" },
       { "name": "REGISTRY_ROOMS", "class_name": "RegistryRoom" },
-      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" }
+      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" },
+      { "name": "VAULT_ROOMS", "class_name": "VaultRoom" }
     ]
   },
   "migrations": [
     { "tag": "v1", "new_sqlite_classes": ["SessionRoom", "DeviceRoom"] },
     { "tag": "v2", "new_sqlite_classes": ["RegistryRoom"] },
-    { "tag": "v3", "new_sqlite_classes": ["ChatRoom"] }
+    { "tag": "v3", "new_sqlite_classes": ["ChatRoom"] },
+    { "tag": "v4", "new_sqlite_classes": ["VaultRoom"] }
   ],
   "r2_buckets": [
     { "binding": "BLOBS", "bucket_name": "comet-native-blobs-chat2test" },

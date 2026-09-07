@@ -7,26 +7,194 @@
 //! the room cursor in one `save_snapshot_with_cursor` transaction, so a
 //! restored backup can never disagree with its own cursor — the root cause
 //! of the redownload-forever class the old s2 clients suffered.
+//!
+//! Encrypted profiles (RFC 0001 §8) add a [`ChatCodec`] in front of every
+//! import and behind every export: rows, checkpoints, and frontiers are
+//! signed+sealed content records opened against the vault's pinned
+//! membership before Loro sees a byte, and local updates are sealed once
+//! into the durable outbox (`DocsStore::persist_encrypted_batch`) before any
+//! transport carries them. There is no plaintext fallback: an encrypted
+//! room whose keys are missing pauses, it never downgrades.
 
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
+use zeron_crypto::content::{self, ContentPurpose};
+use zeron_crypto::record::{RecordError, UnverifiedRecord};
 use zeron_doc::SessionDoc;
-use zeron_sync::chat_client::{ChatDocSink, CheckpointFetcher, RowImportOutcome};
-use zeron_sync::{DocsStore, SyncError};
+use zeron_sync::chat_client::{ApplyOutcome, ChatDocSink, CheckpointFetcher, MAX_PUSH_BYTES};
+use zeron_sync::{DocsStore, PendingEncryptedBatch, SyncError};
 
+use crate::EngineError;
 use crate::doc_host::EdgeConfig;
+use crate::vault::{OpenFailure, VaultService};
 
 /// Doc epoch stamped on every chat2-synced snapshot (docs/chat2-sync.md M1:
 /// thin docs are lineage epoch 2; M3 readers discard-and-adopt below it).
 pub const CHAT2_DOC_EPOCH: u32 = 2;
+/// Doc epoch of a snapshot whose cursor belongs to the ENCRYPTED room
+/// (RFC 0001 §12: a fresh storage generation per encrypted profile). A
+/// stored cursor from a lower epoch names the plaintext room and is not
+/// carried over.
+pub const CHAT2_ENCRYPTED_DOC_EPOCH: u32 = 3;
+/// Content bytes a sealed row may carry: the transport cap minus the signed
+/// wrapper + encrypted-payload overhead (`content::PAYLOAD_OVERHEAD` 144 +
+/// `record::MAX_OVERHEAD` 256), rounded down for headroom.
+pub const MAX_SEALED_UPDATE_BYTES: usize = MAX_PUSH_BYTES - 512;
+/// Sealed frontier budget (a Loro version vector is small; this is a bound,
+/// not a target).
+const MAX_FRONTIER_BYTES: usize = 64 * 1024;
+
+/// The room an encrypted profile's chat lives in: a distinct namespace from
+/// the plaintext room so ciphertext and legacy rows never share a log, and
+/// so the plaintext copy is retained (never silently deleted) for the
+/// separate cleanup step. Stays within the edge's `[A-Za-z0-9_-]{1,128}`.
+pub fn encrypted_room_id(chat_id: &str) -> String {
+    const SUFFIX: &str = "-e1";
+    if chat_id.len() + SUFFIX.len() <= 128 {
+        format!("{chat_id}{SUFFIX}")
+    } else {
+        let digest = zeron_crypto::sha256(&[b"zeron/encrypted-room/v1\0", chat_id.as_bytes()]);
+        let hex: String = digest[..20].iter().map(|b| format!("{b:02x}")).collect();
+        format!("e1-{hex}")
+    }
+}
+
+/// Seal/open boundary for one chat object (RFC 0001 §7.7, §8).
+#[derive(Clone)]
+pub struct ChatCodec {
+    vault: VaultService,
+    object_id: [u8; 16],
+}
+
+impl ChatCodec {
+    pub fn new(vault: VaultService, chat_id: &str) -> Self {
+        Self {
+            object_id: crate::vault::object_id_for("chat", chat_id),
+            vault,
+        }
+    }
+
+    pub fn object_id(&self) -> [u8; 16] {
+        self.object_id
+    }
+
+    pub fn vault(&self) -> &VaultService {
+        &self.vault
+    }
+
+    /// Seal `plaintext` under the current epoch (publishing this object's
+    /// key first when needed). Sealing is async because the object key may
+    /// have to become durable on the control plane before first use.
+    pub async fn seal(
+        &self,
+        purpose: ContentPurpose,
+        plaintext: &[u8],
+        max_plaintext_bytes: usize,
+    ) -> Result<content::SealedContent, EngineError> {
+        let material = self.vault.seal_material(self.object_id).await?;
+        content::seal(
+            &material.binding,
+            purpose,
+            &material.key,
+            &material.signer,
+            plaintext,
+            max_plaintext_bytes,
+        )
+        .map_err(|e| EngineError::Other(format!("seal: {e}")))
+    }
+
+    /// Open a record with cached keys only. `Err(outcome)` is the explicit
+    /// verified result for the cursor; `KeyUnavailable` also kicks a
+    /// background key refresh so the host can `resume` afterwards.
+    pub fn open(
+        &self,
+        purpose: ContentPurpose,
+        encoded: &[u8],
+        max_plaintext_bytes: usize,
+    ) -> Result<Vec<u8>, ApplyOutcome> {
+        let payload_limit = max_plaintext_bytes.saturating_add(144);
+        let parsed = UnverifiedRecord::parse(encoded, payload_limit).map_err(|err| match err {
+            RecordError::UnsupportedVersion | RecordError::UnsupportedKind => {
+                ApplyOutcome::Unsupported
+            }
+            _ => ApplyOutcome::AuthenticationFailed,
+        })?;
+        let binding = *parsed.untrusted_binding();
+        let context = self
+            .vault
+            .open_material_cached(self.object_id, &binding)
+            .map_err(|failure| match failure {
+                OpenFailure::Unavailable | OpenFailure::KeyUnavailable => {
+                    self.vault.spawn_key_refresh(self.object_id);
+                    ApplyOutcome::KeyUnavailable
+                }
+                OpenFailure::NotAuthorized => ApplyOutcome::AuthenticationFailed,
+            })?;
+        let opened = content::open(
+            encoded,
+            &context.binding,
+            purpose,
+            &context.key,
+            &context.author_public_key,
+            max_plaintext_bytes,
+        )
+        .map_err(|err| match err {
+            content::ContentError::UnsupportedFormat
+            | content::ContentError::UnsupportedSuite
+            | content::ContentError::UnsupportedPurpose => ApplyOutcome::Unsupported,
+            _ => ApplyOutcome::AuthenticationFailed,
+        })?;
+        Ok(opened.plaintext().as_bytes().to_vec())
+    }
+}
+
+impl ChatCodec {
+    /// Open with a network fetch of missing object keys (for on-demand
+    /// reads outside the cursor path, e.g. blob display).
+    pub async fn open_async(
+        &self,
+        purpose: ContentPurpose,
+        encoded: &[u8],
+        max_plaintext_bytes: usize,
+    ) -> Result<Vec<u8>, ApplyOutcome> {
+        let payload_limit = max_plaintext_bytes.saturating_add(144);
+        let parsed = UnverifiedRecord::parse(encoded, payload_limit)
+            .map_err(|_| ApplyOutcome::AuthenticationFailed)?;
+        let binding = *parsed.untrusted_binding();
+        let context = self
+            .vault
+            .open_material(self.object_id, &binding)
+            .await
+            .map_err(|failure| match failure {
+                OpenFailure::Unavailable | OpenFailure::KeyUnavailable => {
+                    ApplyOutcome::KeyUnavailable
+                }
+                OpenFailure::NotAuthorized => ApplyOutcome::AuthenticationFailed,
+            })?;
+        content::open(
+            encoded,
+            &context.binding,
+            purpose,
+            &context.key,
+            &context.author_public_key,
+            max_plaintext_bytes,
+        )
+        .map(|opened| opened.plaintext().as_bytes().to_vec())
+        .map_err(|_| ApplyOutcome::AuthenticationFailed)
+    }
+}
+
+type ResumeHook = Arc<dyn Fn() + Send + Sync>;
 
 /// [`ChatDocSink`] over a live [`SessionDoc`] + the cursor-bearing store.
 ///
 /// Loro import of a remote row/checkpoint fires the doc's root subscription,
 /// so the transcript watch, command drain, and debounced UI publish all ride
 /// the existing change plumbing — this type only owns import + same-tx
-/// persistence.
+/// persistence (and, for encrypted rooms, the seal/open boundary).
 pub struct EngineChatSink {
     /// WEAK: the sink lives inside the handle's `ChatClient` for the
     /// client's whole life — a strong ref here kept
@@ -37,6 +205,16 @@ pub struct EngineChatSink {
     doc: std::sync::Weak<SessionDoc>,
     store: Arc<DocsStore>,
     chat_id: String,
+    codec: Option<ChatCodec>,
+    doc_epoch: u32,
+    /// Last cursor this sink persisted (the outbox commit reuses it so a
+    /// sealed batch's snapshot never regresses the verified cursor).
+    last_cursor: AtomicU64,
+    /// Outbox receipts by wire batch id, retired on ack/permanent rejection.
+    outbox: Mutex<HashMap<String, PendingEncryptedBatch>>,
+    /// Installed once the client exists: called when keys arrive so the
+    /// paused client backfills from its honest cursor.
+    resume: Mutex<Option<ResumeHook>>,
 }
 
 impl EngineChatSink {
@@ -45,13 +223,58 @@ impl EngineChatSink {
             doc: Arc::downgrade(doc),
             store,
             chat_id: chat_id.into(),
+            codec: None,
+            doc_epoch: CHAT2_DOC_EPOCH,
+            last_cursor: AtomicU64::new(0),
+            outbox: Mutex::new(HashMap::new()),
+            resume: Mutex::new(None),
+        }
+    }
+
+    /// An encrypted-room sink: every import opens through `codec`, every
+    /// export seals through it, and snapshots carry the encrypted epoch.
+    pub fn encrypted(
+        doc: &Arc<SessionDoc>,
+        store: Arc<DocsStore>,
+        chat_id: impl Into<String>,
+        codec: ChatCodec,
+        initial_cursor: u64,
+    ) -> Self {
+        Self {
+            doc: Arc::downgrade(doc),
+            store,
+            chat_id: chat_id.into(),
+            codec: Some(codec),
+            doc_epoch: CHAT2_ENCRYPTED_DOC_EPOCH,
+            last_cursor: AtomicU64::new(initial_cursor),
+            outbox: Mutex::new(HashMap::new()),
+            resume: Mutex::new(None),
+        }
+    }
+
+    pub fn codec(&self) -> Option<&ChatCodec> {
+        self.codec.as_ref()
+    }
+
+    pub fn doc_epoch(&self) -> u32 {
+        self.doc_epoch
+    }
+
+    pub fn set_resume_hook(&self, hook: ResumeHook) {
+        *lock(&self.resume) = Some(hook);
+    }
+
+    /// Invoke the resume hook (the host saw keys/policy arrive).
+    pub fn resume(&self) {
+        if let Some(hook) = lock(&self.resume).clone() {
+            hook();
         }
     }
 
     /// Export the CURRENT doc and persist it with `cursor` in one tx.
-    fn persist_with_cursor(&self, cursor: u64) {
+    fn persist_with_cursor(&self, cursor: u64) -> Result<(), ()> {
         let Some(doc) = self.doc.upgrade() else {
-            return;
+            return Ok(());
         };
         match doc.export_snapshot() {
             Ok(bytes) => {
@@ -59,26 +282,185 @@ impl EngineChatSink {
                     &self.chat_id,
                     &bytes,
                     cursor,
-                    CHAT2_DOC_EPOCH,
+                    self.doc_epoch,
                 ) {
                     tracing::warn!(chat = %self.chat_id, error = %err,
-                        "chat2 sink: snapshot persist failed (will retry on next change)");
+                        "chat2 sink: snapshot persist failed (cursor held; will retry)");
+                    return Err(());
                 }
+                self.last_cursor.fetch_max(cursor, Ordering::Relaxed);
+                Ok(())
             }
             Err(err) => {
                 tracing::warn!(chat = %self.chat_id, error = %err,
                     "chat2 sink: snapshot export failed");
+                Err(())
+            }
+        }
+    }
+
+    /// Row bytes as Loro sees them: plaintext rooms pass through; encrypted
+    /// rooms open (or report why they cannot).
+    fn open_update(&self, bytes: &[u8]) -> Result<Vec<u8>, ApplyOutcome> {
+        match &self.codec {
+            None => Ok(bytes.to_vec()),
+            Some(codec) => codec.open(ContentPurpose::ChatUpdate, bytes, MAX_SEALED_UPDATE_BYTES),
+        }
+    }
+
+    // ── encrypted outbox ─────────────────────────────────────────────────────
+
+    /// Seal one local update and commit it (with the current snapshot and
+    /// verified cursor) to the durable outbox. Returns the wire batch id and
+    /// the immutable bytes to enqueue; retries must use exactly these.
+    pub async fn seal_and_queue(&self, plaintext: &[u8]) -> Result<(String, Vec<u8>), EngineError> {
+        let codec = self
+            .codec
+            .as_ref()
+            .ok_or_else(|| EngineError::Other("plaintext room has no outbox".into()))?;
+        if plaintext.len() > MAX_SEALED_UPDATE_BYTES {
+            return Err(EngineError::Other(format!(
+                "update of {} bytes exceeds the sealed row budget",
+                plaintext.len()
+            )));
+        }
+        let sealed = codec
+            .seal(
+                ContentPurpose::ChatUpdate,
+                plaintext,
+                MAX_SEALED_UPDATE_BYTES,
+            )
+            .await?;
+        let doc = self
+            .doc
+            .upgrade()
+            .ok_or_else(|| EngineError::Other("doc evicted".into()))?;
+        let snapshot = doc
+            .export_snapshot()
+            .map_err(|e| EngineError::Other(format!("snapshot export: {e}")))?;
+        let cursor = self.last_cursor.load(Ordering::Relaxed);
+        let receipt = self.store.persist_encrypted_batch(
+            &self.chat_id,
+            &snapshot,
+            cursor,
+            self.doc_epoch,
+            &sealed,
+            zeron_sync::MAX_ENCRYPTED_OUTBOX_BYTES,
+        )?;
+        let batch_id = batch_id_of(receipt.revision_id());
+        let bytes = receipt.encoded().to_vec();
+        lock(&self.outbox).insert(batch_id.clone(), receipt);
+        Ok((batch_id, bytes))
+    }
+
+    /// Every durable batch for this doc, ready to enqueue. Batches sealed
+    /// under a superseded policy/epoch are re-sealed under the current one
+    /// first (RFC 0001 §11: refresh policy, THEN re-encrypt queued work) and
+    /// the stale copy is retired; nothing is ever dropped silently.
+    pub async fn replay_outbox(&self) -> Vec<(String, Vec<u8>)> {
+        let Some(codec) = self.codec.as_ref() else {
+            return Vec::new();
+        };
+        let (Some(author), Some(public_key)) = (
+            codec.vault().device_id(),
+            codec.vault().signing_public_key(),
+        ) else {
+            return Vec::new();
+        };
+        let current = codec.vault().current_content_binding(codec.object_id());
+        let pending = match self.store.pending_encrypted_batches_for_doc(
+            &self.chat_id,
+            &author,
+            &public_key,
+            128,
+        ) {
+            Ok(pending) => pending,
+            Err(err) => {
+                tracing::warn!(chat = %self.chat_id, error = %err,
+                    "chat2 outbox: replay read failed; batches retained");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::with_capacity(pending.len());
+        for batch in pending {
+            let batch_id = batch_id_of(batch.revision_id());
+            if Some(*batch.binding()) == current {
+                out.push((batch_id.clone(), batch.encoded().to_vec()));
+                lock(&self.outbox).insert(batch_id, batch);
+                continue;
+            }
+            // Stale policy: open our own record with historical keys and
+            // seal it again under the current head. Failure keeps the old
+            // batch in the outbox for a later attempt.
+            let plaintext = match codec.open(
+                ContentPurpose::ChatUpdate,
+                batch.encoded(),
+                MAX_SEALED_UPDATE_BYTES,
+            ) {
+                Ok(plaintext) => plaintext,
+                Err(outcome) => {
+                    tracing::warn!(chat = %self.chat_id, ?outcome,
+                        "chat2 outbox: stale batch cannot be re-sealed yet; retained");
+                    continue;
+                }
+            };
+            match self.seal_and_queue(&plaintext).await {
+                Ok((new_id, bytes)) => {
+                    if let Err(err) = self.store.acknowledge_encrypted_batch(&batch) {
+                        tracing::warn!(chat = %self.chat_id, error = %err,
+                            "chat2 outbox: stale batch retire failed");
+                    }
+                    tracing::info!(chat = %self.chat_id, "chat2 outbox: re-sealed a stale batch");
+                    out.push((new_id, bytes));
+                }
+                Err(err) => {
+                    tracing::warn!(chat = %self.chat_id, error = %err,
+                        "chat2 outbox: re-seal failed; batch retained");
+                }
+            }
+        }
+        out
+    }
+
+    fn retire(&self, batch_id: &str) {
+        let receipt = lock(&self.outbox).remove(batch_id);
+        if let Some(receipt) = receipt {
+            match self.store.acknowledge_encrypted_batch(&receipt) {
+                Ok(true) => {}
+                Ok(false) => tracing::debug!(chat = %self.chat_id, batch_id,
+                    "chat2 outbox: batch already retired"),
+                Err(err) => tracing::warn!(chat = %self.chat_id, batch_id, error = %err,
+                    "chat2 outbox: retire failed (will be replayed and deduped)"),
             }
         }
     }
 }
 
+/// Wire batch id of a sealed record: its immutable revision id, hex.
+pub fn batch_id_of(revision_id: &[u8; 16]) -> String {
+    revision_id.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 impl ChatDocSink for EngineChatSink {
-    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome {
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome {
         let Some(doc) = self.doc.upgrade() else {
-            return RowImportOutcome::Applied;
+            return ApplyOutcome::Applied;
         };
-        match doc.doc().import(bytes) {
+        let update = match self.open_update(bytes) {
+            Ok(update) => update,
+            Err(outcome) => {
+                tracing::warn!(chat = %self.chat_id, ?outcome, cursor,
+                    "chat2 sink: row not opened; cursor held");
+                return outcome;
+            }
+        };
+        match doc.doc().import(&update) {
             Ok(status) => {
                 if status.pending.is_some() {
                     // Room sequence contiguity does not prove causal history
@@ -86,37 +468,78 @@ impl ChatDocSink for EngineChatSink {
                     // advancing its cursor would lose them after restart.
                     tracing::warn!(chat = %self.chat_id, cursor,
                         "chat2 sink: row parked on missing deps; requesting repair");
-                    return RowImportOutcome::PendingDependencies;
+                    return ApplyOutcome::PendingDependencies;
                 }
             }
             Err(err) => {
-                // Malformed remote bytes cost the row, never the doc (the same
-                // skip-not-fail rule as transcript reads). The cursor still
-                // advances: replaying a poison row forever is the wedge class.
+                // Malformed (but, for encrypted rooms, AUTHENTICATED) update
+                // bytes cost the row, never the doc — the same skip-not-fail
+                // rule as transcript reads. The cursor still advances:
+                // replaying a poison row forever is the wedge class.
                 tracing::warn!(chat = %self.chat_id, error = %err,
                     "chat2 sink: row import failed; skipping row");
             }
         }
-        self.persist_with_cursor(cursor);
-        RowImportOutcome::Applied
+        match self.persist_with_cursor(cursor) {
+            Ok(()) => ApplyOutcome::Applied,
+            Err(()) => ApplyOutcome::StorageFailed,
+        }
     }
 
-    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String> {
-        let doc = self.doc.upgrade().ok_or("doc evicted")?;
-        let status = doc
-            .doc()
-            .import(bytes)
-            .map_err(|e| format!("checkpoint import: {e}"))?;
-        if status.pending.is_some() {
-            return Err("checkpoint is missing causal dependencies".into());
+    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome {
+        let Some(doc) = self.doc.upgrade() else {
+            return ApplyOutcome::StorageFailed;
+        };
+        let snapshot = match &self.codec {
+            None => bytes.to_vec(),
+            Some(codec) => match codec.open(
+                ContentPurpose::Checkpoint,
+                bytes,
+                content::MAX_PLAINTEXT_BYTES,
+            ) {
+                Ok(snapshot) => snapshot,
+                Err(outcome) => {
+                    tracing::warn!(chat = %self.chat_id, ?outcome,
+                        "chat2 sink: checkpoint not opened; cursor held");
+                    return outcome;
+                }
+            },
+        };
+        match doc.doc().import(&snapshot) {
+            Ok(status) if status.pending.is_some() => return ApplyOutcome::PendingDependencies,
+            Ok(_) => {}
+            Err(err) => {
+                tracing::warn!(chat = %self.chat_id, error = %err, "chat2 sink: checkpoint import failed");
+                return ApplyOutcome::StorageFailed;
+            }
         }
-        self.persist_with_cursor(cursor);
-        Ok(())
+        match self.persist_with_cursor(cursor) {
+            Ok(()) => ApplyOutcome::Applied,
+            Err(()) => ApplyOutcome::StorageFailed,
+        }
     }
 
     fn contains_frontier(&self, frontier: &[u8]) -> bool {
         let Some(doc) = self.doc.upgrade() else {
             return true; // evicted: claim contained so the client idles, not refetches
+        };
+        // Encrypted rooms: an unopenable frontier is NOT contained (fetch),
+        // never "already have it" (RFC 0001 §8).
+        let opened;
+        let frontier = match &self.codec {
+            None => frontier,
+            Some(codec) => match codec.open(ContentPurpose::Frontier, frontier, MAX_FRONTIER_BYTES)
+            {
+                Ok(bytes) => {
+                    opened = bytes;
+                    &opened
+                }
+                Err(outcome) => {
+                    tracing::info!(chat = %self.chat_id, ?outcome,
+                        "chat2 frontier not opened; fetching checkpoint");
+                    return false;
+                }
+            },
         };
         // NOTE deliberately no empty-frontier shortcut: an empty payload on
         // a PRESENT checkpoint is unreadable provenance, not proof there is
@@ -150,26 +573,36 @@ impl ChatDocSink for EngineChatSink {
     }
 
     fn advance_cursor(&self, cursor: u64) {
-        self.persist_with_cursor(cursor);
+        let _ = self.persist_with_cursor(cursor);
+    }
+
+    fn acknowledged(&self, batch_id: &str) {
+        self.retire(batch_id);
+    }
+
+    fn rejected(&self, batch_id: &str) {
+        // The ops stay in the local doc and reach peers via the next
+        // checkpoint; the immutable ciphertext has no further use.
+        self.retire(batch_id);
     }
 }
 
-/// `GET /chat2/{chatId}/checkpoint` with Range resume — the fetcher half of
+/// `GET /chat2/{room}/checkpoint` with Range resume — the fetcher half of
 /// the C1 client contract. Partial downloads resume at the byte offset where
 /// the previous attempt died (the DO serves 206), which is the entire point
 /// of checkpoint-over-HTTP on the 1.2 Mbps links this design targets.
 pub struct EdgeCheckpointFetcher {
     http: reqwest::Client,
     edge: EdgeConfig,
-    chat_id: String,
+    room_id: String,
 }
 
 impl EdgeCheckpointFetcher {
-    pub fn new(http: reqwest::Client, edge: EdgeConfig, chat_id: impl Into<String>) -> Self {
+    pub fn new(http: reqwest::Client, edge: EdgeConfig, room_id: impl Into<String>) -> Self {
         Self {
             http,
             edge,
-            chat_id: chat_id.into(),
+            room_id: room_id.into(),
         }
     }
 }
@@ -181,7 +614,7 @@ impl CheckpointFetcher for EdgeCheckpointFetcher {
         let url = format!(
             "{}/chat2/{}/checkpoint",
             edge.url.trim_end_matches('/'),
-            self.chat_id
+            self.room_id
         );
         Box::pin(async move {
             let mut got: Vec<u8> = Vec::new();
@@ -209,7 +642,9 @@ impl CheckpointFetcher for EdgeCheckpointFetcher {
                 // attempts, and a Range against it would splice two different
                 // blobs (the import fails and burns a whole redial cycle).
                 // The DO stamps every response with the checkpoint's seq —
-                // on change, restart the download from byte 0.
+                // on change, restart the download from byte 0. (Encrypted
+                // checkpoints additionally authenticate the whole object
+                // before import, so a splice can never materialize.)
                 let seq = res
                     .headers()
                     .get("x-chat2-checkpoint-seq")
@@ -256,11 +691,11 @@ impl CheckpointFetcher for EdgeCheckpointFetcher {
 }
 
 /// Plain-HTTPS chat pull/push (the airplane-wifi transport): GET/POST
-/// `/chat2/{id}/rows` with the same bearer auth the checkpoint fetcher uses.
+/// `/chat2/{room}/rows` with the same bearer auth the checkpoint fetcher uses.
 pub struct EdgeChatTransport {
     http: reqwest::Client,
     edge: EdgeConfig,
-    chat_id: String,
+    room_id: String,
     device_id: String,
 }
 
@@ -268,13 +703,13 @@ impl EdgeChatTransport {
     pub fn new(
         http: reqwest::Client,
         edge: EdgeConfig,
-        chat_id: impl Into<String>,
+        room_id: impl Into<String>,
         device_id: impl Into<String>,
     ) -> Self {
         Self {
             http,
             edge,
-            chat_id: chat_id.into(),
+            room_id: room_id.into(),
             device_id: device_id.into(),
         }
     }
@@ -283,7 +718,7 @@ impl EdgeChatTransport {
         format!(
             "{}/chat2/{}/rows",
             self.edge.url.trim_end_matches('/'),
-            self.chat_id
+            self.room_id
         )
     }
 }
@@ -403,6 +838,17 @@ mod frontier_tests {
         assert!(sink.contains_frontier(&vv));
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn encrypted_room_ids_stay_within_the_edge_id_grammar() {
+        assert_eq!(encrypted_room_id("chat-1"), "chat-1-e1");
+        let long = "x".repeat(130);
+        let id = encrypted_room_id(&long);
+        assert!(id.len() <= 128);
+        assert!(id.starts_with("e1-"));
+        assert_eq!(id, encrypted_room_id(&long));
+        assert_ne!(id, encrypted_room_id(&"y".repeat(130)));
+    }
 }
 
 #[cfg(test)]
@@ -429,15 +875,12 @@ mod tests {
         let target = Arc::new(SessionDoc::from_doc(loro::LoroDoc::new()));
         let sink = EngineChatSink::new(&target, store.clone(), "chat");
         sink.persist_with_cursor(0);
-        assert_eq!(
-            sink.apply_row(&row, 1),
-            RowImportOutcome::PendingDependencies
-        );
+        assert_eq!(sink.apply_row(&row, 1), ApplyOutcome::PendingDependencies);
         let (_, cursor, _) = store.load_snapshot_with_cursor("chat").unwrap().unwrap();
         assert_eq!(cursor, 0, "a restart must retry the invisible update");
 
         sink.apply_checkpoint(&checkpoint, 0).unwrap();
-        assert_eq!(sink.apply_row(&row, 1), RowImportOutcome::Applied);
+        assert_eq!(sink.apply_row(&row, 1), ApplyOutcome::Applied);
         let (snapshot, cursor, _) = store.load_snapshot_with_cursor("chat").unwrap().unwrap();
         assert_eq!(cursor, 1);
         let restored = loro::LoroDoc::new();

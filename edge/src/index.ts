@@ -35,6 +35,7 @@
  *   GET|PUT  /chat2/:chatId/diff
  *   GET  /chat2/:chatId/stats
  *   POST /chat2/:chatId/reset
+ *   ANY  /vault/:orgId/*              — encrypted-sync control plane `vault1/{orgId}/{user}`
  */
 import { authenticate } from "./auth";
 import { handleAuthRoute } from "./auth-routes";
@@ -43,9 +44,10 @@ import { SessionRoom } from "./session-room";
 import { DeviceRoom } from "./device-room";
 import { RegistryRoom } from "./registry-room";
 import { ChatRoom } from "./chat-room";
+import { VaultRoom } from "./vault-room";
 import installSh from "./install.sh";
 
-export { SessionRoom, DeviceRoom, RegistryRoom, ChatRoom };
+export { SessionRoom, DeviceRoom, RegistryRoom, ChatRoom, VaultRoom };
 
 const ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -337,6 +339,22 @@ export default {
       if (parts[2] === "reset" && request.method === "POST") {
         return forward(env.REGISTRY_ROOMS, room, request, auth.userId, "/reset", "");
       }
+    }
+
+    // ── vault control plane (RFC 0001 §6): per-(org, user) like the
+    //    registry — org claim must match, room derived from the caller's OWN
+    //    user id. The DO validates every sub-path and authenticates every
+    //    write cryptographically; the bearer only proves account identity.
+    //    `vault1` = first control-plane generation. ────────────────────────
+    if (parts[0] === "vault" && parts[1] && ID_RE.test(parts[1])) {
+      const orgId = parts[1];
+      if (auth.orgId !== orgId) return json({ error: "forbidden" }, 403);
+      const room = `vault1/${orgId}/${auth.userId}`;
+      const sub = parts.slice(2);
+      if (sub.length > 3 || !sub.every((segment) => /^[A-Za-z0-9]{1,64}$/.test(segment))) {
+        return json({ error: "not found" }, 404);
+      }
+      return forward(env.VAULT_ROOMS, room, request, auth.userId, `/${sub.join("/")}`, url.search);
     }
 
     // ── device rooms ────────────────────────────────────────────────────────

@@ -34,6 +34,7 @@ pub mod spaces;
 pub mod terminals;
 pub mod titles;
 pub mod uploads;
+pub mod vault;
 pub mod workspace_host;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
@@ -129,6 +130,8 @@ pub struct EngineCore {
     pub device_id: String,
     /// Local→synced profile import (account-scoped runtimes only).
     pub local_import: Option<local_import::LocalImporter>,
+    /// Encrypted-sync vault for this profile (unavailable on local scope).
+    pub vault: vault::VaultService,
     workspace_scope: WorkspaceScope,
     /// Auth service (attached by [`Engine::run`]; a lazy dev-mode instance otherwise).
     auth: std::sync::Mutex<Option<Auth>>,
@@ -228,6 +231,37 @@ impl EngineCore {
                 edge: edge.clone(),
             },
         )?;
+        // Encrypted-sync vault: device identity + keyring under the profile
+        // store, edge control-plane client only for account-scoped runtimes
+        // with an edge. Opening never fails the boot: a locked secure store
+        // is a reported state, not an error.
+        let vault = {
+            let client = edge
+                .as_ref()
+                .filter(|_| profile.scope() != WorkspaceScope::Local)
+                .map(|edge| {
+                    vault::client::VaultClient::new(
+                        reqwest::Client::builder()
+                            .timeout(std::time::Duration::from_secs(30))
+                            .build()
+                            .unwrap_or_default(),
+                        edge.clone(),
+                        profile.org_id(),
+                    )
+                });
+            let protection: Box<dyn vault::ProtectionKeyProvider> = if client.is_some() {
+                vault::platform_protection()
+            } else {
+                Box::new(vault::LockedProtection("local profile".into()))
+            };
+            let store = vault::VaultStore::new(
+                profile.store_root(),
+                format!("{}/{}", profile.org_id(), profile.user_id()),
+                protection,
+            );
+            vault::VaultService::open(store, client, profile.org_id(), profile.user_id())
+        };
+        doc_host.set_vault(vault.clone());
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());
@@ -276,6 +310,7 @@ impl EngineCore {
             repos.clone(),
         ));
         let diff_sync = CheckoutDiffSync::start(repos.clone(), workspace.clone(), &device_id, edge);
+        diff_sync.set_vault(vault.clone());
         // Turn starts snapshot the checkout tree — the "Latest turn" diff base.
         let turn_diff = diff_sync.clone();
         sessions.set_turn_listener(Arc::new(move |chat_id, cwd| {
@@ -296,6 +331,7 @@ impl EngineCore {
             agent_accounts,
             device_id,
             local_import,
+            vault,
             workspace_scope: profile.scope(),
             auth: std::sync::Mutex::new(None),
             links: std::sync::Mutex::new(None),
@@ -435,6 +471,7 @@ impl EngineCore {
         if let Some(importer) = self.local_import.clone() {
             rpc = rpc.with_local_import(importer);
         }
+        rpc = rpc.with_vault(self.vault.clone());
         Arc::new(rpc)
     }
 

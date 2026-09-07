@@ -54,26 +54,32 @@ struct RecordingSink {
     /// Global apply order across rows and checkpoints — the overlap test
     /// pins "checkpoint imports before any row that buffered during it".
     ops: Mutex<Vec<String>>,
+    /// Outcome every `apply_row` answers (default `Applied`).
+    row_outcome: Mutex<ApplyOutcome>,
+    acked: Mutex<Vec<String>>,
 }
 
 impl ChatDocSink for RecordingSink {
-    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome {
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome {
         if self
             .pending_until_checkpoint
             .load(std::sync::atomic::Ordering::Relaxed)
         {
-            return RowImportOutcome::PendingDependencies;
+            return ApplyOutcome::PendingDependencies;
         }
         lock(&self.rows).push((bytes.to_vec(), cursor));
         lock(&self.ops).push(format!("row@{cursor}"));
-        RowImportOutcome::Applied
+        *lock(&self.row_outcome)
     }
-    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String> {
+    fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> ApplyOutcome {
         self.pending_until_checkpoint
             .store(false, std::sync::atomic::Ordering::Relaxed);
         lock(&self.checkpoints).push((bytes.to_vec(), cursor));
         lock(&self.ops).push(format!("ckpt@{cursor}"));
-        Ok(())
+        ApplyOutcome::Applied
+    }
+    fn acknowledged(&self, batch_id: &str) {
+        lock(&self.acked).push(batch_id.to_string());
     }
     fn contains_frontier(&self, _frontier: &[u8]) -> bool {
         self.frontier_contained
@@ -1530,4 +1536,148 @@ async fn http_catchup_crosses_a_contained_checkpoint_and_repairs_causal_gaps() {
         }
         client.shutdown().await;
     }
+}
+
+// ── verified apply outcomes (RFC 0001 §8) ───────────────────────────────────
+
+/// A row the sink cannot verify/open must NOT advance the cursor: the
+/// session pauses (no redial loop), later rows are dropped above the honest
+/// cursor, and `resume` backfills from that cursor once the host fixed keys.
+#[tokio::test(start_paused = true)]
+async fn unverifiable_row_holds_cursor_pauses_and_resume_backfills() {
+    let (pipe, mut end) = pipe_pair();
+    let sink = Arc::new(RecordingSink::default());
+    *lock(&sink.row_outcome) = ApplyOutcome::KeyUnavailable;
+    let (fetch, _) = fetcher(b"");
+    let rows = vec![(1, "dev-b", vec![0xaa]), (2, "dev-b", vec![0xbb])];
+    let rows_again = rows.clone();
+
+    let server = tokio::spawn(async move {
+        serve_join(
+            &mut end,
+            serde_json::json!({"headSeq": 2, "seqFloor": 0, "checkpointSeq": 0,
+                "checkpointSize": 0, "rowCount": 2, "rowBytes": 64}),
+            &[],
+            rows,
+            false,
+        )
+        .await;
+        // The resume backfill: a rowsReq from the honest cursor (0).
+        let req = expect_kind(&mut end, frame_type::ROWS_REQ).await;
+        assert_eq!(req.header["after"], 0);
+        for (seq, device, bytes) in rows_again {
+            send(
+                &end,
+                frame_type::ROW,
+                serde_json::json!({"seq": seq, "device": device, "batchId": format!("b{seq}")}),
+                &bytes,
+            )
+            .await;
+        }
+        send(
+            &end,
+            frame_type::ROWS_DONE,
+            serde_json::json!({"headSeq": 2}),
+            &[],
+        )
+        .await;
+        end
+    });
+
+    let client = ChatClient::connect_with_tuned(
+        connector(vec![pipe]),
+        sink.clone(),
+        fetch,
+        "dev-a",
+        0,
+        ChatTuning::default(),
+    )
+    .await
+    .expect("join succeeds even while paused");
+    let mut events = client.events();
+    let stats = client.stats();
+    assert_eq!(stats.cursor, 0, "an unopened row never advances the cursor");
+    assert_eq!(stats.paused, Some(ApplyOutcome::KeyUnavailable));
+    assert_eq!(
+        lock(&sink.rows).len(),
+        1,
+        "row 2 is dropped above the honest cursor, not offered while paused"
+    );
+    assert!(lock(&sink.cursor_advances).is_empty());
+
+    // Keys arrive: resume backfills from 0 and both rows apply.
+    *lock(&sink.row_outcome) = ApplyOutcome::Applied;
+    lock(&sink.rows).clear();
+    client.resume();
+    server.await.unwrap();
+    let mut saw_resumed = false;
+    for _ in 0..8 {
+        match tokio::time::timeout(Duration::from_secs(1), events.recv()).await {
+            Ok(Ok(ChatEvent::SyncResumed)) => saw_resumed = true,
+            Ok(Ok(_)) => {}
+            _ => break,
+        }
+        if lock(&sink.rows).len() == 2 {
+            break;
+        }
+    }
+    assert!(saw_resumed, "resume is announced");
+    assert_eq!(*lock(&sink.rows), vec![(vec![0xaa], 1), (vec![0xbb], 2)]);
+    let stats = client.stats();
+    assert_eq!(stats.cursor, 2);
+    assert_eq!(stats.paused, None);
+    client.shutdown().await;
+}
+
+/// Pre-sealed outbox batches keep their durable ids on the wire, are never
+/// queued twice, and their acks reach the sink so the outbox can retire them.
+#[tokio::test(start_paused = true)]
+async fn sealed_batches_keep_their_ids_and_acks_reach_the_sink() {
+    let (pipe, mut end) = pipe_pair();
+    let sink = Arc::new(RecordingSink::default());
+    let (fetch, _) = fetcher(b"");
+
+    let server = tokio::spawn(async move {
+        serve_join(&mut end, empty_state_json(), &[], vec![], false).await;
+        let push = expect_kind(&mut end, frame_type::PUSH).await;
+        assert_eq!(push.header["batchId"], "outbox-7");
+        assert_eq!(push.payload, vec![7, 7, 7]);
+        send(
+            &end,
+            frame_type::ACK,
+            serde_json::json!({"batchId": "outbox-7", "seq": 1}),
+            &[],
+        )
+        .await;
+        end
+    });
+
+    let client = ChatClient::connect_with_tuned(
+        connector(vec![pipe]),
+        sink.clone(),
+        fetch,
+        "dev-a",
+        0,
+        ChatTuning::default(),
+    )
+    .await
+    .expect("join");
+    client.enqueue_sealed("outbox-7".into(), vec![7, 7, 7]);
+    client.enqueue_sealed("outbox-7".into(), vec![7, 7, 7]);
+    assert_eq!(
+        client.stats().pending_pushes,
+        1,
+        "duplicate ids are not queued twice"
+    );
+    server.await.unwrap();
+    for _ in 0..20 {
+        if client.stats().pending_pushes == 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(client.stats().pending_pushes, 0);
+    assert_eq!(*lock(&sink.acked), vec!["outbox-7".to_string()]);
+    assert_eq!(*lock(&sink.cursor_advances), vec![1]);
+    client.shutdown().await;
 }

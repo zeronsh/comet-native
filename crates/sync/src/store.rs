@@ -425,6 +425,90 @@ impl DocsStore {
         Ok(pending)
     }
 
+    /// Every queued batch for `doc_id` authored by this device, in FIFO
+    /// order, regardless of the epoch/policy it was sealed under — the
+    /// reconnect path re-seals stale ones under the current policy (RFC 0001
+    /// §11) instead of stranding them. Each record is re-verified against
+    /// its stored binding with the caller's own public key.
+    pub fn pending_encrypted_batches_for_doc(
+        &self,
+        doc_id: &str,
+        author_id: &[u8; 16],
+        author_public_key: &[u8],
+        max_batches: usize,
+    ) -> Result<Vec<PendingEncryptedBatch>, StoreError> {
+        if max_batches > 128 {
+            return Err(StoreError::InvalidOutboxLimit);
+        }
+        let connection = self.conn();
+        let mut statement = connection.prepare(
+            "SELECT sequence, batch_id, length(record), record, vault_id, generation, key_epoch,
+                    object_id, membership_hash
+             FROM encrypted_outbox WHERE doc_id = ?1 AND author_id = ?2 ORDER BY sequence LIMIT ?3",
+        )?;
+        let mut rows =
+            statement.query(params![doc_id, author_id.as_slice(), max_batches as i64])?;
+        let mut pending = Vec::new();
+        let mut loaded_bytes = 0usize;
+        while let Some(row) = rows.next()? {
+            let length = usize::try_from(row.get::<_, i64>(2)?)
+                .map_err(|_| StoreError::InvalidEncryptedBatch)?;
+            loaded_bytes = loaded_bytes
+                .checked_add(length)
+                .ok_or(StoreError::InvalidEncryptedBatch)?;
+            if length > MAX_ENCRYPTED_RECORD_BYTES || loaded_bytes > MAX_ENCRYPTED_OUTBOX_BYTES {
+                return Err(StoreError::InvalidEncryptedBatch);
+            }
+            let fixed16 = |bytes: Vec<u8>| -> Result<[u8; 16], StoreError> {
+                bytes
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| StoreError::InvalidEncryptedBatch)
+            };
+            let sequence = row.get(0)?;
+            let revision_id = fixed16(row.get(1)?)?;
+            let encoded: Vec<u8> = row.get(3)?;
+            let key_epoch: Vec<u8> = row.get(6)?;
+            let membership: Vec<u8> = row.get(8)?;
+            let binding = RecordBinding {
+                kind: RecordKind::Content,
+                vault_id: fixed16(row.get(4)?)?,
+                generation: fixed16(row.get(5)?)?,
+                epoch: u64::from_be_bytes(
+                    key_epoch
+                        .as_slice()
+                        .try_into()
+                        .map_err(|_| StoreError::InvalidEncryptedBatch)?,
+                ),
+                object_id: fixed16(row.get(7)?)?,
+                author_id: *author_id,
+                membership_hash: membership
+                    .as_slice()
+                    .try_into()
+                    .map_err(|_| StoreError::InvalidEncryptedBatch)?,
+            };
+            if encoded.len() != length {
+                return Err(StoreError::InvalidEncryptedBatch);
+            }
+            let parsed = UnverifiedRecord::parse(&encoded, MAX_ENCRYPTED_RECORD_BYTES)
+                .map_err(|_| StoreError::InvalidEncryptedBatch)?;
+            if parsed.untrusted_revision_id() != &revision_id {
+                return Err(StoreError::InvalidEncryptedBatch);
+            }
+            parsed
+                .verify(&binding, author_public_key)
+                .map_err(|_| StoreError::InvalidEncryptedBatch)?;
+            pending.push(PendingEncryptedBatch {
+                sequence,
+                doc_id: doc_id.to_owned(),
+                binding,
+                revision_id,
+                encoded,
+            });
+        }
+        Ok(pending)
+    }
+
     pub fn acknowledge_encrypted_batch(
         &self,
         batch: &PendingEncryptedBatch,

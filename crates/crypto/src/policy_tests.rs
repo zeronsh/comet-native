@@ -380,3 +380,37 @@ fn payload_codec_round_trips_and_rejects_malformed() {
     ));
     assert_ne!(profile_hash("a", "b"), profile_hash("ab", ""));
 }
+
+#[test]
+fn enrollment_proofs_bind_keys_and_pairing_codes_agree() {
+    let device = Device::new(40);
+    let request = EnrollmentRequest {
+        vault_id: VAULT,
+        request_id: [3; 16],
+        device_id: device.id,
+        signing_key: device.signer.public_key().try_into().unwrap(),
+        encryption_key: *device.encryption.public_key().as_bytes(),
+    };
+    let proof = request.sign(&device.signer).unwrap();
+    request.verify(&proof).unwrap();
+    let mut substituted = request;
+    substituted.encryption_key = [9; 32];
+    assert!(substituted.verify(&proof).is_err());
+    assert_ne!(
+        substituted.pairing_code(&[1; 32]),
+        request.pairing_code(&[1; 32])
+    );
+    assert_ne!(
+        request.pairing_code(&[2; 32]),
+        request.pairing_code(&[1; 32])
+    );
+    let code = request.pairing_code(&[1; 32]);
+    assert_eq!(code.len(), 9);
+    assert!(code[..4].bytes().all(|b| b.is_ascii_digit()));
+    assert_eq!(&code[4..5], "-");
+    let other = Device::new(41);
+    assert!(matches!(
+        request.sign(&other.signer),
+        Err(PolicyError::UnknownAuthor)
+    ));
+}

@@ -167,6 +167,11 @@ struct DiffSyncInner {
     /// upgraded Arc — the token cuts it so no sidecar HTTP outlives shutdown.
     cancel: CancellationToken,
     supervisor: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Encrypted-sync vault (engine assembly): when the profile is enrolled,
+    /// the diff sidecar is sealed (purpose Diff) into the chat's encrypted
+    /// room or not published at all — the legacy plaintext `/diff` route is
+    /// never used for an encrypted profile (RFC 0001 §10).
+    vault: std::sync::OnceLock<crate::vault::VaultService>,
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -190,6 +195,11 @@ impl CheckoutDiffSync {
         // Grace = one repair interval: an entry must survive at least one full
         // fresh revalidation pass before reconcile may tear it down.
         Self::start_with_orphan_grace(repos, workspace, device_id, edge, REPAIR_INTERVAL)
+    }
+
+    /// Wire the encrypted-sync vault (engine assembly, once).
+    pub fn set_vault(&self, vault: crate::vault::VaultService) {
+        let _ = self.inner.vault.set(vault);
     }
 
     /// [`CheckoutDiffSync::start`] with an explicit orphan grace — test hook so
@@ -218,6 +228,7 @@ impl CheckoutDiffSync {
                 turn_trees: Mutex::new(HashMap::new()),
                 cancel: CancellationToken::new(),
                 supervisor: Mutex::new(None),
+                vault: std::sync::OnceLock::new(),
             }),
         };
         let task = tokio::spawn(diff_sync_task(
@@ -668,19 +679,57 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
                 truncated: snapshot.truncated,
                 published_at: chrono::Utc::now().timestamp_millis(),
             };
-            let url = format!("{}/diff/{}", edge.url.trim_end_matches('/'), chat.id);
             // Fresh bearer per request — never the boot-time snapshot.
             let Some(bearer) = edge.bearer().await else {
                 tracing::debug!(chat = %chat.id, "diff-sync: sidecar skipped (signed out)");
                 continue;
             };
-            let result = inner
-                .http
-                .post(&url)
-                .bearer_auth(&bearer)
-                .json(&sidecar)
-                .send()
-                .await;
+            let vault = inner.vault.get().filter(|vault| vault.is_enrolled());
+            let result = if let Some(vault) = vault {
+                // Encrypted profile: seal, and address the encrypted room's
+                // sidecar slot. A vault that cannot seal publishes nothing.
+                let Ok(json) = serde_json::to_vec(&sidecar) else {
+                    continue;
+                };
+                let codec = crate::chat2_host::ChatCodec::new(vault.clone(), &chat.id);
+                let sealed = match codec
+                    .seal(
+                        zeron_crypto::content::ContentPurpose::Diff,
+                        &json,
+                        4 * 1024 * 1024 - 1024,
+                    )
+                    .await
+                {
+                    Ok(sealed) => sealed,
+                    Err(err) => {
+                        tracing::debug!(chat = %chat.id, error = %err,
+                            "diff-sync: sidecar not sealed; skipped");
+                        continue;
+                    }
+                };
+                let url = format!(
+                    "{}/chat2/{}/diff",
+                    edge.url.trim_end_matches('/'),
+                    crate::chat2_host::encrypted_room_id(&chat.id)
+                );
+                inner
+                    .http
+                    .put(&url)
+                    .bearer_auth(&bearer)
+                    .header("content-type", "application/octet-stream")
+                    .body(sealed.encoded().to_vec())
+                    .send()
+                    .await
+            } else {
+                let url = format!("{}/diff/{}", edge.url.trim_end_matches('/'), chat.id);
+                inner
+                    .http
+                    .post(&url)
+                    .bearer_auth(&bearer)
+                    .json(&sidecar)
+                    .send()
+                    .await
+            };
             match result {
                 Ok(response) if !response.status().is_success() => {
                     tracing::debug!(chat = %chat.id, status = %response.status(),

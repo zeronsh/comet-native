@@ -40,6 +40,17 @@ impl SecretBytes {
         Self(bytes)
     }
 
+    /// Copy `bytes` into a zeroizing allocation.
+    pub fn from_slice(bytes: &[u8]) -> Self {
+        Self(Zeroizing::new(bytes.to_vec()))
+    }
+
+    /// Explicit duplication (deliberately not `Clone`: copies of secrets
+    /// should be visible in code review).
+    pub fn try_clone(&self) -> Result<Self, CryptoError> {
+        Ok(Self::from_slice(&self.0))
+    }
+
     pub fn as_bytes(&self) -> &[u8] {
         &self.0
     }
@@ -97,6 +108,31 @@ pub fn open_aes256_gcm(
         .map_err(|_| CryptoError::AuthenticationFailed)?;
     buffer.truncate(plaintext_len);
     Ok(SecretBytes(buffer))
+}
+
+/// AES-256-GCM with a caller-supplied nonce. Callers own nonce uniqueness;
+/// content records never use this directly (they derive one key per record
+/// and use a fixed nonce). Used for the local encrypted state file.
+pub fn seal_aes256_gcm(
+    key: &[u8],
+    nonce: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    if key.len() != 32 {
+        return Err(CryptoError::InvalidKeyLength);
+    }
+    let nonce = aead::Nonce::try_assume_unique_for_key(nonce)
+        .map_err(|_| CryptoError::InvalidNonceLength)?;
+    let key = aead::LessSafeKey::new(
+        aead::UnboundKey::new(&aead::AES_256_GCM, key)
+            .map_err(|_| CryptoError::InvalidKeyLength)?,
+    );
+    let mut buffer = Vec::with_capacity(plaintext.len() + aead::AES_256_GCM.tag_len());
+    buffer.extend_from_slice(plaintext);
+    key.seal_in_place_append_tag(nonce, aead::Aad::from(aad), &mut buffer)
+        .map_err(|_| CryptoError::AuthenticationFailed)?;
+    Ok(buffer)
 }
 
 pub fn verify_ed25519(

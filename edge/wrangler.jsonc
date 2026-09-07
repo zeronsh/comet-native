@@ -40,7 +40,8 @@
       { "name": "SESSION_ROOMS", "class_name": "SessionRoom" },
       { "name": "DEVICE_ROOMS", "class_name": "DeviceRoom" },
       { "name": "REGISTRY_ROOMS", "class_name": "RegistryRoom" },
-      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" }
+      { "name": "CHAT_ROOMS", "class_name": "ChatRoom" },
+      { "name": "VAULT_ROOMS", "class_name": "VaultRoom" }
     ]
   },
   "migrations": [
@@ -59,6 +60,12 @@
       // replace SessionRoom's loro-aware s2 rooms.
       "tag": "v3",
       "new_sqlite_classes": ["ChatRoom"]
+    },
+    {
+      // Encrypted-sync control plane (docs/rfc-0001-encrypted-sync.txt §6):
+      // per-profile membership history, key envelopes, enrollment.
+      "tag": "v4",
+      "new_sqlite_classes": ["VaultRoom"]
     }
   ],
   "r2_buckets": [
