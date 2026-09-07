@@ -1,0 +1,1363 @@
+Zeron Project                                              September 2026
+Request for Comments: 0001                              Draft 00 / Phase 1
+Category: Product and Security Design                    Date: 2026-09-04
+Code baseline: a0650ab
+
+
+             END-TO-END ENCRYPTED WORKSPACE SYNCHRONIZATION
+             ============================================
+
+Status of This Memo
+
+   This is a local project RFC, not an Internet standard. It proposes the
+   product contract and security architecture for encrypted Zeron sync.
+   It does not describe a shipped feature or authorize a deployment.
+
+   Phase 1 produces this document for review. No encryption implementation,
+   dependency installation, migration, or deletion is part of Phase 1.
+   Acceptance of this RFC does not replace review of the exact protocol.
+   The blocking decisions in Section 15 must be resolved before the
+   corresponding implementation is considered production-ready.
+
+   MUST, MUST NOT, SHOULD, and MAY express requirements of the proposed
+   design. Diagrams and record layouts describe logical structure, not
+   wire encodings. References [R1]-[R12] identify current implementation
+   seams; they are not claims that the proposed behaviour already exists.
+
+Abstract
+
+   Synced transcripts can contain source code, file contents, commands,
+   patches, and command output. TLS and authenticated backend access do
+   not prevent a backend operator or a storage compromise from reading
+   those contents. Zeron's opaque chat log makes client-side encryption
+   practical without moving CRDT interpretation back into the server.
+
+   This RFC proposes one encrypted vault per personal synced workspace.
+   Users sign in normally, approve devices once, and save a recovery key.
+   All content-bearing sync paths are encrypted, including the registry,
+   sidecars, and device RPC. The server retains routing, ordering, and
+   field-level merge duties, but receives no content decryption keys.
+
+   The release unit is complete encrypted sync, not encrypted chat blobs
+   with plaintext copies elsewhere. Local-only operation remains separate.
+
+Table of Contents
+
+    1. Decisions and scope
+    2. Threat model and product promise
+    3. Current data paths and exposure inventory
+    4. User experience and state machines
+    5. Key hierarchy and device authority
+    6. Enrolment, recovery, and bootstrap service
+    7. Cryptographic records and protocol requirements
+    8. Chat log, checkpoint, and cursor integration
+    9. Registry encryption without changing merge semantics
+   10. Device RPC, attachments, and other content paths
+   11. Revocation and key rotation
+   12. Migration, compatibility, and old plaintext copies
+   13. Local storage, observability, and operational limits
+   14. Implementation sequence and acceptance tests
+   15. Blocking review decisions and alternatives
+   16. Repository references
+
+
+1. Decisions and Scope
+----------------------
+
+   D1. Encryption is opt-in per personal synced workspace for the first
+       release. Within that workspace it is all-or-nothing, not a toggle
+       for individual chats, payload types, or spaces.
+
+   D2. The current workspace boundary is the account-scoped profile
+       (orgId, userId), not the whole organization. Organization membership
+       or an organization administrator role does not grant vault access.
+       A random vault ID is bound to that profile in authenticated policy.
+
+   D3. Every approved device is a full-trust workspace peer in v1. It can
+       read workspace history, write as an authorized peer, and approve or
+       revoke devices. This includes an approved headless VPS. Per-space
+       grants, read-only devices, and restricted runners are deferred.
+
+   D4. Account authentication and vault authorization are independent.
+       Login, password reset, token refresh, and support intervention MUST
+       NOT supply or replace the authority needed to decrypt a vault.
+
+   D5. Device approval is the normal onboarding path. A high-entropy
+       recovery key is the disaster-recovery path. No daily encryption
+       password, server escrow, or automatic email-based key recovery.
+
+   D6. Native Rust and Swift clients ship compatible support together.
+       Legacy writers must be upgraded or stopped before activation.
+       Unsupported clients are denied service, but denial cannot make
+       an obsolete client's outbound request confidential (Section 12).
+       Encryption MUST NOT silently downgrade on errors or missing keys.
+
+   D7. There is no in-place "turn encryption off" operation in v1. Stopping
+       sync does not decrypt cloud copies. An explicit future export into
+       another profile would be a separate, consented operation.
+
+   D8. No encryption format has shipped. The first encrypted-sync release
+       is one feature developed in one PR; draft codecs may be replaced
+       directly without compatibility layers for earlier drafts. Existing
+       plaintext data and clients still require the migration/fencing
+       treatment in Section 12. Future unknown encrypted formats fail closed.
+
+   Local-only profiles MUST remain local. Enabling encryption or signing
+   in MUST NOT import local-only sessions, attachments, or agent secrets.
+   Any existing explicit profile-copy flow must respect the vault gate.
+   Auth state changes MUST NOT silently change an open storage boundary.
+
+
+2. Threat Model and Product Promise
+----------------------------------
+
+   Proposed product copy:
+
+      "Your synced content is encrypted on your devices. Only devices
+       you approve, or someone with your recovery key and encrypted
+       backups, can read it. Our sync backend stores ciphertext."
+
+   The primary goal is confidentiality against backend/database access,
+   including copies in Durable Object storage and R2 backups. TLS remains
+   required. Encryption is additional protection, not a replacement for
+   authentication, authorization, quotas, or safe RPC handling.
+
+   Clients MUST also authenticate content and peer identity. A malicious
+   relay must not substitute an enrollment key, forge a command, or move
+   ciphertext from one chat/field into another and have it accepted.
+
+   The service still observes:
+
+      - Account identity and authenticated organization membership.
+      - IP addresses, connection timing, sizes, and access patterns.
+      - Random vault/room/object/device IDs and routing relationships.
+      - Log sequence numbers, merge clocks, field names, and tombstones.
+      - Device public keys, membership changes, and protocol versions.
+
+   Titles, paths, branches, previews, filenames, device display names,
+   repository URLs, and content checksums MUST NOT be smuggled into those
+   visible identifiers, headers, diagnostics, or object metadata.
+
+   Non-goals and limits:
+
+      - A compromised approved device, local malware, or VPS root access.
+      - Hiding input from the model provider or the agent that executes it.
+      - Protection from a malicious replacement application binary.
+      - Automatic encryption of all local files, journals, or OS backups.
+      - Hiding traffic volume, timing, or every piece of structural data.
+      - Erasing information a device or operator previously copied.
+      - Availability against a server that deletes or withholds data.
+      - Perfect detection of server rollback, omission, or split views.
+
+   Known state must be pinned locally and regressions rejected. Signed
+   records do not, by themselves, prove that the server supplied the most
+   recent record or all records. A fresh recovery client may have no recent
+   state with which to detect a stale but valid backup. Stronger global
+   freshness guarantees would require an additional consistency design.
+
+   This feature is not a claim that work "never leaves the machine" or
+   that a particular client/NDA policy permits a VPS or model provider.
+
+
+3. Current Data Paths and Exposure Inventory
+-------------------------------------------
+
+   The baseline has several paths outside the opaque Loro update stream.
+   Each path below MUST be covered or disabled for an encrypted profile.
+
+   Surface                    Current behavior / required treatment
+   -------------------------  -------------------------------------------
+   Chat rows                  Opaque update bytes in ChatRoom. Encrypt
+                              before enqueue, verify before Loro import.
+
+   Checkpoints and frontiers  Client publishes both. Encrypt snapshot
+                              and frontier; bind them to one revision.
+
+   Chat tail                  doc_host publishes transcript JSON to
+                              /chat2/{id}/tail. Encrypt independently.
+
+   Working-tree diff          diff_sync still posts path, branch, and
+                              patch to legacy /diff/{id}. Migrate this
+                              path; a chat-row wrapper cannot cover it.
+
+   Workspace registry         Server merges individual field values.
+                              Encrypt values, retain minimal merge data.
+
+   R2 tool blobs              /blob stores output/diff payloads. Finished
+                              subagent transcripts also use this path.
+                              Encrypt all such payloads and manifests.
+
+   User attachments           Host-local staging and device RPC, not
+                              current R2 attachment mirroring. Protect
+                              upload and read RPC payloads end to end.
+
+   Device relay               RPC includes files, folders, terminal I/O,
+                              and control requests. Authenticate peers
+                              and encrypt before entering DeviceRoom.
+
+   Device sidecars            JSON storage slots exist. Encrypt all
+                              content-bearing values if used.
+
+   Presence and nudges        Keep only minimal routing/liveness data
+                              clear; encrypt any content-bearing detail.
+
+   Backups and diagnostics    Back up ciphertext plus verifiable public
+                              metadata. Never log decrypted payloads.
+
+   The old /attachments PUT route acknowledges and discards data. Its
+   existence does not prove historical R2 attachment objects were deleted.
+   Likewise, a dormant upload path is not permission to leave it unsafe:
+   re-enabling a call site must not bypass the encryption boundary.
+
+   Sources: [R1]-[R8]. Older architecture notes contain historical plans;
+   implementation behavior at the stated baseline controls this inventory.
+
+
+4. User Experience and State Machines
+------------------------------------
+
+4.1. First activation
+
+   Settings -> Sync -> End-to-end encryption:
+
+      +------------------------------------------------------------+
+      | Protect this workspace                                     |
+      |                                                            |
+      | Sessions, files and workspace details are encrypted before |
+      | they reach our servers. Approved devices can read them.    |
+      |                                                            |
+      |                        [Not now]  [Set up encryption]      |
+      +------------------------------------------------------------+
+
+   Setup generates keys locally, creates this device's membership, and
+   presents a recovery kit. The user saves it to a password manager or
+   local recovery file and confirms possession before activation.
+
+   Required recovery copy:
+
+      "If you lose every approved device and your recovery key, we
+       cannot recover your encrypted data. Resetting your account
+       password will not restore access."
+
+   The key is random, grouped for copying, and protected by a typo-detection
+   checksum. It is not a password the user invents or memorizes. The kit
+   identifies the vault and recovery authority without requiring email
+   addresses, folder names, or other identifying labels.
+
+   Existing accounts enter migration (Section 12). The UI MUST NOT show
+   "Encrypted" while a content path still writes plaintext. It separately
+   reports retained legacy copies even after new sync is encrypted.
+
+4.2. New phone or computer
+
+   Normal account login is followed by:
+
+      +------------------------------------------------------------+
+      | Approve this device to unlock your workspace               |
+      |                                                            |
+      |          [Approve from another device]                     |
+      |          [Use recovery key]                                |
+      +------------------------------------------------------------+
+
+   QR pairing is the default. A comparison-code flow is the alternative
+   for devices without a usable camera, including headless machines.
+   An existing device explicitly approves the authenticated pairing.
+   An untrusted display name alone is never proof of device identity.
+
+   Pending devices MUST NOT publish their names, paths, registry writes,
+   content, or general RPC before approval. They may use the minimal
+   authenticated bootstrap service. Rejecting or expiring an enrollment
+   must leave the existing workspace unchanged.
+
+4.3. Independent state dimensions
+
+      Account:   signed out | signed in
+      Profile:   local | legacy synced | migrating | encrypted
+      Vault:     not enrolled | locked | ready | key update required
+                 | verification failed | revoked
+      Transport: offline | connecting | caught up | retrying
+
+   These are not one boolean "connected" flag. In particular, a valid
+   login and a healthy socket do not imply a usable vault key.
+
+   State                     User-facing behavior
+   ------------------------  --------------------------------------------
+   Not enrolled              "Approve this device"; bootstrap only.
+   Secure store locked       "Unlock this device"; no content upload.
+   Ready, online             Existing streaming and sync experience.
+   Ready, offline            Read permitted local cache; queue edits.
+   Key update required       "Waiting for encryption keys"; preserve data.
+   Verification failed       "Sync paused: data could not be verified."
+   Revoked                   Stop encrypted sync and remote control.
+
+   Errors MUST NOT erase a last-known-good transcript, clear a pending
+   command, show an empty chat as success, or trigger plaintext fallback.
+   Network retries and crypto failures require different recovery actions.
+
+4.4. Daily use, sign-out, and locking
+
+   No additional password is required for ordinary reads or sends on an
+   approved device whose OS secure store is available. Offline operation
+   continues within the existing local-data policy.
+
+   "Lock sync keys" is not a promise to encrypt or hide all existing local
+   caches. If an app-lock feature hides local content, it needs its own
+   cache and memory-lifetime policy. The UI MUST distinguish those claims.
+
+   Account sign-out stops network access and releases in-memory keys as
+   practicable. Retaining this device's secure-store enrollment for later
+   login is distinct from revoking it. "Remove this device" revokes its
+   membership; optional local-data deletion requires explicit confirmation.
+
+4.5. Headless operation
+
+   A proposed CLI pairing action displays an enrollment request and key
+   fingerprint/code, not workspace keys or a login bearer. Approval occurs
+   on a trusted native client. Command spelling is an implementation detail.
+
+   The approval prompt MUST disclose that v1 grants the VPS full workspace
+   trust, including device-management authority, not just job execution.
+
+   Two explicit credential modes are supported:
+
+      Unattended      OS/service credential storage allows restart without
+                      a person. The VPS operator/root remains trusted.
+
+      Unlock on boot  Sync remains locked until an operator unlocks it
+                      through a local or authenticated pairing mechanism.
+
+   Do not silently fall back from a secure store to a plaintext key file.
+   If a platform needs an operator-provisioned credential file, it must be
+   an explicit unattended-mode choice with restrictive permissions and
+   clear disclosure of the storage and backup implications.
+
+
+5. Key Hierarchy and Device Authority
+------------------------------------
+
+   Keys are independent of WorkOS credentials and existing installation
+   device IDs. Each vault enrollment has a fresh cryptographic identity.
+
+      Approved device keys       Recovery key
+                |                     |
+                +----------+----------+
+                           |
+                   Recipient envelopes
+                           |
+                    Workspace keyring
+                           |
+               +-----------+-----------+
+               |           |           |
+           Registry      Chats       Blobs
+
+   Logical key material:
+
+      Device identity    Separate signing and key-agreement keys,
+                         generated and retained by that device.
+
+      Vault epoch key    A random wrapping key for one write epoch.
+                         A new epoch is not derivable from an old key.
+
+      Content keys       Separate random keys for chats, registry data,
+                         and blobs, wrapped under a vault epoch key.
+                         Purpose/writer subkeys are domain-separated.
+
+      Recovery secret    A random 256-bit secret in the recovery kit.
+                         Separate recovery encryption and signing keys
+                         are derived using reviewed, labeled derivation.
+
+   Devices receive only their own private identity and the workspace
+   keyring, never another device's private identity. Device private keys
+   and the recovery secret MUST NOT appear in normal registry fields,
+   general-purpose RPC responses, logs, or content backups. Persist the
+   local keyring in secure storage or encrypted under a device-held key,
+   not as plaintext alongside the application's ordinary snapshots.
+
+   The keyring supplies epoch wrapping keys and the registry entry point.
+   Chat/blob manifests carry their object-key envelopes, which can be
+   opened with an already available epoch key. A key needed to open an
+   object MUST NOT exist only inside that object's encrypted payload.
+   Key envelopes bind the recipient, vault, object, purpose, and epoch.
+
+   The recovery public encryption key allows approved devices to publish
+   updated recovery envelopes without keeping or asking for the recovery
+   secret. This is important: recovery must still work after key rotation,
+   and daily clients must not need the user's offline recovery key.
+
+   Keyring updates contain the history keys needed for retained data as
+   well as the active epoch. Keys must not be discarded while referenced
+   by retained ciphertext, a restorable backup, or pending local work.
+   Versioned recovery envelopes and device envelopes are committed before
+   clients publish data that depends on a newly introduced key epoch.
+   Object-key envelopes likewise become durable before publishing refs
+   that require them; retries must not strand ciphertext without its key.
+
+   A signed genesis record binds the vault ID, profile, protocol policy,
+   initial device, and recovery public keys. The first device pins it.
+   Later devices obtain their trust anchor through authenticated pairing
+   or their recovery kit, never from a server assertion alone.
+
+   A signed membership history records additions, revocations, recovery
+   authority changes, and write-epoch transitions. Each change names its
+   parent revision/hash. An active device may authorize the next change;
+   the recovery authority may authorize an explicit recovery transition.
+   Concurrent changes use compare-and-swap and must be re-authorized if
+   rebasing changes their meaning. Never merge trust decisions by HLC.
+
+   Historical signatures remain verifiable after a device is revoked.
+   Revocation affects acceptance of new writes, not the existence of valid
+   historical signatures. Membership history is not a CRDT content log and
+   must have its own bounded retention/checkpoint design before release.
+
+
+6. Enrollment, Recovery, and Bootstrap Service
+---------------------------------------------
+
+6.1. Logical bootstrap operations
+
+   The server needs a small key-management control plane independent of
+   the encrypted registry. These are logical operations, not final URLs:
+
+      Read vault descriptor and signed membership revisions.
+      Create/read/cancel a short-lived enrollment request.
+      Publish an approved recipient envelope and membership change.
+      Read an envelope addressed to this device or recovery authority.
+      Publish a signed epoch/policy transition with compare-and-swap.
+
+   Account authentication and profile authorization are required in
+   addition to cryptographic proofs. Rate and size limits apply. Native
+   clients MUST verify signatures, bindings, and peer possession even if
+   the service reports success. Server authorization must not rely on a
+   caller-supplied device ID without proof of its private key.
+
+   The server receives public keys and encrypted envelopes only. It has
+   no vault-unlock endpoint, administrative decryption key, or plaintext
+   recovery-secret field. Key absence is not permission to create a new
+   vault over an existing encrypted profile.
+
+6.2. Pairing transcript
+
+      New device             Untrusted relay             Trusted device
+          |                         |                           |
+          |-- enrollment request -->|                           |
+          |                         |<-- fetch request ---------|
+          |<==== authenticated pairing; QR/code comparison =====>|
+          |                         |                    user approves
+          |                         |<-- signed membership -----|
+          |                         |<-- encrypted envelope ----|
+          |<-- membership/envelope -|                           |
+          |-- verify, decrypt, pin  |                           |
+          |-- possession receipt -->|-------------------------->|
+
+   Pairing MUST bind both device keys, vault/profile identity, request ID,
+   protocol version, and a fresh challenge. QR data is generated by an
+   endpoint, not accepted as trusted because a backend web page rendered
+   it. Enrollment expires, is single-use, and requires explicit consent.
+
+   Use a reviewed authenticated key-exchange/pairing construction. A short
+   code may be a human comparison of the handshake transcript; it MUST
+   NOT be used directly as an encryption key. If a typed secret replaces
+   comparison, use a reviewed PAKE with attempt limits, not a homemade
+   password exchange. The concrete pairing construction is a review gate.
+
+   Do not auto-enroll every device with a valid WorkOS session. Enrollment
+   secrets MUST NOT enter query strings, browser history, shell history,
+   analytics, or remotely captured terminal logs. Bootstrap requests must
+   not contain a user's email or machine paths as convenience labels.
+
+6.3. Recovery
+
+   After normal sign-in, the client reads the encrypted recovery bundle.
+   The user supplies the recovery kit locally. The client derives recovery
+   keys, verifies the vault binding and authority, decrypts the bundle,
+   and creates a new device identity.
+
+   Recovery is an explicit signed transition, not a backend membership
+   override. The user chooses whether unavailable devices are retained or
+   revoked. Lost/stolen-device recovery SHOULD recommend revoking them and
+   rotating active keys. Before completion, durably publish the replacement
+   device envelope and the new recovery bundle and confirm they decrypt.
+
+   A trusted device can replace a lost recovery kit by installing a new
+   recovery authority and re-encrypting the recoverable keyring. It cannot
+   display the old recovery secret if that secret was not retained.
+
+   Treat a possibly exposed recovery key as a compromise: replacing its
+   envelope alone is insufficient. Rotate the recovery authority and
+   active content keys. Previously copied ciphertext may remain readable.
+
+   Losing every approved device and the recovery kit is unrecoverable by
+   the service. Offer creation of a separate empty vault only through an
+   explicit flow; do not automatically delete or overwrite the old vault.
+   A recovery key restores access to existing ciphertext, not deleted data.
+
+
+7. Cryptographic Records and Protocol Requirements
+--------------------------------------------------
+
+7.1. Candidate suite and library policy
+
+   The proposed baseline is AES-256-GCM for authenticated content
+   encryption, HKDF-SHA-256 for domain separation, Ed25519 for device and
+   policy signatures, and HPKE for recipient key envelopes. The candidate
+   HPKE suite uses X25519, HKDF-SHA-256, and AES-256-GCM. These are design
+   choices to validate across Rust and Swift, not new implementations of
+   the primitives. HPKE base mode requires the separate authorization
+   signature; encryption to a public key does not identify the sender.
+
+   No direct E2EE dependency is selected by this RFC. Select maintained,
+   reviewed implementations; check provenance, release age, install/build
+   behavior, and source before installing unfamiliar dependencies.
+   Native platform facilities may be used behind the same tested format.
+   Do not implement cryptographic primitives or ad hoc key exchange.
+
+7.2. Logical content envelope
+
+      +------------------------------------------------------------+
+      | version / suite / vault ID / generation / key epoch        |
+      | object ID / kind / writer ID / batch or revision ID        |
+      | nonce / ciphertext / tag / author proof                    |
+      +------------------------------------------------------------+
+
+   All interpretation-relevant headers MUST be authenticated. Author
+   proofs establish which approved device produced a write; possession
+   of a group key alone is insufficient for writer attribution. They bind
+   the complete envelope and the applicable membership/write epoch.
+
+   Associated data binds the object to its vault, generation, purpose,
+   writer, and immutable batch/revision identity. Registry records also
+   bind the row, field, operation semantics, and original HLC. Checkpoint
+   records bind the covered sequence and frontier/manifest identity.
+
+   A chat row's server-assigned sequence is unknown at encryption time.
+   Do not pretend it is authenticated by the original writer. It remains
+   transport ordering metadata; checkpoint manifests and local monotonic
+   state provide additional checks but not proof of server completeness.
+
+   Freeze one deterministic signed/AAD encoding before implementation.
+   Specify field lengths, integer ranges, byte order, base64 variant where
+   needed, signature inputs, and duplicate/unknown-field handling. Ordinary
+   JSON reserialization MUST NOT determine a signature's meaning.
+
+7.3. Nonces, persistence, and retries
+
+   Every encryption key/nonce pair MUST be unique, including after process
+   restart, restored device backup, concurrent writers, and key rotation.
+   The nonce/subkey allocation scheme and per-key usage limits are blocking
+   protocol-review items. A process-local counter or shared group counter
+   without a crash/clone-safe allocation design is not sufficient.
+
+   Encrypt once and durably store the immutable envelope plus batch ID
+   before sending. Retries use identical bytes. On an epoch change, create
+   a new transport batch for newly encrypted bytes; never reuse an old
+   batch ID with different ciphertext. Preserve semantic command IDs.
+
+   Include authentication/signature overhead in row, frame, header, and
+   registry budgets. Reject oversized data before placing it in a retry
+   queue. Bound allocations before parsing or decrypting untrusted input.
+   Unknown formats or suites MUST fail closed, not invoke a legacy parser.
+
+7.4. Blob and checkpoint revisions
+
+   Mutable sidecars and checkpoint replacements receive immutable content
+   revisions. A signed manifest binds revision, ciphertext digest, size,
+   key identity, and relevant sequence/frontier metadata. Object digests
+   exposed to the backend are ciphertext digests, not plaintext hashes.
+
+   A small checkpoint MAY use one AEAD envelope: resume ciphertext bytes
+   with HTTP Range, then authenticate the full object before Loro import.
+   Replacing a checkpoint at the same covered sequence still changes its
+   revision; sequence number alone is not a safe resume validator.
+
+   If chunked encryption is required, use a reviewed construction that
+   authenticates chunk index, object revision, and total/final length.
+   Reject reordering, truncation, duplication, and cross-object splicing.
+   Do not assemble unverified plaintext into a trusted file or document.
+
+7.5. Signed-wrapper v1 fixture profile
+
+   This subsection fixes a candidate signed-wrapper encoding for isolated
+   conformance tests. It does not close G1-G3, authorize transport use, or
+   define the encrypted payload, its nonce allocator, or membership rules.
+   The wrapper is shared by public control records and encrypted payloads;
+   a valid wrapper signature is NOT proof that its payload is encrypted.
+
+   Encode exactly one RFC 8949 core-deterministic CBOR map, with these
+   integer keys in ascending order. All lengths/unsigned integers use
+   their shortest encoding. Reject duplicates, missing/unknown/reordered
+   keys, indefinite lengths, tags, text, floats, negative integers, and
+   trailing bytes. There is no alternate JSON or legacy interpretation.
+
+      Key  Field                 Type
+       0   wrapper version       unsigned integer, exactly 1
+       1   record kind           unsigned: 1 policy, 2 key envelope, 3 content
+       2   vault ID              byte string, 16 bytes
+       3   storage generation    byte string, 16 bytes
+       4   authorizing epoch     unsigned integer, 1 through 2^64-1
+       5   object ID             byte string, 16 bytes
+       6   author device ID      byte string, 16 bytes
+       7   immutable revision    byte string, 16 bytes
+       8   membership hash       byte string, 32 bytes
+       9   payload               bounded byte string
+      10   Ed25519 signature     byte string, 64 bytes
+
+   IDs are raw opaque bytes, not UUID text, account names, or paths. The
+   membership hash identifies the policy authorizing the signer, not the
+   hash of this record; genesis cannot require its own hash. Genesis and
+   membership transitions need their separate reviewed payload/trust rules.
+   A zero hash is not permission to bypass trust verification.
+
+   Signature input is the ASCII bytes "zeron/signed-record/v1" followed
+   by one zero byte, then the deterministic CBOR map of keys 0 through 9
+   (map length 10, not the length-11 signed map). All payload bytes are
+   covered. Use ordinary Ed25519, not Ed25519ph. Signature output itself
+   need not be deterministic across platforms; persist the complete signed
+   record once and retransmit those same bytes.
+
+   Parsing yields an UNVERIFIED record. Verification requires an expected
+   binding obtained from trusted local profile/object/policy state: kind,
+   vault, generation, epoch, object, author, and membership hash. The caller
+   separately supplies that author's public key from verified membership;
+   no public key is embedded in this wrapper. Comparing a record with a
+   context copied from that same untrusted record is not authorization.
+   Only successful context AND signature verification yields payload access
+   through the verified-record interface. This still does not authorize
+   commands, validate a membership transition, or prove freshness.
+
+   The revision is signed but not a server sequence. Dedupe/replay and
+   accepted-history policy remain separate. Valid signatures do not allow
+   old epochs to be treated as new writes after revocation.
+
+   Each caller supplies a trusted payload byte limit. Validate encoded
+   size (payload limit plus at most 256 bytes of wrapper overhead), field
+   lengths, and declared payload length before copying or signing data.
+   Limit arithmetic must not wrap. Empty payloads are structurally valid;
+   each reviewed payload schema decides whether they are meaningful.
+   Full-width epoch values must not be rounded through JavaScript numbers.
+
+   The isolated codecs implement only this fixed map grammar, not a
+   general CBOR value tree. Payload codecs, cipher-suite identifiers,
+   AEAD associated data, key IDs, nonce/salt fields, and author admission
+   checks remain required before encrypted records can enter transport.
+
+7.6. Ed25519 input-encoding prechecks
+
+   The isolated verification adapters reject small-order and noncanonical
+   encodings before invoking the existing Ed25519 implementation. This
+   is a candidate verification-policy restriction, not complete device-key
+   admission and not a new signature algorithm.
+
+   For the 32-byte public key A and the first 32 bytes R of a signature:
+
+      - Inspect the little-endian y-coordinate after masking the sign bit
+        in a COPY of the final byte. Require y < p, where p = 2^255 - 19.
+      - Reject y equal to 0, 1, p-1, or either of these two little-endian
+        order-eight coordinates (both sign-bit variants are rejected):
+
+        26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05
+        c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a
+
+   For the final 32 bytes S, require the full little-endian integer to be
+   less than L = 2^252 + 27742317777372353535851937790883648493. Do not mask
+   S's high bits or reduce it modulo L. S = 0 passes this encoding check
+   but still requires a valid signature equation under an acceptable key.
+
+   Pass the ORIGINAL, unmodified A/R/S bytes to the signature library.
+   These comparisons inspect public data only. Signature failures retain
+   the existing coarse authentication error and do not yield a verified
+   record. Future transport callers MUST NOT turn such failures into cursor
+   advancement or an alternate verification mode.
+
+   The identity-point regression is concrete: the underlying libraries
+   tested here accepted A = R = identity, S = 0 for a synthetic message.
+   No valid device private key is needed for that construction. It is not
+   a break of signatures under correctly generated keys, but it cannot be
+   used as device-possession evidence. The adapter must reject it even if
+   a caller accidentally supplies the identity point as its trusted key.
+
+   Passing the encoding precheck does NOT prove that bytes decode to an
+   acceptable prime-order device key. The existing library still performs
+   signature verification; mixed-order point policy, complete admission,
+   and cross-version agreement remain G1/G2 review requirements. Do not
+   enroll a device based on the precheck alone. These rules apply only to
+   Ed25519, not to X25519/HPKE keys.
+
+7.7. Encrypted content record implementation
+
+   Content uses the signed wrapper with kind = 3. Its payload is one
+   deterministic CBOR map with exactly these ordered integer keys:
+
+      0  format version       unsigned, exactly 1
+      1  suite                unsigned, exactly 1 (AES-256-GCM/HKDF-SHA256)
+      2  purpose              unsigned: 1 update, 2 checkpoint, 3 frontier,
+                              4 registry field, 5 tail, 6 diff, 7 blob,
+                              8 device sidecar
+      3  content-key ID       byte string, 16 bytes
+      4  per-record salt      byte string, 32 bytes
+      5  ciphertext and tag   byte string; final 16 bytes are the GCM tag
+
+   A content root key is random, 32 bytes, and scoped to one vault, storage
+   generation, write epoch, and object. Its ID and scope are immutable in
+   the key object. A new epoch requires fresh root keys, not relabeling or
+   rewrapping the old roots. Signers likewise bind a device ID to their
+   private signing key; a caller cannot label a seal as another author.
+
+   Define C as the deterministic CBOR map of signed-wrapper fields 0..8
+   (length 9, including the fresh revision). Define H as the deterministic
+   CBOR map of encrypted-payload fields 0..4 (length 5). Then:
+
+      K = HKDF-SHA256(root key, salt,
+            ASCII("zeron/content/key/v1") || 00 || C || H, 32 bytes)
+      AAD = ASCII("zeron/content/aad/v1") || 00 || C || H
+
+   Use K for exactly one AES-256-GCM encryption with a 12-byte zero nonce.
+   Generate the 16-byte revision and 32-byte salt from fresh OS randomness
+   for each new seal. Randomness failure yields no record. The public seal
+   API accepts no caller-provided nonce or salt. The complete encrypted
+   payload is then signed using Section 7.5, and the resulting immutable
+   record is persisted before transport. Retries use those stored bytes;
+   re-encryption always creates a fresh salt and transport revision while
+   preserving semantic command IDs inside the plaintext.
+
+   Opening first verifies the expected wrapper context and author, then
+   requires the expected purpose, key ID, and root-key scope. It derives K
+   and authenticates GCM before returning any plaintext. Unknown formats,
+   suites, and purposes fail closed. Signature-only or plaintext draft
+   records are not a content-encryption fallback.
+
+   The implementation caps plaintext at 16 MiB minus 400 bytes, with a
+   smaller caller-supplied limit for each transport/object type. The 400
+   bytes conservatively cover encryption and signed-wrapper overhead;
+   existing row and sidecar quotas still apply. Length checks precede
+   randomness, copying, and crypto work where possible.
+
+   This selects the per-record-derived-key approach for implementation,
+   not a claim that review is finished. Entropy quality, aggregate key-use
+   budgets, collision/authentication bounds, restored-device identity, and
+   live VM/RNG-state cloning remain explicit release-review requirements.
+   No compatibility with earlier unshipped draft encryption is required.
+
+
+8. Chat Log, Checkpoint, and Cursor Integration
+----------------------------------------------
+
+   Keep ChatRoom an opaque log. No server decryption, Loro replay, or
+   materialization is introduced. Content encryption sits above both the
+   WebSocket and HTTPS transports, not in only one send function.
+
+      Local Loro export -> seal -> durable outbox -> WS or HTTPS
+      WS or HTTPS -> validate -> decrypt -> Loro import -> persist
+
+   Cover every path: new rows, duplicate sends, HTTP fallback, backfill,
+   initial seeds, threshold checkpoints, reset recovery, and rejected-row
+   recovery. Parent and live subagent documents use the same boundary.
+   Clear ping/probe frames may describe transport liveness, not content.
+
+   The checkpoint frontier is independently encrypted/authenticated and
+   bound to the snapshot's manifest. A frontier that cannot be verified
+   MUST NOT be treated as "already contained" or as an empty checkpoint.
+   Decrypt it before planning catch-up. Missing keys are distinguishable
+   from a valid frontier whose state is absent locally.
+
+   Before materialization, authenticate the writer and applicable epoch,
+   verify the envelope, and decrypt. Then apply the existing document
+   semantics. A valid signature does not make arbitrary imported commands
+   safe: the existing host ownership and command authorization rules stay.
+
+   Cursor handling requires an explicit result, rather than the current
+   void apply_row path [R2], for at least these cases:
+
+      Applied and durable       Doc and cursor committed atomically.
+      Key unavailable           Keep data, refresh keys, do not advance.
+      Authentication failed     Pause/quarantine, do not advance.
+      Unsupported version       Require upgrade, do not advance.
+      Import/storage failed     Preserve last good state, do not advance.
+
+   Authentication failure MUST NOT take the current "skip malformed row
+   and persist cursor" branch. Acknowledging a local push also MUST NOT
+   advance the verified receive cursor over an unauthenticated gap.
+   Checkpoint pruning must never cover unverified/unpersisted content.
+
+   If causal imports remain pending, persistence must retain what is needed
+   to resume them; advancing a cursor over state that disappears on export
+   is not acceptable. Keep the existing gap-repair discipline and test it
+   with encrypted data, not only successful single-row imports.
+
+   Bad ciphertext must not cause a rapid reconnect loop. Preserve bounded
+   diagnostic identity, retain last good local state, and require a valid
+   recovery path. The relay may deny availability; clients must not hide
+   this by deleting data or declaring themselves caught up.
+
+
+9. Registry Encryption Without Changing Merge Semantics
+-------------------------------------------------------
+
+   RegistryRoom is a per-field HLC/LWW table, not an opaque document [R4].
+   Encrypting an entire row into one field would cause concurrent changes
+   to different fields to overwrite each other. Preserve its current
+   merge granularity instead.
+
+   The encrypted wire table retains row kind, random row ID, original
+   field names, per-field clocks, and row lifecycle markers. Values such
+   as title, cwd, branch, preview, config, device name, and checkout data
+   are encrypted. Any plaintext field-value exception requires a named
+   addition to the Section 2 disclosure; do not rely on a denylist of
+   today's sensitive fields. New application fields encrypt by default.
+
+   Each winning field retains a self-contained authenticated value and
+   author proof bound to its row, field, clock, and operation semantics.
+   A server-merged row contains contributions from several writers: do
+   not require one writer signature over the final server-assembled row.
+
+   Field deletion is an authenticated field tombstone, not an unproven
+   missing value. Row delete/create/revival records also retain proof.
+   The current merge code clears values and clocks on row deletion; the
+   encrypted protocol MUST preserve sufficient lifecycle evidence for a
+   new client to validate deletion/revival after compaction or full sync.
+   This needs a versioned registry schema, not just encrypt(value).
+
+   A null application value, field deletion, and an absent field must have
+   unambiguous representations matching existing semantics. Reseeding
+   carries original clocks and proofs; it does not impersonate an old
+   author or promote stale values by inventing newer clocks.
+
+   Keep authenticated wire state separate from decrypted projection and
+   pending local edits. Verify every received field/lifecycle record
+   before updating authoritative local state or its committed cursor.
+   An invalid field cannot poison the HLC and make all future writes lose.
+
+   Encryption/key rotation is not a semantic edit. Preserve original
+   conflict clocks during re-encryption. Use a signed generation cutover
+   or a separately specified rekey operation; do not fight the strict
+   newer-clock rule by assigning arbitrary new application timestamps.
+
+   Retain tombstone GC and full-repair behavior only with the required
+   proofs. A server can still omit an entire valid row; signatures do not
+   prove absence. Do not interpret an unauthenticated "full" response as
+   permission to destroy known local state or lower pinned trust policy.
+
+   Sidebar search, sorting, and previews remain local after decryption.
+   Lost server-side plaintext inspection is an intended consequence.
+
+
+10. Device RPC, Attachments, and Other Content Paths
+---------------------------------------------------
+
+   DeviceRoom can retain outer routing fields while forwarding an
+   authenticated encrypted channel [R7]. The channel binds the vault,
+   device identities, negotiated protocol, and a fresh session transcript.
+   Use a reviewed authenticated channel with ephemeral session keys,
+   directional keys, replay protection, and explicit rekey limits.
+
+   A relay-assigned connection ID is not a cryptographic device identity.
+   Authenticate the peer and membership before exposing serve_connection
+   or executing RPC. Scope each channel to one profile; the current
+   installation-wide device ID must not authorize another profile.
+   A claimed transport echo or backend control frame cannot authorize a
+   command, unlock keys, or establish end-to-end peer health.
+
+   Protect the entire application payload, including RPC method/arguments,
+   replies, streams, terminal bytes, directory names, file chunks, and
+   errors that contain workspace data. This covers the current host-local
+   attachment path without adding R2 mirroring [R6]. Existing path jails,
+   command deduplication, and method authorization remain necessary.
+
+   Local-only key-management operations MUST NOT become callable merely
+   because the existing RPC surface is forwarded through an encrypted
+   channel. Do not expose device private keys or recovery material through
+   diagnostic/export methods.
+
+   Tail, diff, and device sidecar publishers use typed encrypted codecs.
+   The legacy working-tree diff route must migrate to a ciphertext-capable
+   endpoint or be disabled for encrypted profiles. The same rule applies
+   to readers: no legacy fallback fetch when decryption fails.
+
+   R2 tool blobs include finished subagent transcripts [R5]. Use opaque
+   object IDs and encrypted descriptors for filenames, media types, source
+   paths, and plaintext checksums. Serve ciphertext as octet-stream where
+   appropriate. No public plaintext-content-addressed deduplication.
+
+   A nudge may name only an opaque room/device route. It is a wake-up hint,
+   never authority to execute. The host fetches and verifies the queued
+   command. Rich presence, future notification previews, exports, and new
+   attachment mirrors must pass the same content-path review before use.
+
+
+11. Revocation and Key Rotation
+-------------------------------
+
+   Removing an envelope is not revocation: a device may already know the
+   workspace and content keys. A complete transition is:
+
+      1. Authorize a signed membership change from a trusted device.
+      2. Prepare a fresh random write epoch and fresh active content keys.
+      3. Publish key envelopes for retained devices and recovery.
+      4. Fence old-epoch writers and close revoked device sessions.
+      5. Activate the new epoch; confirm retained devices can catch up.
+
+   Publication and activation need an explicit recoverable transaction
+   protocol. A crash must not activate keys that no retained device or
+   recovery bundle can obtain. Competing rotations use the membership
+   compare-and-swap rule, not independent last-write-wins updates.
+
+   Rotate keys used for new chat updates, checkpoints, registry values,
+   blobs, and live channels. Rewrapping the same content keys under a new
+   vault key is insufficient. Dormant objects may keep historical keys
+   for reading, but their first subsequent write must use a fresh active
+   key. New full snapshots use new keys even if they contain old content.
+
+   Honest server enforcement rejects old-epoch new writes, including from
+   stale clients. Reconnecting retained clients first obtain and verify
+   the active policy, then re-encrypt queued local work. Do not upload an
+   old outbox first and refresh membership afterward. Preserve semantic
+   command IDs to avoid executing the same intent twice.
+
+   Historical old-epoch records remain readable with their original
+   proofs. The protocol must distinguish accepted history from a new
+   submission claiming to be history; a writer timestamp is not proof of
+   acceptance before revocation. Epoch closure/frontier rules are a
+   blocking review item, including checkpoint replacement and restore.
+
+   Offline devices learn of revocation on reconnect. A malicious server
+   can withhold the transition from a stale device; v1 does not promise
+   immediate global revocation or perfect freshness under partition.
+   Once a client learns a new policy it MUST reject rollback. If a future
+   requirement demands bounded freshness, it needs a separate availability
+   trade-off rather than an undocumented timeout.
+
+   Required removal copy:
+
+      "This stops future sync access after the change takes effect.
+       It cannot erase information the device already downloaded."
+
+
+12. Migration, Compatibility, and Old Plaintext Copies
+------------------------------------------------------
+
+12.1. State and ordering
+
+      LEGACY -> PREPARING -> WRITE-FENCED -> COPYING -> VERIFYING
+                                                        |
+                                                        v
+                                          ENCRYPTED / LEGACY RETAINED
+                                                        |
+                                                explicit cleanup
+                                                        |
+                                                        v
+                                          ENCRYPTED / RETENTION STATUS
+
+   Migration is per profile, resumable, and explicitly initiated. Its
+   encrypted manifest records source objects, revisions, progress, and
+   failures without publishing sensitive labels in cleartext.
+
+      A. Preflight. Inventory sessions, subagent docs, registry rows,
+         sidecars, blobs, local pending work, and available host copies.
+         Require a saved recovery kit and upgrade/stop every known legacy
+         content producer, including offline devices before their next
+         use. Obtain explicit confirmation for unavailable devices; do
+         not equate a server block with stopping their plaintext requests.
+         Missing sources block completion or require an explicit exclusion
+         recorded for the user; never silently drop history.
+
+      B. Quiesce and fence. Pause/drain content producers, close old
+         sockets, and reject new legacy writes for the profile. Record
+         final source revisions after in-flight writes are fenced.
+         Offline clients keep local work until they upgrade/rejoin.
+
+      C. Copy. Create fresh encrypted storage generations and seed them
+         from the final source state. Preserve Loro lineage, semantic
+         chat/command IDs, and host processed-command ledgers. Maintain
+         encrypted mappings to new random transport IDs. Encryption
+         alone is not a reason to rebuild or replay command history.
+
+      D. Verify. Check decryptability, source coverage, pending-work
+         continuity, and recovery-bundle completeness. A second approved
+         device SHOULD test restore; the originating device MUST also
+         test the actual saved recovery kit/bundle before activation.
+
+      E. Activate. Publish and pin the signed encrypted-only policy after
+         target data and envelopes are durable. Resume only encrypted
+         writers. Show retained legacy-copy status separately.
+
+      F. Clean up. Offer a separately confirmed cleanup operation after
+         validation and the agreed retention decision. Keep a record of
+         what was removed, what remains, and what cannot be verified.
+
+   Local pending commands may be created while offline/migrating but must
+   not leak into old transports. No plaintext/ciphertext dual-write.
+   Source snapshots are retained until validation and explicit cleanup.
+   A crash at any stage resumes from durable progress, not from guesswork.
+
+12.2. Server enforcement and downgrade resistance
+
+   New ciphertext namespaces alone are not sufficient: an old client may
+   continue uploading plaintext to its old room, blob, or diff endpoint.
+   The Worker and DO paths need profile-scoped legacy-write fences and
+   capability checks covering existing sockets as well as new requests.
+
+   A rejection prevents accepted writes, not disclosure of request bytes
+   already sent to the backend. Even a revoked bearer can accompany a
+   plaintext body before rejection. Activation therefore requires the
+   client upgrade/stop precondition in 12.1; it cannot be guaranteed solely
+   by server code. Display the risk of restarting an obsolete client.
+   Compatible clients must check their local gate before serializing any
+   content and refresh policy before resuming content transport.
+
+   Some current routes identify only chat/device/user, not the full
+   profile. The implementation must establish authoritative ownership and
+   migration mappings before fencing; it must not trust a caller's new
+   profile label or disable unrelated profiles belonging to the user.
+   Unknown legacy room creation for an activated profile must be denied.
+   Route inventory and coverage are a release gate, not follow-up work.
+
+   Client version strings alone are not proof of encryption or device
+   identity. Enforce protocol framing and device possession, and retain
+   client-side encrypted-only policy pins. A malicious authorized device
+   can intentionally disclose plaintext; that is outside this promise.
+
+   Every supported downgrade target must honor encrypted local-profile
+   markers and stop with an upgrade-required error rather than interpret
+   missing data as a fresh legacy profile. A marker cannot retrofit checks
+   into already shipped binaries: those versions are unsupported and must
+   stay stopped until upgraded. Define the safe local-layout transition
+   and downgrade range explicitly. Losing local pins or an empty bootstrap
+   response must not auto-create a replacement vault over existing data.
+
+   Before fencing, setup can be canceled without changing legacy sync.
+   After fencing, pause/resume is safe; abandoning the transition requires
+   an explicit reviewed path. After activation, rollback means restoring
+   an earlier compatible encrypted client/state, never plaintext sync.
+
+12.3. Historical copies
+
+   Re-encrypting data does not undo previous exposure. Cleanup inventory
+   must include active and legacy DO namespaces, tails/diffs, R2 blobs,
+   chat and registry backups, historical attachment objects, any configured
+   provider recovery snapshots, and operational exports/log retention.
+   Inspect actual deployment retention; do not invent a deletion deadline.
+
+   Nightly backup sequencing must be generation-aware. The existing
+   monotonic-sequence guard must not cause an older plaintext backup to
+   remain the apparent current backup after an encrypted generation starts
+   at a lower sequence. Ciphertext backup manifests retain key references.
+
+   A cleanup receipt cannot prove an operator never copied plaintext.
+   Do not label data "never exposed" or promise cryptographic erasure of
+   prior plaintext. Cleanup of cloud data is separate from local cache
+   cleanup and is not performed by this RFC.
+
+
+13. Local Storage, Observability, and Operational Limits
+-------------------------------------------------------
+
+   Use platform secure storage for device keys with deliberate access and
+   backup attributes. On Apple platforms, do not blindly reuse the auth
+   token helper: encryption enrollment requires checked persistence errors
+   and an explicit device-only versus restorable-key policy [R10].
+   Device identity must not be silently cloned through OS backup/restore.
+
+   Existing SQLite snapshots, run journals, staged attachments, and UI
+   caches may contain plaintext on approved endpoints. This RFC does not
+   retrofit full local-at-rest encryption. Document that boundary and keep
+   profile isolation, file permissions, and OS disk protection intact.
+   Do not imply the vault is locked if readable local data remains exposed
+   under an independent application-cache policy.
+
+   Device approval is not complete until key storage is durable. Handle
+   secure-store denial, full disk, interrupted writes, and restored backups
+   without generating a second untracked identity or losing the keyring.
+   Avoid plaintext key material in crash dumps and diagnostics as far as
+   supported by platform/library facilities; never claim perfect memory
+   erasure on a running endpoint.
+
+   Observability may include coarse error codes, protocol versions, random
+   identifiers, queue lengths, ciphertext sizes, and key-epoch numbers.
+   These remain metadata with a retention/access policy, not public data.
+   MUST NOT log secrets, cleartext bodies, decrypted previews, paths,
+   enrollment secrets, recovery keys, or authorization-bearing URLs.
+   Error formatting from parsers/HTTP clients needs the same review.
+
+   Support can diagnose transport, authorization, and ciphertext integrity
+   without obtaining user keys. Any user-exported diagnostic package is
+   locally reviewed/redacted and explicitly consented; no automatic upload
+   of plaintext under the label "debugging".
+
+   Server-assisted search or previews over plaintext are unavailable.
+   Notifications, if added, must use generic text or device-side decryption.
+   Backup restore works with ciphertext plus the appropriate keys; the
+   backend can restore bytes without gaining the ability to inspect them.
+
+
+14. Implementation Sequence and Acceptance Tests
+------------------------------------------------
+
+14.1. Workstreams
+
+   Phase 1  This RFC, threat/UX review, and resolution of protocol gates.
+            No production changes. Record decisions before coding them.
+
+   Phase 2  Implement the reviewed record codecs and Rust/Swift vectors;
+            device secure storage, signed vault/membership records,
+            bootstrap service, pairing, recovery, and native/CLI states.
+
+   Phase 3  Chat transport and frontier/checkpoint integration using those
+            codecs; durable outbox and explicit verified-cursor outcomes.
+
+   Phase 4  Registry field/lifecycle proofs, device channels, attachments,
+            tails/diffs, R2/subagent blobs, and diagnostics review.
+
+   Phase 5  Capability fences, migration journal, generation-aware backups,
+            old-client handling, and consented legacy-copy cleanup tooling.
+
+   Phase 6  End-to-end security/reliability review, opt-in rollout, and
+            operational recovery exercises with ciphertext-only storage.
+
+   The user-visible feature switch stays unavailable until all content
+   paths and migration requirements are satisfied. Workstreams may be
+   separate PRs; a partially encrypted deployment is not a public beta
+   claiming full workspace protection.
+
+14.2. Acceptance matrix
+
+   Test group                 Required result
+   -------------------------  -------------------------------------------
+   Cross-language vectors     Rust and Swift agree on key envelopes,
+                              signatures, AAD, failures, and wire bytes.
+
+   Untrusted backend          Account credentials plus DO/R2/bootstrap
+                              dumps cannot decrypt data or enroll a peer
+                              without the required cryptographic proof.
+
+   Pairing attacks            Substituted keys, wrong vault, mismatched
+                              code, expired/replayed request, and absent
+                              user approval all fail without enrollment.
+
+   Recovery                   Recover without an old device, including
+                              after multiple key rotations. Test a lost
+                              kit, replaced kit, stale bundle, and failed
+                              persistence. No auth-only recovery path.
+
+   Ciphertext validation      Wrong key, modified header/body/tag/proof,
+                              cross-chat/field substitution, truncation,
+                              and unsupported version never materialize.
+
+   Nonce/retry safety         Crash, concurrent writers, cloned/restored
+                              storage, resend, and rekey cannot reuse a
+                              key/nonce for different plaintext.
+
+   Cursor durability          Missing keys, invalid proof, disk failure,
+                              pending causal ops, and interleaved own ACK
+                              do not advance over uncommitted content.
+
+   Transport parity           WS and HTTPS fallback support the same
+                              security checks, offline outbox, dedupe,
+                              reconnect, and bounded failure handling.
+
+   Checkpoint resume          Replacement at equal covered sequence,
+                              changed revision, and mixed byte ranges
+                              cannot produce accepted spliced plaintext.
+
+   Registry convergence       Concurrent different-field edits survive;
+                              null/delete/revival, GC, reseed, rekey, and
+                              original clocks match existing semantics.
+                              Invalid proofs cannot poison valid state.
+
+   Device channel             Wrong peer/profile, replayed handshake or
+                              command, relay-forged health, and revoked
+                              membership cannot authorize application RPC.
+
+   Revocation                 Rotate active keys, reject new old-epoch
+                              writes, retain valid history, and catch up
+                              retained offline devices without duplicate
+                              commands. Test interrupted/concurrent changes.
+
+   Migration                  Resume every interrupted stage; preserve
+                              lineage, IDs, pending work, and host ledgers.
+                              Compatible clients emit no plaintext; legacy
+                              writes are not accepted. Test upgrade/stop
+                              preflight, not just server rejection.
+                              Missing sources cannot look like completion.
+
+   Plaintext canaries         Seed distinctive titles, paths, branch names,
+                              file/terminal content, attachments, and
+                              subagent output. Capture request payloads
+                              after sealing, DO/R2 state, sidecars, and
+                              diagnostics; none contain the cleartext.
+                              Decode representations before scanning;
+                              base64 is not evidence of encryption.
+
+   Backup and cleanup         Restore encrypted data using recovery keys;
+                              verify generation selection and old-copy
+                              inventory/retention reporting. A cleanup
+                              test cannot claim deletion of unknown copies.
+
+   UI and platform failures   No empty-success transcript, implicit
+                              downgrade, unapproved auto-enrollment, or
+                              lost draft on lock/sign-out/secure-store
+                              failure. Headless restart behavior matches
+                              the chosen credential mode.
+
+   Extend existing Rust sync/engine/RPC tests, Swift sync tests, and edge
+   unit/workerd tests [R11]. A crypto unit test alone does not demonstrate
+   end-to-end coverage. Include a two-native-device plus headless scenario
+   and a restore performed without backend access to any private key.
+
+
+15. Blocking Review Decisions and Alternatives
+----------------------------------------------
+
+   The product decisions in Section 1 are proposed for acceptance now.
+   The following technical gates need explicit decisions and test vectors,
+   not silent choices scattered across later PRs:
+
+   G1. Exact pairing/channel construction, human verification flow, and
+       audited Rust/Swift implementations. Freeze one versioned suite;
+       do not negotiate a weaker legacy mode.
+
+   G2. Canonical record/signature encoding, domain-separation labels,
+       nonce/subkey allocation with restart/clone safety, usage limits,
+       and immutable checkpoint/chunk manifests.
+
+   G3. Membership history retention, epoch closure/frontiers, recovery
+       authority transitions, and the distinction between accepted old
+       history and a new old-epoch forgery after revocation.
+
+   G4. Registry lifecycle proof schema, tombstone compaction, original-clock
+       reseeding, and rekey behavior without changing conflict semantics.
+
+   G5. Secure-store adapters and backup/restore policy on macOS, iOS, and
+       Linux/headless hosts; enforceable old-client local-schema behavior.
+
+   G6. Profile ownership for legacy routes, in-flight write fencing,
+       migration cancellation/recovery, and measured retention of old
+       cloud copies. These need deployment verification, not assumptions.
+
+   Implementation direction accepted by the maintainer on 2026-09-04:
+
+      - Native CryptoKit content/key-envelope operations on Swift, a small
+        reusable Rust crypto boundary, and a shared Rust channel through
+        a narrow Swift bridge rather than a second handshake implementation.
+      - Device-bound, non-syncing iOS Keychain keys accessible after the
+        first unlock following boot; replacement devices approve/recover.
+      - Explicit opt-in unattended headless operation using supported
+        protected service credentials, with unlock-on-boot also available
+        and no silent plaintext-file fallback.
+      - A grouped, checksummed Base32 recovery secret and a locally saved
+        recovery file carrying vault/trust-anchor metadata.
+
+   These choices select implementation/UX directions, not exact wire
+   encodings, nonce rules, libraries, or closure of the gates above.
+
+   Before broad release, an independent security review SHOULD cover the
+   complete construction and its implementation, particularly pairing,
+   recovery, revocation, and the command-bearing device channel. Review
+   findings and unresolved limitations must be tracked as release gates.
+
+   Alternatives considered:
+
+      Blob-only encryption   Rejected as the feature boundary: tails,
+                             diffs, registry, and RPC still expose data.
+
+      Whole-registry blob    Rejected for v1: changes independent-field
+                             merging or recreates a client-log design.
+
+      Login-derived keys     Rejected: account recovery/compromise becomes
+                             decryption authority; password/SSO coupling.
+
+      One permanent key      Rejected: device removal cannot protect
+                             future writes and key usage is unbounded.
+
+      Server/admin escrow    Rejected: does not meet backend-confidentiality
+                             goal. An enterprise escrow product, if ever
+                             added, needs different explicit claims.
+
+      Per-space grants       Deferred: useful for restricted VPS runners,
+                             but requires finer key and RPC authorization
+                             boundaries than the current full-peer model.
+
+      Passkey-only recovery  Deferred: may improve UX later, but requires
+                             a separately reviewed cross-platform key
+                             derivation and recovery story, not merely a
+                             successful WebAuthn login.
+
+      Local-at-rest vault    Deferred as a separate project. Protecting
+                             transport/cloud copies does not encrypt
+                             existing endpoint files and run journals.
+
+
+16. Repository References
+--------------------------
+
+   Paths are repository-relative. Function/type names are preferred over
+   line numbers so this memo survives nearby edits. Baseline: a0650ab.
+
+   [R1] Opaque chat storage, frame codec, backup and HTTP surfaces:
+        edge/src/chat-log.ts
+        edge/src/chat-room.ts
+        edge/src/chat-frames.ts
+
+   [R2] Rust chat transport, sink, persistence, and checkpoint fetch:
+        crates/sync/src/chat_client.rs
+        crates/sync/src/store.rs
+        crates/engine/src/chat2_host.rs
+        Types: ChatClient, ChatDocSink, EngineChatSink,
+               EdgeCheckpointFetcher, EdgeChatTransport.
+
+   [R3] Seeds, tail/checkpoint publishing, and blob upload/read:
+        crates/engine/src/doc_host.rs
+        Functions: chat2_maintenance, spawn_chat2_checkpoint,
+                   upload_tool_sidecar, fetch_tool_blob.
+
+   [R4] Registry field merge, authoritative state, and transport:
+        edge/src/registry-core.ts
+        edge/src/registry-room.ts
+        crates/doc/src/registry.rs
+        crates/sync/src/registry.rs
+        crates/engine/src/workspace_host.rs
+        docs/registry-sync.md
+
+   [R5] Legacy diff and finished subagent blob publication:
+        crates/engine/src/diff_sync.rs
+        crates/engine/src/sessions.rs
+        edge/src/index.ts
+
+   [R6] Host-local attachments and device transfer:
+        crates/engine/src/uploads.rs
+        apps/ios/Zeron/Sync/SessionStore.swift
+        apps/ios/Zeron/Sync/UploadStash.swift
+
+   [R7] Device routing, sidecars, and RPC channel boundary:
+        edge/src/device-room.ts
+        crates/rpc/src/device_room.rs
+        apps/ios/Zeron/Sync/DeviceRelayClient.swift
+
+   [R8] Native Swift chat and registry clients:
+        apps/ios/Zeron/Sync/ChatRoomClient.swift
+        apps/ios/Zeron/Sync/RegistryClient.swift
+        apps/ios/Zeron/Sync/RegistryCore.swift
+        apps/ios/Zeron/Sync/DocDisk.swift
+        apps/ios/Zeron/Sync/WorkspaceStore.swift
+
+   [R9] Profile, auth, and account-scoped storage:
+        crates/engine/src/profile.rs
+        crates/engine/src/auth.rs
+        ARCHITECTURE.md
+
+   [R10] Existing keychain helper and desktop device settings:
+         apps/ios/Zeron/Auth/AuthClient.swift
+         crates/ui/src/settings/devices.rs
+
+   [R11] Existing test infrastructure:
+         crates/sync/src/chat_client/tests.rs
+         crates/sync/tests/
+         crates/engine/tests/
+         crates/rpc/tests/device_room.rs
+         apps/ios/ZeronTests/
+         edge/package.json
+
+   [R12] Historical chat-log design and migration context:
+         docs/chat2-sync.md
+         Some status and sidecar notes are historical; consult code.
+
+
+                         -- End of Draft 00 --

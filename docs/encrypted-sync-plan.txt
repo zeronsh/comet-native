@@ -1,0 +1,1520 @@
+Zeron Project                                              September 2026
+Project Plan: Encrypted Sync                             Date: 2026-09-04
+Status: Implementation in progress / encrypted-sync activation unavailable
+Branch: feat/encrypted-sync
+Design: docs/rfc-0001-encrypted-sync.txt (Draft 00)
+Code baseline: a0650ab
+
+
+                  ENCRYPTED SYNC: DELIVERY PROJECT PLAN
+                  ====================================
+
+1. Outcome and Boundaries
+--------------------------
+
+   Deliver opt-in end-to-end encrypted sync for one personal account
+   vault per (orgId, userId). This is PER USER WITHIN AN ORGANISATION,
+   not per project, not per chat, and not shared with other organisation
+   members. All projects/spaces in that profile belong to the same vault.
+
+   Success means a user can:
+
+      - Enable encryption without losing sessions or queued commands.
+      - Approve a desktop, phone, or headless host once, then use normal
+        streaming, offline reads, queued sends, and remote control.
+      - Recover using the saved recovery kit without an existing device.
+      - Remove a device and protect subsequent writes through key rotation.
+      - Understand retained legacy copies and endpoint/metadata limits.
+
+   The backend receives ciphertext on every content-bearing path. Login
+   alone cannot unlock the vault. Every approved device, including a VPS,
+   is a full-trust peer in v1; restricted runners are not part of this plan.
+
+   Non-goals: per-project grants, organisation sharing, server key escrow,
+   local-at-rest encryption, model-provider confidentiality, traffic hiding,
+   guaranteed erasure of previous copies, or plaintext downgrade.
+
+   The RFC is the security contract; this plan organises delivery. If an
+   implementation needs to change that contract, amend/review the RFC first.
+   Existing user changes are not part of the project merely because they
+   are present on this branch. Do not bundle unrelated iOS work into PRs.
+
+
+2. Current Status and Working Rules
+-----------------------------------
+
+   Existing artefacts:
+
+      [x] Draft RFC written and repository data paths investigated.
+      [x] Per-user, per-organisation scope clarified with the maintainer.
+      [x] Dedicated feature branch created from the current main checkout.
+      [ ] RFC protocol gates G1-G6 resolved and recorded.
+      [ ] Implementation, migration, and deployment.
+
+   All ES work packages below start PENDING. A written design is not an
+   implemented control, and a passing crypto test is not complete sync.
+
+   Maintainer direction (2026-09-04):
+      - Commit and push notable progress to PR #252 and keep its status
+        updated without waiting for another commit/push request.
+      - Deliver encrypted sync as one feature in this PR. No encryption
+        format has shipped; draft codecs may be replaced directly. Do not
+        add compatibility layers or migrations for earlier draft formats.
+      - This does not remove the need to migrate existing plaintext data,
+        stop old plaintext producers, or preserve user data.
+      - Fix the pinned GPUI dependency setup and use normal workspace tests
+        rather than treating an offline checkout failure as permanent.
+      - Proceed with implementation using idiomatic defaults. Security
+        review and complete coverage remain release gates, not a reason
+        to preserve unshipped prototypes or postpone implementation.
+
+   Before starting a package:
+
+      1. Assign one accountable owner and a reviewer; roles below are
+         planning labels, not assignments to particular people.
+      2. Confirm dependencies and record exact design decisions for the
+         slice before coding. Track unresolved protocol/security risks as
+         blockers to production activation, with tests and review evidence.
+      3. Capture the existing test baseline and write the failing fixture
+         or regression test for the behaviour being introduced.
+      4. Keep changes narrow and preserve existing comments/conventions.
+      5. Attach acceptance evidence to the PR; update package status only
+         after that evidence is reviewed.
+
+   New cryptographic dependencies require provenance, age, build/install,
+   and source review before installation or execution. Do not weaken
+   repository security controls or use floating latest versions to unblock
+   a build. Library selection and independent security review are explicit
+   work, not assumptions hidden in a coding task.
+
+   Milestone commits/PR updates and restoring pinned build dependencies
+   are authorised by the maintainer's current direction above. Production
+   requests, data deletion, and release still require separate approval.
+   New dependencies still require supply-chain review. Historical discovery
+   entries below describe what had run at each point, not the current limit.
+
+
+3. Milestones and Dependency Order
+----------------------------------
+
+   Milestone   Required packages        Observable exit
+   ----------  -----------------------  ---------------------------------
+   M0 Design   ES-01, ES-02              Reviewed protocol decisions and
+                                        complete content/legacy inventory.
+
+   M1 Access   ES-03 through ES-07       Two native clients can enrol and
+                                        recover a synthetic vault; a
+                                        headless host can restart safely.
+
+   M2 Chats    ES-08, ES-09              Encrypted chat rows/checkpoints
+                                        survive disconnects and restores.
+
+   M3 Coverage ES-10 through ES-13       Registry, RPC, sidecars, blobs,
+                                        and rotation work end to end.
+
+   M4 Upgrade  ES-14                     A fixture legacy account migrates
+                                        without lost or replayed work.
+
+   M5 Release  ES-15, ES-16              Security/reliability evidence and
+                                        an approved staged rollout.
+
+   M1 and M2 are test milestones, not public encrypted-sync releases.
+   The user-facing activation switch remains unavailable until M5 gates
+   are satisfied. Internal tests use synthetic, explicitly isolated data.
+
+   Dependency table (numbers refer to ES packages):
+
+      01: none                         09: 02, 08
+      02: none                         10: 02, 03, 04, 05
+      03: 01, 02                       11: 03, 04, 05, 06
+      04: 01, 02, 03                   12: 09, 10, 11
+      05: 01, 02, 03                   13: 05, 06, 08, 09, 10, 11, 12
+      06: 03, 04, 05                   14: 02, 07, 13
+      07: 04, 06                       15: 07, 14
+      08: 03, 04, 05                   16: 15
+
+   Practical sequence:
+
+      01 + 02 -> 03 -> 04 + 05 -> 06 -> 07
+                                  |       |
+                                  |       +-> 11 --+
+                                  +-> 08 -> 09 ---+-> 12 -> 13 -> 14
+                                  +-> 10 --------+              |
+                                                               15 -> 16
+
+   The dependency table is authoritative. Parallel work is possible on
+   independent adapters and test fixtures once shared interfaces are
+   frozen. Do not parallelise incompatible edits to shared protocol or
+   schema files. Bootstrap, registry lifecycle proofs, and migration
+   ownership mapping are distinct designs, not one large transport patch.
+
+
+4. Work Packages
+-----------------
+
+ES-01  Resolve protocol and trust decisions
+
+   Role: Protocol/security lead, with Rust and Swift reviewers.
+   Depends: None. RFC: Sections 5-7, 11, 15; gates G1-G3 and crypto part G5.
+
+   Deliver:
+      - Freeze pairing/channel construction, cipher suite, canonical
+        records, signature/AAD inputs, key labels, and nonce allocation.
+      - Specify membership authority, genesis pins, concurrent changes,
+        recovery-authority replacement, and accepted-history boundaries.
+      - Specify crash/clone-safe key usage, immutable checkpoint identity,
+        epoch activation, revocation freshness limits, and test vectors.
+      - Select/vet compatible libraries; decide module placement. Prefer
+        a small reusable Rust crypto boundary shared by sync and RPC,
+        with an interoperable Swift counterpart. No parallel protocols.
+
+   Acceptance:
+      - Every G1-G3 decision has a recorded answer, reviewer, and negative
+        test case; key/epoch dependencies have no bootstrap cycle.
+      - A protocol reviewer can explain how key substitution, replay,
+        nonce reuse, stale recovery, and revocation are handled or limited.
+      - No implementation starts by inventing unspecified crypto details.
+
+ES-02  Inventory surfaces, schemas, legacy ownership, and baselines
+
+   Role: Engine/edge lead with platform and privacy reviewers.
+   Depends: None; coordinates with ES-01. RFC: Sections 3, 9, 12-13; G4-G6.
+
+   Deliver:
+      - A route/publisher/reader/storage matrix, including legacy paths,
+        subagent docs/blobs, attachments, sidecars, and diagnostic sinks.
+      - A registry lifecycle-proof/rekey design preserving HLC semantics.
+      - A profile ownership/fencing design for routes that currently carry
+        only chat, user, or installation device IDs; identify ambiguity.
+      - Secure-store/restore policy and safe local schema/downgrade range.
+      - Existing test results, synthetic thin-link/streaming baselines,
+        and reviewed latency, memory, frame-size, and byte budgets.
+      - A deployment-retention investigation plan. Use approved read-only
+        access for actual verification; mark unknown retention as unknown.
+
+   Acceptance:
+      - Every inventory row has an implementation package and test owner.
+      - G4/G5 designs and G6 route/fencing design are reviewed. Deployment
+        retention evidence may remain open until ES-14, blocking release.
+      - No inferred organisation ownership or assumption that server
+        rejection prevents a legacy client from sending plaintext.
+
+ES-03  Implement shared record codecs and cross-language fixtures
+
+   Role: Rust crypto and Swift platform owners.
+   Depends: ES-01, ES-02. RFC: Section 7.
+   Seams: Proposed reusable Rust module/crate; Swift Sync crypto module.
+
+   Deliver:
+      - Seal/open, signature verification, HPKE envelopes, manifest and
+        membership codecs, key types, and structured failure results.
+      - Fixed synthetic positive/negative fixtures consumed by both
+        languages. Include keyring, recovery, field, row, and blob forms.
+      - Bounded parsing, key/nonce usage checks, deterministic signed
+        encoding, and safe secret handling. No HTTP or UI in primitives.
+
+   Acceptance:
+      - Rust writes are readable by Swift and vice versa; fixtures agree
+        byte-for-byte, including errors and canonical encoding rules.
+      - Wrong vault/object/kind/epoch/author, duplicate fields, corrupted
+        ciphertext, oversized lengths, and unknown versions fail closed.
+      - Crash/restore/concurrent-writer nonce rules are tested, not merely
+        covered by comments. No secrets in debug/serialization output.
+
+ES-04  Secure storage and the account-vault lifecycle gate
+
+   Role: Engine/platform owner with macOS, iOS, and Linux review.
+   Depends: ES-01, ES-02, ES-03. RFC: Sections 4-5, 13; G5.
+   Seams: engine profile/auth/startup; proto states; iOS AppConfig/AppModel.
+
+   Deliver:
+      - Per-profile device identity and protected local keyring storage.
+      - Explicit account, profile, vault, and transport states rather than
+        one connected flag. Gate content producers before serialisation.
+      - Sign-out, key locking, restored-device identity, account switching,
+        and headless unattended versus unlock-on-boot policies.
+      - In-memory/fault-injection secure-store adapters for tests, plus
+        native adapters with checked persistence/access errors.
+
+   Acceptance:
+      - Login/refresh alone starts no encrypted-profile content transport.
+      - A locked store, denied keychain, failed write, or restored clone
+        does not erase keys, enrol twice, or fall back to a cleartext file.
+      - Local-only/profile isolation tests remain valid. The UI does not
+        promise local-cache encryption just because sync keys are locked.
+
+ES-05  Bootstrap, membership, and policy control plane
+
+   Role: Edge owner plus native control-plane owners.
+   Depends: ES-01, ES-02, ES-03. RFC: Sections 5-6, 11.
+   Seams: edge routing/auth and a proposed vault-control store; clients.
+
+   Deliver:
+      - Versioned descriptor, signed membership revision/CAS, recipient
+        envelopes, recovery envelopes, and staged epoch activation.
+      - Short-lived enrolment requests, device-possession proof, account
+        scoping, request limits, and minimal auditable public metadata.
+      - Client verification and local pins; bootstrap independent of the
+        registry whose keys it supplies. Explicit missing/stale states.
+
+   Acceptance:
+      - Account session plus backend dump cannot unlock or approve a peer.
+      - Forged author, changed recipient, wrong profile, replayed change,
+        stale CAS, and an absent descriptor cannot reset trust.
+      - Crash/retry tests do not activate an epoch without durable device
+        and recovery envelopes. No private key or plaintext keyring on edge.
+
+ES-06  Pairing and recovery engines
+
+   Role: Native protocol owner; security review required.
+   Depends: ES-03, ES-04, ES-05. RFC: Sections 4, 6.
+   Seams: Rust/Swift vault services above crypto and below UI.
+
+   Deliver:
+      - QR and comparison-code pairing, explicit approval, possession
+        receipt, cancellation, expiry, retry, and rejected-request states.
+      - Recovery-kit creation/verification, restore, replacement, and
+        recovery-authority transition using the selected protocol.
+      - Publish updated recovery envelopes using the recovery public key;
+        ordinary devices never need to retain the offline recovery secret.
+
+   Acceptance:
+      - Native A approves native B through an untrusted test relay.
+      - Key substitution, code mismatch, cross-vault pairing, replay, and
+        interrupted persistence fail without accidental enrolment.
+      - Restore without A works from actual saved kit/bundle bytes, not
+        an in-memory shortcut; a replaced kit and stale bundle are tested.
+
+ES-07  Desktop, iOS, and headless product flows
+
+   Role: Desktop UI, iOS, and CLI owners.
+   Depends: ES-04, ES-06. RFC: Section 4.
+   Seams: ui settings/devices; iOS views/AppModel; apps/zeron command layer.
+
+   Deliver:
+      - Setup/recovery-kit confirmation, approve-device, trusted-device
+        list, remove-device confirmation, and recovery screens.
+      - Clear states for locked, not approved, key update, verification
+        failure, offline, and revoked; preserve drafts/last-good content.
+      - Headless pairing and explicit credential mode. Full-vault and
+        device-management authority warning on VPS approval.
+      - Testable flow models; feature capability gate remains closed to
+        real-user activation until the release gate is met. Removal UI
+        may use a test model here, but its real action stays disabled
+        until ES-13 supplies complete cross-surface revocation.
+
+   Acceptance:
+      - Rust and Swift copy/state transitions have matching meaning.
+      - Cancelling, sleeping, signing out, or restarting mid-flow does not
+        lose drafts or create hidden memberships. Accessibility/keyboard
+        flows work without requiring a camera or routine extra password.
+      - Keys and recovery secrets never enter telemetry, command arguments,
+        history, general RPC, or remotely captured enrolment logs.
+
+ES-08  Durable encrypted chat rows and verified cursor semantics
+
+   Role: Sync/engine owner with Swift sync owner.
+   Depends: ES-03, ES-04, ES-05. RFC: Sections 7-8.
+   Seams: sync chat_client/store; engine chat2_host/doc_host;
+          iOS ChatRoomClient/SessionStore/DocDisk.
+
+   Deliver:
+      - Encrypt once into a durable immutable batch outbox shared by WS
+        and HTTPS. Preserve semantic command IDs across transport retries.
+      - Explicit verified/durable apply outcomes replacing void row import.
+      - Verify author, epoch, and envelope before Loro import; persist
+        snapshot and receive cursor atomically, including failure paths.
+      - Preserve causal pending data and verified gaps across restarts.
+
+   Acceptance:
+      - Missing key, failed authentication, failed disk write, unknown
+        version, and interleaved own ACK never skip an unread gap.
+      - Reconnect and HTTP fallback replay identical ciphertext/batch IDs
+        without duplicate commands or an unbounded crypto retry loop.
+      - Parent and live subagent docs use the same encrypted boundary;
+        local-only operation is unchanged.
+
+ES-09  Encrypted checkpoints, frontiers, and generation-aware backups
+
+   Role: Sync/edge owner with Swift reader review.
+   Depends: ES-02, ES-08. RFC: Sections 7.4, 8, 12.3.
+   Seams: engine chat2_host/doc_host; edge chat-room/chat-log;
+          iOS checkpoint/resume path.
+
+   Deliver:
+      - Sealed frontier and snapshot bound to one immutable manifest.
+      - Range-resumable ciphertext reads with revision/digest validators.
+      - All seed, threshold, reset, and rejected-row recovery publishers.
+      - Generation-aware backup identity and key references; maintain the
+        opaque-log/no-server-Loro architecture.
+
+   Acceptance:
+      - Mid-download replacement, including at the same covered sequence,
+        cannot splice different checkpoints into accepted plaintext.
+      - A missing/invalid frontier never counts as contained. No pruning
+        covers unverified/unpersisted state; resumed work remains bounded.
+      - A lower-sequence new generation does not leave a legacy backup
+        labelled current. Restore uses ciphertext and client-held keys.
+
+ES-10  Encrypted registry fields and lifecycle proofs
+
+   Role: Registry owner across TypeScript, Rust, and Swift.
+   Depends: ES-02, ES-03, ES-04, ES-05. RFC: Section 9; G4.
+   Seams: edge registry-core/registry-room; doc registry; sync registry;
+          engine workspace_host; iOS RegistryCore/RegistryClient.
+
+   Deliver:
+      - Versioned field envelopes, original clocks, and independently
+        verifiable author contributions in server-merged rows.
+      - Authenticated field/row tombstones, creation/revival evidence,
+        GC/full-sync rules, and original-clock reseed behaviour.
+      - Separate wire state from decrypted projection and local overlays;
+        encrypt new application fields by default, not by a denylist.
+      - Reviewed rekey/generation path that does not manufacture newer
+        application clocks to force ciphertext replacement.
+
+   Acceptance:
+      - Rename on A plus archive/status edit on B converges without a
+        whole-row overwrite. Null, absence, delete, revival, reseed, and
+        old clocks match the agreed existing semantics in all languages.
+      - Bad proofs cannot poison clocks/cursors or discard local state.
+      - Backend-visible IDs, fields, and clocks match the metadata contract;
+        titles, previews, paths, device names, and config are ciphertext.
+
+ES-11  Authenticated device channels and host-local attachments
+
+   Role: RPC/engine owner and Swift relay owner.
+   Depends: ES-03, ES-04, ES-05, ES-06. RFC: Section 10.
+   Seams: rpc device_room/serve_connection; edge device-room;
+          engine uploads; iOS DeviceRelayClient/attachment transfer.
+
+   Deliver:
+      - Reviewed end-to-end handshake, identity/profile binding,
+        directional session keys, replay protection, and rekey limits.
+      - No general RPC until peer verification. Encrypt method names,
+        arguments, replies, streams, file chunks, and error details.
+      - Keep outer routing opaque/minimal. Explicitly exclude private-key
+        and local key-management export from the forwarded RPC surface.
+
+   Acceptance:
+      - Terminal, folder browser, file upload/read, and command flows work
+        through the relay without exposing their application payloads.
+      - Forged connId/echo, wrong profile, stale peer, and replay cannot
+        authenticate RPC. Test chunk retries and host reconnects.
+      - Existing path jails and command deduplication still pass; encryption
+        does not widen host filesystem or method permissions.
+
+ES-12  Close all secondary content paths and diagnostic leaks
+
+   Role: Engine/blob owner with both frontend readers.
+   Depends: ES-09, ES-10, ES-11. RFC: Sections 3, 10, 13.
+   Seams: engine doc_host/diff_sync/sessions; edge blob/device sidecars;
+          native full-output/subagent/tail/diff readers.
+
+   Deliver:
+      - Encrypt chat tails, working-tree diffs, device sidecar values,
+        R2 tool blobs, and finished subagent transcripts plus descriptors.
+      - Migrate/disable legacy diff publication for encrypted profiles;
+        no decryption-error fallback into legacy readers.
+      - Opaque object names, encrypted filenames/types/plaintext checksums,
+        ciphertext manifests, and atomic key-envelope publication.
+      - Structured safe diagnostics and an inventory test that detects
+        newly introduced cleartext publishers, including dormant paths.
+
+   Acceptance:
+      - Every ES-02 surface has a canary test covering write, read, retry,
+        error, storage, and backup where applicable; decode encodings
+        before scanning. Base64 is not counted as encryption.
+      - Rich presence, future notification previews, and exported debug
+        data cannot bypass the encryption/explicit-consent boundary.
+      - Required product features still work; disabling a necessary path
+        is not a substitute for completing its encrypted implementation.
+
+ES-13  Cross-surface revocation and recovery-key continuity
+
+   Role: Protocol/integration lead with security reviewer.
+   Depends: ES-05, ES-06, ES-08, ES-09, ES-10, ES-11, ES-12.
+   RFC: Sections 5-6, 11; G3.
+
+   Deliver:
+      - Prepared -> envelopes durable -> old writers fenced -> new epoch
+        active transition, with CAS and crash/retry recovery.
+      - Fresh keys for subsequent chat, checkpoint, registry, blob, and
+        channel writes. Lazy rekey of dormant content on its next write.
+      - Catch-up policy before flushing an offline outbox; distinguish
+        accepted historical records from new old-epoch submissions.
+      - Recovery-kit replacement/compromise flow and continuously updated
+        encrypted recovery bundles across rotations.
+
+   Acceptance:
+      - Removed device cannot read new-epoch content or make accepted new
+        writes under the tested honest-service/current-policy conditions.
+      - Concurrent rotation, mid-transition crash, and restored backups
+        leave retained devices and recovery able to obtain current keys.
+      - An offline retained phone sends its original intent exactly once
+        after rekey. Copied history is not claimed erased; stale-server
+        and partition limits are visible and match the RFC.
+
+ES-14  Migration, compatibility fences, and cleanup tooling
+
+   Role: Engine/edge migration lead plus UI/platform reviewers.
+   Depends: ES-02, ES-07, ES-13. RFC: Section 12; G5-G6.
+   Seams: engine profile/store/startup; edge all legacy routes; native UI.
+
+   Deliver as separate reviewable PRs:
+      A. Preflight/inventory and safe local schema/capability gates.
+      B. Old-writer quiescence, route/socket fences, and final revisions.
+      C. Encrypted generation copy, durable progress journal, verification,
+         activation, and restart/cancellation recovery.
+      D. Retention report and dry-run cleanup plan; separately authorised
+         deletion executor with scoped object lists and audit receipts.
+
+   Acceptance:
+      - Every known legacy producer is upgraded/stopped before activation;
+        unavailable devices require the explicit confirmation flow.
+        Tests separate client no-plaintext behaviour from server rejection.
+      - Preserve lineage, chat/command IDs, host ledgers, and pending work.
+        Crash after each transition and resume without replay or loss.
+      - Missing/ambiguous sources block or require recorded user exclusion.
+        One profile's migration never blocks/decrypts another's data.
+      - Restore with the actual recovery kit before activation. Verify
+        actual deployment retention; no invented deletion deadline.
+      - Cleanup does not run on activation or claim erasure of unknown
+        copies. Post-activation rollback never enables plaintext sync.
+
+ES-15  Integrated reliability, leakage, performance, and security review
+
+   Role: Integration/test lead and an independent security reviewer.
+   Depends: ES-07, ES-14. Harness scaffolding may begin during ES-02.
+   RFC: Section 14.2 and all closed protocol gates.
+
+   Deliver:
+      - Repeatable synthetic topology: desktop host, second native client,
+        iOS peer, headless Linux host, and inspectable local/test edge.
+      - Fault injection for network, secure store, persistence, malformed
+        frames, stale/forked responses, rotation, and migration boundaries.
+      - Automated Rust/Swift compatibility fixtures and leakage scans of
+        requests, DO/R2 state, sidecars, errors, and diagnostic packages.
+      - Before/after performance report against ES-02 budgets; independent
+        protocol/implementation review with a tracked finding disposition.
+
+   Acceptance:
+      - Every RFC acceptance row has a test/evidence link and accountable
+        reviewer. No unwaived baseline failure or unresolved release blocker.
+      - Restore works without the old devices or backend private keys.
+        Remove/rejoin, long offline sends, attachment/terminal operations,
+        and identical retry bytes pass across WS and HTTPS.
+      - Streaming/cold-open/resume/rekey budgets are met on target platforms;
+        memory/retries remain bounded. No per-update pairing round trips.
+      - Security reviewer confirms the published guarantees are supported;
+        limitations are explicit rather than quietly expanded promises.
+
+ES-16  Release controls, support, and staged activation
+
+   Role: Release owner with maintainer/security sign-off.
+   Depends: ES-15. RFC: Sections 2, 4, 12-14.
+
+   Deliver:
+      - Compatible edge and native build matrix; approved migration and
+        encrypted-backup restore runbooks; privacy-safe support checklist.
+      - Activation gate, safe pause controls, health indicators, and a
+        forward-fix/compatible-encrypted-rollback procedure.
+      - Staged progression from synthetic environments to explicit
+        internal opt-in, limited user opt-in, and broader opt-in.
+      - Clear product copy for full account-vault trust, recovery loss,
+        headless storage mode, local caches, and retained legacy copies.
+
+   Acceptance:
+      - Maintainer approves each rollout expansion using ES-15 evidence
+        and current restore/migration health, not elapsed calendar time.
+      - Incident response can pause new activations or encrypted writes
+        without deleting keys, losing local edits, or enabling plaintext.
+      - Operators can diagnose failures without asking users for private
+        keys/recovery secrets; destructive recovery requires consent.
+
+
+5. Coverage and Review Ownership
+--------------------------------
+
+   Surface/control             Implemented by          Release evidence
+   --------------------------  ----------------------  ------------------
+   Crypto formats/nonce rules  ES-01, ES-03             Shared vectors
+   Device keys/unlock gate     ES-04, ES-06, ES-07      Platform failures
+   Membership/bootstrap        ES-05, ES-06             Pairing attacks
+   Chat rows and commands      ES-08                    Cursor/retry tests
+   Checkpoints/frontiers       ES-09                    Resume/restore
+   Registry fields/lifecycle   ES-10                    3-language merge
+   Device RPC/attachments      ES-11                    Peer/path/replay
+   Tails/diffs/device sidecars  ES-12                    Content canaries
+   R2/tool/subagent blobs      ES-12                    Blob/metadata scan
+   Epoch/key recovery          ES-13                    Rotation/restore
+   Legacy routes/local gates   ES-02, ES-14             Migration matrix
+   Old cloud copies            ES-14                    Retention report
+   Logging/errors/support      ES-12, ES-15, ES-16      Diagnostic scan
+   Product flows and rollout   ES-07, ES-16             Native flow review
+
+   Gate closure ownership:
+
+      G1: ES-01 -> ES-03/ES-06/ES-11 evidence.
+      G2: ES-01 -> ES-03/ES-08/ES-09 evidence.
+      G3: ES-01 -> ES-05/ES-13 evidence.
+      G4: ES-02 -> ES-10 evidence.
+      G5: ES-02 -> ES-04/ES-14 evidence.
+      G6: ES-02 design -> ES-14 deployment and migration evidence.
+
+   Require protocol/security review for ES-01/03/05/06/11/13 and migration
+   review for ES-14. Changes to shared wire/schema fixtures require Rust,
+   Swift, and edge review where applicable. No side may silently accept a
+   format the others cannot authenticate.
+
+
+6. Verification Strategy and Existing Commands
+-----------------------------------------------
+
+   These are implementation verification entry points, not commands run
+   while writing the plan. Audit/install prerequisites first. Start with
+   targeted tests, then run broader regressions before milestone closure.
+   Record pre-existing failures; do not relax controls or absorb unrelated
+   repairs into encryption work to obtain a green result.
+
+   From the repository root, relevant existing Rust package names are:
+
+      cargo test -p zeron-doc -p zeron-sync -p zeron-rpc
+      cargo test -p zeron-engine
+      cargo test -p zeron-proto -p zeron-ui
+      cargo fmt --all -- --check
+
+   Add the crypto module/crate's actual test command when ES-03 chooses its
+   location. Test both macOS and Linux build paths; a macOS-only build does
+   not validate headless credential storage or restart behaviour.
+
+   Existing edge entry points, from the repository root:
+
+      npm --prefix edge run typecheck
+      npm --prefix edge run test:unit
+      npm --prefix edge run test:workerd
+
+   The shared Zeron Xcode scheme includes ZeronTests. On a machine with
+   the supported SDK and an installed iOS simulator, from apps/ios:
+
+      xcodebuild -project Zeron.xcodeproj -scheme Zeron \
+        -destination 'platform=iOS Simulator,id=<simulator-UDID>' test
+
+   Substitute a real local simulator ID; it is not a literal command
+   argument. Secure-store/background lifecycle tests also need supported
+   physical-device coverage, not only simulated storage adapters.
+
+   Extend existing tests in:
+
+      crates/sync/src/chat_client/tests.rs
+      crates/sync/tests/
+      crates/engine/tests/
+      crates/rpc/tests/device_room.rs
+      apps/ios/ZeronTests/
+      edge/src/*test.ts and edge workerd test configuration
+
+   Build a dedicated encrypted-sync integration fixture rather than using
+   production rooms, real repositories, or user secrets. Shared canaries
+   should exercise source text, commands, diffs, titles, branch/path names,
+   binary attachments, and subagent output. Include success AND error
+   paths. Scan decoded wire/storage representations as well as raw bytes.
+
+   Performance baselines must use the same corpus/device/link settings
+   before and after encryption. Record first usable sidebar, cold chat
+   open, streaming latency, attachment/terminal throughput, Range resume,
+   rekey cost, ciphertext overhead, peak memory, and retries. Approve
+   numeric budgets in ES-02 rather than inventing them in this plan.
+
+
+7. Risk Register and Stop Conditions
+------------------------------------
+
+   Risk                         Mitigation / accountable package
+   ---------------------------  -----------------------------------------
+   Crypto/library mismatch      Freeze one format and negative vectors;
+                                vetted implementations. ES-01/03.
+
+   Nonce reuse after restore    Crash/clone-safe allocation and usage
+                                bounds; no improvised counters. ES-01/03.
+
+   Permanent key loss           Durable device/recovery envelopes before
+                                activation; actual restore drills. ES-06/13.
+
+   Cursor advances past error   Result-bearing verified apply, atomic
+                                persistence, own-ACK gap tests. ES-08/09.
+
+   Registry conflicts regress   Per-field proofs, lifecycle evidence,
+                                original-clock rekey/reseed. ES-02/10.
+
+   Secondary plaintext leak     Default-encrypted typed boundaries and
+                                full publisher/error inventory. ES-12/15.
+
+   Old clients disclose data    Upgrade/stop preflight plus client gates;
+                                server rejection alone is not enough.
+                                Ownership design and tests. ES-02/14.
+
+   Rotation strands peers       Staged publication/CAS, offline catch-up,
+                                historical-key retention. ES-05/13.
+
+   Migration re-executes work   Preserve semantic IDs, lineage, and host
+                                processed ledgers; fault injection. ES-14.
+
+   Misleading deletion claim    Measured retention and consented dry-run
+                                cleanup; report unknown copies. ES-14/16.
+
+   Hidden platform gap          Rust/Swift parity and macOS/Linux/iOS
+                                lifecycle coverage before opt-in. ES-15.
+
+   Scope creep                  Per-user vault only. New sharing/runner
+                                restrictions require a separate design.
+
+   Stop a package when a critical protocol choice is still unspecified,
+   a new plaintext path is unowned, an invariant needs weakening, or a
+   schema cannot preserve existing semantics. Escalate that decision;
+   do not work around it with fallback, silent drops, or broader trust.
+
+   Stop rollout for unexplained decryption/cursor errors, key-loss cases,
+   plaintext canary leakage, incomplete migrations, replayed commands, or
+   a failed recovery drill. Use safe pause/forward-fix procedures. Never
+   "recover availability" by accepting plaintext or resetting trust.
+
+
+8. Release Checklist and Immediate Next Action
+-----------------------------------------------
+
+      [ ] RFC G1-G6 decisions and acceptance evidence reviewed.
+      [ ] ES-01 through ES-15 complete; required review findings resolved.
+      [ ] Every content/metadata path accounted for and tested.
+      [ ] Desktop, iOS, and headless supported-version matrix approved.
+      [ ] Recovery after multiple rotations and from backup demonstrated.
+      [ ] Legacy upgrade/stop and supported-downgrade flows verified.
+      [ ] Migration crash matrix and command deduplication verified.
+      [ ] Old-copy retention report and cleanup consent flow available.
+      [ ] Latency/memory/byte budgets met without weakened protection.
+      [ ] Safe pause, compatible rollback, and support procedures rehearsed.
+      [ ] Maintainer authorises the next rollout stage (ES-16).
+
+   Immediate next action is ES-01 and ES-02 review/discovery, not wrapping
+   ChatClient bytes in isolation. Close the protocol and ownership/schema
+   questions, record the exact decisions, and then begin ES-03 fixtures.
+
+   Suggested PR grouping:
+
+      - One logical PR per ES package where review stays manageable.
+      - Split ES-03 into reviewed fixture/codec changes per language.
+      - Split ES-08 into durable cursor/outbox tests, Rust integration,
+        and Swift integration, without exposing the activation switch.
+      - Split ES-14 along A-D above. No cleanup execution in a migration PR.
+      - Keep all split parts tied to the parent package's acceptance gate;
+        merged preparatory PRs do not mean that package is complete.
+
+   Update this plan with actual issue/PR/evidence references as work lands.
+   Do not invent issue links, assign people without agreement, or mark
+   implementation complete based only on this planning document.
+
+
+9. Initial Discovery and First Review Slice (2026-09-04)
+-------------------------------------------------------
+
+   RFC Draft 00 was committed separately as 812e64c on feat/encrypted-sync.
+   This changes no production code; the inspected code baseline remains
+   a0650ab. This plan is not included in that commit. Existing iOS project,
+   scheme, and workspace-user changes were left untouched.
+
+   This is preliminary ES-01/ES-02 discovery, not package acceptance.
+   G1-G6 remain OPEN. Owners/reviewers are not yet assigned. No dependency
+   installation, implementation test run, deployment inspection, or
+   migration has been performed during this discovery pass.
+
+9.1. Confirmed integration constraints
+
+   A. Profile and route ownership (ES-02/04/05/14).
+      EngineProfile::account_scoped in crates/engine/src/profile.rs stores
+      data under org/user; local profiles use a separate root. In contrast,
+      edge/src/index.ts routes chat2 by chat ID and device rooms by device
+      ID, forwarding authenticated user identity without an org-scoped
+      room name. Tool blobs use blob/{user}/{chat}/{part}. Registry and
+      legacy workspace routes explicitly scope rooms by org AND user.
+      Define authoritative legacy-object-to-profile mappings before
+      implementing per-profile fences. Do not infer ownership from a new
+      caller-provided org field or block every profile of the same user.
+
+   B. Durable receive outcomes (ES-08).
+      ChatDocSink::apply_row and advance_cursor return void. EngineChatSink
+      logs failed imports and still attempts cursor persistence;
+      persist_with_cursor logs storage errors without returning failure.
+      apply_checkpoint can therefore return success after persistence
+      failed. Swift SessionStore likewise advances its cursor after failed
+      row import and schedules saving with saver.poke().
+      Require explicit verified/durable results in BOTH languages before
+      integrating encrypted records. Test failed imports, failed saves,
+      causal pending state, and own ACKs interleaved with unread rows.
+
+   C. Immutable checkpoint identity (ES-01/09).
+      EdgeCheckpointFetcher::fetch in crates/engine/src/chat2_host.rs uses
+      x-chat2-checkpoint-seq as its replacement validator. A replacement
+      at the same covered sequence needs a distinct immutable revision.
+      Define manifest/revision binding before changing Range resume; test
+      a replacement between partial responses with an unchanged sequence.
+
+   D. Registry semantics (ES-02/10).
+      edge/src/registry-core.ts applies strictly newer per-field clocks;
+      update cannot create/revive a row, while upsert can. Top-level null
+      in an op's set deletes a field. Row deletion clears fields/clocks,
+      and rowToSeedOp preserves original clocks for live values.
+      Specify authenticated field tombstones and creation/revival evidence
+      independently of encrypted values. Preserve current null/absence
+      semantics; adding literal-null assignment would be a schema change.
+      Rekey must not manufacture a newer application clock.
+
+   E. Command-bearing relay (ES-01/11).
+      crates/rpc/src/device_room.rs dispatches RPC payload text into a
+      virtual serve_connection stream keyed by the relay's from field.
+      That routing ID is not a device-key possession proof. Insert the
+      reviewed peer/channel handshake before creating an application RPC
+      stream, and bind it to a single profile. Preserve existing method
+      authorization and attachment path restrictions after decryption.
+
+   F. Independent plaintext publishers (ES-12).
+      DocHost::chat2_maintenance publishes transcript JSON to /chat2/*/tail.
+      diff_sync publishes checkout paths, branches, and patches to legacy
+      /diff/*. DocHost::upload_tool_sidecar uploads output/diff bytes to
+      /blob/*; fetch_tool_blob reads the body as text. These bypass chat
+      row transport. Give each a typed encrypted writer AND reader, plus
+      retry/error canaries. HTTP metadata and blob identifiers also need
+      review; wrapping the Loro stream does not cover them.
+
+   G. Secure storage (ES-02/04).
+      The Swift Keychain.save helper in Auth/AuthClient.swift deletes the
+      old item before adding a replacement, ignores return statuses, and
+      uses AfterFirstUnlock rather than an explicit device-only attribute.
+      Do not reuse it unchanged for enrollment. Decide checked persistence,
+      accessibility, restore/clone behavior, and Linux credential modes
+      before declaring a device approved. Auth refresh tokens and vault
+      private keys remain separate credentials.
+
+9.2. Next review deliverables
+
+   First, prepare two bounded design submissions under M0:
+
+      ES-01 review: a Rust/Swift library compatibility and provenance
+      matrix; one proposed pairing/RPC channel construction; exact record
+      encoding and signing/AAD inputs; nonce/clone-safety and usage limits;
+      membership/epoch closure and recovery transitions. Each choice needs
+      a rationale, negative fixture specification, and reviewer decision.
+      The RFC candidate suite is a starting point, not an approved codec.
+
+      ES-02 review: expand 9.1 into the complete route/publisher/reader/
+      storage matrix; propose registry lifecycle proofs and profile
+      ownership/fencing rules; specify secure-store and downgrade policy;
+      capture audited local test and synthetic performance baselines.
+      Include sidecars, subagents, attachments, diagnostics, backups, and
+      retired routes. Deployed retention stays UNKNOWN until separately
+      approved inspection; repository source cannot establish deletion.
+
+   After those gates are reviewed, the first implementation submission is
+   ES-03: bounded record codecs and shared Rust/Swift positive/negative
+   fixtures, with no transport activation. ES-04/05 then establish durable
+   device keys, the fail-closed vault lifecycle, and signed bootstrap.
+   Chat integration follows those foundations; ES-08's first narrow slice
+   is failing durability/cursor tests and explicit apply outcomes, followed
+   by immutable encrypted outbox integration across WS and HTTPS.
+
+   The existing M0-M5 sequence remains unchanged. Neither these discovery
+   notes nor committing the RFC closes a protocol gate or enables the
+   encrypted-sync switch.
+
+
+10. Decision Proposals and Capability Evidence (2026-09-04)
+----------------------------------------------------------
+
+   Status: Q1-Q4 option A ACCEPTED by the maintainer on 2026-09-04.
+   Native CryptoKit plus a shared Rust channel, device-bound background-
+   accessible iOS keys, explicit unattended runner setup, and a grouped
+   checksummed text recovery kit are the selected directions. Alternatives
+   below remain for decision history. Section 10.4 is not a frozen protocol;
+   acceptance does not waive dependency vetting or close G1-G6.
+
+10.1. Capability probe completed
+
+   Added scripts/check-crypto-capabilities.swift. It uses only Apple's
+   installed CryptoKit and Foundation, creates synthetic keys in memory,
+   performs no network/keychain operations, and prints no key material.
+
+   Verified with Apple Swift 6.3.3:
+
+      swift scripts/check-crypto-capabilities.swift
+
+   Result: 14 checks passed on macOS: AES-256-GCM round trip and rejection
+   of changed AAD/key/ciphertext; Ed25519 verification and changed-message/
+   wrong-signer rejection; HKDF-SHA256 repeatability and label separation;
+   HPKE X25519/HKDF-SHA256/AES-256-GCM round trip and rejection of changed
+   AAD/info/recipient/ciphertext.
+
+      xcrun swiftc -typecheck -target arm64-apple-ios26.0-simulator \
+        -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+        scripts/check-crypto-capabilities.swift
+
+   Result: passed with the installed iOS Simulator 26.5 SDK. This is an
+   iOS compile check, NOT an iOS runtime test. The app targets iOS 26;
+   Apple's HPKE API is available from iOS 17. The candidate suite needs
+   HPKE.Ciphersuite(kem:kdf:aead:), not a matching named static constant.
+
+   An initial probe failure was a Data indexing error in the test script:
+   CryptoKit's ciphertext can have a nonzero startIndex. Mutation now uses
+   startIndex; the interpreter run passed after that correction.
+
+   This probe does not define a wire format, enrollment handshake, nonce
+   allocator, key-storage policy, or Rust/Swift interoperability. It is
+   discovery evidence only and is not linked into an application target.
+   Existing Rust/edge/Xcode suites have not run in this discovery pass;
+   edge/node_modules is absent. No third-party packages were installed.
+
+10.2. Library shortlist and review limits
+
+   Candidate           Verified metadata / remaining review
+   ------------------  --------------------------------------------------
+   Apple CryptoKit     Built-in platform APIs support the candidate suite;
+                       local positive/negative capability probe passed.
+
+   snow 0.10.0         crates.io: published 2025-07-19, publisher mcginty,
+                       not yanked, MIT OR Apache-2.0, MSRV 1.85.
+                       1Password reports a Trail of Bits assessment and
+                       remediation work. RustSec RUSTSEC-2024-0011 is
+                       patched from 0.9.5. Audit scope and every finding's
+                       correspondence to the selected release still need
+                       verification; this is not full audit clearance.
+
+   hpke 0.13.0         crates.io: published 2025-02-19, publisher rozbb,
+                       not yanked, MIT/Apache-2.0. Supports the candidate
+                       suite. Upstream explicitly says no formal audit;
+                       Cloudflare's cited review covered 0.8, not 0.13.
+
+   Both registry responses have trustpub_data=null; neither response
+   supplies a trusted-publishing attestation. This alone proves neither
+   maliciousness nor absence of other provenance. Registry publication
+   times above take precedence over differing dates shown by docs.rs.
+   Requests used a generic tool/version User-Agent, no personal contact.
+
+   These are candidates, not selected dependencies. Before cargo add or
+   execution: verify exact archives/checksums against publisher/source,
+   review build scripts and selected transitive dependencies, scan actual
+   code for process execution/network/secret-path/unsafe behavior, check
+   current advisories and audit fixes, and record the result. Minimize
+   enabled algorithms/features and pin reviewed versions. Do not equate
+   version age, a README, or an audit of another version with source review.
+
+   Swift channel research found a production-use warning in
+   swift-libp2p/swift-noise and an older swift-noise-protocol release.
+   Neither is a recommended production dependency on this evidence.
+   Do not port the Noise handshake by hand to avoid a Rust bridge.
+
+10.3. Options requiring maintainer choice
+
+   Q1. Native integration boundary (G1; ES-03/06/11).
+       A [recommended]: CryptoKit for Swift content/key-envelope operations,
+       a small reusable Rust crypto crate for Rust callers, and a shared
+       Rust Noise channel behind a narrow Swift bridge. Native keychain
+       adapters remain outside cryptographic primitives. Shared fixtures
+       test the independently implemented record boundary in both languages.
+       This follows the app's native-client design without maintaining two
+       independent handshake implementations. It adds an iOS Rust artifact
+       build/signing/packaging path that the repo does not currently own.
+       B: share the entire Rust security core with Swift. Less duplicated
+       protocol logic, but a larger foreign-function interface and less
+       use of Apple's native crypto APIs. Keep independent CryptoKit/RFC
+       vectors as an oracle; two calls to one core are not independent
+       cross-implementation evidence.
+
+   Q2. Apple key accessibility (G5; ES-04).
+       A [recommended]: non-syncing, device-bound keys. On iOS, use
+       AfterFirstUnlockThisDeviceOnly to permit background work after the
+       first unlock following boot. Restoring to a different phone requires
+       approval/recovery. Handle keychain persistence errors explicitly.
+       B: WhenUnlockedThisDeviceOnly; pause key-dependent work whenever the
+       phone is locked. Stricter access, but background sync is restricted.
+       macOS needs its own checked login/data-protection keychain policy;
+       do not assume iOS accessibility behavior proves macOS lock behavior.
+       Neither option claims to encrypt existing plaintext local caches.
+
+   Q3. Default headless credential mode (G5; ES-04/07).
+       A [recommended for a runner]: explicitly opt into unattended mode
+       at pairing, using systemd encrypted credentials where supported.
+       Use the provisioned secret to protect a mutable local keyring; do
+       not try to rewrite systemd's immutable runtime credential on rekey.
+       Root/VPS snapshots remain trusted. If secure storage is unavailable,
+       stay locked and ask for a supported provisioning choice.
+       B: unlock on each boot by default; safer unattended exposure but
+       jobs cannot resume encrypted sync until an operator intervenes.
+       Both modes remain available. No silent plaintext-file fallback.
+
+   Q4. Recovery-kit representation (ES-06/07).
+       A [recommended]: grouped, checksummed Base32 encoding of the random
+       256-bit recovery secret, plus vault/trust-anchor metadata in a
+       locally saved recovery file. Confirm possession before activation.
+       Straightforward password-manager storage, no language-specific list.
+       B: a reviewed mnemonic encoding plus the same metadata; easier to
+       transcribe verbally but adds word-list, normalization, and checksum
+       compatibility work. Do not invent a new mnemonic scheme.
+       Neither choice changes the no-email/no-account-reset recovery rule.
+
+10.4. Technical defaults proposed for review, not user crypto design
+
+   G1: retain the RFC's AES-256-GCM/HKDF-SHA256/Ed25519 and X25519 HPKE
+       candidate suite. Prefer one fixed Noise_XX_25519_AESGCM_SHA256
+       channel profile for pairing and device RPC, using a vetted release
+       of snow in both clients. Enrollment authenticates the exchanged
+       identity via endpoint-generated QR/comparison; established peers
+       verify signed membership and expected static keys before RPC.
+       Exact transcript binding, human-verification strength/attempt
+       limits, channel key separation, and framing require reviewed vectors.
+       XX alone does not make a server-provided public key trustworthy.
+
+   G2: prefer an RFC 8949 deterministic-CBOR profile for signed records,
+       with a deliberately narrow schema (integer keys, byte strings,
+       fixed field sets; no floats, tags, indefinite lengths, duplicates,
+       or unknown fields for a fixed version). JSON may carry opaque
+       Base64 bytes, never determine signature meaning. Alternative:
+       bespoke fixed-layout binary records; fewer library dependencies,
+       but more project-specific encoding/extension rules to maintain.
+       Specify signature/AAD domains, exact bytes, bounded parsing, and
+       nonce/key-use limits before adding codecs. Persist sealed outbox
+       bytes once; no process-local counter as the only nonce safeguard.
+       A crash/clone-safe nonce construction remains an explicit G2 task,
+       not a decision delegated to an API's random-nonce default.
+
+   G3: a signed, parent-linked membership history with compare-and-swap;
+       prepare/durable-envelopes/fence/activate epoch transitions. Pin
+       known revisions locally and retain historical read keys. Specify
+       signed accepted-history closure manifests and bounded membership
+       checkpoints before accepting old-epoch history after revocation.
+       Do not treat a server sequence or writer timestamp as proof that
+       an old-epoch write preceded revocation. Global freshness under a
+       malicious partition remains outside the RFC's guarantee.
+
+   G4: retain per-field LWW semantics with independently signed encrypted
+       field values and explicit lifecycle proofs. Prefer a signed new
+       registry generation for rekey, preserving semantic row IDs and
+       original clocks, over rewriting clocks or adding a second LWW race.
+       Define deletion/revival/GC and cutover concurrency in three-language
+       fixtures before implementing the encrypted registry schema.
+
+   G5: follow Q2/Q3; enrollment completes only after checked durable key
+       storage. Device restore must not silently clone writer identity.
+       Account switching, sign-out, and secure-store lock state are
+       separate from transport state. Safe local-layout/downgrade behavior
+       still needs a concrete versioned design and failure tests.
+
+   G6: introduce a profile-scoped vault control Durable Object and explicit
+       versioned ciphertext routes/generations. Maintain authoritative
+       legacy ownership mappings, not caller-inferred organization labels.
+       Gate producers before serialization and fence every legacy route
+       and existing socket. Migration is explicit copy/verify/activate,
+       with no plaintext dual-write and no automatic legacy deletion.
+       Actual deployed retention remains UNKNOWN pending approved access.
+
+   These defaults narrow the work but do not close the gates. In particular,
+   G2 nonce allocation, G3 accepted-history closure, G4 lifecycle proofs,
+   and G6 legacy ownership/fencing still require exact designs and review.
+
+10.5. First bounded implementation after decisions
+
+   Freeze the accepted architecture and reviewed record schema in the RFC,
+   completing the relevant ES-01/02 decisions before marking ES-03 ready.
+   Then introduce the reusable Rust crypto boundary and Swift adapter/
+   bridge chosen in Q1, with no networking, application activation, or
+   key export RPC. Add shared synthetic positive/negative fixtures first.
+   Complete archive/source review before installing any dependency.
+   Native secure storage and vault-state gating follow; chat integration
+   cannot substitute for those foundations. No additional commit or push
+   is implied by starting this work.
+
+   Sources consulted (2026-09-04):
+      https://developer.apple.com/documentation/cryptokit/hpke/ciphersuite.md
+      https://developer.apple.com/documentation/security/ksecattraccessibleafterfirstunlockthisdeviceonly.md
+      https://docs.rs/crate/hpke/0.13.0/source/README.md
+      https://crates.io/api/v1/crates/hpke/0.13.0
+      https://crates.io/api/v1/crates/snow/0.10.0
+      https://1password.com/blog/strengthening-snow-for-the-open-source-community
+      https://rustsec.org/advisories/RUSTSEC-2024-0011
+      https://noiseprotocol.org/noise.html
+      https://www.rfc-editor.org/rfc/rfc8949.html
+      https://systemd.io/CREDENTIALS/
+
+
+11. First Isolated Primitive Slice (2026-09-04)
+-----------------------------------------------
+
+   Q1-Q4 option A is accepted and recorded in RFC Section 15. M0 and the
+   exact protocol gates remain open. Standards-only adapters and fixture
+   scaffolding have begun; ES-03 as a complete record-codec package is NOT
+   accepted. No signed-record encoding or nonce allocator was invented to
+   get ahead of those gates.
+
+11.1. Implemented boundary
+
+   Added crates/crypto (zeron-crypto) and the native Swift counterpart
+   apps/ios/Zeron/Sync/VaultCrypto.swift:
+
+      - AES-256-GCM opening with a 12-byte nonce and 16-byte appended tag.
+        Validate key/nonce/tag lengths and caller-supplied plaintext size
+        budget before allocating a decryption buffer. Return no plaintext
+        on authentication failure; do not mutate the caller's ciphertext.
+      - Ed25519 signature verification with explicit key/signature lengths.
+        This is a primitive, not membership validation or RPC authorization.
+      - HKDF-SHA256 extract/expand with output restricted to 1..8160 bytes
+        before allocation. This is a key-producing adapter; zero-byte keys
+        are rejected even though HKDF itself can describe empty output.
+      - Coarse typed errors without key/payload contents. Rust SecretBytes
+        redacts Debug output, is not Clone/Copy/Serialize, and uses a
+        zeroizing allocation for output and decryption-failure cleanup.
+        Swift retains derived keys as SymmetricKey. No claim of perfect
+        process-memory erasure, including backend internal key schedules.
+
+   The caller still must bound framing/AAD/message inputs and authenticate
+   profile, membership, object, kind, epoch, and canonical record bytes.
+   These primitives do not supply those checks. No application calls the
+   adapters yet. There is deliberately no production seal/sign API while
+   nonce allocation, signed record domains, and durable outbox rules are
+   open. Raw sealing/signing occurs only in synthetic fixture tests.
+
+11.2. Dependency scope and supply-chain check
+
+   Reused ring 0.17.14 and zeroize 1.9.0 already in the root lockfile and
+   local registry cache. Both are exact-pinned with only alloc requested;
+   no existing dependency versions were changed and no new package was
+   downloaded. HPKE and Noise packages were not added.
+
+   Registry metadata checked with a generic tool User-Agent:
+
+      ring 0.17.14: published 2025-03-11 by briansmith, not yanked,
+      no trusted-publishing metadata. Registry checksum matches Cargo.lock.
+      RustSec's AES overflow issue is patched from 0.17.12; the legacy
+      unmaintained advisory concerns versions before 0.17.
+
+      zeroize 1.9.0: published 2026-06-12, not yanked, trusted-publishing
+      metadata names RustCrypto/utils and revision
+      0b715735a660a8566ccd240bf42489fe2ed98efb. Registry checksum matches
+      Cargo.lock. No build script or default derive/serialization feature.
+
+   Inspected cached manifests, ring's native-build dispatch and compilation
+   paths, AES-GCM/HKDF/Ed25519 entry points, and Zeroizing/Vec cleanup.
+   Source scans found no listed credential paths or unexpected network
+   calls. ring's process-spawn matches are native build tooling (compiler,
+   assembler/Perl generation paths), not application networking; packaged
+   builds select pregenerated assembly. zeroize uses expected volatile
+   writes/optimization barriers. This is a scoped supply-chain review, not
+   an independent cryptographic audit or complete transitive-code audit.
+
+11.3. Shared fixtures and findings
+
+   crates/crypto/tests/fixtures/primitives.json contains public standard
+   test keys only: AES-256-GCM empty/block vectors, RFC 8032 Ed25519 vectors,
+   RFC 5869 HKDF, and a synthetic binary/nonempty-AAD fixture generated by
+   CryptoKit and checked independently by ring.
+
+   Rust tests and scripts/check-crypto-capabilities.swift consume this
+   same file. Both AES implementations produce the expected bytes. Both
+   signature verifiers accept the published signatures, and Rust signing
+   matches RFC 8032. The script can emit additional CryptoKit signatures;
+   Rust requires and verifies them when ZERON_CRYPTO_TEST_VECTORS is set.
+
+   Important discovery: CryptoKit signing on the tested platform does not
+   produce the deterministic RFC signature bytes. Tests therefore assert
+   verification interoperability, NOT identical output from two signing
+   calls. An initial exact-signature assertion failed and was replaced
+   with fresh CryptoKit-signature verification by Rust. Canonical signed
+   input and immutable stored envelope bytes remain required; retries must
+   not recreate signatures and then assume identical envelopes.
+
+   Negative tests cover key/nonce/tag/signature lengths, changed bytes,
+   AAD/key/nonce substitution, output limits, nonzero Data slice indices,
+   unchanged input on decryption failure, and redacted Rust secret Debug.
+   This is not yet an adversarial Ed25519 key-acceptance/point-encoding
+   corpus. Strict verification compatibility and identity-key admission
+   rules remain part of G1/G2 review before trust-record use.
+
+11.4. Verification and reproducible entry points
+
+   Normal Rust entry points once the workspace's pinned Git sources exist:
+
+      cargo test -p zeron-crypto --locked --offline
+      cargo clippy -p zeron-crypto --locked --offline --all-targets -- -D warnings
+      cargo fmt -p zeron-crypto -- --check
+
+   This checkout cannot resolve the full workspace offline: GPUI's pinned
+   e2ddcc6805f8c5088e62a60dfe517abcccd61a9a revision is not checked out.
+   No fetch or unrelated dependency change was performed to work around it.
+   Verification used an ignored target/crypto-verification manifest whose
+   lib path points at the ACTUAL crates/crypto/src/lib.rs, with the same
+   direct dependencies and locked serde/serde_json versions. cc was pinned
+   back to the root's 1.2.67 after isolated resolution selected cached 1.4.0.
+   Final tests and Clippy passed with the root's cc version. The new local
+   package stanza was copied from Cargo's isolated generated lockfile into
+   the root lockfile; existing package records remain unchanged.
+
+      cargo test --manifest-path target/crypto-verification/Cargo.toml --offline --locked
+      cargo clippy --manifest-path target/crypto-verification/Cargo.toml --offline --locked --all-targets -- -D warnings
+
+   Result: 7 Rust test groups passed; Clippy passed with warnings denied.
+   Workspace metadata and package-specific rustfmt checks also passed.
+   This is not a full workspace build or test result.
+
+   Historical Swift/shared-vector command for this slice (superseded by
+   the normal-workspace commands in Section 15):
+
+      swiftc apps/ios/Zeron/Sync/VaultCrypto.swift \
+        apps/ios/Zeron/Sync/VaultSignedRecord.swift \
+        scripts/check-crypto-capabilities.swift \
+        -o target/crypto-capabilities-probe
+      ./target/crypto-capabilities-probe \
+        crates/crypto/tests/fixtures/primitives.json \
+        target/crypto-swift-vectors.json
+      ZERON_CRYPTO_TEST_VECTORS="$PWD/target/crypto-swift-vectors.json" \
+        cargo test --manifest-path target/crypto-verification/Cargo.toml --offline --locked
+
+   Result: Swift shared vectors and HPKE platform probe passed; Rust passed
+   with the fresh Swift signatures. The emitted file holds public test-key
+   fixtures only. HPKE cross-language support is not implemented/tested yet.
+
+      xcrun swiftc -typecheck -target arm64-apple-ios26.0-simulator \
+        -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
+        apps/ios/Zeron/Sync/VaultCrypto.swift \
+        apps/ios/Zeron/Sync/VaultSignedRecord.swift \
+        scripts/check-crypto-capabilities.swift
+
+   Result: iOS simulator-target compile check passed. Additionally, the
+   four new VaultCryptoTests XCTest methods passed using a temporary native
+   macOS runner against the actual Swift adapter source. The runner needed
+   Xcode's Swift XCTest overlay and private-framework search paths. This
+   does not substitute for the full iOS app test target or physical-device
+   secure-store tests. The XCTest source is in the existing synchronized
+   test group; no existing Xcode project/scheme changes were modified.
+
+   Next: finish G1/G2's exact record/identity verification and nonce design,
+   vet HPKE/Noise and codec dependencies, then extend these fixtures to
+   signed envelopes and cross-language HPKE. Secure storage, the channel
+   bridge, pairing/recovery, all transport integrations, migration, and
+   activation remain pending. No commit, push, or deployment performed.
+
+
+12. Signed-Wrapper Slice and Pending Nonce Decision (2026-09-04)
+---------------------------------------------------------------
+
+   RFC Section 7.5 fixes the candidate wrapper grammar for conformance
+   work: an exact deterministic-CBOR map, domain-separated Ed25519 input,
+   opaque IDs, epoch/membership binding, and a bounded opaque payload.
+   This is a signed wrapper, not yet an encrypted-content envelope.
+   The decoder must keep unverified and verified payload states distinct.
+   Membership authorization, freshness, and inner-payload semantics are
+   not inferred from a syntactically valid or correctly signed wrapper.
+
+   There is no CBOR dependency in the current crypto crate; none was found
+   in the inspected active registry cache. This slice uses a non-recursive
+   implementation of the fixed map grammar (unsigned integers, byte strings,
+   fixed ordered keys), not a general CBOR decoder or new cryptographic
+   primitives. Cross-language canonical-byte and malformed-input fixtures
+   are required. A future replacement library must pass the same strict
+   acceptance corpus.
+
+   Proposed G2 nonce direction, still awaiting decision/review:
+
+      A [recommended for investigation]: derive a fresh AES content key
+      per immutable record using HKDF and a fresh random 256-bit salt.
+      Bind derivation/AAD to the version, suite, vault, generation, epoch,
+      content-key ID, purpose, author, and immutable revision. One AEAD
+      invocation per derived key permits a fixed nonce for that key.
+      Persist the entire signed ciphertext once; a retry never seals again.
+      Rekey/re-encryption requires a fresh salt and transport revision.
+
+      This avoids coupling nonce safety to a restorable SQLite counter.
+      It does not create an absolute uniqueness guarantee: entropy quality,
+      salt/derived-key collision bounds, aggregate usage limits, and exact
+      domain encodings still require review. For illustration, at most
+      2^32 independently random 256-bit salts have collision probability
+      below 2^-193; this is not a complete AES-GCM security bound or an
+      approved operational budget. Restoring a disk backup must use fresh
+      OS entropy/new identity policy; arbitrary live VM/RNG-state cloning
+      cannot be declared safe merely by writing "random" in the design.
+
+      B: per-writer keys and durably reserved nonce-counter ranges. This
+      uses conventional counter nonces but needs atomic allocation across
+      processes and a restore/clone barrier outside the restorable outbox.
+      A database transaction alone cannot prevent nonce reuse after backup
+      rollback. More storage/platform state must become part of the proof.
+
+   Neither construction is implemented or approved by this section. The
+   signed wrapper deliberately leaves the inner encrypted payload format
+   open so that its parser/signature work cannot accidentally commit us
+   to an unreviewed nonce allocator. No production seal API is added.
+
+12.1. Implemented wrapper and verification evidence
+
+   Added crates/crypto/src/record.rs and the native counterpart
+   apps/ios/Zeron/Sync/VaultSignedRecord.swift. Parsing exposes only named
+   untrusted routing/binding metadata. Context and signature verification
+   are required to obtain the payload-bearing verified-record type. Rust
+   borrows the input payload; Swift retains bounded Data slices. Verified
+   fields cannot be mutated through these APIs, and record Debug output is
+   redacted. Neither type decides membership validity or payload meaning.
+
+   Added six Rust record test groups and four additional XCTest cases.
+   Shared fixtures now include exact canonical signing bytes, a Rust-made
+   reference signature, and 21 malformed CBOR mutations consumed by both
+   languages. Swift emits a fresh signed wrapper; Rust checks its exact
+   encoding and verifies it against the expected binding and trusted key.
+
+   Coverage includes every binding field, every single-byte mutation of
+   the sample record, every truncation, trailing bytes, unknown versions/
+   kinds, duplicate/reordered keys, forbidden CBOR types, oversized declared
+   lengths, zero epoch, size-limit arithmetic, redaction, nonzero Data slice
+   indices, all unsigned integer widths through UInt64/u64 maximum, and
+   byte-string length boundaries through 65536 bytes. This is conformance
+   coverage, not a substitute for fuzzing or independent protocol review.
+
+   Verification on 2026-09-04:
+      - 13 Rust tests passed through the existing isolated manifest,
+        including fresh Swift signatures AND complete signed-wrapper bytes.
+      - 8 native XCTest cases passed against the actual Swift sources.
+      - Swift shared-fixture runner passed; iOS simulator-target typecheck
+        passed with both Swift adapter files included.
+      - Clippy passed with warnings denied; package rustfmt passed.
+      - A negative Swift compile probe confirmed that unverified payload
+        access and direct construction of a verified record are rejected
+        by the compiler's private/fileprivate access checks.
+
+   Full workspace testing retains the earlier missing-GPUI limitation;
+   these are isolated source tests, not a full app/platform release result.
+   No dependency, transport, account state, existing Xcode project/scheme,
+   or activation behavior was changed by this slice. No commit or push.
+
+   G1-G3 remain open. Before using these records for authorization, finish
+   strict key-admission/verification compatibility, trusted membership
+   lookup, genesis/epoch-transition schemas, and replay/history rules.
+   Before encrypting content, resolve the nonce proposal and exact inner
+   payload/AEAD/key-binding format. No signature-only record may be used as
+   evidence that workspace content is end-to-end encrypted.
+
+
+13. Ed25519 Encoding Hardening (2026-09-04)
+------------------------------------------
+
+   PR #252 was open with review still required when this work began. The
+   automated review had reported no issues; that is not protocol approval.
+   The subsequent standing direction in Section 2 authorises committing
+   and pushing this and later notable milestones to the same PR.
+
+13.1. Reproduction and scope
+
+   Both ring and CryptoKit accepted A = R = the encoded identity point,
+   S = 0 for synthetic messages. With that point supplied as the trusted
+   public key, the signed-wrapper adapters also returned a verified record.
+   Added failing regression tests at BOTH the primitive and wrapper layers
+   before changing verification; two Rust and two XCTest cases failed as
+   expected. This is not a signature break under a correctly generated
+   public key. It demonstrates why a raw signature check is insufficient
+   as device-key possession/admission evidence for arbitrary input keys.
+
+   No live application transport currently calls these adapters, so this
+   finding does not establish an exploit against deployed sync. It is an
+   important restriction to enforce before implementing enrollment.
+
+13.2. Added restrictions
+
+   RFC Section 7.6 records the exact candidate byte-level policy:
+
+      - Inspect A and R as 32-byte compressed Edwards encodings. Reject
+        y >= 2^255-19 and the small-order y coordinates, for either sign.
+      - Require the full 32-byte scalar S to be less than the Ed25519
+        subgroup order L; do not mask high bits or reduce modulo L.
+      - Preserve the original input bytes for the library's signature
+        calculation. Sign-bit masking is performed only on a local copy
+        used for the public-coordinate check.
+
+   Rust and Swift apply the same prechecks before their existing signature
+   libraries. Failures remain AuthenticationFailed / authenticationFailed;
+   signed wrappers map them to InvalidSignature / invalidSignature. No
+   alternate verifier, fallback, curve arithmetic, or signature algorithm
+   was introduced. Helpers are explicitly named encoding PRECHECKS and
+   are not a device-admission API.
+
+   These restrictions intentionally do not claim complete prime-subgroup
+   admission or identical behavior for all mixed-order point constructions.
+   Passing the precheck is necessary, not sufficient, for signature success
+   or key acceptance. Full G1/G2 verification/admission review remains open.
+
+13.3. Fixtures, evidence, and sources
+
+   Expanded the shared fixture file with 13 point-encoding cases, 9 scalar
+   cases, and 8 complete signature rejection cases. The Rust and Swift
+   harnesses also test both point sign bits, the entire noncanonical field
+   range p through 2^255-1, S boundaries including L-1/L/L+1 and high bits,
+   malformed lengths, immutable input, and nonzero Data slice indices.
+   Existing positive RFC and fresh CryptoKit-signature fixtures still pass.
+   Explicitly positive encoding-only cases prevent tests from confusing
+   an encoding check with successful curve-point admission.
+
+   Verification:
+      - 17 Rust tests passed against the actual source through the existing
+        isolated manifest, including fresh Swift signatures/records.
+      - 11 native XCTest cases passed through the macOS source runner.
+      - Shared Swift fixtures and iOS simulator-target typecheck passed.
+      - Clippy passed with warnings denied; no new dependency was added.
+
+   Inspected RFC 8032 and the small-order/canonical-encoding reference in
+   libsodium 1.0.18, source blob ec6d86f5ec5243cc01a951ba2f13cccc574009a5:
+      https://www.rfc-editor.org/rfc/rfc8032.html
+      https://github.com/jedisct1/libsodium/blob/1.0.18/src/libsodium/crypto_core/ed25519/ref10/ed25519_ref10.c
+      https://hdevalence.ca/blog/2020-10-04-its-25519am/
+
+   Only the public mathematical coordinate/order values informed these
+   byte checks. No libsodium dependency was installed or executed, and
+   this does not claim compatibility with every libsodium validation rule.
+   The validation-criteria analysis explicitly explains why a small-order
+   exclusion list alone is not a full solution to mixed-order agreement.
+
+   The nonce proposal in Section 12 is still undecided. No encrypted write,
+   key store, enrollment flow, migration, activation, or existing Xcode
+   project/scheme behavior changed. Full workspace verification retains the
+   earlier missing-GPUI limitation; full iOS device and security review are
+   still required. Next work remains complete key-admission policy and
+   reviewed HPKE interoperability before wiring key-management transports.
+
+
+14. Workspace Verification Restored (2026-09-04)
+------------------------------------------------
+
+   The GPUI issue was a missing cached checkout, not a broken pin or API.
+   The pinned commit exists and is dated 2026-08-19; its GitHub signature
+   status is unverified. Fetched the exact locked dependency sources with:
+
+      cargo fetch --locked --target aarch64-apple-darwin
+
+   Inspected the GPUI/GPUI-macOS build entry points: local resource/binding
+   generation and shader preparation, with no unexpected network step.
+   No dependency versions, repository security settings, or GPUI source
+   files were changed. Cargo.toml and Cargo.lock remained unchanged.
+
+   Normal workspace commands now work:
+      cargo test -p zeron-crypto --locked --offline
+      cargo check --workspace --all-targets --locked --offline
+      cargo test -p zeron-doc -p zeron-sync -p zeron-rpc -p zeron-engine --locked --offline
+
+   Results: crypto's 17 tests passed; the all-target workspace check passed;
+   the doc/sync/RPC/engine unit and integration suites passed after the
+   test synchronization correction below. Existing warnings remain; live
+   provider/edge tests retain their existing explicit ignored status.
+
+   The broader run reproduced a pre-existing heartbeat test race twice.
+   Its "run completes" predicate accepted ANY complete message, including
+   the user entry created before the harness had emitted reasoning. The
+   test then read the journal too early. Tightened the predicate to require
+   a complete ASSISTANT entry; no assertion was removed and no production
+   behavior was changed. The formerly failing test and the broader suite
+   then passed.
+
+   The old isolated-manifest commands are historical evidence only. Use
+   the real workspace from here onward; do not preserve a workaround for
+   a checkout that simply needed its pinned dependencies fetched.
+
+
+15. Content Encryption Implemented (2026-09-04)
+-----------------------------------------------
+
+   Selected the per-record-derived-key design for implementation, superseding
+   the undecided status in the historical Section 12 notes. RFC 7.7 specifies
+   the exact wire, key-derivation, and AAD inputs. No earlier draft ciphertext
+   is a compatibility target. Release security review still applies.
+
+   Rust content.rs and Swift VaultContent.swift now provide:
+      - Immutable scoped content-root keys and device signing identities.
+      - Fresh OS-generated revision/salt material for every new seal.
+      - HKDF-SHA256 per-record AES-256-GCM keys, one encryption per derived
+        key, and signed ciphertext envelopes with explicit purpose/key ID.
+      - Signature/context verification before key selection and AEAD open;
+        no plaintext or alternate-format fallback on failure.
+      - Bounded allocations, explicit entropy errors, and redacted key/
+        plaintext wrapper diagnostics. Secret export is explicit for future
+        protected key envelopes, not a general RPC operation.
+
+   Root-key objects are bound to vault/generation/epoch/object. Using one
+   under a different scope or a signer under another author ID fails before
+   encryption. Key lifecycle code must generate new root material on rotation;
+   reconstructing an old secret under new labels is not revocation.
+
+   Shared fixtures demonstrate Swift opening Rust ciphertext and Rust opening
+   fresh Swift ciphertext. Tests cover mutation/truncation, wrong roots/IDs/
+   purposes/scopes/authors, empty payloads, size and entropy failures, distinct
+   fresh seals, stable retry bytes, and AEAD rejection even after a modified
+   ciphertext/context is re-signed by the test author.
+
+   Verification: 25 Rust tests passed from the real workspace, 15 native
+   XCTest cases passed, and the all-target workspace check passed. The
+   conformance runner now compiles VaultContent.swift alongside VaultCrypto
+   and VaultSignedRecord. No external dependency version was changed.
+
+      swiftc apps/ios/Zeron/Sync/VaultCrypto.swift \
+        apps/ios/Zeron/Sync/VaultSignedRecord.swift \
+        apps/ios/Zeron/Sync/VaultContent.swift \
+        scripts/check-crypto-capabilities.swift -o target/crypto-capabilities-probe
+      ./target/crypto-capabilities-probe \
+        crates/crypto/tests/fixtures/primitives.json target/crypto-swift-vectors.json
+      ZERON_CRYPTO_TEST_VECTORS="$PWD/target/crypto-swift-vectors.json" \
+        cargo test -p zeron-crypto --locked --offline
+      cargo check --workspace --all-targets --locked --offline
+
+   Next is durable outbox/snapshot persistence and key-management integration.
+   These codecs are working implementation, not a user-facing activation:
+   bootstrap/pairing/recovery, every content path, migration, and final security
+   evidence are still required for the complete feature in PR #252.
+
+
+16. Atomic Encrypted Chat Outbox (2026-09-04)
+--------------------------------------------
+
+   Integrated zeron-crypto into zeron-sync and added an encrypted_outbox
+   table to DocsStore. Only sealed ChatUpdate records can enter this queue;
+   blob/sidecar/checkpoint work needs its own transport-specific handling.
+   The queue rejects records larger than ChatClient's existing MAX_PUSH_BYTES
+   before committing them, and enforces a bounded per-profile byte budget.
+
+   persist_encrypted_batch writes the local snapshot, verified receive cursor,
+   document lineage epoch, and immutable ciphertext in one IMMEDIATE SQLite
+   transaction with synchronous=FULL. A PendingEncryptedBatch receipt is
+   returned only after commit. A duplicate enqueue returns the existing bytes
+   without overwriting a newer snapshot; reusing an ID for another document
+   or different bytes is rejected. Cursor overflow/regression is rejected.
+   Crypto key epochs use 8-byte big-endian blobs, separate from the existing
+   document epoch, so full-width u64 values do not wrap through SQLite i64.
+
+   Replay requires the caller's trusted current binding and author public
+   key, filters every binding dimension, verifies stored record signatures,
+   and preserves FIFO order. Old-epoch/policy records remain stored rather
+   than being sent as current or silently discarded. Reads are bounded to
+   128 batches and 64 MiB; enqueue quotas are checked under the write lock.
+   Acknowledgment deletes only the exact receipt/bytes and is idempotent;
+   it never deletes the snapshot or processed-command ledger. Corrupt rows
+   stop replay and are retained for recovery instead of being acknowledged.
+
+   Nine new integration tests cover restart/ack, duplicate/stale enqueues,
+   transaction failure after snapshot update, quota/cursor failures, exact
+   policy filtering, corrupted ciphertext, stale acknowledgments, purpose/
+   frame-size rejection, full-width key epochs, and concurrent connections
+   competing for a one-record quota. All pass. The normal all-target
+   workspace check and crypto/doc/sync/RPC/engine suites also pass, with
+   their existing warnings and explicitly ignored live-service tests.
+
+   The caller must serialize per-document mutations and supply a cursor
+   already verified by the receive path. These APIs do not manufacture
+   trusted membership or connect encrypted traffic to the legacy transport.
+   Local snapshots remain plaintext under the existing endpoint-data policy;
+   no private content keys are stored in the outbox.
+
+   Remaining work in this same PR: secure key persistence and bootstrap/
+   membership/key envelopes; pairing/recovery/revocation; desktop/iOS vault
+   gates and native durable storage; wire the committed batches and verified
+   apply outcomes into WS/HTTPS; cover registry/RPC/sidecars/blobs; migrate
+   plaintext profiles; finish end-to-end leakage, failure, and security review.
+
+
+                          -- End of Project Plan --

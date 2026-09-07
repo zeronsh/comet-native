@@ -1,0 +1,200 @@
+{
+  "version": 1,
+  "purpose": "Public test keys only. Primitive compatibility, not the Zeron wire protocol.",
+  "aes256gcm": [
+    {
+      "name": "gcm-aes256-empty",
+      "source": "GCM specification test case 13",
+      "key": "0000000000000000000000000000000000000000000000000000000000000000",
+      "nonce": "000000000000000000000000",
+      "aad": "",
+      "plaintext": "",
+      "ciphertext": "",
+      "tag": "530f8afbc74536b9a963b4f1c4cb738b"
+    },
+    {
+      "name": "gcm-aes256-one-block",
+      "source": "GCM specification test case 14",
+      "key": "0000000000000000000000000000000000000000000000000000000000000000",
+      "nonce": "000000000000000000000000",
+      "aad": "",
+      "plaintext": "00000000000000000000000000000000",
+      "ciphertext": "cea7403d4d606b6e074ec5d3baf39d18",
+      "tag": "d0d1c8a799996bf0265b98b5d48ab919"
+    },
+    {
+      "name": "synthetic-binary-with-aad",
+      "source": "CryptoKit-generated public test data; independently checked by ring",
+      "key": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "nonce": "202122232425262728292a2b",
+      "aad": "73796e7468657469632d616164",
+      "plaintext": "00ff7f800a0d7368617265642066697874757265",
+      "ciphertext": "d2c5d9f0669569667b0e27aae17e9d81a43c9ef9",
+      "tag": "dd70040212ec1131d455cbef70eff563"
+    }
+  ],
+  "ed25519": [
+    {
+      "name": "rfc8032-test-1",
+      "source": "https://www.rfc-editor.org/rfc/rfc8032.html#section-7.1",
+      "seed": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    {
+      "name": "rfc8032-test-2",
+      "source": "https://www.rfc-editor.org/rfc/rfc8032.html#section-7.1",
+      "seed": "4ccd089b28ff96da9db6c346ec114e0f5b8a319f35aba624da8cf6ed4fb8a6fb",
+      "publicKey": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "message": "72",
+      "signature": "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00"
+    }
+  ],
+  "hkdfSha256": [
+    {
+      "name": "rfc5869-test-1",
+      "source": "https://www.rfc-editor.org/rfc/rfc5869.txt",
+      "ikm": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "salt": "000102030405060708090a0b0c",
+      "info": "f0f1f2f3f4f5f6f7f8f9",
+      "output": "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+    }
+  ],
+  "signedRecords": [
+    {
+      "name": "draft-wrapper-v1-content",
+      "source": "RFC 0001 section 7.5 candidate wrapper; not a production protocol",
+      "kind": 3,
+      "vaultId": "01010101010101010101010101010101",
+      "generation": "02020202020202020202020202020202",
+      "epoch": 24,
+      "objectId": "03030303030303030303030303030303",
+      "authorId": "04040404040404040404040404040404",
+      "revisionId": "05050505050505050505050505050505",
+      "membershipHash": "0606060606060606060606060606060606060606060606060606060606060606",
+      "payload": "00ff1020",
+      "seed": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "signingBytes": "7a65726f6e2f7369676e65642d7265636f72642f763100aa000101030250010101010101010101010101010101010350020202020202020202020202020202020418180550030303030303030303030303030303030650040404040404040404040404040404040750050505050505050505050505050505050858200606060606060606060606060606060606060606060606060606060606060606094400ff1020",
+      "signature": "7b01f902b880d79bcf51346e81121d6c207793d973d6e22f39a7b5de25bd3eb9a0d2d5e115754e528acb4c0f25865f41a1d6c84fda70b43f7636f1e1b1931a02"
+    }
+  ],
+  "recordMutations": [
+    { "name": "nonminimal map length", "offset": 0, "remove": 1, "insert": "b80b", "error": "NonCanonical" },
+    { "name": "indefinite map", "offset": 0, "remove": 1, "insert": "bf", "error": "Malformed" },
+    { "name": "missing field", "offset": 0, "remove": 1, "insert": "aa", "error": "Malformed" },
+    { "name": "unknown field", "offset": 0, "remove": 1, "insert": "ac", "error": "Malformed" },
+    { "name": "tagged map", "offset": 0, "remove": 0, "insert": "c0", "error": "Malformed" },
+    { "name": "reordered key", "offset": 1, "remove": 1, "insert": "01", "error": "Malformed" },
+    { "name": "nonminimal version", "offset": 2, "remove": 1, "insert": "1801", "error": "NonCanonical" },
+    { "name": "unknown version", "offset": 2, "remove": 1, "insert": "02", "error": "UnsupportedVersion" },
+    { "name": "negative version", "offset": 2, "remove": 1, "insert": "20", "error": "Malformed" },
+    { "name": "float version", "offset": 2, "remove": 1, "insert": "fa3f800000", "error": "Malformed" },
+    { "name": "duplicate key", "offset": 3, "remove": 1, "insert": "00", "error": "Malformed" },
+    { "name": "unknown kind", "offset": 4, "remove": 1, "insert": "04", "error": "UnsupportedKind" },
+    { "name": "nonminimal byte string", "offset": 6, "remove": 1, "insert": "5810", "error": "NonCanonical" },
+    { "name": "text identifier", "offset": 6, "remove": 1, "insert": "70", "error": "Malformed" },
+    { "name": "indefinite byte string", "offset": 6, "remove": 1, "insert": "5f", "error": "Malformed" },
+    { "name": "identifier length bomb", "offset": 6, "remove": 1, "insert": "5bffffffffffffffff", "error": "SizeLimitExceeded" },
+    { "name": "payload length bomb", "offset": 134, "remove": 1, "insert": "5bffffffffffffffff", "error": "SizeLimitExceeded" },
+    { "name": "zero epoch", "offset": 42, "remove": 2, "insert": "00", "error": "InvalidEpoch" },
+    { "name": "nonminimal epoch", "offset": 42, "remove": 2, "insert": "190018", "error": "NonCanonical" },
+    { "name": "short signature", "offset": 140, "remove": 2, "insert": "583f", "error": "Malformed" },
+    { "name": "short identifier", "offset": 6, "remove": 1, "insert": "4f", "error": "Malformed" }
+  ],
+  "ed25519PointEncodings": [
+    { "name": "order-four zero", "encoding": "0000000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "identity", "encoding": "0100000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "order-eight y1", "encoding": "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", "allowed": false },
+    { "name": "order-eight y2", "encoding": "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", "allowed": false },
+    { "name": "order-two minus-one", "encoding": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "noncanonical p", "encoding": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "noncanonical p+1", "encoding": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "noncanonical maximum y", "encoding": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": false },
+    { "name": "canonical p-2 encoding only", "encoding": "ebffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", "allowed": true },
+    { "name": "RFC 8032 public-key encoding", "encoding": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a", "allowed": true },
+    { "name": "canonical two encoding only", "encoding": "0200000000000000000000000000000000000000000000000000000000000000", "allowed": true },
+    { "name": "short point", "encoding": "00000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "long point", "encoding": "000000000000000000000000000000000000000000000000000000000000000000", "allowed": false }
+  ],
+  "ed25519ScalarEncodings": [
+    { "name": "zero scalar", "encoding": "0000000000000000000000000000000000000000000000000000000000000000", "allowed": true },
+    { "name": "one scalar", "encoding": "0100000000000000000000000000000000000000000000000000000000000000", "allowed": true },
+    { "name": "L-1", "encoding": "ecd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010", "allowed": true },
+    { "name": "L", "encoding": "edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010", "allowed": false },
+    { "name": "L+1", "encoding": "eed3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010", "allowed": false },
+    { "name": "high scalar bit", "encoding": "0000000000000000000000000000000000000000000000000000000000000080", "allowed": false },
+    { "name": "maximum scalar", "encoding": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "allowed": false },
+    { "name": "short scalar", "encoding": "00000000000000000000000000000000000000000000000000000000000000", "allowed": false },
+    { "name": "long scalar", "encoding": "000000000000000000000000000000000000000000000000000000000000000000", "allowed": false }
+  ],
+  "ed25519Rejections": [
+    {
+      "name": "identity-key signature",
+      "publicKey": "0100000000000000000000000000000000000000000000000000000000000000",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "negative-zero identity key",
+      "publicKey": "0100000000000000000000000000000000000000000000000000000000000080",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "noncanonical identity key",
+      "publicKey": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "noncanonical identity R",
+      "publicKey": "0100000000000000000000000000000000000000000000000000000000000000",
+      "message": "",
+      "signature": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    {
+      "name": "noncanonical S plus L",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901554c8c7872aa064e049dbb3013fbf29380d25bf5f0595bbe24655141438e7a101b"
+    },
+    {
+      "name": "scalar exactly L",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155edd3f55c1a631258d69cf7a2def9de1400000000000000000000000000000010"
+    },
+    {
+      "name": "small-order R with regular key",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "01000000000000000000000000000000000000000000000000000000000000005fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    },
+    {
+      "name": "noncanonical R with regular key",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "message": "",
+      "signature": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f5fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+    }
+  ],
+  "encryptedContent": [
+    {
+      "name": "encrypted-content-v1",
+      "vaultId": "01010101010101010101010101010101",
+      "generation": "02020202020202020202020202020202",
+      "epoch": 1,
+      "objectId": "03030303030303030303030303030303",
+      "authorId": "04040404040404040404040404040404",
+      "membershipHash": "0505050505050505050505050505050505050505050505050505050505050505",
+      "purpose": 1,
+      "keyId": "06060606060606060606060606060606",
+      "contentKey": "0707070707070707070707070707070707070707070707070707070707070707",
+      "signerSeed": "0808080808080808080808080808080808080808080808080808080808080808",
+      "publicKey": "1398f62c6d1a457c51ba6a4b5f3dbd2f69fca93216218dc8997e416bd17d93ca",
+      "plaintext": "70726976617465207472616e73637269707400ff",
+      "encoded": "ab0001010302500101010101010101010101010101010103500202020202020202020202020202020204010550030303030303030303030303030303030650040404040404040404040404040404040750000102030405060708090a0b0c0d0e0f0858200505050505050505050505050505050505050505050505050505050505050505095863a6000101010201035006060606060606060606060606060606045820101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f05582459810eb900ed20065ddcf078cdc6058678314d7c772b113f7a6fa5ca4bedeaad37fc67600a5840ccf11a4602d378560442555ab3ee8a6c517c2dd41a1c2cef190cf417a6f90342c32e637f2b5b76b39bf8baff4b97f9d104d878cee25b09bd3974c99f6a93f60a"
+    }
+  ]
+}

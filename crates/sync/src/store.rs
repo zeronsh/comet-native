@@ -6,7 +6,12 @@ use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use zeron_crypto::content::{ContentPurpose, SealedContent};
+use zeron_crypto::record::{RecordBinding, RecordKind, UnverifiedRecord};
+
+pub const MAX_ENCRYPTED_OUTBOX_BYTES: usize = 64 * 1024 * 1024;
+const MAX_ENCRYPTED_RECORD_BYTES: usize = crate::chat_client::MAX_PUSH_BYTES;
 
 /// Errors surfaced by [`DocsStore`].
 #[derive(Debug, thiserror::Error)]
@@ -15,6 +20,20 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
+    #[error("encrypted batch conflicts with an existing immutable record")]
+    EncryptedBatchConflict,
+    #[error("encrypted outbox capacity reached")]
+    EncryptedOutboxFull,
+    #[error("encrypted record exceeds the chat transport limit")]
+    EncryptedBatchTooLarge,
+    #[error("invalid encrypted outbox limit")]
+    InvalidOutboxLimit,
+    #[error("stored encrypted batch could not be verified")]
+    InvalidEncryptedBatch,
+    #[error("snapshot cursor exceeds the supported storage range")]
+    InvalidCursor,
+    #[error("encrypted snapshot cursor would regress")]
+    CursorRegression,
 }
 
 /// Ordered, append-only migrations. Each entry runs once inside a transaction;
@@ -37,7 +56,52 @@ const MIGRATIONS: &[&str] = &[
     // (M1/M3): 2 = thin chat2 rebuild; NULL/0 = pre-migration s2 doc.
     "ALTER TABLE snapshots ADD COLUMN cursor INTEGER;
      ALTER TABLE snapshots ADD COLUMN epoch INTEGER;",
+    "CREATE TABLE encrypted_outbox (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_id BLOB NOT NULL UNIQUE CHECK(length(batch_id) = 16),
+        doc_id TEXT NOT NULL CHECK(length(doc_id) BETWEEN 1 AND 256),
+        vault_id BLOB NOT NULL CHECK(length(vault_id) = 16),
+        generation BLOB NOT NULL CHECK(length(generation) = 16),
+        key_epoch BLOB NOT NULL CHECK(length(key_epoch) = 8),
+        object_id BLOB NOT NULL CHECK(length(object_id) = 16),
+        author_id BLOB NOT NULL CHECK(length(author_id) = 16),
+        membership_hash BLOB NOT NULL CHECK(length(membership_hash) = 32),
+        record BLOB NOT NULL CHECK(length(record) BETWEEN 1 AND 1044480),
+        queued_at INTEGER NOT NULL
+     ) STRICT;
+     CREATE INDEX encrypted_outbox_scope ON encrypted_outbox
+        (vault_id, generation, key_epoch, object_id, author_id, membership_hash, sequence);",
 ];
+
+#[derive(Clone)]
+pub struct PendingEncryptedBatch {
+    sequence: i64,
+    doc_id: String,
+    binding: RecordBinding,
+    revision_id: [u8; 16],
+    encoded: Vec<u8>,
+}
+
+impl PendingEncryptedBatch {
+    pub fn doc_id(&self) -> &str {
+        &self.doc_id
+    }
+    pub fn binding(&self) -> &RecordBinding {
+        &self.binding
+    }
+    pub fn revision_id(&self) -> &[u8; 16] {
+        &self.revision_id
+    }
+    pub fn encoded(&self) -> &[u8] {
+        &self.encoded
+    }
+}
+
+impl std::fmt::Debug for PendingEncryptedBatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("PendingEncryptedBatch([REDACTED])")
+    }
+}
 
 /// SQLite-backed store under a data directory (`{data_dir}/docs.sqlite3`).
 ///
@@ -196,6 +260,198 @@ impl DocsStore {
             params![command_id, now_ms()],
         )?;
         Ok(changed > 0)
+    }
+
+    pub fn persist_encrypted_batch(
+        &self,
+        doc_id: &str,
+        snapshot: &[u8],
+        cursor: u64,
+        document_epoch: u32,
+        sealed: &SealedContent,
+        max_pending_bytes: usize,
+    ) -> Result<PendingEncryptedBatch, StoreError> {
+        if max_pending_bytes > MAX_ENCRYPTED_OUTBOX_BYTES {
+            return Err(StoreError::InvalidOutboxLimit);
+        }
+        if doc_id.is_empty() || doc_id.len() > 256 || sealed.purpose() != ContentPurpose::ChatUpdate
+        {
+            return Err(StoreError::InvalidEncryptedBatch);
+        }
+        if sealed.encoded().len() > MAX_ENCRYPTED_RECORD_BYTES {
+            return Err(StoreError::EncryptedBatchTooLarge);
+        }
+        let cursor = i64::try_from(cursor).map_err(|_| StoreError::InvalidCursor)?;
+        let binding = sealed.binding();
+        let mut connection = self.conn();
+        connection.pragma_update(None, "synchronous", "FULL")?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let existing: Option<(i64, String, Vec<u8>)> = transaction
+            .query_row(
+                "SELECT sequence, doc_id, record FROM encrypted_outbox WHERE batch_id = ?1",
+                params![sealed.revision_id().as_slice()],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()?;
+        if let Some((sequence, existing_doc_id, encoded)) = existing {
+            if existing_doc_id != doc_id || encoded != sealed.encoded() {
+                return Err(StoreError::EncryptedBatchConflict);
+            }
+            transaction.commit()?;
+            return Ok(PendingEncryptedBatch {
+                sequence,
+                doc_id: existing_doc_id,
+                binding: *binding,
+                revision_id: *sealed.revision_id(),
+                encoded,
+            });
+        }
+        let stored_cursor: Option<Option<i64>> = transaction
+            .query_row(
+                "SELECT cursor FROM snapshots WHERE doc_id = ?1",
+                params![doc_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if stored_cursor
+            .flatten()
+            .is_some_and(|stored| stored < 0 || cursor < stored)
+        {
+            return Err(StoreError::CursorRegression);
+        }
+        let queued_bytes: i64 = transaction.query_row(
+            "SELECT COALESCE(SUM(length(record)), 0) FROM encrypted_outbox",
+            [],
+            |row| row.get(0),
+        )?;
+        let queued_bytes =
+            usize::try_from(queued_bytes).map_err(|_| StoreError::InvalidEncryptedBatch)?;
+        if queued_bytes
+            .checked_add(sealed.encoded().len())
+            .is_none_or(|total| total > max_pending_bytes)
+        {
+            return Err(StoreError::EncryptedOutboxFull);
+        }
+        transaction.execute(
+            "INSERT INTO snapshots (doc_id, bytes, saved_at, cursor, epoch) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(doc_id) DO UPDATE SET bytes = excluded.bytes, saved_at = excluded.saved_at,
+                 cursor = excluded.cursor, epoch = excluded.epoch",
+            params![doc_id, snapshot, now_ms(), cursor, i64::from(document_epoch)],
+        )?;
+        transaction.execute(
+            "INSERT INTO encrypted_outbox
+             (batch_id, doc_id, vault_id, generation, key_epoch, object_id, author_id, membership_hash, record, queued_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![sealed.revision_id().as_slice(), doc_id, binding.vault_id.as_slice(), binding.generation.as_slice(),
+                binding.epoch.to_be_bytes().as_slice(), binding.object_id.as_slice(), binding.author_id.as_slice(),
+                binding.membership_hash.as_slice(), sealed.encoded(), now_ms()],
+        )?;
+        let sequence = transaction.last_insert_rowid();
+        transaction.commit()?;
+        Ok(PendingEncryptedBatch {
+            sequence,
+            doc_id: doc_id.to_owned(),
+            binding: *binding,
+            revision_id: *sealed.revision_id(),
+            encoded: sealed.encoded().to_vec(),
+        })
+    }
+
+    pub fn pending_encrypted_batches(
+        &self,
+        binding: &RecordBinding,
+        trusted_public_key: &[u8],
+        max_batches: usize,
+    ) -> Result<Vec<PendingEncryptedBatch>, StoreError> {
+        if max_batches > 128 {
+            return Err(StoreError::InvalidOutboxLimit);
+        }
+        if binding.kind != RecordKind::Content {
+            return Err(StoreError::InvalidEncryptedBatch);
+        }
+        let connection = self.conn();
+        let mut statement = connection.prepare(
+            "SELECT sequence, doc_id, batch_id, length(record), record FROM encrypted_outbox
+             WHERE vault_id = ?1 AND generation = ?2 AND key_epoch = ?3 AND object_id = ?4
+                AND author_id = ?5 AND membership_hash = ?6 ORDER BY sequence LIMIT ?7",
+        )?;
+        let mut rows = statement.query(params![
+            binding.vault_id.as_slice(),
+            binding.generation.as_slice(),
+            binding.epoch.to_be_bytes().as_slice(),
+            binding.object_id.as_slice(),
+            binding.author_id.as_slice(),
+            binding.membership_hash.as_slice(),
+            max_batches as i64
+        ])?;
+        let mut pending = Vec::new();
+        let mut loaded_bytes = 0usize;
+        while let Some(row) = rows.next()? {
+            let length = usize::try_from(row.get::<_, i64>(3)?)
+                .map_err(|_| StoreError::InvalidEncryptedBatch)?;
+            loaded_bytes = loaded_bytes
+                .checked_add(length)
+                .ok_or(StoreError::InvalidEncryptedBatch)?;
+            if length > MAX_ENCRYPTED_RECORD_BYTES || loaded_bytes > MAX_ENCRYPTED_OUTBOX_BYTES {
+                return Err(StoreError::InvalidEncryptedBatch);
+            }
+            let sequence = row.get(0)?;
+            let doc_id: String = row.get(1)?;
+            let revision_bytes: Vec<u8> = row.get(2)?;
+            let revision_id: [u8; 16] = revision_bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| StoreError::InvalidEncryptedBatch)?;
+            let encoded: Vec<u8> = row.get(4)?;
+            if doc_id.is_empty() || doc_id.len() > 256 || encoded.len() != length {
+                return Err(StoreError::InvalidEncryptedBatch);
+            }
+            let parsed = UnverifiedRecord::parse(&encoded, MAX_ENCRYPTED_RECORD_BYTES)
+                .map_err(|_| StoreError::InvalidEncryptedBatch)?;
+            if parsed.untrusted_revision_id() != &revision_id {
+                return Err(StoreError::InvalidEncryptedBatch);
+            }
+            parsed
+                .verify(binding, trusted_public_key)
+                .map_err(|_| StoreError::InvalidEncryptedBatch)?;
+            pending.push(PendingEncryptedBatch {
+                sequence,
+                doc_id,
+                binding: *binding,
+                revision_id,
+                encoded,
+            });
+        }
+        Ok(pending)
+    }
+
+    pub fn acknowledge_encrypted_batch(
+        &self,
+        batch: &PendingEncryptedBatch,
+    ) -> Result<bool, StoreError> {
+        let connection = self.conn();
+        connection.pragma_update(None, "synchronous", "FULL")?;
+        let removed = connection.execute(
+            "DELETE FROM encrypted_outbox WHERE sequence = ?1 AND batch_id = ?2 AND record = ?3",
+            params![
+                batch.sequence,
+                batch.revision_id.as_slice(),
+                batch.encoded.as_slice()
+            ],
+        )?;
+        Ok(removed == 1)
+    }
+
+    pub fn encrypted_outbox_stats(&self) -> Result<(usize, usize), StoreError> {
+        let (count, bytes): (i64, i64) = self.conn().query_row(
+            "SELECT COUNT(*), COALESCE(SUM(length(record)), 0) FROM encrypted_outbox",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        Ok((
+            usize::try_from(count).map_err(|_| StoreError::InvalidEncryptedBatch)?,
+            usize::try_from(bytes).map_err(|_| StoreError::InvalidEncryptedBatch)?,
+        ))
     }
 
     fn conn(&self) -> MutexGuard<'_, Connection> {
