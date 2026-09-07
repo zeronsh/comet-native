@@ -195,6 +195,25 @@ final class MobilePolishTests: XCTestCase {
         capture("delayed-hydration")
     }
 
+    func testToolGroupRepeatedOpenAndClose() {
+        launch(["-route", "chat:chat-tabs"])
+        let group = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Ran 1 command")).firstMatch
+        XCTAssertTrue(group.waitForExistence(timeout: 5))
+        let detail = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "cargo test")).firstMatch
+        for cycle in 0..<3 {
+            group.tap()
+            XCTAssertEqual(group.value as? String, "Expanded")
+            XCTAssertTrue(detail.exists)
+            if cycle == 0 { capture("tool-group-expanded") }
+            group.tap()
+            XCTAssertEqual(group.value as? String, "Collapsed")
+            let removed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: detail)
+            XCTAssertEqual(XCTWaiter.wait(for: [removed], timeout: 2), .completed)
+            if cycle == 0 { capture("tool-group-collapsed") }
+        }
+        XCTAssertTrue(composer.isHittable)
+    }
+
     func testToolRailAndComposerPicker() {
         launch(["-route", "chat:chat-tabs"])
         let group = app.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Ran 1 command")).firstMatch

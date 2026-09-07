@@ -100,6 +100,33 @@ All interaction data is the offline demo dataset. This pass does not claim
 physical-device performance, live host/edge delivery, or attachment transfer
 coverage beyond the existing protocol tests.
 
+## Tool-group disclosure motion
+
+Tool-group fold state is observed inside each hosted group. Toggling no longer
+reconfigures all visible table cells through the nonanimated streaming update
+path. A small animatable layout reveals the tool rail over the existing 200ms
+resize curve and retains the rail until the closing animation finishes. Rapid
+reversals cancel that pending removal; collapsed details are immediately hidden
+from hit testing and accessibility. Closed groups do not retain their detail
+views after the transition.
+
+The table receives intermediate heights through the existing resize hook. Its
+keyboard spring synchronization, streaming updates, send clearing, and follow
+logic are unchanged. Regression checks sample intermediate opening/closing
+heights, preserve the history header's position, and reverse a toggle while new
+streamed blocks arrive with the keyboard open.
+
+Validation passed across iPhone 17 Pro and iPhone 16e simulator runs: 30 affected
+layout, presentation, and composer checks, plus UI coverage for repeated tool
+toggles, streaming/back-swipe, draft clearing, keyboard/reopen, long user messages,
+landscape, and the tool rail/model picker. The smaller simulator's stale hardware
+keyboard connection was refreshed before rerunning the real-keyboard checks.
+The arm64 Release simulator build also passed.
+
+| Expanded tool rail | Collapsed group |
+| --- | --- |
+| ![Expanded tool group](screenshots/mobile-tool-disclosure/tool-group-expanded.png) | ![Collapsed tool group](screenshots/mobile-tool-disclosure/tool-group-collapsed.png) |
+
 ## Streaming, keyboard motion, and draft clearing
 
 Streaming chunks are registered with the row's fade clock before constructing

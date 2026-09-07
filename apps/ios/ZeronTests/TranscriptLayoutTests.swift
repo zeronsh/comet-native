@@ -8,6 +8,7 @@ final class TranscriptLayoutTests: XCTestCase {
     @Observable final class Harness {
         let store: SessionStore
         var scroll = ScrollState()
+        let folds = ToolGroupFolds()
         var identity = UUID()
         var composerHeight: CGFloat = 64
         var dynamicTypeSize: DynamicTypeSize = .large
@@ -20,7 +21,7 @@ final class TranscriptLayoutTests: XCTestCase {
         let harness: Harness
         var body: some View {
             VStack(spacing: 0) {
-                TranscriptView(store: harness.store, chatId: harness.store.chatId, scroll: harness.scroll)
+                TranscriptView(store: harness.store, chatId: harness.store.chatId, scroll: harness.scroll, folds: harness.folds)
                     .id(harness.identity)
                 if harness.useEditor {
                     ComposerShell(draft: Binding(get: { harness.draft }, set: { harness.draft = $0 }),
@@ -141,6 +142,104 @@ final class TranscriptLayoutTests: XCTestCase {
             let visibleBottom = table.visibleCells.map { table.convert($0.frame, to: window).maxY }.max() ?? 0
             XCTAssertGreaterThanOrEqual(visibleBottom, viewport.maxY - 100,
                 "Reading history must have realized content throughout the viewport")
+        }
+    }
+
+    func testToolGroupsRevealAndCollapseThroughIntermediateHeights() async {
+        await mount(turns: 3)
+        let rows = harness.store.transcriptCache.rows(revision: harness.store.revision,
+            entries: harness.store.entries, pendingSends: harness.store.pendingSends)
+        let index = rows.lastIndex { if case .toolGroup = $0.kind { return true }; return false }!
+        let id = rows[index].id
+        harness.folds.values[id] = false
+        await settle()
+        let table = harness.scroll.nativeScrollView as! TranscriptTableView
+        let path = IndexPath(row: index, section: 0)
+        let tailKey = key + "|" + rows.last!.id
+        for open in [true, false, true, false] {
+            let start = table.rectForRow(at: path).height
+            withAnimation(Motion.resize) { harness.folds.values[id] = open }
+            var heights: [CGFloat] = []
+            var gaps: [CGFloat] = []
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .milliseconds(16))
+                heights.append(table.rectForRow(at: path).height)
+                if let viewport = TranscriptLayoutProbe.presentedFrame(for: key),
+                   let tail = TranscriptLayoutProbe.presentedFrame(for: tailKey) {
+                    gaps.append(viewport.maxY - tail.maxY)
+                }
+            }
+            let attachment = XCTAttachment(string: "heights=\(heights)\ngaps=\(gaps)")
+            attachment.name = open ? "tool-opening-motion" : "tool-closing-motion"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            XCTAssertEqual(gaps.count, 30)
+            XCTAssertGreaterThan(Set(heights.map { Int($0.rounded()) }).count, 5)
+            XCTAssertGreaterThan(abs(heights.last! - start), 100)
+            XCTAssertLessThan((gaps.max() ?? .infinity) - (gaps.min() ?? 0), 4)
+            assertTailVisible()
+        }
+    }
+
+    func testToolToggleReversalWhileStreamingKeepsTailAttached() async {
+        await mount(turns: 3, useEditor: true)
+        let rows = harness.store.transcriptCache.rows(revision: harness.store.revision,
+            entries: harness.store.entries, pendingSends: harness.store.pendingSends)
+        let index = rows.lastIndex { if case .toolGroup = $0.kind { return true }; return false }!
+        let id = rows[index].id
+        harness.folds.values[id] = false
+        findNativeEditor(window)!.becomeFirstResponder()
+        await settle()
+        let table = harness.scroll.nativeScrollView as! TranscriptTableView
+        let path = IndexPath(row: index, section: 0)
+        let closedHeight = table.rectForRow(at: path).height
+        var heights = [closedHeight]
+        for open in [true, false, true, false, true, false] {
+            withAnimation(Motion.resize) { harness.folds.values[id] = open }
+            for tick in 0..<5 {
+                try? await Task.sleep(for: .milliseconds(16))
+                heights.append(table.rectForRow(at: path).height)
+                assertTailVisible() // Inspect the rendered frame before applying the next network update.
+                if tick == 2 {
+                    var entries = harness.store.entries
+                    entries[entries.count - 1].status = .streaming
+                    entries[entries.count - 1].parts.append(.text(id: "stream-\(heights.count)", text: "More output."))
+                    harness.store.setEntries(entries)
+                }
+            }
+        }
+        await settle()
+        XCTAssertEqual(table.rectForRow(at: path).height, closedHeight, accuracy: 1)
+        XCTAssertGreaterThan(Set(heights.map { Int($0.rounded()) }).count, 10)
+        XCTAssertLessThan(zip(heights, heights.dropFirst()).map { abs($1 - $0) }.max() ?? .infinity, 100)
+        assertTailVisible()
+    }
+
+    func testToolDisclosureKeepsHistoryHeaderAnchored() async {
+        await mount(turns: 120)
+        let rows = harness.store.transcriptCache.rows(revision: harness.store.revision,
+            entries: harness.store.entries, pendingSends: harness.store.pendingSends)
+        let index = rows.indices.filter { if case .toolGroup = rows[$0].kind { return true }; return false }[110]
+        let id = rows[index].id
+        harness.folds.values[id] = false
+        let table = harness.scroll.nativeScrollView as! TranscriptTableView
+        let path = IndexPath(row: index, section: 0)
+        harness.scroll.pinned = false
+        table.scrollToRow(at: path, at: .top, animated: false)
+        await settle()
+        let cell = table.cellForRow(at: path)!
+        func headerY() -> CGFloat {
+            let layer = cell.layer.presentation() ?? cell.layer
+            return layer.convert(layer.bounds, to: window.layer.presentation() ?? window.layer).minY
+        }
+        let startY = headerY()
+        for open in [true, false] {
+            withAnimation(Motion.resize) { harness.folds.values[id] = open }
+            for _ in 0..<30 {
+                try? await Task.sleep(for: .milliseconds(16))
+                XCTAssertEqual(headerY(), startY, accuracy: 4)
+                XCTAssertFalse(harness.scroll.pinned)
+            }
         }
     }
 
