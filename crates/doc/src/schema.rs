@@ -261,6 +261,41 @@ impl SessionDoc {
         &self.doc
     }
 
+    /// A single atomic value prevents tokens and capacity from tearing on sync.
+    pub fn context_usage(&self) -> Option<zeron_proto::ContextUsage> {
+        let loro::ValueOrContainer::Value(LoroValue::String(value)) =
+            self.doc.get_map("meta").get("contextUsage")?
+        else {
+            return None;
+        };
+        serde_json::from_str(&value).ok()
+    }
+
+    pub fn update_context_usage(
+        &self,
+        tokens: Option<u64>,
+        window: Option<u64>,
+    ) -> Result<(), DocError> {
+        let previous = self.context_usage().unwrap_or_default();
+        let next = zeron_proto::ContextUsage {
+            tokens: tokens.or(previous.tokens),
+            window: window.filter(|n| *n > 0).or(previous.window),
+        };
+        if next != previous {
+            self.doc
+                .get_map("meta")
+                .insert("contextUsage", serde_json::to_string(&next)?)?;
+            self.doc.commit();
+        }
+        Ok(())
+    }
+
+    pub fn clear_context_usage(&self) -> Result<(), DocError> {
+        self.doc.get_map("meta").delete("contextUsage")?;
+        self.doc.commit();
+        Ok(())
+    }
+
     pub fn chat_id(&self) -> Option<String> {
         match self.doc.get_map("meta").get("chatId") {
             Some(loro::ValueOrContainer::Value(LoroValue::String(s))) => Some(s.to_string()),
@@ -1726,5 +1761,43 @@ mod tests {
         });
         let entry = entry_from_json(v).expect("strict");
         assert_eq!(entry.id, "m1");
+    }
+}
+
+#[cfg(test)]
+mod context_usage_tests {
+    use super::*;
+    #[test]
+    fn context_snapshot_survives_remote_import_restart_and_rebuild() {
+        let host = SessionDoc::init("context-chat").unwrap();
+        assert_eq!(host.context_usage(), None);
+        host.update_context_usage(Some(150_000), Some(200_000))
+            .unwrap();
+        let replica = SessionDoc::from_doc(LoroDoc::new());
+        replica
+            .doc()
+            .import(&host.export_snapshot().unwrap())
+            .unwrap();
+        assert_eq!(replica.context_usage(), host.context_usage());
+        let version = host.doc().oplog_vv();
+        // Compaction is a replacement, not an accumulating counter. Zero capacity is invalid.
+        host.update_context_usage(Some(0), Some(0)).unwrap();
+        replica
+            .doc()
+            .import(&host.doc().export(ExportMode::updates(&version)).unwrap())
+            .unwrap();
+        assert_eq!(
+            replica.context_usage(),
+            Some(zeron_proto::ContextUsage {
+                tokens: Some(0),
+                window: Some(200_000)
+            })
+        );
+        host.update_context_usage(None, Some(1_000_000)).unwrap();
+        assert_eq!(host.context_usage().unwrap().tokens, Some(0));
+        let rebuilt = crate::rebuild_thin_doc(&host).unwrap().doc;
+        assert_eq!(rebuilt.context_usage(), host.context_usage());
+        rebuilt.clear_context_usage().unwrap();
+        assert_eq!(rebuilt.context_usage(), None);
     }
 }

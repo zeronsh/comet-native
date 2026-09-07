@@ -627,6 +627,7 @@ pub struct AppState {
     deep_link_notice: Option<String>,
     /// Joined transcript of the selected chat (continuations folded engine-side).
     pub transcript: Vec<SessionMessageEntry>,
+    pub context_usage: Option<zeron_proto::ContextUsage>,
     /// The selected chat's opening `WatchDocMessages` reset has landed. An
     /// empty transcript is otherwise indistinguishable from the pre-replay
     /// gap after selection, where optimistic echoes may already be visible.
@@ -716,6 +717,7 @@ impl AppState {
             selected_device: None,
             selected_chat: None,
             transcript: Vec::new(),
+            context_usage: None,
             transcript_replayed: false,
             transcript_revision: 0,
             echoes: HashMap::new(),
@@ -841,6 +843,7 @@ impl AppState {
             // Selected chat vanished (deleted elsewhere): drop selection + transcript.
             self.selected_chat = None;
             self.transcript.clear();
+            self.context_usage = None;
             self.transcript_revision = self.transcript_revision.wrapping_add(1);
             self.transcript_replayed = false;
             self.transcript_task = None;
@@ -1541,6 +1544,7 @@ impl AppState {
         self.chats_synced = false;
         self.spaces_synced = false;
         self.transcript.clear();
+        self.context_usage = None;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.transcript_replayed = false;
         self.echoes.clear();
@@ -1758,6 +1762,7 @@ impl AppState {
         self.selected_chat = chat_id.clone();
         self.auto_selected = true;
         self.transcript.clear();
+        self.context_usage = None;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.transcript_replayed = false;
         self.transcript_task = None;
@@ -2144,7 +2149,7 @@ fn spawn_transcript_watch(
                 }
             };
             while let Some(value) = rx.recv().await {
-                let frame: TranscriptFrame = match serde_json::from_value(value) {
+                let update: zeron_doc::TranscriptUpdate = match serde_json::from_value(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         // Schema skew (a newer peer's entry shape arriving
@@ -2156,10 +2161,18 @@ fn spawn_transcript_watch(
                         continue 'resubscribe;
                     }
                 };
+                let zeron_doc::TranscriptUpdate {
+                    frame,
+                    context_usage: usage,
+                } = update;
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                        if state.context_usage != usage {
+                            state.context_usage = usage;
+                            cx.notify();
+                        }
                         if let Err(err) = state.receive_transcript_frame(frame, cx) {
                             tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
                             desync = true;

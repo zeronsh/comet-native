@@ -62,16 +62,17 @@ Markdown/
                         from the 2nd-to-last top-level block; link-defs force
                         full parses) — parser.rs port
   Highlight.swift       line tokenizer with carry state, paint-only
-  MarkdownBlockView.swift  desktop metrics: body 14/22, headings 19/27…14/22,
-                        code 12.5/18 (analytic line rows), violet inline code,
+  MarkdownBlockView.swift  mobile metrics: body 17/26, headings 23/31…17/26,
+                        code 14/21 (Dynamic Type scaled line rows), violet inline code,
                         accent blockquotes, hairline tables
 Transcript/
   TranscriptRows.swift  rows_for_entry port: block-granularity rows, stable
                         ids ({msg}#{part}.{block}, {msg}#g{n}), fingerprint
                         versions, consecutive-tool grouping
-  TranscriptView.swift  lazy stack + stick-to-bottom (pin breaks only on user
-                        scroll, 70pt re-engage band, 320pt jump button),
-                        tool-group folds, error/input chips
+  NativeTranscriptTable.swift  UIKit row reuse, gesture anchoring and
+                        animated local-send runway retained across navigation
+  TranscriptView.swift  SwiftUI message content, user-message folding, follow
+                        (70pt re-engage, 140pt jump), tool activity rail
   Veil.swift            paint-only streaming fade (EMA-tracked duration,
                         1−(1−p)^1.6 curve)
 Composer/               glass pill, Send→Steer→Stop morph, QuestionPanel
@@ -95,12 +96,13 @@ Theme/                  theme.rs port: oklch→sRGB converter, exact palette,
 | Add-space palette (device + folder browser) | New-space sheet: device tabs + remote folder browser (ListFolders over the device-room relay, git repos badged) |
 | ControlRpc over device-room relay | `DeviceRelayClient` — binary `uleb128(len)+header+payload` frames, `{"s","k","to","from"}` header, ndjson ControlRpc; used for ListFolders + direct-to-host `Mutate {createSpace}` (local doc-write fallback when the host is offline) |
 | Hover timestamps / copy | Context menus |
-| gpui `list()` sum-tree virtualization | `LazyVStack` + stable row ids + version fingerprints |
-| Stick-to-bottom spring, wheel-up breaks pin | Scroll-phase-gated pin + spring scrollTo, same 70/320pt thresholds |
+| Long user messages: Show more / Show less | Five-line preview, 44pt disclosure target, expansion retained per session |
+| gpui `list()` sum-tree virtualization | Native table row reuse with SwiftUI content, stable row ids and version fingerprints |
+| Stick-to-bottom spring, wheel-up breaks pin | Gesture-owned follow, composer-sized viewport with glass underlap, retained local prompt runway |
 
-Status colors, fonts, spacing, markdown metrics, veil timing, command-ledger
-shapes, and the wire protocol are ports, not approximations — constants match
-the desktop sources cited in each file header.
+Status colors, font families, veil timing, command-ledger shapes, and wire
+protocol follow desktop. Text sizes and touch targets are adapted for phones;
+see [mobile polish and simulator coverage](../../docs/mobile-polish.md).
 
 ### Writer discipline (what the phone writes)
 

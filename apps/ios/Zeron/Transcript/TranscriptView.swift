@@ -1,399 +1,61 @@
-// Transcript — virtualized block-granularity rows with stick-to-bottom.
-//
-// Desktop parity (transcript.rs): global spacing tokens — turn 16, ordinary
-// block 8, tool-group boundaries 12 — plus MD_BLOCK_GAP 12 for sibling blocks;
-// content column max 736, re-engage band 70, jump-button threshold 320,
-// bottom pad 24. Rows are identified by stable ids and versioned by content
-// fingerprints, so a streamed token re-renders exactly one row. SwiftUI's lazy
-// stack + scroll APIs stand in for gpui's list(): the pin breaks only on
-// user scroll-up and re-engages when approaching the bottom.
-
+// Block-granularity transcript with a single owner for follow intent.
+// UIKit owns row reuse and scrolling; SwiftUI owns message presentation.
 import SwiftUI
 
 struct TranscriptView: View {
     let store: SessionStore
     let chatId: String
-    /// Owned by SessionView so IT can report the composer inset's global
-    /// frame into `insetTopGlobalY` — the measured truth `correctPin`
-    /// re-pins against.
     let scroll: ScrollState
-
-    init(store: SessionStore, chatId: String, scroll: ScrollState) {
-        self.store = store
-        self.chatId = chatId
-        self.scroll = scroll
-        // NOT seeded from store.hasRevealed anymore. That seed (meant to stop
-        // a blink on mid-typing view re-creation) un-gated every warm RE-OPEN:
-        // a new view lays the whole LazyVStack out from scratch — estimates,
-        // churn, mis-anchor — and the user watched it, or worse, was left in
-        // the blank over-estimate region ("cached session opens blank every
-        // time"). Every new view identity now earns its reveal through
-        // settleToBottom, which converges on the MEASURED pin error and is
-        // ~1 frame for content that lays out where the anchor put it.
-        _hydrated = State(initialValue: !store.entries.isEmpty || !store.pendingSends.isEmpty)
-    }
 
     static let maxContentWidth: CGFloat = 736
     static let stickThreshold: CGFloat = 70
-    static let jumpThreshold: CGFloat = 320
-
+    static let jumpThreshold: CGFloat = 140
     @State private var veils = VeilStore()
-    @State private var folds: [String: Bool] = [:]
-    /// One-shot guard for the first non-empty projection.
-    @State private var hydrated = false
-    /// Gates the reveal: false until the transcript has landed at the bottom.
-    @State private var settled = false
-    @State private var scrollPosition = ScrollPosition(edge: .bottom)
+    @State var folds = ToolGroupFolds()
+    @State private var userExpansionHeights: [String: CGFloat] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
 
     var body: some View {
-        // The parse cache lives on the store (one per session, prewarmed
-        // off-main), so opening a chat assembles rows from settled parses
-        // instead of re-parsing the whole transcript on the main thread.
         let rows = store.transcriptCache.rows(revision: store.revision,
                                               entries: store.entries,
                                               pendingSends: store.pendingSends)
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 0) {
-                ForEach(rows) { row in
-                    rowView(row).id(row.id)
-                }
-                Color.clear.frame(height: 44)  // bottom pad clears the fade + floating status strip
-                    // The pad's on-screen frame is the one bottom-position
-                    // reading the keyboard can't distort (see correctPin).
-                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { [scroll] new in
-                        scroll.padGlobalMaxY = new
-                        correctPin()
+        let runway = store.lastSubmittedMessageId
+        NativeTranscriptTable(rows: rows, scroll: scroll, runwayID: runway,
+            expansionHeight: runway.flatMap { userExpansionHeights[$0] } ?? 0,
+            bottomSpacing: verticalSizeClass == .compact ? 8 : 24,
+            reduceMotion: reduceMotion,
+            configurationID: store.expandedUserMessages.hashValue ^ dynamicTypeSize.hashValue) { row in
+                AnyView(rowView(row)
+                    .modifier(TranscriptTailProbe(rowID: row.id,
+                        isTail: row.id == rows.last?.id || (row.entryId == runway && row.turnStart),
+                        chatId: chatId))
+                    .environment(\.dynamicTypeSize, dynamicTypeSize)
+                    .environment(\.colorScheme, .dark))
+            }
+            .modifier(TranscriptViewportProbe(chatId: chatId))
+            .background(Theme.bg)
+            .overlay(alignment: .bottomTrailing) {
+                if scroll.showJump {
+                    Button {
+                        scroll.arm()
+                        scroll.jumpToLatest?(!reduceMotion)
+                    } label: {
+                        Image(systemName: "arrow.down")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(Theme.text)
+                            .frame(width: 44, height: 44)
                     }
-            }
-            .frame(maxWidth: Self.maxContentWidth)
-            .frame(maxWidth: .infinity)
-        }
-        .scrollPosition($scrollPosition)
-        .defaultScrollAnchor(.bottom)
-        // Drag past the composer and the keyboard follows the finger down —
-        // the Messages-style interactive dismissal.
-        .scrollDismissesKeyboard(.interactively)
-        // Tap anywhere in the transcript to put the keyboard away (t3's
-        // tap-to-blur; TapGesture already cancels on drag-sized movement).
-        // Simultaneous so fold toggles and row buttons still receive theirs.
-        .simultaneousGesture(TapGesture().onEnded {
-            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder),
-                                            to: nil, from: nil, for: nil)
-        })
-        // Held invisible until it has settled at the bottom, then faded in.
-        // The settling itself is unavoidable (see settleToBottom) — what is
-        // avoidable is WATCHING it: painting mid-settle is what read as the
-        // transcript sliding on load.
-        .opacity(settled ? 1 : 0)
-        // While a big transcript is finding its bottom, show the skeleton — a
-        // black void here read as "the session is broken" (and on a slow
-        // settle it WAS multiple seconds of void).
-        .overlay {
-            if !settled {
-                TranscriptSkeleton()
-                    .background(Theme.bg)
-            }
-        }
-        .motionAnimation(Motion.fadeQuick, value: settled)
-        .background(Theme.bg)
-        .task {
-            // SessionView calls this on keyboard didShow/didHide — the one
-            // forced correction that ends each keyboard transition.
-            scroll.requestCorrection = { correctPin(force: true) }
-            // Warm sessions already have rows at first layout, and `onChange`
-            // never fires for an initial value — this is the only hook for them.
-            await settleToBottom()
-        }
-        .onChange(of: rows.isEmpty) { _, isEmpty in
-            // Projection is off-main, so a cached transcript usually lands after
-            // the pass above ran on an empty list. Only ever hides a transcript
-            // that has never been shown — re-hiding a visible one is what made
-            // it blink out mid-typing. `hydrated` is the one-shot: it seeds
-            // true for stores that have already revealed content, so this
-            // fires exactly once, on a fresh store's first non-empty rows.
-            guard !isEmpty, !hydrated else { return }
-            hydrated = true
-            settled = false
-            Task { await settleToBottom() }
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { [scroll] old, new in
-            scroll.contentHeight = new
-            // Estimated row heights keep resolving after the settle, and a
-            // SHRINK leaves the held offset past the content — a black
-            // viewport until the user's scroll clamps it (t3 re-pins on
-            // itemLayout for exactly this). Keep a pinned feed glued through
-            // reflows; never touch a user's in-flight drag.
-            if scroll.pinned, !scroll.userScrolling, new < old - 1 {
-                correctPin()
-            }
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { [scroll] _, new in
-            scroll.contentOffsetY = new
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { $0.containerSize.height + $0.contentInsets.bottom } action: { _, _ in
-            // The viewport resized under the content — keyboard up/down, the
-            // composer's capsule↔card morph, the question-panel swap. t3's
-            // rule for exactly this ("keyboardLiftBehavior=whenAtEnd" +
-            // inset re-report on remount): a feed pinned at the end follows
-            // the new bottom IMMEDIATELY; an unpinned reader stays put —
-            // unless the resize stranded the offset past the content (blank
-            // viewport), which is clamped back to the bottom. Without this,
-            // focusing the composer could leave the transcript scrolled out
-            // of range (blank until touched) or resting a viewport short
-            // (content "appears" only when the next resize brought it back).
-            guard !scroll.userScrolling else { return }  // their drag wins
-            if scroll.pinned || scroll.distanceFromBottom < -1 {
-                // t3's keyboardLiftBehavior=whenAtEnd: no per-frame chasing
-                // while the boundary animates (that fight was the stutter,
-                // and the edge math lies by the keyboard inset anyway) —
-                // correctPin trails the transition and lands one measured,
-                // animated lift when the boundary goes quiet.
-                correctPin()
-            }
-        }
-        .onScrollPhaseChange { [scroll] _, newPhase in
-            // Desktop rule: the pin breaks only on USER input (wheel-up/drag),
-            // never on streaming growth. Phases track the gesture.
-            scroll.userScrolling = newPhase == .interacting || newPhase == .decelerating
-            // A gesture can END stranded past the content (a shrink landed
-            // mid-drag; the in-flight clamps all yield to the user). Once the
-            // scroll view goes quiet there is no later geometry event to
-            // catch it — clamp here or the viewport stays blank.
-            if !scroll.userScrolling {
-                correctPin()  // self-gates: pinned re-glue or stranded clamp
-            }
-        }
-        .onScrollGeometryChange(for: CGFloat.self) { geo in
-            // Inset-proof distance: visibleRect is already contentInsets-
-            // adjusted, so this is 0 at the VISUAL bottom whether or not the
-            // keyboard is up. The old offset+insets formula double-counted
-            // the keyboard inset (~keyboard-height at the bottom), which
-            // both pinned the jump button on and put the 70pt re-stick band
-            // permanently out of reach while typing. Unclamped on purpose:
-            // negative = stranded past the content (the resize clamp's cue).
-            geo.contentSize.height - geo.visibleRect.maxY
-        } action: { [scroll] old, new in
-            scroll.distanceFromBottom = new
-            if scroll.userScrolling, new > old + 1, new > 2 {
-                scroll.pinned = false
-            } else if !scroll.pinned, new <= Self.stickThreshold, new < old {
-                // Re-stick only when moving TOWARD the bottom inside the 70pt
-                // band, else the pin would be unbreakable.
-                scroll.pinned = true
-            } else if !scroll.userScrolling {
-                if new < -1 {
-                    // Stranded past the content end (blank viewport). The
-                    // measured corrector resolves it — and self-defers while
-                    // the composer boundary is mid-transition, so it never
-                    // fights a keyboard animation the way raw edge-scrolls
-                    // here used to.
-                    correctPin()
-                } else if scroll.pinned, new > old + 1, new > Self.stickThreshold {
-                    // The bottom moved out from under a pinned feed with no
-                    // user input — estimated heights resolving AFTER the
-                    // settle loop exited. Growth-only (`new > old`), so the
-                    // streamed-append spring, which closes the distance frame
-                    // by frame, is never fought.
-                    correctPin()
+                    .glassEffect(.regular.interactive(), in: Circle())
+                    .accessibilityLabel("Jump to latest")
+                    .accessibilityIdentifier("jump-to-latest")
+                    .padding(12)
+                    .transition(.opacity)
                 }
             }
-            // The only observable write, and only at the threshold crossing —
-            // it re-renders the tiny jump button, never this body. Gated on
-            // the PIN, not just distance: with the keyboard up, UIKit
-            // double-counts the bottom inset (t3's "nativeInsetOvercount"),
-            // so distance reads ~keyboard-height at the visual bottom and the
-            // raw threshold kept the button up for a pinned feed.
-            let show = !scroll.pinned && new > Self.jumpThreshold
-            if scroll.showJump != show { scroll.showJump = show }
-        }
-        .onChange(of: contentSignature(rows)) {
-            guard scroll.pinned else { return }
-            if reduceMotion {
-                scrollPosition.scrollTo(edge: .bottom)
-            } else {
-                // correctPin must not snap-cancel this spring mid-flight.
-                scroll.animatingUntil = Date().timeIntervalSinceReferenceDate + 0.35
-                withAnimation(.spring(duration: 0.3)) {
-                    scrollPosition.scrollTo(edge: .bottom)
-                }
-            }
-        }
-        .overlay(alignment: .top) {
-            // Soft fade under the nav bar — content dissolves instead of
-            // hard-clipping against the header.
-            LinearGradient(
-                stops: [
-                    .init(color: Theme.bg, location: 0),
-                    .init(color: Theme.bg.opacity(0.85), location: 0.45),
-                    .init(color: Theme.bg.opacity(0), location: 1),
-                ],
-                startPoint: .top, endPoint: .bottom
-            )
-            .frame(height: 130)
-            .ignoresSafeArea(edges: .top)
-            .allowsHitTesting(false)
-        }
-        // The bottom dissolve lives on SessionView's composer inset (one
-        // continuous gradient from above the status strip to the physical
-        // bottom edge) — a second ramp here would double-darken the rows
-        // right where they slide under the glass.
-        .overlay(alignment: .bottomTrailing) {
-            // Jump-to-bottom floats ABOVE the fades. A child view so only IT
-            // observes the show flag — the transcript body stays out of the
-            // per-frame scroll path.
-            JumpToBottomButton(scroll: scroll) {
-                scroll.pinned = true
-                scroll.animatingUntil = Date().timeIntervalSinceReferenceDate + 0.4
-                withAnimation(.spring(duration: 0.35)) {
-                    scrollPosition.scrollTo(edge: .bottom)
-                }
-            }
-            .padding(.trailing, 16)
-            // 12pt above the COMPOSER, not the safe-area edge: the edge
-            // now sits atop the 24pt status-strip band (SessionView's
-            // inset), so dip into it — the strip never hit-tests.
-            .padding(.bottom, -12)
-        }
+            .motionAnimation(Motion.fadeQuick, value: scroll.showJump)
     }
-
-    /// Measured re-pin. The scroll-geometry numbers LIE while the keyboard is
-    /// up: UIKit's interactive-dismiss avoidance and the SwiftUI safe area
-    /// each count the keyboard inset once (the jump-button comment's
-    /// "nativeInsetOvercount"), so `scrollTo(edge: .bottom)` overshoots by
-    /// ~keyboard height — the transcript parks with a blank band under it, or
-    /// wholly off-viewport on a tall keyboard (the "blank screen when I open
-    /// the composer"). And because `distanceFromBottom` is derived from the
-    /// same lying insets, it reads ≈0 there, which is why clamps built on it
-    /// never caught this. On-screen GLOBAL frames don't lie: when pinned,
-    /// nudge the offset by the measured gap between the bottom pad and the
-    /// composer boundary. Falls back to the edge scroll until both frames
-    /// have reported (first layout), and stays out of the way of user drags
-    /// and in-flight programmatic springs.
-    private func correctPin(force: Bool = false) {
-        guard !scroll.userScrolling else { return }
-        // The keyboard's whole transition is one no-correct window (UIKit
-        // will/did notifications, flipped by SessionView) — the focus
-        // sequence runs TWO boundary animations (composer morph, then the
-        // keyboard) with a gap between them, and a quiet-gap glide firing
-        // between the two was the double-adjust stutter. SessionView requests
-        // exactly one forced correction on didShow/didHide.
-        guard force || !scroll.keyboardTransitioning else { return }
-        let now = Date().timeIntervalSinceReferenceDate
-        guard now >= scroll.animatingUntil else { return }
-        // While the composer boundary is mid-flight (card morph, panel swap)
-        // nothing corrects — chasing a moving target was the stutter.
-        // Trail instead: skip now, re-check after the boundary goes quiet.
-        if !force, now - scroll.insetTopChangedAt < 0.12 {
-            if !scroll.correctionScheduled {
-                scroll.correctionScheduled = true
-                Task { @MainActor in
-                    try? await Task.sleep(nanoseconds: 150_000_000)
-                    scroll.correctionScheduled = false
-                    correctPin()
-                }
-            }
-            return
-        }
-        guard scroll.padGlobalMaxY > 0, scroll.insetTopGlobalY > 0 else {
-            if scroll.pinned { scrollPosition.scrollTo(edge: .bottom) }
-            return
-        }
-        // < 0: overshot past the end — a blank band below the content, never
-        //      a legitimate state, corrected whether or not we're pinned.
-        // > 0: tail parked short of the boundary — only wrong for a PINNED
-        //      feed (an unpinned reader mid-history always measures > 0).
-        let error = scroll.padGlobalMaxY - scroll.insetTopGlobalY
-        guard error < -2 || (scroll.pinned && error > 2) else { return }
-        if abs(error) > 48 {
-            // A keyboard-sized lift reads as motion — glide it. Tiny nudges
-            // (late row measurements) stay instant and invisible.
-            scroll.animatingUntil = now + 0.35
-            withAnimation(.spring(duration: 0.3)) {
-                scrollPosition.scrollTo(y: scroll.contentOffsetY + error)
-            }
-        } else {
-            scrollPosition.scrollTo(y: scroll.contentOffsetY + error)
-        }
-    }
-
-    /// Hold the bottom until the MEASURED pin is right, then reveal.
-    ///
-    /// A lazy stack only measures the rows near the viewport; the rest carry
-    /// ESTIMATED heights that resolve over the next frames, moving the real
-    /// bottom. The old loop compared content heights across 30ms polls (16
-    /// max) — on a big transcript the height was still churning when it gave
-    /// up, revealing wherever the churn was: sometimes mid-transcript,
-    /// sometimes in the blank over-estimate region past the content.
-    ///
-    /// Convergence is now the same truth correctPin uses: the bottom pad's
-    /// on-screen frame meeting the composer boundary. Edge-jumps chase the
-    /// estimated bottom until the pad realizes and reports; measured nudges
-    /// close the remainder; two consecutive in-tolerance reads reveal.
-    /// Bounded (~2s worst case), and it yields the moment the user takes the
-    /// scroll view. `settled` flips either way — never left invisible.
-    private func settleToBottom() async {
-        scroll.padGlobalMaxY = 0  // stale pad frames must not fake convergence
-        // Frame-rate polling (16ms, was 50ms): the loop's total budget is the
-        // same ~2s, but a transcript that converges in a few frames reveals
-        // in ~50ms instead of holding the skeleton for multiples of 50ms —
-        // this cadence IS the "cached session shows a skeleton" time.
-        var quietTicks = 0
-        for _ in 0..<120 {
-            guard scroll.pinned, !scroll.userScrolling else { break }
-            // Don't chase targets through a keyboard transition — the edge
-            // math lies there and the budget burns on garbage jumps. The
-            // didShow correction handles that endpoint; just wait it out.
-            if scroll.keyboardTransitioning {
-                try? await Task.sleep(nanoseconds: 60_000_000)
-                continue
-            }
-            if scroll.padGlobalMaxY > 0, scroll.insetTopGlobalY > 0 {
-                let error = scroll.padGlobalMaxY - scroll.insetTopGlobalY
-                // Near-pinned is good enough to reveal — correctPin's trailing
-                // nudges close the last few points invisibly, while every
-                // poll spent here is the user staring at the loader.
-                if abs(error) < 24 { break }
-                scrollPosition.scrollTo(y: scroll.contentOffsetY + error)
-                quietTicks = 0
-            } else {
-                scrollPosition.scrollTo(edge: .bottom)
-                // No pad report while we hold the bottom anchor means layout
-                // is quiescent exactly where defaultScrollAnchor put it — the
-                // warm cached-open case. The pad's onGeometryChange only
-                // fires on CHANGE, and the zeroing above discarded its last
-                // report, so a stable layout never re-reports: this loop then
-                // burned its whole budget blind (measured 2.1s on device for
-                // a 6-entry cached transcript, the "skeleton on every open").
-                // A short quiet streak WITH content = converged; reveal.
-                quietTicks += 1
-                if quietTicks >= 6,
-                   !store.entries.isEmpty || !store.pendingSends.isEmpty {
-                    break
-                }
-            }
-            try? await Task.sleep(nanoseconds: 16_000_000)
-        }
-        settled = true
-        // Revealed-with-CONTENT only: a settle that ran against a still-empty
-        // projection must not latch, or the rows landing a beat later find
-        // `hasRevealed` true, seed `hydrated`/`settled` from it on the next
-        // view identity, and skip their own settle — the transcript then
-        // rests wherever the empty pass left it (out of view until a resize
-        // — focusing the composer — happened to drag it back).
-        if !store.entries.isEmpty || !store.pendingSends.isEmpty {
-            store.hasRevealed = true
-        }
-    }
-
-    // Streamed growth signature: last row id + version + count. Any append or
-    // reflow of the tail bumps it; scroll-back through history doesn't.
-    private func contentSignature(_ rows: [TranscriptRow]) -> String {
-        guard let last = rows.last else { return "" }
-        return "\(rows.count)|\(last.id)|\(last.version)"
-    }
-
-    // MARK: Row rendering
 
     @ViewBuilder
     private func rowView(_ row: TranscriptRow) -> some View {
@@ -401,81 +63,87 @@ struct TranscriptView: View {
             switch row.kind {
             case .user(let text):
                 UserBubble(text: text, pending: row.timestamp == nil,
-                           deviceId: store.hostDeviceId ?? "")
-
+                           deviceId: store.hostDeviceId ?? "",
+                           expanded: store.expandedUserMessages.contains(row.entryId),
+                           onToggle: {
+                    // Expanding a prompt is an explicit reading action.
+                    // Keep its visible position instead of chasing the tail.
+                    scroll.pinned = false
+                    if !store.expandedUserMessages.insert(row.entryId).inserted {
+                        store.expandedUserMessages.remove(row.entryId)
+                    }
+                    scroll.refreshLayout?()
+                }, onExpansionHeightChanged: { height in
+                    guard (userExpansionHeights[row.entryId] ?? 0) != height else { return }
+                    userExpansionHeights[row.entryId] = height
+                    scroll.refreshLayout?()
+                })
             case .markdown(let block, let streaming):
                 MarkdownRowView(row: row, block: block, streaming: streaming, veils: veils)
-
             case .toolGroup(let tools, let autoOpen):
-                ToolGroupView(tools: tools,
-                              open: folds[row.id] ?? autoOpen,
-                              userToggled: folds[row.id] != nil) {
-                    withAnimation(reduceMotion ? nil : Motion.resize) {
-                        folds[row.id] = !(folds[row.id] ?? autoOpen)
-                    }
-                }
-
+                HostedToolGroup(id: row.id, tools: tools, autoOpen: autoOpen,
+                                folds: folds, onResize: { scroll.refreshLayout?() })
             case .inputChip(let header, let resolved):
                 InputChipView(header: header, resolved: resolved)
-
             case .errorChip(let message):
                 ErrorChipView(message: message)
             }
         }
         .padding(.top, row.topGap)
-        .padding(.horizontal, 16)
+        .padding(.horizontal, 20)
+        .frame(maxWidth: Self.maxContentWidth)
+        .frame(maxWidth: .infinity)
     }
 }
 
-/// Per-frame scroll tracking for the transcript. Only `showJump` is
-/// observable — everything else is written every scroll frame and read only
-/// inside closures/the settle loop, so observation (and with it, whole-body
-/// re-evaluation per frame) must not see those writes.
-@Observable
-final class ScrollState {
-    /// Flips at the jump threshold; observed by JumpToBottomButton alone.
-    var showJump = false
-    @ObservationIgnored var distanceFromBottom: CGFloat = 0
-    @ObservationIgnored var contentHeight: CGFloat = 0
-    @ObservationIgnored var contentOffsetY: CGFloat = 0
-    @ObservationIgnored var pinned = true
-    @ObservationIgnored var userScrolling = false
-    /// Programmatic spring deadline — correctPin stays quiet until it passes.
-    @ObservationIgnored var animatingUntil: TimeInterval = 0
-    /// Measured on-screen frames for correctPin: the transcript's bottom pad
-    /// (written here) and the composer inset's top edge (written by
-    /// SessionView, which owns the inset).
-    @ObservationIgnored var padGlobalMaxY: CGFloat = 0
-    @ObservationIgnored var insetTopGlobalY: CGFloat = 0
-    /// When the boundary last moved — correctPin trails transitions.
-    @ObservationIgnored var insetTopChangedAt: TimeInterval = 0
-    /// True between UIKit's keyboardWillShow/Hide and didShow/Hide — the
-    /// no-correct window (flipped by SessionView, which owns the notifications).
-    @ObservationIgnored var keyboardTransitioning = false
-    /// Trailing re-check dedupe: one scheduled correction at a time.
-    @ObservationIgnored var correctionScheduled = false
-    /// Set by TranscriptView; SessionView invokes it on didShow/didHide.
-    @ObservationIgnored var requestCorrection: () -> Void = {}
+struct TranscriptGeometry: Equatable {
+    var contentHeight: CGFloat
+    var viewportHeight: CGFloat
+    var offset: CGFloat
+    var bottom: CGFloat
 }
 
-private struct JumpToBottomButton: View {
-    let scroll: ScrollState
-    let action: () -> Void
+@Observable
+final class ScrollState {
+    var pinned = true
+    var showJump = false
+    @ObservationIgnored weak var nativeScrollView: UIScrollView?
+    @ObservationIgnored var refreshLayout: (() -> Void)?
+    @ObservationIgnored var jumpToLatest: ((Bool) -> Void)?
+    @ObservationIgnored var interactionEpoch: UInt64 = 0
+    @ObservationIgnored var userScrolling = false
+    @ObservationIgnored var userDragging = false
+    @ObservationIgnored var distanceFromBottom: CGFloat = 0
+    @ObservationIgnored private var movedAway = false
 
-    var body: some View {
-        ZStack(alignment: .bottomTrailing) {
-            if scroll.showJump {
-                Button(action: action) {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundStyle(Theme.text)
-                        .frame(width: 36, height: 36)
-                }
-                .glassEffect(.regular.interactive(), in: Circle())
-                .transition(.opacity.combined(with: .move(edge: .bottom)))
-            }
+    func observe(old: TranscriptGeometry, new: TranscriptGeometry) {
+        distanceFromBottom = new.bottom
+        // Offset direction, not distance direction: growing content can move
+        // the bottom while the user's finger is stationary.
+        if userDragging, new.offset < old.offset - 0.5 {
+            pinned = false
+            movedAway = true
         }
-        .motionAnimation(Motion.fadeQuick, value: scroll.showJump)
+        if userDragging, new.offset > old.offset + 0.5,
+           new.bottom <= TranscriptView.stickThreshold {
+            pinned = true
+        }
+        let show = !pinned && new.bottom > TranscriptView.jumpThreshold
+        if showJump != show { showJump = show }
+    }
+
+    func endGesture() {
+        if userScrolling, movedAway, distanceFromBottom <= 2 { pinned = true }
+        userScrolling = false
+        userDragging = false
+        movedAway = false
+        showJump = !pinned && distanceFromBottom > TranscriptView.jumpThreshold
+    }
+
+    func arm() {
+        pinned = true
+        showJump = false
+        movedAway = false
     }
 }
 
@@ -536,20 +204,22 @@ final class TranscriptBuilderCache {
     }
 }
 
-/// Veil registry — one RowVeil per live row, dropped on the live→complete flip.
+/// Keep each row's fade clock across hosted-cell reconfiguration. A replaced
+/// hosting view disappearing must not discard the replacement's active fade.
 @Observable
 final class VeilStore {
     @ObservationIgnored private var veils: [String: RowVeil] = [:]
 
-    func veil(for rowId: String, seeded: Bool) -> RowVeil {
-        if let existing = veils[rowId] { return existing }
-        let veil = RowVeil()
+    func veil(for rowId: String, seededLength: Int) -> RowVeil {
+        if let existing = veils[rowId] {
+            // Register the delta before Text is constructed. Doing this in
+            // onChange paints one opaque frame, then makes the same words dark.
+            existing.noteLength(seededLength)
+            return existing
+        }
+        let veil = RowVeil(seededLength: seededLength)
         veils[rowId] = veil
         return veil
-    }
-
-    func drop(_ rowId: String) {
-        veils.removeValue(forKey: rowId)
     }
 }
 
@@ -560,6 +230,22 @@ struct UserBubble: View {
     var pending = false
     /// The chat's host device — where attachment files live (read-back key).
     var deviceId = ""
+    var expanded = false
+    var onToggle: () -> Void = {}
+    var onExpansionHeightChanged: (CGFloat) -> Void = { _ in }
+    @State private var fullHeight: CGFloat = 0
+    @State private var collapsedHeight: CGFloat = 0
+
+    static func needsCollapse(_ text: String) -> Bool {
+        text.count > 400 || text.split(separator: "\n", omittingEmptySubsequences: false).count > 5
+    }
+
+    private func prompt(_ text: String) -> some View {
+        Text(text)
+            .font(Theme.sans(MD.textSize))
+            .lineSpacing(MD.lineHeight - MD.textSize - 4)
+            .foregroundStyle(Theme.text)
+    }
 
     var body: some View {
         // Attachment refs ride the message text (message-attachments.ts
@@ -571,13 +257,50 @@ struct UserBubble: View {
                 UserAttachmentsStrip(deviceId: deviceId, attachments: parsed.attachments)
             }
             if !parsed.text.isEmpty {
-                Text(parsed.text)
-                    .font(Theme.sans(MD.textSize))
-                    .lineSpacing(MD.lineHeight - MD.textSize - 4)
-                    .foregroundStyle(Theme.text)
+                let collapsible = Self.needsCollapse(parsed.text) || fullHeight > collapsedHeight + 0.5
+                VStack(alignment: .leading, spacing: 0) {
+                    prompt(parsed.text)
+                        .lineLimit(expanded ? nil : 5)
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            if !expanded { collapsedHeight = height }
+                        }
+                        .background(alignment: .topLeading) {
+                            if expanded {
+                                prompt(parsed.text)
+                                    .lineLimit(5)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .hidden()
+                                    .accessibilityHidden(true)
+                                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { collapsedHeight = $0 }
+                            }
+                        }
+                        .background(alignment: .topLeading) {
+                            prompt(parsed.text)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .hidden()
+                                .accessibilityHidden(true)
+                                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fullHeight = $0 }
+                        }
+                    if collapsible {
+                        Button {
+                            onToggle()
+                        } label: {
+                            Text(expanded ? "Show less" : "Show more")
+                                .font(Theme.sans(14))
+                                .foregroundStyle(Theme.textMuted)
+                                .frame(minHeight: 44)
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                    }
+                }
+                .onChange(of: expanded && collapsedHeight > 0 ? max(0, fullHeight - collapsedHeight) : 0, initial: true) { _, height in
+                    onExpansionHeightChanged(height)
+                }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 10)
-                    .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.bubbleRadius))
+                    .background(Theme.surfaceRaised, in: RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous))
                     .frame(maxWidth: TranscriptView.maxContentWidth * 0.8, alignment: .trailing)
                     .contextMenu {
                         Button {
@@ -590,6 +313,9 @@ struct UserBubble: View {
         }
         .opacity(pending ? 0.65 : 1)
         .frame(maxWidth: .infinity, alignment: .trailing)
+        // Jump-button visibility can animate the enclosing transcript update.
+        // Do not let that tween sweep the disclosure through revealed text.
+        .transaction { $0.animation = nil }
     }
 }
 
@@ -601,12 +327,38 @@ struct MarkdownRowView: View {
     let streaming: Bool
     let veils: VeilStore
 
+    @State private var fading = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var textLength: Int {
+        switch block {
+        case .paragraph(let runs), .heading(_, let runs): return runs.reduce(0) { $0 + $1.text.count }
+        default: return 0
+        }
+    }
+
     var body: some View {
-        if streaming, isVeilable {
-            TimelineView(.animation) { _ in
-                veiledText
+        if streaming, isVeilable, !reduceMotion {
+            // Reattaching a row must never fade already-visible text to black.
+            let veil = veils.veil(for: row.id, seededLength: textLength)
+            TimelineView(.animation(minimumInterval: 1.0 / 60, paused: !fading)) { _ in
+                veiledText(veil: veil)
             }
-            .onDisappear { veils.drop(row.id) }
+            .onChange(of: textLength) { _, _ in
+                fading = veil.isFading
+            }
+            .task(id: textLength) {
+                // Stop frame work when the last appended span has settled.
+                // A new chunk cancels this task and starts a new deadline.
+                try? await Task.sleep(for: .milliseconds(600))
+                while !Task.isCancelled, veil.isFading {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard !Task.isCancelled else { return }
+                fading = false
+            }
+            .onAppear { fading = veil.isFading }
+            .transaction { $0.animation = nil }
         } else {
             MarkdownBlockView(block: block, cacheKey: row.id)
         }
@@ -620,11 +372,9 @@ struct MarkdownRowView: View {
     }
 
     @ViewBuilder
-    private var veiledText: some View {
-        let veil = veils.veil(for: row.id, seeded: false)
+    private func veiledText(veil: RowVeil) -> some View {
         switch block {
         case .paragraph(let runs):
-            let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             runs.styledVeiled(veil: veil)
                 .textRenderer(InlineCodeRenderer())
                 .lineSpacing(MD.lineHeight - MD.textSize - 4)
@@ -632,7 +382,6 @@ struct MarkdownRowView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .heading(let level, let runs):
             let m = MD.headingMetrics(level)
-            let _ = veil.noteLength(runs.map(\.text.count).reduce(0, +))
             runs.styledVeiled(size: m.size, weight: .semibold, veil: veil)
                 .textRenderer(InlineCodeRenderer())
                 .lineSpacing(m.line - m.size - 4)
@@ -646,75 +395,163 @@ struct MarkdownRowView: View {
 
 // MARK: - Tool group (transcript.rs render_tool_group)
 
+/// Read fold state inside the hosting view, so a toggle preserves that view's
+/// animation and identity instead of reconfiguring every visible table cell.
+@Observable
+final class ToolGroupFolds {
+    var values: [String: Bool] = [:]
+}
+
+private struct HostedToolGroup: View {
+    let id: String
+    let tools: [ToolItem]
+    let autoOpen: Bool
+    let folds: ToolGroupFolds
+    let onResize: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let open = folds.values[id] ?? autoOpen
+        ToolGroupView(tools: tools, open: open, userToggled: folds.values[id] != nil,
+            toggle: {
+                withAnimation(reduceMotion ? nil : Motion.resize) { folds.values[id] = !open }
+            }, onDetailChanged: onResize)
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { _ in onResize() }
+    }
+}
+
+/// Interpolate actual layout height, not just the painted position of children.
+/// The native table can then keep following and reading anchors on every frame.
+private struct ToolRevealLayout: Layout, Animatable {
+    var progress: CGFloat
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let size = subviews.first?.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) ?? .zero
+        return CGSize(width: size.width, height: size.height * min(1, max(0, progress)))
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, anchor: .topLeading,
+                             proposal: ProposedViewSize(width: bounds.width, height: nil))
+    }
+}
+
 struct ToolGroupView: View {
     let tools: [ToolItem]
     let open: Bool
     let userToggled: Bool
     let toggle: () -> Void
+    var onDetailChanged: () -> Void = {}
+    @State private var retainingDetails = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header stays quiet even on failure — chips carry the red.
             Button(action: toggle) {
-                HStack(spacing: 8) {
+                HStack(spacing: 10) {
                     Image(systemName: "chevron.right")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundStyle(Theme.textMuted)
+                        .font(.system(size: 11, weight: .semibold))
                         .rotationEffect(.degrees(open ? 90 : 0))
-                        .frame(width: 18, height: 18)
-                        .background(whiteAlpha(0.06), in: RoundedRectangle(cornerRadius: 5))
+                        .frame(width: 26)
                     Text(toolGroupSummary(tools))
-                        .font(Theme.sans(12))
-                        .foregroundStyle(Theme.textMuted)
-                        .lineLimit(1)
+                        .font(Theme.sans(14))
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
                     Spacer(minLength: 0)
                 }
-                .frame(height: 26)
+                .foregroundStyle(Theme.textMuted)
+                .frame(minHeight: 44)
                 .contentShape(Rectangle())
             }
-            .buttonStyle(PressWashButtonStyle(cornerRadius: 6))
+            .buttonStyle(PressWashButtonStyle(cornerRadius: 8))
+            .accessibilityValue(open ? "Expanded" : "Collapsed")
+            .accessibilityHint("Shows or hides tool activity")
 
-            if open {
-                VStack(alignment: .leading, spacing: 0) {
-                    ForEach(Array(tools.enumerated()), id: \.offset) { _, tool in
-                        ToolChipRow(tool: tool)
+            ToolRevealLayout(progress: open ? 1 : 0) {
+                if open || retainingDetails {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(tools.enumerated()), id: \.offset) { index, tool in
+                            ToolChipRow(tool: tool, continues: index < tools.count - 1, onResize: onDetailChanged)
+                        }
                     }
                 }
-                .padding(.top, 2)
+            }
+            .clipped()
+            .allowsHitTesting(open)
+            .accessibilityHidden(!open)
+            .task(id: open) {
+                if open { retainingDetails = true }
+                else {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if !Task.isCancelled { retainingDetails = false }
+                }
             }
         }
     }
 }
 
-/// 38pt row containing a 30pt card (transcript.rs tool_chip).
+/// Desktop activity rail: quiet summary, connected icons, plain detail rows.
+/// Long commands remain available through a disclosure instead of being lost
+/// to middle truncation on a phone.
 struct ToolChipRow: View {
     let tool: ToolItem
+    var continues = false
+    var onResize: () -> Void = {}
+    @State private var expanded = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Image(systemName: tool.call.chipSymbol)
-                    .font(.system(size: 10))
-                    .foregroundStyle(Theme.textMuted)
-                    .frame(width: 18, height: 18)
-                    .background(whiteAlpha(0.08), in: RoundedRectangle(cornerRadius: 5))
-                Text(tool.call.chipLabel)
-                    .font(Theme.sans(12, weight: .medium))
-                    .foregroundStyle(tool.isError ? Theme.danger : Theme.textMuted)
-                Text(tool.call.chipDetail)
-                    .font(Theme.sans(12))
-                    .foregroundStyle(tool.isError ? Theme.danger : Theme.text.opacity(0.85))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
+        Button {
+            withAnimation(reduceMotion ? nil : Motion.resize) { expanded.toggle() }
+            onResize()
+        } label: {
+            HStack(alignment: .top, spacing: 10) {
+                VStack(spacing: 5) {
+                    Rectangle().fill(Theme.borderStrong).frame(width: 1, height: 5)
+                    Image(systemName: tool.call.chipSymbol)
+                        .font(.system(size: 14))
+                        .foregroundStyle(tool.isError ? Theme.danger : Theme.textMuted)
+                        .frame(width: 26, height: 18)
+                    Rectangle().fill(continues ? Theme.borderStrong : .clear)
+                        .frame(width: 1)
+                }
+                .frame(width: 26)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text(tool.call.chipLabel)
+                            .font(Theme.sans(14, weight: .medium))
+                            .foregroundStyle(tool.isError ? Theme.danger : Theme.textMuted)
+                        if tool.isError {
+                            Text("Failed").font(Theme.sans(12)).foregroundStyle(Theme.danger)
+                        } else if !tool.resolved {
+                            Text("Running").font(Theme.sans(12)).foregroundStyle(Theme.textFaint)
+                        }
+                    }
+                    if !tool.call.chipDetail.isEmpty {
+                        Text(expanded ? tool.call.expandedDetail : tool.call.chipDetail)
+                            .font(Theme.mono(13))
+                            .foregroundStyle(Theme.text.opacity(0.85))
+                            .lineLimit(expanded ? nil : 2)
+                            .multilineTextAlignment(.leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .padding(.horizontal, 8)
-            .frame(height: 30)
-            .background(whiteAlpha(0.03), in: RoundedRectangle(cornerRadius: 9))
-            .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(whiteAlpha(0.05), lineWidth: 1))
-            .padding(.leading, 12)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(minHeight: 44)
+            .contentShape(Rectangle())
         }
-        .frame(height: 38)
+        .buttonStyle(.plain)
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+        .accessibilityHint("Shows the full tool details")
+        .contextMenu {
+            Button("Copy details", systemImage: "doc.on.doc") {
+                UIPasteboard.general.string = tool.call.expandedDetail
+            }
+        }
     }
 }
 

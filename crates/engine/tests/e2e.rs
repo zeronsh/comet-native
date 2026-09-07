@@ -2134,3 +2134,71 @@ async fn parked_steer_restamps_started_at_and_idle_clears_it() {
     .await;
     assert_eq!(core.sessions.session_status(CHAT).unwrap().started_at, None);
 }
+
+#[tokio::test]
+async fn context_usage_settles_after_done_without_reopening_the_turn() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(
+        dir.path(),
+        Arc::new(ScriptedHarness {
+            script: vec![
+                AgentEvent::TextDelta {
+                    text: "Finished".into(),
+                },
+                AgentEvent::ContextUsage {
+                    tokens: Some(64000),
+                    window: Some(200000),
+                },
+                done(DoneStatus::Completed),
+                AgentEvent::Subagent {
+                    parent_tool_use_id: "child".into(),
+                    event: Box::new(AgentEvent::ContextUsage {
+                        tokens: Some(999999),
+                        window: Some(1000000),
+                    }),
+                },
+                AgentEvent::ContextUsage {
+                    tokens: Some(0),
+                    window: None,
+                },
+            ],
+            step_delay: Duration::from_millis(20),
+            hang_until_interrupt: false,
+        }),
+    );
+    let handle = core.doc_host.open(CHAT).unwrap();
+    queue_as_viewer(
+        handle.doc(),
+        "context-run",
+        SessionCommandPayload::Run {
+            request: run_request("measure context"),
+            message_id: "context-user".into(),
+        },
+    );
+    wait_for(
+        || {
+            handle
+                .doc()
+                .context_usage()
+                .is_some_and(|u| u.tokens == Some(0))
+        },
+        "post-turn context update",
+    )
+    .await;
+    assert_eq!(
+        handle.doc().context_usage(),
+        Some(zeron_proto::ContextUsage {
+            tokens: Some(0),
+            window: Some(200000)
+        })
+    );
+    assert_eq!(
+        core.sessions.session_status(CHAT).map(|s| s.status),
+        Some(SessionStatus::Idle)
+    );
+    assert_eq!(
+        entries(&core).len(),
+        2,
+        "usage does not create transcript rows"
+    );
+}

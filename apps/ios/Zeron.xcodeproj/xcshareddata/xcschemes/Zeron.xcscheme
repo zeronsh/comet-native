@@ -38,6 +38,16 @@
                ReferencedContainer = "container:Zeron.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "A3000000000000000000T001"
+               BuildableName = "ZeronUITests.xctest"
+               BlueprintName = "ZeronUITests"
+               ReferencedContainer = "container:Zeron.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

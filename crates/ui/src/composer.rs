@@ -6411,10 +6411,25 @@ impl Render for Composer {
         let footer = self
             .pickers
             .update(cx, |pickers, cx| pickers.render_footer(cx));
-        let container = match footer {
-            Some(footer) => container.child(footer),
-            None => container,
-        };
+        let container =
+            if !new_chat {
+                let usage = self.state.read(cx).context_usage;
+                container.child(
+                    div()
+                        .w_full()
+                        .flex()
+                        .items_center()
+                        .child(div().flex_1().min_w_0().children(footer))
+                        .child(div().pr(px(10.0)).mb(px(-8.0)).child(
+                            crate::context_usage::render(usage, self.state.clone(), &theme),
+                        )),
+                )
+            } else {
+                match footer {
+                    Some(footer) => container.child(footer),
+                    None => container,
+                }
+            };
         // Full-size preview of a staged thumbnail (AttachmentPreviewDialog).
         if let Some(preview) = self.preview.clone() {
             if std::mem::take(&mut self.preview_focus_pending) {

@@ -1216,6 +1216,8 @@ async fn run_session(session: Session) {
                     }
 
                     "thread/tokenUsage/updated" => {
+                        if let Some(usage) = normalize::context_usage_event(&params)
+                            && !send(&event_tx, usage).await { break 'main; }
                         if let Some(usage) = usage_event(&params) {
                             pending_usage = Some(usage);
                         }

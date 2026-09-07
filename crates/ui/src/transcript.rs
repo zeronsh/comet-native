@@ -1991,6 +1991,9 @@ struct FoldState {
     /// Per-toggle duration. User bubbles scale this with travel distance;
     /// existing tool folds leave it at zero and keep their catalog constants.
     duration_ms: u64,
+    /// Extra user-body height revealed by Show more. It is not reply growth
+    /// and must not permanently consume the sent turn's reservation.
+    user_expansion_height: f32,
 }
 
 /// Viewport compensation paired with a long user-message collapse. While the
@@ -2747,7 +2750,11 @@ impl Transcript {
         self.discard_pending_viewport();
         self.cancel_user_hold();
         self.user_collapse_scroll = None;
-        // Rail navigation within the session RELEASES the hold but keeps the
+        self.stop_automatic_scrolling();
+    }
+
+    fn stop_automatic_scrolling(&mut self) {
+        // Navigation and selection within the session release the hold but keep the
         // runway (user spec: only leaving and revisiting the session clears
         // it) — scrolling back down re-arms the hold like any restick.
         self.release_own_turn_hold();
@@ -2902,18 +2909,44 @@ impl Transcript {
         self.schedule_selection_scroll(cx);
     }
 
+    fn on_selection_mouse_down(
+        &mut self,
+        event: &gpui::MouseDownEvent,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Text listeners claim the drag before it bubbles here. Stop following
+        // immediately: a stream commit can otherwise virtualize the anchor
+        // before the first mouse move. Keep the user bubble's long-press timer.
+        if !crate::markdown::selection::is_dragging() {
+            return;
+        }
+        self.selection_drag_position = Some(event.position);
+        self.discard_pending_viewport();
+        self.user_collapse_scroll = None;
+        self.stop_automatic_scrolling();
+        self.materialize_scroll_anchor();
+        cx.notify();
+    }
+
     fn on_selection_mouse_up(
         &mut self,
         _event: &MouseUpEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let was_selecting = self.selection_drag_position.is_some();
         self.stop_selection_scroll();
         if let Some(_text) = crate::markdown::selection::end_active_drag() {
             // X11 middle-click paste parity, including the case where the
             // anchor row has virtualized away and cannot receive mouse-up.
             #[cfg(any(target_os = "linux", target_os = "freebsd"))]
             cx.write_to_primary(ClipboardItem::new_string(_text));
+        }
+        if was_selecting {
+            self.last_scroll_distance = self.distance_from_bottom();
+            self.show_jump_button = self.last_scroll_distance > SCROLL_BUTTON_THRESHOLD_PX;
+            cx.notify();
         }
     }
 
@@ -3095,11 +3128,30 @@ impl Transcript {
 
     /// Install the reservation before list layout. Its height follows the
     /// current viewport in that same pass, including window resizes.
-    fn update_runway_minimum(&mut self) {
+    fn update_runway_minimum(&mut self, cx: &gpui::App) {
         if let Some(ix) = self.own_turn_anchor_ix() {
+            // Revealing the prompt adds reading space; only reply growth
+            // consumes the runway. Include the same expansion tween in the
+            // reservation before layout, including its reverse on Show less.
+            let expansion = self.user_folds.get(&self.rows[ix].id).map_or(0.0, |fold| {
+                let target = if fold.open == Some(true) {
+                    fold.user_expansion_height
+                } else {
+                    0.0
+                };
+                match fold.toggled_at {
+                    Some(at) if !motion::reduced_motion(cx) && fold.duration_ms > 0 => {
+                        let raw = (at.elapsed().as_secs_f32() * 1000.0 / fold.duration_ms as f32)
+                            .clamp(0.0, 1.0);
+                        let progress = user_resize_spec(fold.user_expansion_height).progress(raw);
+                        motion::lerp(fold.user_expansion_height - target, target, progress)
+                    }
+                    _ => target,
+                }
+            });
             self.list.set_tail_reservation(Some((
                 ix,
-                px(Self::own_send_inset(ix) - OWN_SEND_SCROLL_SLACK_PX),
+                px(Self::own_send_inset(ix) - OWN_SEND_SCROLL_SLACK_PX - expansion),
             )));
         } else if self.own_turn.is_none() {
             self.list.set_tail_reservation(None);
@@ -3155,7 +3207,11 @@ impl Transcript {
             let held = self.own_turn.take().is_some_and(|a| a.held);
             self.own_turn_last_tick = None;
             self.list.set_tail_reservation(None);
-            if held || self.pinned || self.distance_from_bottom() <= AT_BOTTOM_PX {
+            if held
+                || self.pinned
+                || (self.selection_drag_position.is_none()
+                    && self.distance_from_bottom() <= AT_BOTTOM_PX)
+            {
                 self.engage_pin(cx);
             } else {
                 cx.notify();
@@ -3336,6 +3392,17 @@ impl Transcript {
         self.user_collapse_scroll = None;
         self.cancel_user_hold();
         self.discard_pending_viewport();
+        // An expanded prompt can be taller than the viewport. Its reservation
+        // is retained, but jumping should reveal the reply below that prompt.
+        if self.own_turn_anchor_ix().is_some_and(|ix| {
+            self.user_folds
+                .get(&self.rows[ix].id)
+                .is_some_and(|fold| fold.open == Some(true))
+        }) {
+            self.release_own_turn_hold();
+            self.engage_pin(cx);
+            return;
+        }
         // With a live runway, "bottom" IS the held position (the reservation
         // makes prompt-at-top and pad-bottom the same place): re-arm the hold
         // and glide back instead of destroying the runway (user spec — only
@@ -3870,6 +3937,7 @@ impl Transcript {
         entry.epoch += 1;
         entry.toggled_at = Some(Instant::now());
         entry.duration_ms = duration_ms;
+        entry.user_expansion_height = (full_h - collapsed_h).max(0.0);
 
         // Capture a screen-space anchor for the clicked row. We do not subtract
         // the removed height: that is only correct when the row's top is
@@ -4185,6 +4253,10 @@ impl Transcript {
             || (measured > 0.0 && measured > collapsed_text_h + 0.5)
             || (measured == 0.0 && user_message_needs_collapse(&text));
         let full_h = measured_h.get().max(collapsed_h);
+        if let Some(fold) = self.user_folds.get_mut(row_id) {
+            // Wrapping can change with the window width while expanded.
+            fold.user_expansion_height = (full_h - collapsed_h).max(0.0);
+        }
 
         let hold_key = row_id.clone();
         let hold_height = measured_h.clone();
@@ -6783,7 +6855,7 @@ impl Render for Transcript {
         // region overlay): it must float just above the composer and paint
         // OVER the bottom fade gradient, which is a later sibling of this
         // outlet — an overlay here would be tinted by the fade.
-        self.update_runway_minimum();
+        self.update_runway_minimum(cx);
         let list_el = list(self.list.clone(), cx.processor(Self::render_row))
             .size_full()
             .with_sizing_behavior(gpui::ListSizingBehavior::Auto);
@@ -6813,6 +6885,10 @@ impl Render for Transcript {
             .relative()
             .size_full()
             .min_h_0()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(Self::on_selection_mouse_down),
+            )
             .on_mouse_move(cx.listener(Self::on_selection_mouse_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_selection_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_selection_mouse_up))
@@ -7945,8 +8021,18 @@ mod tests {
             });
         }
 
+        struct CachedTranscript(Entity<Transcript>);
+
+        impl Render for CachedTranscript {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                self.0
+                    .clone()
+                    .cached(gpui::StyleRefinement::default().size_full())
+            }
+        }
+
         fn with_window(
-            test: impl FnOnce(Entity<Transcript>, gpui::WindowHandle<Transcript>, &mut gpui::App)
+            test: impl FnOnce(Entity<Transcript>, gpui::WindowHandle<CachedTranscript>, &mut gpui::App)
             + 'static,
         ) {
             gpui_platform::headless().run(move |cx| {
@@ -7961,10 +8047,14 @@ mod tests {
                             ))),
                             ..Default::default()
                         },
-                        |_, cx| cx.new(|cx| Transcript::new(state, cx)),
+                        |_, cx| {
+                            let transcript = cx.new(|cx| Transcript::new(state, cx));
+                            cx.new(|_| CachedTranscript(transcript))
+                        },
                     )
                     .unwrap();
-                test(window.entity(cx).unwrap(), window, cx);
+                let transcript = window.entity(cx).unwrap().read(cx).0.clone();
+                test(transcript, window, cx);
                 cx.spawn(async move |cx| {
                     cx.update(|cx| cx.quit());
                 })
@@ -7972,7 +8062,7 @@ mod tests {
             });
         }
 
-        fn draw(window: gpui::WindowHandle<Transcript>, cx: &mut gpui::App) {
+        fn draw(window: gpui::WindowHandle<CachedTranscript>, cx: &mut gpui::App) {
             cx.update_window(window.into(), |_, window, cx| {
                 window.refresh();
                 let _ = window.draw(cx);
@@ -8082,7 +8172,7 @@ mod tests {
 
         fn tick(
             transcript: &Entity<Transcript>,
-            window: gpui::WindowHandle<Transcript>,
+            window: gpui::WindowHandle<CachedTranscript>,
             cx: &mut gpui::App,
         ) {
             transcript.update(cx, |this, cx| {
@@ -8098,7 +8188,7 @@ mod tests {
             draw(window, cx);
         }
 
-        fn wheel(window: gpui::WindowHandle<Transcript>, delta: f32, cx: &mut gpui::App) {
+        fn wheel(window: gpui::WindowHandle<CachedTranscript>, delta: f32, cx: &mut gpui::App) {
             cx.update_window(window.into(), |_, window, cx| {
                 window.dispatch_event(
                     gpui::PlatformInput::ScrollWheel(gpui::ScrollWheelEvent {
@@ -8110,6 +8200,186 @@ mod tests {
                 );
             })
             .unwrap();
+        }
+
+        #[test]
+        fn selecting_live_tail_keeps_anchor_visible_during_a_stream_burst() {
+            with_window(|transcript, window, cx| {
+                let text = (0..40)
+                    .map(|i| format!("Paragraph {i} has selectable response text.\n\n"))
+                    .collect::<String>();
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        vec![assistant(
+                            "reply",
+                            MessageStatus::Streaming,
+                            vec![text_part("text", &text)],
+                        )],
+                        cx,
+                    );
+                    this.rail_enabled = false;
+                });
+                draw(window, cx);
+                let bounds = render::selection_test_bounds("reply#text.39:39");
+                let start = bounds.origin + gpui::point(px(1.0), px(8.0));
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                            button: MouseButton::Left,
+                            position: start,
+                            click_count: 1,
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                })
+                .unwrap();
+                assert!(crate::markdown::selection::is_dragging());
+                assert!(
+                    !transcript.read(cx).pinned,
+                    "text mouse-down must release following"
+                );
+                assert!(
+                    !transcript.read(cx).is_glued(),
+                    "selection must materialize the viewport"
+                );
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        vec![assistant(
+                            "reply",
+                            MessageStatus::Streaming,
+                            vec![text_part("text", &(text.clone() + &text))],
+                        )],
+                        cx,
+                    );
+                });
+                draw(window, cx);
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position: start + gpui::point(px(90.0), px(0.0)),
+                            pressed_button: Some(MouseButton::Left),
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                })
+                .unwrap();
+                assert!(
+                    crate::markdown::selection::selected_text().is_some(),
+                    "streaming must not virtualize the drag anchor before the first move"
+                );
+                crate::markdown::selection::end_active_drag();
+                crate::markdown::selection::clear_if_owner("reply#text.39:39");
+            });
+        }
+
+        #[test]
+        fn active_reply_text_selection_survives_streaming_and_completion() {
+            with_window(|transcript, window, cx| {
+                transcript.update(cx, |this, cx| {
+                    feed(this, vec![prompt("prompt")], cx);
+                    this.rail_enabled = false;
+                    this.state.update(cx, |state, _| {
+                        state.sessions.push(zeron_proto::Session {
+                            chat_id: "chat".into(),
+                            device_id: "test".into(),
+                            status: zeron_proto::SessionStatus::Working,
+                            started_at: Some(chrono::Utc::now()),
+                            updated_at: chrono::Utc::now(),
+                        })
+                    });
+                    this.on_own_send("chat".into(), "prompt".into(), cx);
+                });
+                let entries = |status, text: &str| {
+                    vec![
+                        prompt("prompt"),
+                        assistant("reply", status, vec![text_part("text", text)]),
+                    ]
+                };
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        entries(MessageStatus::Streaming, "Selectable response text."),
+                        cx,
+                    )
+                });
+                for _ in 0..80 {
+                    tick(&transcript, window, cx);
+                }
+                let bounds = render::selection_test_bounds("reply#text.0:0");
+                let start = bounds.origin + gpui::point(px(1.0), px(8.0));
+                let end = start + gpui::point(px(90.0), px(0.0));
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                            button: MouseButton::Left,
+                            position: start,
+                            click_count: 1,
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                })
+                .unwrap();
+                assert!(crate::markdown::selection::is_dragging());
+                draw(window, cx);
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                            position: end,
+                            pressed_button: Some(MouseButton::Left),
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                })
+                .unwrap();
+                let selected =
+                    crate::markdown::selection::selected_text().expect("active text must select");
+                assert!(!selected.is_empty());
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        entries(
+                            MessageStatus::Streaming,
+                            "Selectable response text. More output.",
+                        ),
+                        cx,
+                    )
+                });
+                draw(window, cx);
+                assert_eq!(
+                    crate::markdown::selection::selected_text(),
+                    Some(selected.clone())
+                );
+                cx.update_window(window.into(), |_, window, cx| {
+                    window.dispatch_event(
+                        gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                            button: MouseButton::Left,
+                            position: end,
+                            ..Default::default()
+                        }),
+                        cx,
+                    );
+                })
+                .unwrap();
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        entries(
+                            MessageStatus::Complete,
+                            "Selectable response text. More output.",
+                        ),
+                        cx,
+                    )
+                });
+                draw(window, cx);
+                assert_eq!(crate::markdown::selection::selected_text(), Some(selected));
+                crate::markdown::selection::clear_if_owner("reply#text.0:0");
+            });
         }
 
         #[test]
@@ -8880,6 +9150,87 @@ mod tests {
                     assert_eq!(this.list.logical_scroll_top().item_ix, 1);
                     assert_eq!(this.list.logical_scroll_top().offset_in_item, px(20.0));
                 });
+            });
+        }
+
+        #[test]
+        fn expanding_streaming_prompt_does_not_retire_its_runway() {
+            with_window(|transcript, window, cx| {
+                let mut user = prompt("prompt");
+                user.parts = vec![text_part("text", &"A long prompt line.\n".repeat(80))];
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        vec![
+                            user.clone(),
+                            assistant(
+                                "reply",
+                                MessageStatus::Streaming,
+                                vec![text_part("text", "A short live reply.")],
+                            ),
+                        ],
+                        cx,
+                    );
+                    this.rail_enabled = false;
+                    this.on_own_send("chat".into(), "prompt".into(), cx);
+                });
+                for _ in 0..80 {
+                    tick(&transcript, window, cx);
+                }
+                let before = transcript.read(cx).list.max_offset_for_scrollbar();
+                let toggle = |this: &mut Transcript, cx: &mut Context<Transcript>| {
+                    let full_h = this.user_heights["prompt"].get();
+                    this.toggle_user_fold(
+                        "prompt".into(),
+                        0,
+                        USER_LINE_HEIGHT * (USER_COLLAPSED_LINES + 1) as f32,
+                        full_h,
+                        true,
+                    );
+                    this.user_folds.get_mut("prompt").unwrap().toggled_at =
+                        Some(Instant::now() - Duration::from_secs(5));
+                    cx.notify();
+                };
+                transcript.update(cx, toggle);
+                draw(window, cx);
+                tick(&transcript, window, cx);
+                assert!(
+                    transcript.read(cx).own_turn.is_some(),
+                    "Show more must not consume the runway as assistant output"
+                );
+                transcript.update(cx, toggle);
+                draw(window, cx);
+                tick(&transcript, window, cx);
+                assert!(transcript.read(cx).own_turn.is_some());
+                assert!(
+                    (transcript.read(cx).list.max_offset_for_scrollbar().y - before.y).abs()
+                        <= px(1.0),
+                    "Show less must restore the original reservation"
+                );
+                transcript.update(cx, toggle);
+                draw(window, cx);
+                transcript.update(cx, |this, cx| {
+                    feed(
+                        this,
+                        vec![
+                            user,
+                            assistant(
+                                "reply",
+                                MessageStatus::Streaming,
+                                vec![text_part("text", &"More assistant output.\n\n".repeat(80))],
+                            ),
+                        ],
+                        cx,
+                    )
+                });
+                transcript.update(cx, |this, cx| this.jump_to_bottom(cx));
+                for _ in 0..80 {
+                    tick(&transcript, window, cx);
+                }
+                assert!(
+                    transcript.read(cx).own_turn.is_none(),
+                    "real output must still retire the reservation while the prompt is expanded"
+                );
             });
         }
 

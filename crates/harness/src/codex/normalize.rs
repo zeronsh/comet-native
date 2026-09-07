@@ -5,8 +5,8 @@
 //! (`delta`/`textDelta`, `exitCode`/`exit_code`, camelCase/snake_case item
 //! types) are accepted, and unknown item types map to nothing.
 
-use zeron_proto::{AgentEvent, TodoItem, ToolCall};
 use serde_json::Value;
+use zeron_proto::{AgentEvent, TodoItem, ToolCall};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
@@ -135,6 +135,28 @@ pub(crate) fn usage_event(params: &Value) -> Option<AgentEvent> {
         input_tokens: count(&["inputTokens", "input_tokens"]),
         output_tokens: count(&["outputTokens", "output_tokens"]),
     })
+}
+
+pub(crate) fn context_usage_event(params: &Value) -> Option<AgentEvent> {
+    let usage = field(params, &["tokenUsage", "token_usage"])?;
+    let last = usage.get("last");
+    let tokens = last
+        .and_then(|last| field(last, &["totalTokens", "total_tokens"]).and_then(Value::as_u64))
+        .or_else(|| {
+            let last = last?;
+            let input = field(last, &["inputTokens", "input_tokens"])?.as_u64()?;
+            Some(
+                input.saturating_add(
+                    field(last, &["outputTokens", "output_tokens"])
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                ),
+            )
+        });
+    let window = field(usage, &["modelContextWindow", "model_context_window"])
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0);
+    (tokens.is_some() || window.is_some()).then_some(AgentEvent::ContextUsage { tokens, window })
 }
 
 /// Tool-shaped Codex items must always close the lifecycle they open: started
@@ -652,5 +674,36 @@ mod tests {
         );
         assert_eq!(turn_error_message(&json!({"turn": {"id": "t"}})), None);
         assert_eq!(turn_error_message(&json!({"turn": {"error": null}})), None);
+    }
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    use serde_json::json;
+    #[test]
+    fn context_uses_latest_call_not_thread_total() {
+        assert_eq!(
+            context_usage_event(&json!({"tokenUsage": {
+                "last": {"totalTokens": 42000}, "total": {"totalTokens": 900000}, "modelContextWindow": 200000
+            }})),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(42000),
+                window: Some(200000)
+            })
+        );
+        assert_eq!(
+            context_usage_event(&json!({"token_usage": {
+                "last": {"input_tokens": 0, "output_tokens": 0}, "model_context_window": 0
+            }})),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(0),
+                window: None
+            })
+        );
+        assert_eq!(
+            context_usage_event(&json!({"tokenUsage": {"total": {"totalTokens": 100}}})),
+            None
+        );
     }
 }
