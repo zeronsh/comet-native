@@ -395,7 +395,7 @@ pub fn flip_morph_step(
     reduced_motion: bool,
     route_snap: bool,
 ) -> Option<FlipMorph> {
-    if route_snap {
+    if route_snap || reduced_motion {
         return None;
     }
     if !mode_changed {
@@ -1318,6 +1318,9 @@ pub struct ComposerInput {
     drag_autoscroll_active: bool,
     /// Vertical scroll inside the input once content exceeds the max height.
     scroll_top: f32,
+    /// Visible content budget supplied by the animated composer.
+    viewport_height: Option<f32>,
+    needs_measure: bool,
     /// Normally keeps the caret visible through edits and rewraps. Manual
     /// wheel scrolling pauses it until the next caret move or edit.
     follow_cursor: bool,
@@ -1397,6 +1400,8 @@ impl ComposerInput {
             drag_generation: 0,
             drag_autoscroll_active: false,
             scroll_top: 0.0,
+            viewport_height: None,
+            needs_measure: true,
             follow_cursor: true,
             last_lines: Vec::new(),
             line_starts: vec![0],
@@ -1517,6 +1522,7 @@ impl ComposerInput {
         self.selection_reversed = false;
         self.follow_cursor = true;
         self.reset_blink();
+        self.needs_measure = true;
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -1547,6 +1553,7 @@ impl ComposerInput {
         self.selection_reversed = false;
         self.follow_cursor = true;
         self.reset_blink();
+        self.needs_measure = true;
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -1603,6 +1610,7 @@ impl ComposerInput {
         self.redo_stack.clear();
         self.last_edit = None;
         self.reset_blink();
+        self.needs_measure = true;
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -1793,6 +1801,7 @@ impl ComposerInput {
         // Never merge a subsequent edit into a step that undo just crossed.
         self.last_edit = None;
         self.reset_blink();
+        self.needs_measure = true;
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -2613,6 +2622,7 @@ impl ComposerInput {
         self.content_height = content_height.max(INPUT_LINE_HEIGHT);
         self.max_line_width = if is_placeholder { 0.0 } else { max_line_width };
         self.last_width = f32::from(width);
+        self.needs_measure = false;
         self.layout_epoch += 1;
         self.content_height
     }
@@ -2712,6 +2722,7 @@ impl EntityInputHandler for ComposerInput {
         self.marked_range.take();
         self.follow_cursor = true;
         self.reset_blink();
+        self.needs_measure = true;
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -2756,6 +2767,7 @@ impl EntityInputHandler for ComposerInput {
             .unwrap_or_else(|| range.start + new_text.len()..range.start + new_text.len());
         self.follow_cursor = true;
         self.reset_blink();
+        self.needs_measure = true;
         cx.emit(ComposerInputEvent::Edited);
         cx.notify();
     }
@@ -2875,7 +2887,12 @@ impl gpui::Element for ComposerTextElement {
                     _ => px(320.0),
                 });
                 let content_height = input.update(cx, |input, cx| {
-                    input.layout_text(width, &text_style, window, cx)
+                    let previous = input.content_height;
+                    let height = input.layout_text(width, &text_style, window, cx);
+                    if (height - previous).abs() > 0.5 {
+                        cx.emit(ComposerInputEvent::ViewportChanged);
+                    }
+                    height
                 });
                 size(width, px(content_height.min(max_content)))
             });
@@ -3088,60 +3105,77 @@ impl gpui::Element for ComposerTextElement {
             )
         });
 
-        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            for quad in prepaint.mention_quads.drain(..) {
-                window.paint_quad(quad);
-            }
-            for quad in prepaint.selection_quads.drain(..) {
-                window.paint_quad(quad);
-            }
-            let mut y = bounds.top() - px(scroll);
-            for line in &lines {
-                let height = line.size(line_height).height;
-                let _ = line.paint(
-                    point(bounds.left(), y),
-                    line_height,
-                    gpui::TextAlign::Left,
-                    Some(bounds),
-                    window,
-                    cx,
-                );
-                y += height;
-            }
-            if let Some((ghost_origin, ghost)) = prepaint.ghost.take() {
-                let style = window.text_style();
-                let font_size = style.font_size.to_pixels(window.rem_size());
-                let run = TextRun {
-                    len: ghost.len(),
-                    font: style.font(),
-                    color: Theme::of(cx).text_faint,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let line = window
-                    .text_system()
-                    .shape_line(ghost, font_size, &[run], None);
-                // (Clipping comes from the surrounding content mask.)
-                let _ = line.paint(
-                    ghost_origin,
-                    line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
-            }
-            // Caret only when this input is actually focused in an active
-            // window (Electron hides it on window deactivation too), and only
-            // in the "on" blink phase — solid while typing, ~500ms blink idle.
-            if self
-                .input
-                .update(cx, |input, cx| input.caret_shown(window, cx))
-                && let Some(cursor) = prepaint.cursor.take()
-            {
-                window.paint_quad(cursor);
-            }
+        // Read overflow after prepaint has clamped scrolling for this frame.
+        let max_scroll = input_max_scroll(
+            self.input.read(cx).content_height,
+            f32::from(bounds.size.height),
+        );
+        let fade = gpui::EdgeFade {
+            bounds,
+            band: px(12.0),
+            band_top: None,
+            band_bottom: None,
+            top: scroll > 1.0,
+            bottom: scroll < max_scroll - 1.0,
+            left: false,
+            right: false,
+        };
+        window.with_edge_fade(Some(fade), |window| {
+            window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
+                for quad in prepaint.mention_quads.drain(..) {
+                    window.paint_quad(quad);
+                }
+                for quad in prepaint.selection_quads.drain(..) {
+                    window.paint_quad(quad);
+                }
+                let mut y = bounds.top() - px(scroll);
+                for line in &lines {
+                    let height = line.size(line_height).height;
+                    let _ = line.paint(
+                        point(bounds.left(), y),
+                        line_height,
+                        gpui::TextAlign::Left,
+                        Some(bounds),
+                        window,
+                        cx,
+                    );
+                    y += height;
+                }
+                if let Some((ghost_origin, ghost)) = prepaint.ghost.take() {
+                    let style = window.text_style();
+                    let font_size = style.font_size.to_pixels(window.rem_size());
+                    let run = TextRun {
+                        len: ghost.len(),
+                        font: style.font(),
+                        color: Theme::of(cx).text_faint,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let line = window
+                        .text_system()
+                        .shape_line(ghost, font_size, &[run], None);
+                    // (Clipping comes from the surrounding content mask.)
+                    let _ = line.paint(
+                        ghost_origin,
+                        line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
+                // Caret only when this input is actually focused in an active
+                // window (Electron hides it on window deactivation too), and only
+                // in the "on" blink phase — solid while typing, ~500ms blink idle.
+                if self
+                    .input
+                    .update(cx, |input, cx| input.caret_shown(window, cx))
+                    && let Some(cursor) = prepaint.cursor.take()
+                {
+                    window.paint_quad(cursor);
+                }
+            });
         });
         self.input.update(cx, |input, _| {
             input.last_lines = lines;
@@ -3210,7 +3244,9 @@ impl Render for ComposerInput {
                 input: cx.entity(),
                 // Internal scrolling once content exceeds the 260px textarea
                 // box minus its `pt-4 pb-1` padding.
-                max_content_height: TEXTAREA_MAX - TEXTAREA_PAD_V,
+                max_content_height: self
+                    .viewport_height
+                    .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
             })
     }
 }
@@ -3447,6 +3483,8 @@ pub struct Composer {
     /// Pill height actually rendered last frame — a committed flip morphs
     /// from here, so mid-flight reversals hand off without a jump.
     last_rendered_height: f32,
+    last_target_height: f32,
+    height_morph: Option<FlipMorph>,
     /// Monotonic clock anchor for the morph timeline.
     morph_clock: Instant,
     /// Set on every session/route change: flips committed before this instant
@@ -3569,6 +3607,8 @@ impl Composer {
             settle_task: None,
             flip_morph: None,
             last_rendered_height: 0.0,
+            last_target_height: 0.0,
+            height_morph: None,
             morph_clock: Instant::now(),
             route_snap_until: None,
             _observe: observe,
@@ -4632,6 +4672,8 @@ impl Composer {
             // been re-measured, one or two renders later, so the whole
             // window snaps (see ROUTE_SNAP_MS).
             self.flip_morph = None;
+            self.height_morph = None;
+            self.last_target_height = 0.0;
             self.last_rendered_height = 0.0;
             self.route_snap_until = Some(Instant::now() + Duration::from_millis(ROUTE_SNAP_MS));
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
@@ -5790,6 +5832,21 @@ impl Render for Composer {
             self.reset_slash(None, cx);
         }
         let mode = self.button_mode(cx);
+        // Shape the current draft before sizing the pill. Waiting for the child
+        // layout leaves the parent using the previous edit's height.
+        self.input.update(cx, |input, cx| {
+            if input.needs_measure && input.last_width > 0.0 {
+                let mut style = window.text_style();
+                style.font_family = theme.font_sans.clone();
+                style.font_size = crate::typography::ui_rems(INPUT_TEXT_SIZE).into();
+                style.color = if input.content.is_empty() {
+                    theme.text_faint
+                } else {
+                    theme.text
+                };
+                input.layout_text(px(input.last_width), &style, window, cx);
+            }
+        });
         let (text_width, has_newline, content_height, last_width, epoch) = {
             let input = self.input.read(cx);
             (
@@ -6067,7 +6124,22 @@ impl Render for Composer {
             COMPACT_TOTAL_HEIGHT
         };
         let target_height = base_height + strip_h + comment_strip_h;
-        let (pill_height, morph_t, morphing) = match self.flip_morph {
+        self.height_morph = flip_morph_step(
+            self.height_morph,
+            (target_height - self.last_target_height).abs() > 0.5,
+            self.last_rendered_height,
+            now_ms,
+            motion::reduced_motion(cx),
+            route_snap,
+        );
+        self.last_target_height = target_height;
+        let pill_height = self
+            .height_morph
+            .map_or(target_height, |m| m.height(target_height, now_ms));
+        if self.height_morph.is_some() {
+            window.request_animation_frame();
+        }
+        let (_, morph_t, morphing) = match self.flip_morph {
             Some(m) if !m.done(now_ms) => {
                 (m.height(target_height, now_ms), m.progress(now_ms), true)
             }
@@ -6080,6 +6152,20 @@ impl Render for Composer {
             window.request_animation_frame();
         }
         self.last_rendered_height = pill_height;
+        let text_pt = morph_text_pad(morph_t);
+        let textarea_height =
+            (pill_height - strip_h - comment_strip_h - PILL_BORDER_V - ACTIONS_ROW_HEIGHT).max(0.0);
+        self.input.update(cx, |input, cx| {
+            let height = if expanded {
+                (textarea_height - text_pt - 4.0).max(0.0)
+            } else {
+                INPUT_LINE_HEIGHT
+            };
+            if input.viewport_height != Some(height) {
+                input.viewport_height = Some(height);
+                cx.notify();
+            }
+        });
 
         let send_button = self.render_send_button(mode, cx);
         // Attach button — opens the native image picker (the original's hidden
@@ -6144,10 +6230,10 @@ impl Render for Composer {
             // (`px-3 pb-2.5 pt-1`, h-8 chips → 46px) ABSOLUTE at the pill's
             // stationary bottom — constant screen-y through the morph, with
             // the 2.5px compact↔expanded centering delta gliding out. The
-            // text container is laid out at TARGET size (committed layout
-            // never reflows mid-tween — the caret can't jump); its top pad
-            // eases 12→16 so the first line glides from its compact resting
-            // place. The whole control cluster stays at full alpha — chips,
+            // text viewport follows the animated height so it cannot paint
+            // over the controls. Its width stays fixed (no tween rewraps);
+            // top padding eases 12→16. The whole control cluster stays at
+            // full alpha — chips,
             // attach and send are all (near-)stationary on the bottom anchor.
             let text_pt = morph_text_pad(morph_t);
             pill.h(px(pill_height))
@@ -6159,9 +6245,9 @@ impl Render for Composer {
                 .children(strip)
                 .child(
                     div()
-                        .h(px(
-                            (base_height - PILL_BORDER_V - ACTIONS_ROW_HEIGHT).max(0.0)
-                        ))
+                        .h(px(textarea_height))
+                        .flex_none()
+                        .overflow_hidden()
                         .px(px(16.0))
                         .pt(px(text_pt))
                         .pb(px(4.0))
@@ -6819,6 +6905,29 @@ mod tests {
         );
         assert_eq!(
             flip_morph_step(Some(m), false, 124.0, 300.0, false, false),
+            None
+        );
+    }
+
+    #[test]
+    fn content_resize_retargets_from_visible_height_and_settles() {
+        let start = composer_total_height(input_content_height(3));
+        let target = composer_total_height(input_content_height(6));
+        let grow = flip_morph_step(None, true, start, 0.0, false, false).unwrap();
+        let visible = grow.height(target, 60.0);
+        assert!(visible > start && visible < target);
+        // A delete during growth reverses from what is on screen, with no snap.
+        let shrink = flip_morph_step(Some(grow), true, visible, 60.0, false, false).unwrap();
+        assert_eq!(shrink.height(start, 60.0), visible);
+        assert!(shrink.height(start, 120.0) < visible);
+        assert_eq!(shrink.height(start, 240.0), start);
+        assert_eq!(
+            flip_morph_step(Some(shrink), false, start, 240.0, false, false),
+            None
+        );
+        // Toggling reduced motion also cancels an already running resize.
+        assert_eq!(
+            flip_morph_step(Some(grow), false, visible, 60.0, true, false),
             None
         );
     }
