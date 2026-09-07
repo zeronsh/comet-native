@@ -523,6 +523,16 @@ impl RegistryDoc {
         true
     }
 
+    /// Keep the sync cursor at or below `cursor`: rows withheld before apply
+    /// (an encrypted profile waiting for keys) must be re-delivered by the
+    /// next pull/hello, so the cursor may not claim them (RFC 0001 §9).
+    pub fn hold_cursor(&mut self, cursor: u64) {
+        if self.server_seq > cursor {
+            self.server_seq = cursor;
+            self.generation += 1;
+        }
+    }
+
     /// Retire an acked batch; returns whether it existed.
     ///
     /// Deliberately does NOT advance the sync cursor: the ack's `seq` is OUR

@@ -145,6 +145,10 @@ pub struct WorkspaceHostConfig {
     /// The signed-in user — registries are per-user (`reg1/{orgId}/{userId}`):
     /// spaces/sessions are private to their owner, never org-visible.
     pub user_id: String,
+    /// Encrypted-sync vault: when the profile is enrolled, the registry joins
+    /// its ENCRYPTED generation (`/registry/{orgId}/e1/ws`) with per-field
+    /// sealing and never the plaintext room (RFC 0001 §9).
+    pub vault: Option<crate::vault::VaultService>,
     /// When present, the host joins `/registry/{orgId}/ws`. `None` = fully offline
     /// (local snapshots only; the registry still drives everything device-side).
     pub edge: Option<EdgeConfig>,
@@ -312,9 +316,26 @@ impl WorkspaceHost {
             return;
         };
         let org_id = self.inner.config.org_id.clone();
+        let vault = self
+            .inner
+            .config
+            .vault
+            .clone()
+            .filter(|vault| vault.is_enrolled());
         // Per-dial URL provider: the bearer is re-read on every (re)connect.
-        let url = edge.room_url(format!("/registry/{org_id}/ws"));
-        self.spawn_join(url, edge.token_changes(), Some(edge.token.clone()));
+        // Encrypted profiles address the encrypted registry generation and
+        // seal every value; the plaintext room is never joined again.
+        let (url, codec) = match vault {
+            Some(vault) => (
+                edge.room_url(format!("/registry/{org_id}/e1/ws")),
+                Some(Arc::new(crate::vault::VaultRegistryCodec::new(
+                    vault,
+                    &self.inner.config.user_id,
+                ))),
+            ),
+            None => (edge.room_url(format!("/registry/{org_id}/ws")), None),
+        };
+        self.spawn_join(url, edge.token_changes(), Some(edge.token.clone()), codec);
     }
 
     /// Test seam: join a registry room at a fixed WebSocket URL without an
@@ -322,7 +343,12 @@ impl WorkspaceHost {
     /// server through this. Production always goes through [`Self::join_room`].
     #[doc(hidden)]
     pub fn connect_registry_url(&self, url: &str) {
-        self.spawn_join(Arc::new(zeron_sync::StaticUrl(url.to_string())), None, None);
+        self.spawn_join(
+            Arc::new(zeron_sync::StaticUrl(url.to_string())),
+            None,
+            None,
+            None,
+        );
     }
 
     fn spawn_join(
@@ -330,6 +356,7 @@ impl WorkspaceHost {
         url: Arc<dyn zeron_sync::UrlProvider>,
         mut token_changes: Option<tokio::sync::watch::Receiver<u64>>,
         token: Option<Arc<dyn zeron_rpc::TokenSource>>,
+        codec: Option<Arc<crate::vault::VaultRegistryCodec>>,
     ) {
         let org_id = self.inner.config.org_id.clone();
         let reg = self.inner.reg.clone();
@@ -351,12 +378,48 @@ impl WorkspaceHost {
                 let tuning = RegistryTuning {
                     probe_quiet: REGISTRY_PROBE_QUIET,
                 };
+                // Vault gate (RFC 0001 §4.3): an encrypted registry is joined
+                // only with usable keys — locked / key-update / revoked wait
+                // here, and sealing material is prepared before the first
+                // push so no batch ever leaves unsealed.
+                if let Some(codec) = &codec {
+                    let vault = codec.vault().clone();
+                    let mut status = vault.watch_status();
+                    let mut announced = false;
+                    loop {
+                        if vault.is_ready() && codec.prepare().await.is_ok() {
+                            break;
+                        }
+                        if !announced {
+                            tracing::info!(status = ?vault.status().phase,
+                                "registry: encrypted join waiting for the vault");
+                            announced = true;
+                            let vault = vault.clone();
+                            tokio::spawn(async move {
+                                let _ = vault.refresh().await;
+                            });
+                        }
+                        if status.changed().await.is_err() || weak.upgrade().is_none() {
+                            return;
+                        }
+                    }
+                }
                 // Production path (token present): dual transport — the WS
                 // dials as before, and a plain-HTTPS pull/push seam derived
                 // from the same URL provider bootstraps the doc in ~1 RTT
                 // and keeps syncing at backoff cadence when the socket can't
                 // connect (airplane-wifi networks strip WS upgrades).
-                let result = if token.is_some() {
+                let result = if let (Some(codec), true) = (&codec, token.is_some()) {
+                    RegistryClient::connect_via_transport_with_codec(
+                        url.clone(),
+                        reg.clone(),
+                        &device_id,
+                        tuning,
+                        Arc::new(WsDerivedRegistryTransport::new(url.clone())),
+                        codec.clone(),
+                    )
+                    .await
+                } else if token.is_some() {
                     RegistryClient::connect_via_transport(
                         url.clone(),
                         reg.clone(),

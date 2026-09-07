@@ -7,9 +7,11 @@
 //! explicit states and the transports consult it before serializing content.
 
 pub mod client;
+pub mod registry_codec;
 pub mod service;
 pub mod store;
 
+pub use registry_codec::VaultRegistryCodec;
 pub use service::{
     ChatKeyMaterial, OpenContext, OpenFailure, RecoveryKit, VaultDevice, VaultPhase, VaultService,
     VaultStatus, object_id_for,

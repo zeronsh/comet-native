@@ -1621,6 +1621,30 @@ ES-16  Release controls, support, and staged activation
    - Checkpoint + frontier, tail, tool blobs (writer and reader), and the
      diff sidecar (PUT chat2/{room}/diff) are sealed for enrolled profiles.
 
+17.4a. Registry field envelopes (ES-10, first cut)
+
+   - zeron-sync RegistryCodec seam: seal_ops / open_rows wrap the client's
+     push and every inbound row (hello state, HTTPS pull, live broadcasts).
+     A batch is never half-sealed (keys not ready keeps it pending); a row
+     with a field whose key is not held is withheld and the doc cursor is
+     held (RegistryDoc::hold_cursor) so the next pull re-delivers it; a
+     field that fails verification is dropped, never the row's verified
+     fields or the clocks.
+   - Engine VaultRegistryCodec: purpose RegistryField, one object key per
+     epoch for the whole registry (object "registry"), plaintext
+     {kind, id, field, hlc, value} so the authenticated slot must equal the
+     slot the server filed it under; value null is an authenticated deletion
+     marker; wire value {"e1": base64 record}. Plaintext where ciphertext is
+     required is rejected.
+   - Encrypted profiles join /registry/{org}/e1/ws → reg1e1/{org}/{user}
+     (edge/src/index.ts): a separate generation seeded from the local doc
+     with ORIGINAL clocks by the existing re-seed path; the plaintext
+     registry room is never written again and is retained for cleanup.
+   - Still open in ES-10: signed row lifecycle proofs (delete/revival
+     evidence survives compaction), GC/full-sync rules with proofs, the
+     Swift registry codec (iOS shows an empty sidebar for an encrypted
+     profile until it lands), and the reviewed rekey/cutover design.
+
 17.5. Verification
 
       cargo test -p zeron-crypto --locked --offline           (42 + fixture)
@@ -1629,7 +1653,8 @@ ES-16  Release controls, support, and staged activation
       npm --prefix edge run typecheck && npm --prefix edge run test
       (cd edge && npx wrangler dev --port 27640 --var AUTH_MODE:dev --local)
       ZERON_VAULT_EDGE_URL=http://127.0.0.1:27640 \
-        cargo test -p zeron-engine --test vault_e2e
+        cargo test -p zeron-engine --test vault_e2e       (2 live scenarios)
+      cargo test -p zeron-sync --features mock-server --test registry_client
       xcrun swiftc -typecheck -target arm64-apple-ios26.0-simulator \
         -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
         apps/ios/Zeron/Sync/Vault{Crypto,SignedRecord,Content,Policy,Envelope}.swift
@@ -1655,9 +1680,9 @@ ES-16  Release controls, support, and staged activation
    - Swift: native Keychain vault store, bootstrap client, pairing/recovery
      screens, encrypted SessionStore/ChatRoomClient path, tail/blob readers.
      (The record verifiers and fixture test landed in this slice.)
-   - Registry field envelopes and lifecycle proofs (ES-10); the device RPC
-     channel handshake (ES-11); device sidecars; the reader side of sealed
-     tails on iOS.
+   - Registry lifecycle proofs and the Swift registry codec (ES-10 rest);
+     the device RPC channel handshake (ES-11); device sidecars; the reader
+     side of sealed tails on iOS.
    - Legacy write fences on chat2/blob/diff routes for activated profiles,
      migration journal and consented cleanup (ES-14); retention verification.
    - Accepted-history closure after revocation (old-epoch writes are still

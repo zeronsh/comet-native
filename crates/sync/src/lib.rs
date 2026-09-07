@@ -23,7 +23,8 @@ pub use chat_client::{
     ChatClient, ChatDocSink, ChatEvent, ChatStatsSnapshot, ChatTuning, CheckpointFetcher,
 };
 pub use registry::{
-    ReconnectState, RegistryClient, RegistryEvent, RegistryTransport, RegistryTuning,
+    FieldOpenFailure, ReconnectState, RegistryClient, RegistryCodec, RegistryEvent,
+    RegistryTransport, RegistryTuning, open_rows, seal_ops,
 };
 pub use store::{DocsStore, MAX_ENCRYPTED_OUTBOX_BYTES, PendingEncryptedBatch, StoreError};
 pub use types::{RoomStatsSnapshot, StaticUrl, SyncError, UrlProvider};

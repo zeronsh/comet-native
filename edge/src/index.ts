@@ -304,8 +304,14 @@ export default {
     if (parts[0] === "registry" && parts[1] && ID_RE.test(parts[1])) {
       const orgId = parts[1];
       if (auth.orgId !== orgId) return json({ error: "forbidden" }, 403);
-      const room = `reg1/${orgId}/${auth.userId}`;
-      if (parts[2] === "ws") {
+      // Encrypted profiles address a SEPARATE registry generation
+      // (`/registry/:orgId/e1/*` → `reg1e1/{org}/{user}`, RFC 0001 §9, §12):
+      // sealed field values never share a table with the legacy plaintext
+      // rows, and the plaintext room is retained for the cleanup step.
+      const encrypted = parts[2] === "e1";
+      const room = encrypted ? `reg1e1/${orgId}/${auth.userId}` : `reg1/${orgId}/${auth.userId}`;
+      const leaf = encrypted ? parts[3] : parts[2];
+      if (leaf === "ws") {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
           return json({ error: "expected websocket" }, 426);
         }
@@ -318,25 +324,25 @@ export default {
           `?${deviceParam(url).replace(/^&/, "")}`
         );
       }
-      if (parts[2] === "stats" && request.method === "GET") {
+      if (leaf === "stats" && request.method === "GET") {
         return forward(env.REGISTRY_ROOMS, room, request, auth.userId, "/stats", "");
       }
       // Pull over plain HTTPS: `?since=` returns the same delta the WS
       // hello would (full table without it — the original repair read).
       // One round trip on any network that passes HTTPS at all, where the
       // WS upgrade needs 4 and a cooperative middlebox.
-      if (parts[2] === "rows" && request.method === "GET") {
+      if (leaf === "rows" && request.method === "GET") {
         return forward(env.REGISTRY_ROOMS, room, request, auth.userId, "/rows", url.search);
       }
       // Push over plain HTTPS — the WS push's fallback twin (LWW clocks
       // make replays no-ops, so at-least-once delivery is safe).
-      if (parts[2] === "push" && request.method === "POST") {
+      if (leaf === "push" && request.method === "POST") {
         return forward(env.REGISTRY_ROOMS, room, request, auth.userId, "/push", url.search);
       }
       // Operator wipe. Unlike the CRDT rooms this needs no recipe: clients
       // detect the seq regression on their next hello and re-seed the table
       // from local rows with original clocks, automatically.
-      if (parts[2] === "reset" && request.method === "POST") {
+      if (leaf === "reset" && request.method === "POST") {
         return forward(env.REGISTRY_ROOMS, room, request, auth.userId, "/reset", "");
       }
     }

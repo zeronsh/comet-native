@@ -25,7 +25,7 @@ use tokio::sync::{broadcast, mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message as WsMessage;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
 
-use zeron_doc::{PendingBatch, RegistryDoc, RegistryRow, StateOutcome};
+use zeron_doc::{PendingBatch, RegistryDoc, RegistryRow, RowOp, StateOutcome};
 
 use crate::types::{RoomStatsSnapshot, StaticUrl, SyncError, UrlProvider};
 
@@ -162,6 +162,102 @@ pub(crate) trait TextConnector: Send + Sync + 'static {
 pub trait RegistryTransport: Send + Sync + 'static {
     fn fetch(&self, since: u64) -> BoxFuture<'static, Result<String, SyncError>>;
     fn push(&self, body: String) -> BoxFuture<'static, Result<String, SyncError>>;
+}
+
+/// Why an inbound field could not be opened (RFC 0001 §9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldOpenFailure {
+    /// The key/epoch is not held yet: withhold the row and hold the cursor.
+    KeyUnavailable,
+    /// Not authentic under pinned membership (or plaintext where ciphertext
+    /// is required): drop the field, never the row's other verified fields.
+    Rejected,
+}
+
+/// Per-field seal/open boundary for an encrypted profile's registry. The
+/// server keeps merging by row/field/clock; only VALUES cross this seam, and
+/// each sealed value binds its row, field, and clock inside the
+/// authenticated plaintext so a relay cannot move one between slots.
+pub trait RegistryCodec: Send + Sync + 'static {
+    /// Seal one outbound write (`value == Null` = an authenticated field
+    /// deletion marker). `Err` keeps the batch pending (keys not ready).
+    fn seal_field(
+        &self,
+        kind: &str,
+        id: &str,
+        field: &str,
+        hlc: &str,
+        value: &serde_json::Value,
+    ) -> Result<serde_json::Value, String>;
+    /// Open one inbound value. `Ok(None)` is an authenticated deletion.
+    fn open_field(
+        &self,
+        kind: &str,
+        id: &str,
+        field: &str,
+        hlc: &str,
+        wire: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, FieldOpenFailure>;
+}
+
+/// Seal every write in `ops` for the wire. `None` when any field cannot be
+/// sealed yet (the whole batch stays queued — never a half-sealed batch).
+pub fn seal_ops(codec: &dyn RegistryCodec, ops: &[RowOp]) -> Option<Vec<RowOp>> {
+    let mut out = Vec::with_capacity(ops.len());
+    for op in ops {
+        let mut sealed = op.clone();
+        if let Some(set) = &op.set {
+            let mut wire = std::collections::BTreeMap::new();
+            for (field, value) in set {
+                let clock = op
+                    .clocks
+                    .as_ref()
+                    .and_then(|c| c.get(field))
+                    .map_or(op.hlc.as_str(), String::as_str);
+                match codec.seal_field(&op.kind, &op.id, field, clock, value) {
+                    Ok(value) => {
+                        wire.insert(field.clone(), value);
+                    }
+                    Err(reason) => {
+                        tracing::info!(reason, "registry: field sealing deferred");
+                        return None;
+                    }
+                }
+            }
+            sealed.set = Some(wire);
+        }
+        out.push(sealed);
+    }
+    Some(out)
+}
+
+/// Open every field of `rows`. Rows with a field whose key is not held are
+/// withheld (returned count); rejected fields are dropped from their row.
+pub fn open_rows(codec: &dyn RegistryCodec, rows: Vec<RegistryRow>) -> (Vec<RegistryRow>, usize) {
+    let mut out = Vec::with_capacity(rows.len());
+    let mut withheld = 0;
+    'rows: for mut row in rows {
+        let mut fields = std::collections::BTreeMap::new();
+        for (field, wire) in &row.fields {
+            let clock = row.clocks.get(field).map_or("", String::as_str);
+            match codec.open_field(&row.kind, &row.id, field, clock, wire) {
+                Ok(Some(value)) => {
+                    fields.insert(field.clone(), value);
+                }
+                Ok(None) => {}
+                Err(FieldOpenFailure::KeyUnavailable) => {
+                    withheld += 1;
+                    continue 'rows;
+                }
+                Err(FieldOpenFailure::Rejected) => {
+                    tracing::warn!(kind = %row.kind, field, "registry: field rejected; dropped");
+                }
+            }
+        }
+        row.fields = fields;
+        out.push(row);
+    }
+    (out, withheld)
 }
 
 struct WsTextConnector {
@@ -351,7 +447,7 @@ impl RegistryClient {
         tuning: RegistryTuning,
     ) -> Result<Self, SyncError> {
         let connector = Arc::new(WsTextConnector { url: provider });
-        Self::connect_with_transport(connector, doc, device_id, tuning, None).await
+        Self::connect_with_transport(connector, doc, device_id, tuning, None, None).await
     }
 
     /// Connect with a plain-HTTPS pull/push seam alongside the socket (the
@@ -366,7 +462,48 @@ impl RegistryClient {
         transport: Arc<dyn RegistryTransport>,
     ) -> Result<Self, SyncError> {
         let connector = Arc::new(WsTextConnector { url: provider });
-        Self::connect_with_transport(connector, doc, device_id, tuning, Some(transport)).await
+        Self::connect_with_transport(connector, doc, device_id, tuning, Some(transport), None).await
+    }
+
+    /// [`Self::connect_via_transport`] for an encrypted profile: every
+    /// pushed value is sealed and every received value opened through `codec`.
+    pub async fn connect_via_transport_with_codec(
+        provider: Arc<dyn UrlProvider>,
+        doc: Arc<Mutex<RegistryDoc>>,
+        device_id: &str,
+        tuning: RegistryTuning,
+        transport: Arc<dyn RegistryTransport>,
+        codec: Arc<dyn RegistryCodec>,
+    ) -> Result<Self, SyncError> {
+        let connector = Arc::new(WsTextConnector { url: provider });
+        Self::connect_with_transport(
+            connector,
+            doc,
+            device_id,
+            tuning,
+            Some(transport),
+            Some(codec),
+        )
+        .await
+    }
+
+    /// Socket-only encrypted join (tests, dev bearers).
+    pub async fn connect_via_codec(
+        provider: Arc<dyn UrlProvider>,
+        doc: Arc<Mutex<RegistryDoc>>,
+        device_id: &str,
+        codec: Arc<dyn RegistryCodec>,
+    ) -> Result<Self, SyncError> {
+        let connector = Arc::new(WsTextConnector { url: provider });
+        Self::connect_with_transport(
+            connector,
+            doc,
+            device_id,
+            RegistryTuning::default(),
+            None,
+            Some(codec),
+        )
+        .await
     }
 
     pub(crate) async fn connect_with_tuned(
@@ -375,7 +512,7 @@ impl RegistryClient {
         device_id: &str,
         tuning: RegistryTuning,
     ) -> Result<Self, SyncError> {
-        Self::connect_with_transport(connector, doc, device_id, tuning, None).await
+        Self::connect_with_transport(connector, doc, device_id, tuning, None, None).await
     }
 
     pub(crate) async fn connect_with_transport(
@@ -384,6 +521,7 @@ impl RegistryClient {
         device_id: &str,
         tuning: RegistryTuning,
         transport: Option<Arc<dyn RegistryTransport>>,
+        codec: Option<Arc<dyn RegistryCodec>>,
     ) -> Result<Self, SyncError> {
         let (events, _) = broadcast::channel(256);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -409,6 +547,7 @@ impl RegistryClient {
             presence: presence.clone(),
             stats: stats.clone(),
             transport,
+            codec,
             sync_busy: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         };
         let task = tokio::spawn(actor.run(ready_tx));
@@ -526,8 +665,34 @@ struct Actor {
     stats: Arc<Stats>,
     /// Plain-HTTPS pull/push (None = socket-only: tests, dev bearers).
     transport: Option<Arc<dyn RegistryTransport>>,
+    /// Encrypted profile: per-field seal/open (None = plaintext registry).
+    codec: Option<Arc<dyn RegistryCodec>>,
     /// One offline sync in flight at a time.
     sync_busy: Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Open inbound rows through the codec (identity without one) and hold the
+/// doc's cursor at `previous` when any row was withheld for missing keys.
+fn apply_opened(
+    codec: Option<&Arc<dyn RegistryCodec>>,
+    doc: &Mutex<RegistryDoc>,
+    rows: Vec<RegistryRow>,
+    apply: impl FnOnce(&mut RegistryDoc, Vec<RegistryRow>),
+) {
+    let (rows, withheld) = match codec {
+        Some(codec) => open_rows(codec.as_ref(), rows),
+        None => (rows, 0),
+    };
+    let mut doc = lock(doc);
+    let previous = doc.cursor();
+    apply(&mut doc, rows);
+    if withheld > 0 {
+        tracing::info!(
+            withheld,
+            "registry: rows withheld until keys arrive; cursor held"
+        );
+        doc.hold_cursor(previous);
+    }
 }
 
 enum SessionEnd {
@@ -755,14 +920,16 @@ impl Actor {
             return SessionEnd::Reconnect;
         };
         {
-            let mut doc = lock(&self.doc);
-            let outcome = doc.apply_state(seq, full, gc_floor, rows);
-            if full {
-                self.stats.full_resyncs.fetch_add(1, Relaxed);
-            }
-            if outcome == StateOutcome::Reseeded {
-                tracing::info!("registry: server behind local state; re-seeding");
-            }
+            let stats = self.stats.clone();
+            apply_opened(self.codec.as_ref(), &self.doc, rows, |doc, rows| {
+                let outcome = doc.apply_state(seq, full, gc_floor, rows);
+                if full {
+                    stats.full_resyncs.fetch_add(1, Relaxed);
+                }
+                if outcome == StateOutcome::Reseeded {
+                    tracing::info!("registry: server behind local state; re-seeding");
+                }
+            });
         }
         {
             let now = tokio::time::Instant::now();
@@ -885,12 +1052,22 @@ impl Actor {
         let presence = self.presence.clone();
         let stats = self.stats.clone();
         let busy = self.sync_busy.clone();
+        let codec = self.codec.clone();
         tokio::spawn(async move {
             let batches: Vec<PendingBatch> = lock(&doc).take_pushable();
             let mut push_failed = false;
             for batch in &batches {
-                let body =
-                    serde_json::json!({ "batch": batch.batch, "ops": batch.ops }).to_string();
+                let ops = match &codec {
+                    Some(codec) => match seal_ops(codec.as_ref(), &batch.ops) {
+                        Some(ops) => ops,
+                        None => {
+                            push_failed = true;
+                            break;
+                        }
+                    },
+                    None => batch.ops.clone(),
+                };
+                let body = serde_json::json!({ "batch": batch.batch, "ops": ops }).to_string();
                 match transport.push(body).await {
                     Ok(ack) => {
                         let parsed = serde_json::from_str::<serde_json::Value>(&ack)
@@ -945,9 +1122,9 @@ impl Actor {
                     }
                     match serde_json::from_str::<PullBody>(&body) {
                         Ok(pull) => {
-                            let mut d = lock(&doc);
-                            d.apply_state(pull.seq, pull.full, pull.gc_floor, pull.rows);
-                            drop(d);
+                            apply_opened(codec.as_ref(), &doc, pull.rows, |d, rows| {
+                                d.apply_state(pull.seq, pull.full, pull.gc_floor, rows);
+                            });
                             let now = tokio::time::Instant::now();
                             let mut map = lock(&presence);
                             for (device, at) in pull.presence {
@@ -974,9 +1151,21 @@ impl Actor {
     async fn push_pending(&self, pipe: &mut TextPipe) -> bool {
         let batches: Vec<PendingBatch> = lock(&self.doc).take_pushable();
         for batch in batches {
+            let ops = match &self.codec {
+                Some(codec) => match seal_ops(codec.as_ref(), &batch.ops) {
+                    Some(ops) => ops,
+                    None => {
+                        // Keys not ready: the batch (and everything after
+                        // it) stays pending and pushable for the next nudge.
+                        lock(&self.doc).mark_disconnected();
+                        return true;
+                    }
+                },
+                None => batch.ops.clone(),
+            };
             let frame = serde_json::to_string(&ClientFrame::Push {
                 batch: &batch.batch,
-                ops: &batch.ops,
+                ops: &ops,
             })
             .expect("push serializes");
             if pipe.tx.send(frame).await.is_err() {
@@ -998,7 +1187,10 @@ impl Actor {
         };
         match frame {
             ServerFrame::Rows { seq, rows } => {
-                let contiguous = lock(&self.doc).apply_rows(seq, rows);
+                let mut contiguous = true;
+                apply_opened(self.codec.as_ref(), &self.doc, rows, |doc, rows| {
+                    contiguous = doc.apply_rows(seq, rows);
+                });
                 self.stats.last_pushed_ms.store(epoch_ms(), Relaxed);
                 let _ = self.events.send(RegistryEvent::Applied);
                 if !contiguous {
@@ -1030,9 +1222,9 @@ impl Actor {
             } => {
                 // Servers only send state as a hello answer, but applying a
                 // late duplicate is harmless and simpler than special-casing.
-                let mut doc = lock(&self.doc);
-                doc.apply_state(seq, full, gc_floor, rows);
-                drop(doc);
+                apply_opened(self.codec.as_ref(), &self.doc, rows, |doc, rows| {
+                    doc.apply_state(seq, full, gc_floor, rows);
+                });
                 let now = tokio::time::Instant::now();
                 let mut map = lock(&self.presence);
                 for (device, at) in presence {

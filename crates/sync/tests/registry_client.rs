@@ -564,3 +564,205 @@ async fn unreadable_http_ack_retries_instead_of_stranding_the_batch() {
 
     client.shutdown().await;
 }
+
+// ── encrypted profile: per-field codec (RFC 0001 §9) ────────────────────────
+
+/// A stand-in codec: values travel as `{"sealed": <row|field|clock|value>}`
+/// so the test can observe (a) the server only ever holds the wire form,
+/// (b) a value moved between fields/rows/clocks is rejected, (c) a device
+/// without keys withholds rows and holds its cursor until keys arrive.
+struct TestCodec {
+    has_keys: std::sync::atomic::AtomicBool,
+}
+
+impl TestCodec {
+    fn new(has_keys: bool) -> Self {
+        Self {
+            has_keys: std::sync::atomic::AtomicBool::new(has_keys),
+        }
+    }
+}
+
+impl zeron_sync::RegistryCodec for TestCodec {
+    fn seal_field(
+        &self,
+        kind: &str,
+        id: &str,
+        field: &str,
+        hlc: &str,
+        value: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        if !self.has_keys.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err("no keys".into());
+        }
+        let inner = serde_json::json!({ "kind": kind, "id": id, "field": field, "hlc": hlc, "value": value })
+            .to_string();
+        // Obscure the plaintext the way a real seal would (the assertions
+        // scan the relay's copy for canaries): reversed hex is enough here.
+        let wire: String = inner.bytes().rev().map(|b| format!("{b:02x}")).collect();
+        Ok(serde_json::json!({ "sealed": wire }))
+    }
+
+    fn open_field(
+        &self,
+        kind: &str,
+        id: &str,
+        field: &str,
+        hlc: &str,
+        wire: &serde_json::Value,
+    ) -> Result<Option<serde_json::Value>, zeron_sync::FieldOpenFailure> {
+        if !self.has_keys.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(zeron_sync::FieldOpenFailure::KeyUnavailable);
+        }
+        let Some(text) = wire.get("sealed").and_then(|v| v.as_str()) else {
+            return Err(zeron_sync::FieldOpenFailure::Rejected); // plaintext where ciphertext is required
+        };
+        let bytes: Vec<u8> = (0..text.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&text[i..i + 2], 16).unwrap())
+            .rev()
+            .collect();
+        let inner: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        if inner["kind"] != kind
+            || inner["id"] != id
+            || inner["field"] != field
+            || inner["hlc"] != hlc
+        {
+            return Err(zeron_sync::FieldOpenFailure::Rejected);
+        }
+        Ok(if inner["value"].is_null() {
+            None
+        } else {
+            Some(inner["value"].clone())
+        })
+    }
+}
+
+#[tokio::test]
+async fn codec_seals_every_value_and_opens_it_on_the_peer() {
+    let server = MockRegistryServer::start().await;
+    let doc_a = new_doc("dev-a");
+    let doc_b = new_doc("dev-b");
+    {
+        let mut doc = doc_a.lock().unwrap();
+        doc.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    }
+    let client_a = RegistryClient::connect_via_codec(
+        Arc::new(zeron_sync::StaticUrl(server.url())),
+        doc_a.clone(),
+        "dev-a",
+        Arc::new(TestCodec::new(true)),
+    )
+    .await
+    .expect("A joins");
+    wait_until(|| server.row("chats", "chat-1").is_some()).await;
+    let stored = server.row("chats", "chat-1").unwrap();
+    // The relay holds only the wire form: no plaintext title/cwd anywhere.
+    let dump = serde_json::to_string(&stored).unwrap();
+    assert!(!dump.contains("\"chat\""), "title leaked: {dump}");
+    assert!(!dump.contains("/tmp"), "cwd leaked: {dump}");
+    assert!(stored.fields.values().all(|v| v.get("sealed").is_some()));
+    // The clocks are still the server's merge input (per-field LWW intact).
+    assert!(stored.clocks.contains_key("title"));
+
+    let client_b = RegistryClient::connect_via_codec(
+        Arc::new(zeron_sync::StaticUrl(server.url())),
+        doc_b.clone(),
+        "dev-b",
+        Arc::new(TestCodec::new(true)),
+    )
+    .await
+    .expect("B joins");
+    wait_until(|| {
+        doc_b
+            .lock()
+            .unwrap()
+            .read_chats()
+            .map(|c| {
+                c.iter()
+                    .any(|c| c.id == "chat-1" && c.title.as_deref() == Some("chat"))
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    // B edits one field; A sees only that field change (merge granularity).
+    {
+        let mut doc = doc_b.lock().unwrap();
+        doc.rename_chat("chat-1", "renamed").unwrap();
+    }
+    client_b.nudge();
+    wait_until(|| {
+        doc_a
+            .lock()
+            .unwrap()
+            .read_chats()
+            .map(|c| {
+                c.iter()
+                    .any(|c| c.id == "chat-1" && c.title.as_deref() == Some("renamed"))
+            })
+            .unwrap_or(false)
+    })
+    .await;
+    assert_eq!(
+        doc_a.lock().unwrap().read_chats().unwrap()[0]
+            .cwd
+            .as_deref(),
+        Some("/tmp")
+    );
+    client_a.shutdown().await;
+    client_b.shutdown().await;
+}
+
+#[tokio::test]
+async fn rows_without_keys_are_withheld_and_the_cursor_holds() {
+    let server = MockRegistryServer::start().await;
+    let doc_a = new_doc("dev-a");
+    {
+        let mut doc = doc_a.lock().unwrap();
+        doc.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    }
+    let client_a = RegistryClient::connect_via_codec(
+        Arc::new(zeron_sync::StaticUrl(server.url())),
+        doc_a.clone(),
+        "dev-a",
+        Arc::new(TestCodec::new(true)),
+    )
+    .await
+    .expect("A joins");
+    wait_until(|| server.row("chats", "chat-1").is_some()).await;
+
+    // A device with no keys yet: nothing materializes, cursor stays at 0.
+    let doc_b = new_doc("dev-b");
+    let codec_b = Arc::new(TestCodec::new(false));
+    let client_b = RegistryClient::connect_via_codec(
+        Arc::new(zeron_sync::StaticUrl(server.url())),
+        doc_b.clone(),
+        "dev-b",
+        codec_b.clone(),
+    )
+    .await
+    .expect("B joins");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    {
+        let doc = doc_b.lock().unwrap();
+        assert!(doc.read_chats().unwrap().is_empty(), "no row without keys");
+        assert_eq!(doc.cursor(), 0, "cursor held over withheld rows");
+    }
+    // Keys arrive: a redial re-pulls from the held cursor and applies.
+    codec_b
+        .has_keys
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    client_b.redial();
+    wait_until(|| {
+        doc_b
+            .lock()
+            .unwrap()
+            .read_chats()
+            .map(|c| c.iter().any(|c| c.id == "chat-1"))
+            .unwrap_or(false)
+    })
+    .await;
+    assert!(doc_b.lock().unwrap().cursor() >= 1);
+    client_a.shutdown().await;
+    client_b.shutdown().await;
+}

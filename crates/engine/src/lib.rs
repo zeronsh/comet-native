@@ -220,17 +220,6 @@ impl EngineCore {
                 edge: edge.clone(),
             },
         );
-        let workspace = WorkspaceHost::open(
-            store,
-            WorkspaceHostConfig {
-                device_id: device_id.clone(),
-                device_name: local_device_name(&device_id),
-                platform: std::env::consts::OS.to_string(),
-                org_id: profile.org_id().to_string(),
-                user_id: profile.user_id().to_string(),
-                edge: edge.clone(),
-            },
-        )?;
         // Encrypted-sync vault: device identity + keyring under the profile
         // store, edge control-plane client only for account-scoped runtimes
         // with an edge. Opening never fails the boot: a locked secure store
@@ -262,6 +251,18 @@ impl EngineCore {
             vault::VaultService::open(store, client, profile.org_id(), profile.user_id())
         };
         doc_host.set_vault(vault.clone());
+        let workspace = WorkspaceHost::open(
+            store,
+            WorkspaceHostConfig {
+                device_id: device_id.clone(),
+                device_name: local_device_name(&device_id),
+                platform: std::env::consts::OS.to_string(),
+                org_id: profile.org_id().to_string(),
+                user_id: profile.user_id().to_string(),
+                vault: Some(vault.clone()),
+                edge: edge.clone(),
+            },
+        )?;
         doc_host.set_workspace(workspace.clone());
         doc_host.set_sessions(sessions.clone());
         sessions.set_doc_host(doc_host.clone());

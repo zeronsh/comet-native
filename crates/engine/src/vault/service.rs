@@ -187,6 +187,12 @@ pub struct VaultService {
     inner: Arc<Inner>,
 }
 
+impl std::fmt::Debug for VaultService {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "VaultService({:?})", self.status().phase)
+    }
+}
+
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()

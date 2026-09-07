@@ -214,3 +214,117 @@ async fn two_devices_pair_seal_open_revoke_and_recover() {
     ));
     drop(Arc::new(()));
 }
+
+/// Registry field envelopes (RFC 0001 §9) through the live control plane:
+/// one object key per epoch for the whole registry, values bound to their
+/// row/field/clock, deletion markers, and key-unavailable withholding.
+#[tokio::test]
+async fn registry_fields_seal_open_and_bind_their_slot() {
+    use zeron_engine::vault::VaultRegistryCodec;
+    use zeron_sync::{FieldOpenFailure, RegistryCodec};
+
+    let Some(edge) = edge_url() else {
+        eprintln!("ZERON_VAULT_EDGE_URL unset; skipping live vault e2e");
+        return;
+    };
+    let (org, user) = fresh_profile();
+    let dir_a = tempfile::tempdir().unwrap();
+    let dir_b = tempfile::tempdir().unwrap();
+    let a = device(dir_a.path(), &edge, &org, &user);
+    a.refresh().await.unwrap();
+    let _kit = a.setup().await.unwrap();
+    let b = device(dir_b.path(), &edge, &org, &user);
+    b.refresh().await.unwrap();
+    let (request_id, code) = b.request_enrollment().await.unwrap();
+    a.approve(&request_id, &code).await.unwrap();
+    b.refresh().await.unwrap();
+    assert!(b.is_ready());
+
+    let codec_a = VaultRegistryCodec::new(a.clone(), &user);
+    let codec_b = VaultRegistryCodec::new(b.clone(), &user);
+    // Sealing before `prepare` is refused (no half-sealed batches).
+    assert!(
+        codec_a
+            .seal_field(
+                "chats",
+                "c1",
+                "title",
+                "1-000000-a",
+                &serde_json::json!("t")
+            )
+            .is_err()
+    );
+    codec_a.prepare().await.unwrap();
+    let title = codec_a
+        .seal_field(
+            "chats",
+            "c1",
+            "title",
+            "0000000000001-000000-a",
+            &serde_json::json!("secret title"),
+        )
+        .unwrap();
+    let deleted = codec_a
+        .seal_field(
+            "chats",
+            "c1",
+            "branch",
+            "0000000000002-000000-a",
+            &serde_json::Value::Null,
+        )
+        .unwrap();
+    let wire = serde_json::to_string(&title).unwrap();
+    assert!(
+        !wire.contains("secret title"),
+        "plaintext on the wire: {wire}"
+    );
+    assert!(title.get("e1").is_some());
+
+    // B opens both after fetching the object key from the control plane.
+    let first = codec_b.open_field("chats", "c1", "title", "0000000000001-000000-a", &title);
+    if first == Err(FieldOpenFailure::KeyUnavailable) {
+        // The synchronous path spawned a key fetch; wait for it.
+        for _ in 0..50 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            if codec_b
+                .open_field("chats", "c1", "title", "0000000000001-000000-a", &title)
+                .is_ok()
+            {
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        codec_b.open_field("chats", "c1", "title", "0000000000001-000000-a", &title),
+        Ok(Some(serde_json::json!("secret title")))
+    );
+    assert_eq!(
+        codec_b.open_field("chats", "c1", "branch", "0000000000002-000000-a", &deleted),
+        Ok(None),
+        "an authenticated deletion marker opens as absence"
+    );
+    // Moved between fields, rows, or clocks: rejected, never displayed.
+    assert_eq!(
+        codec_b.open_field("chats", "c1", "cwd", "0000000000001-000000-a", &title),
+        Err(FieldOpenFailure::Rejected)
+    );
+    assert_eq!(
+        codec_b.open_field("chats", "c2", "title", "0000000000001-000000-a", &title),
+        Err(FieldOpenFailure::Rejected)
+    );
+    assert_eq!(
+        codec_b.open_field("chats", "c1", "title", "0000000000009-000000-a", &title),
+        Err(FieldOpenFailure::Rejected)
+    );
+    // Plaintext where ciphertext is required is rejected too.
+    assert_eq!(
+        codec_b.open_field(
+            "chats",
+            "c1",
+            "title",
+            "0000000000001-000000-a",
+            &serde_json::json!("plain")
+        ),
+        Err(FieldOpenFailure::Rejected)
+    );
+}

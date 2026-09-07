@@ -774,6 +774,13 @@ Table of Contents
    10^8, shown as NNNN-NNNN; binding the genesis hash lets the user detect a
    relay that presents a substitute vault to the pending device.
 
+   Registry field values (Section 9) are content records with purpose 4
+   under the object "registry"; the authenticated plaintext is the JSON
+   object {kind, id, field, hlc, value} and MUST equal the slot the server
+   filed the value under. value = null is an authenticated field deletion.
+   The wire value is {"e1": base64(record)}. Encrypted profiles use the
+   registry generation /registry/{org}/e1 (room reg1e1/{org}/{user}).
+
    Object IDs are the first 16 bytes of SHA-256("zeron/object-id/v1" 00 ||
    kind || 00 || id). Encrypted profiles publish chats to a separate room
    (chat2/{id}-e1) whose local cursor carries doc epoch 3; the plaintext room
