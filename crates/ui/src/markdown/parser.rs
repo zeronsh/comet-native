@@ -12,6 +12,7 @@
 //! through both paths and assert equality.
 
 use std::ops::Range;
+use std::sync::Arc;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag};
 
@@ -87,7 +88,9 @@ pub struct TopBlock {
 /// The parse result: top-level blocks in document order.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BlockTree {
-    pub blocks: Vec<TopBlock>,
+    // Completed blocks are immutable. Canonical/display trees and old/new
+    // transcript rows share their contents across streamed tail updates.
+    pub blocks: Vec<Arc<TopBlock>>,
 }
 
 impl BlockTree {
@@ -123,17 +126,17 @@ pub fn parse_full(source: &str) -> BlockTree {
         match event {
             Event::Rule => {
                 cur.bump();
-                blocks.push(TopBlock {
+                blocks.push(Arc::new(TopBlock {
                     range,
                     block: Block::Rule,
-                });
+                }));
             }
             Event::Start(_) => {
                 for block in parse_started_block(&mut cur) {
-                    blocks.push(TopBlock {
+                    blocks.push(Arc::new(TopBlock {
                         range: range.clone(),
                         block,
-                    });
+                    }));
                 }
             }
             // Stray inline events at top level (shouldn't happen): skip.
@@ -559,7 +562,7 @@ pub struct IncrementalParser {
     /// has hanging inline markers ([`super::mend`]): `None` means the display
     /// tree is exactly [`Self::tree`]. Never fed back into the incremental
     /// state — the canonical tree stays parity-exact with `parse_full`.
-    display_tail: Option<Vec<TopBlock>>,
+    display_tail: Option<Vec<Arc<TopBlock>>>,
     /// Link-reference definitions act at a distance — full reparses only.
     full_only: bool,
     /// Bytes fed through `parse_full` by the most recent `set_text`/`append`/
@@ -587,7 +590,7 @@ impl IncrementalParser {
     /// The tree to render while streaming: the canonical tree with the last
     /// block swapped for its mended parse when inline markers hang (an
     /// unclosed `**bold`, a half-streamed `[link](url…`). Same shape and cost
-    /// as `tree().clone()` — the stable prefix is copied either way; only a
+    /// as `tree().clone()` — the stable prefix shares its blocks; only a
     /// hanging tail adds one O(tail) reparse, done at append time.
     pub fn display_tree(&self) -> BlockTree {
         let Some(tail) = &self.display_tail else {
@@ -613,13 +616,13 @@ impl IncrementalParser {
     /// Set the source: appends take the incremental path, anything else resets.
     pub fn set_text(&mut self, text: &str) {
         if text.len() >= self.source.len() && text.starts_with(self.source.as_str()) {
-            let delta = text[self.source.len()..].to_string();
+            let delta = &text[self.source.len()..];
             if delta.is_empty() {
                 self.last_parse_bytes = 0;
                 self.stable_prefix_blocks = self.tree.blocks.len();
                 return;
             }
-            self.append(&delta);
+            self.append(delta);
         } else {
             self.reset(text);
         }
@@ -678,8 +681,9 @@ impl IncrementalParser {
         self.tree.blocks.retain(|b| b.range.start < boundary);
         self.stable_prefix_blocks = self.tree.blocks.len();
         for mut top in tail.blocks {
-            top.range.start += boundary;
-            top.range.end += boundary;
+            let block = Arc::make_mut(&mut top);
+            block.range.start += boundary;
+            block.range.end += boundary;
             self.tree.blocks.push(top);
         }
         self.remend();
@@ -713,6 +717,7 @@ impl IncrementalParser {
         self.last_parse_bytes += mended.len();
         let mut tail = parse_full(&mended).blocks;
         for top in &mut tail {
+            let top = Arc::make_mut(top);
             // Display ranges point back into the unmended source; synthetic
             // closers at the end clamp away.
             top.range.start += start;
@@ -734,6 +739,31 @@ fn has_link_defs(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn display_snapshots_share_stable_blocks_without_mutating_old_frames() {
+        let mut parser = IncrementalParser::new();
+        parser.set_text("first **bold** paragraph\n\nsecond paragraph\n\nlast **open");
+        let before = parser.display_tree();
+        let frozen = format!("{before:?}");
+        assert!(Arc::ptr_eq(&before.blocks[0], &parser.tree().blocks[0]));
+        parser.append(" tail**\n\nnext paragraph");
+        let after = parser.display_tree();
+        assert!(Arc::ptr_eq(&before.blocks[0], &after.blocks[0]));
+        assert_eq!(
+            format!("{before:?}"),
+            frozen,
+            "old paint snapshot is immutable"
+        );
+        assert_eq!(parser.tree(), &parse_full(parser.source()));
+        parser.reset("replacement");
+        assert_eq!(
+            format!("{before:?}"),
+            frozen,
+            "reset cannot alter an old frame"
+        );
+        assert_eq!(parser.tree(), &parse_full("replacement"));
+    }
 
     fn stream(chunks: usize, text: &str) -> IncrementalParser {
         let mut p = IncrementalParser::new();

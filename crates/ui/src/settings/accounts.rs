@@ -1214,6 +1214,7 @@ impl Render for AccountsPage {
         let provider_icon = |harness: HarnessId| match harness {
             HarnessId::Codex => (crate::icons::OPENAI_MARK, None),
             HarnessId::Cursor => (crate::icons::CURSOR_MARK, None),
+            HarnessId::Devin => (crate::icons::DEVIN_MARK, None),
             HarnessId::Grok => (crate::icons::GROK_MARK, None),
             HarnessId::Hermes => (crate::icons::HERMES_MARK, None),
             HarnessId::Pi => (crate::icons::PI_MARK, None),

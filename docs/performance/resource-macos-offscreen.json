@@ -1,0 +1,3340 @@
+{
+  "platform": "macOS 26.0.1 (25A362), arm64, Mac16,7, 24 GiB RAM",
+  "kind": "UI-only native CoreText/Metal offscreen replay; no window compositor or engine",
+  "windowLogicalPixels": [
+    1320,
+    880
+  ],
+  "scaleFactor": 2,
+  "baselineApp": "f10ef38c39256602b984201c01817746cd58ca67",
+  "baselineZui": "49f9abd196705eda6a27080c506295a19b5da63e",
+  "candidateZui": "0003b923354ea8938b2d0cadbd17ef93108e2ae5",
+  "traceSha256": "9d13d6cc6533ef9822db4332fa5a5d6b41f68851b2993b13a27f1d9d76b44628",
+  "method": "Sequential runs, no concurrent builds. 500ms samples. First 2s of each phase excluded. Replay includes initial gap before text. Settled includes fixed 8ms polling; it is not native window idle CPU. Same profiling driver and allocator for both builds. Baseline adds only the profiling driver and embedded TestPlatform launch support.",
+  "runs": [
+    {
+      "build": "baseline",
+      "binarySha256": "5f5f722926e20a64a528f4c82c4be2bfe3f330e3b42cea689024839dd02469a6",
+      "completedPngSha256": "1239080bd0b08d77780c628a05b43fa76099fa8737d605c5689d1b72ffb3de7c",
+      "summary": {
+        "replay": {
+          "durationSeconds": 23.786408959,
+          "cpuPercent": 18.22799351711087,
+          "peakFootprintMiB": 286.532349,
+          "endFootprintMiB": 286.532349
+        },
+        "settled": {
+          "durationSeconds": 12.435139625000001,
+          "cpuPercent": 0.32687242142646866,
+          "peakFootprintMiB": 128.563667,
+          "endFootprintMiB": 92.626167
+        }
+      },
+      "samples": [
+        {
+          "at": 0.033511416,
+          "phase": "startup",
+          "pid": 20768,
+          "cpuSeconds": 0.000642875,
+          "rssMiB": 0.03125,
+          "footprintMiB": 0.078194,
+          "lifetimePeakFootprintMiB": 0.093819,
+          "idleWakeups": 0
+        },
+        {
+          "at": 0.550453125,
+          "phase": "startup",
+          "pid": 20768,
+          "cpuSeconds": 0.000642875,
+          "rssMiB": 0.03125,
+          "footprintMiB": 0.078194,
+          "lifetimePeakFootprintMiB": 0.093819,
+          "idleWakeups": 0
+        },
+        {
+          "at": 1.066169708,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.207116708,
+          "rssMiB": 53.984375,
+          "footprintMiB": 233.579201,
+          "lifetimePeakFootprintMiB": 233.579201,
+          "idleWakeups": 0
+        },
+        {
+          "at": 1.587742458,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.271414333,
+          "rssMiB": 53.421875,
+          "footprintMiB": 279.110474,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 2.091233125,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.308089417,
+          "rssMiB": 53.546875,
+          "footprintMiB": 279.126099,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 2.616436041,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.309638542,
+          "rssMiB": 53.5,
+          "footprintMiB": 271.860474,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 3.135988416,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.31151275,
+          "rssMiB": 53.5,
+          "footprintMiB": 69.860474,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 3.654370583,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.313466125,
+          "rssMiB": 53.5,
+          "footprintMiB": 67.422974,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 4.175422708,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.315153875,
+          "rssMiB": 53.5,
+          "footprintMiB": 67.422974,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 4.68751075,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.316582292,
+          "rssMiB": 53.5,
+          "footprintMiB": 67.422974,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 5.198538958,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.352614708,
+          "rssMiB": 54.1875,
+          "footprintMiB": 272.063599,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 5.718412291,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.445226833,
+          "rssMiB": 57.453125,
+          "footprintMiB": 274.344849,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 6.241184583,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.573443,
+          "rssMiB": 66.46875,
+          "footprintMiB": 279.969849,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 6.762305375,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.678251333,
+          "rssMiB": 67.921875,
+          "footprintMiB": 280.563599,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 7.282080166,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.749127167,
+          "rssMiB": 68.375,
+          "footprintMiB": 281.016724,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 7.797170916,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.846818708,
+          "rssMiB": 68.859375,
+          "footprintMiB": 281.485474,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 8.315662166,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 0.952428667,
+          "rssMiB": 68.96875,
+          "footprintMiB": 281.579224,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 8.836192083,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.049371625,
+          "rssMiB": 69.359375,
+          "footprintMiB": 281.922974,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 9.355992,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.149459792,
+          "rssMiB": 69.78125,
+          "footprintMiB": 282.313599,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 9.873664583,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.257006417,
+          "rssMiB": 69.875,
+          "footprintMiB": 282.376099,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 10.386000375,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.339324,
+          "rssMiB": 69.90625,
+          "footprintMiB": 282.407349,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 10.896526125,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.454356708,
+          "rssMiB": 70.296875,
+          "footprintMiB": 282.797974,
+          "lifetimePeakFootprintMiB": 284.922974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 11.409421125,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.547157542,
+          "rssMiB": 70.640625,
+          "footprintMiB": 283.141724,
+          "lifetimePeakFootprintMiB": 285.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 11.929161083,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.65513925,
+          "rssMiB": 70.71875,
+          "footprintMiB": 283.204224,
+          "lifetimePeakFootprintMiB": 285.204224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 12.439635,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.752278667,
+          "rssMiB": 70.78125,
+          "footprintMiB": 283.110474,
+          "lifetimePeakFootprintMiB": 285.204224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 12.95440525,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.866936125,
+          "rssMiB": 70.90625,
+          "footprintMiB": 283.157349,
+          "lifetimePeakFootprintMiB": 285.204224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 13.468577666,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 1.986906667,
+          "rssMiB": 71.234375,
+          "footprintMiB": 283.485474,
+          "lifetimePeakFootprintMiB": 285.485474,
+          "idleWakeups": 0
+        },
+        {
+          "at": 13.986001041,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.088987167,
+          "rssMiB": 71.625,
+          "footprintMiB": 283.844849,
+          "lifetimePeakFootprintMiB": 285.844849,
+          "idleWakeups": 0
+        },
+        {
+          "at": 14.503704625,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.191764042,
+          "rssMiB": 71.703125,
+          "footprintMiB": 283.876099,
+          "lifetimePeakFootprintMiB": 285.860474,
+          "idleWakeups": 0
+        },
+        {
+          "at": 15.023150458,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.291109875,
+          "rssMiB": 71.828125,
+          "footprintMiB": 283.985474,
+          "lifetimePeakFootprintMiB": 285.985474,
+          "idleWakeups": 0
+        },
+        {
+          "at": 15.5424895,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.413381792,
+          "rssMiB": 71.875,
+          "footprintMiB": 284.001099,
+          "lifetimePeakFootprintMiB": 286.001099,
+          "idleWakeups": 0
+        },
+        {
+          "at": 16.054139,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.51961525,
+          "rssMiB": 71.96875,
+          "footprintMiB": 284.079224,
+          "lifetimePeakFootprintMiB": 286.079224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 16.5703625,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.632105833,
+          "rssMiB": 72.34375,
+          "footprintMiB": 284.001099,
+          "lifetimePeakFootprintMiB": 286.079224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 17.089874,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.739234458,
+          "rssMiB": 72.515625,
+          "footprintMiB": 284.094849,
+          "lifetimePeakFootprintMiB": 286.079224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 17.605746083,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.850653583,
+          "rssMiB": 72.640625,
+          "footprintMiB": 284.188599,
+          "lifetimePeakFootprintMiB": 286.157349,
+          "idleWakeups": 0
+        },
+        {
+          "at": 18.124720916,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 2.955461625,
+          "rssMiB": 72.65625,
+          "footprintMiB": 284.204224,
+          "lifetimePeakFootprintMiB": 286.204224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 18.641353041,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.050271708,
+          "rssMiB": 72.609375,
+          "footprintMiB": 284.266724,
+          "lifetimePeakFootprintMiB": 286.204224,
+          "idleWakeups": 0
+        },
+        {
+          "at": 19.155981208,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.159437583,
+          "rssMiB": 72.5,
+          "footprintMiB": 284.485474,
+          "lifetimePeakFootprintMiB": 286.422974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 19.672683458,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.257584583,
+          "rssMiB": 72.515625,
+          "footprintMiB": 284.454224,
+          "lifetimePeakFootprintMiB": 286.438599,
+          "idleWakeups": 0
+        },
+        {
+          "at": 20.190915208,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.359036208,
+          "rssMiB": 70.203125,
+          "footprintMiB": 284.719849,
+          "lifetimePeakFootprintMiB": 286.516724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 20.713539291,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.463870125,
+          "rssMiB": 69.734375,
+          "footprintMiB": 284.766724,
+          "lifetimePeakFootprintMiB": 286.751099,
+          "idleWakeups": 0
+        },
+        {
+          "at": 21.233471,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.575535875,
+          "rssMiB": 69.734375,
+          "footprintMiB": 284.782349,
+          "lifetimePeakFootprintMiB": 286.782349,
+          "idleWakeups": 0
+        },
+        {
+          "at": 21.752610625,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.685464375,
+          "rssMiB": 67.953125,
+          "footprintMiB": 284.922974,
+          "lifetimePeakFootprintMiB": 286.907349,
+          "idleWakeups": 0
+        },
+        {
+          "at": 22.26963275,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.792121958,
+          "rssMiB": 68.0,
+          "footprintMiB": 284.969849,
+          "lifetimePeakFootprintMiB": 286.969849,
+          "idleWakeups": 0
+        },
+        {
+          "at": 22.78543,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 3.892053125,
+          "rssMiB": 68.109375,
+          "footprintMiB": 284.985474,
+          "lifetimePeakFootprintMiB": 286.985474,
+          "idleWakeups": 0
+        },
+        {
+          "at": 23.297050833,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.003509375,
+          "rssMiB": 64.1875,
+          "footprintMiB": 286.172974,
+          "lifetimePeakFootprintMiB": 288.172974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 23.815236875,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.110093583,
+          "rssMiB": 63.828125,
+          "footprintMiB": 286.297974,
+          "lifetimePeakFootprintMiB": 288.297974,
+          "idleWakeups": 0
+        },
+        {
+          "at": 24.331643833,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.147101042,
+          "rssMiB": 62.109375,
+          "footprintMiB": 286.297974,
+          "lifetimePeakFootprintMiB": 288.407349,
+          "idleWakeups": 0
+        },
+        {
+          "at": 24.846172208,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.223197542,
+          "rssMiB": 62.1875,
+          "footprintMiB": 286.516724,
+          "lifetimePeakFootprintMiB": 288.516724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 25.364973416,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.322203833,
+          "rssMiB": 62.21875,
+          "footprintMiB": 286.438599,
+          "lifetimePeakFootprintMiB": 288.516724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 25.882240875,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.421928917,
+          "rssMiB": 62.25,
+          "footprintMiB": 286.469849,
+          "lifetimePeakFootprintMiB": 288.516724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 26.400499666,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.532201917,
+          "rssMiB": 62.375,
+          "footprintMiB": 286.485474,
+          "lifetimePeakFootprintMiB": 288.516724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 26.922397375,
+          "phase": "replay",
+          "pid": 20768,
+          "cpuSeconds": 4.647297833,
+          "rssMiB": 62.390625,
+          "footprintMiB": 286.532349,
+          "lifetimePeakFootprintMiB": 288.532349,
+          "idleWakeups": 0
+        },
+        {
+          "at": 27.437656791,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.687379083,
+          "rssMiB": 103.515625,
+          "footprintMiB": 335.329292,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 27.951710708,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.688464042,
+          "rssMiB": 103.5,
+          "footprintMiB": 335.391792,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 28.467895916,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.690436,
+          "rssMiB": 102.765625,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 28.986392708,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.691501375,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 29.50460225,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.693314208,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 30.024527708,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.694966458,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 30.54274425,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.696776333,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 31.063910833,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.698234625,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 31.582951416,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.699848458,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 32.10613625,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.702107542,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 32.627684,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.704324333,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 33.13667075,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.706562083,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 33.652862791,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.70862425,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 34.160417708,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.710512958,
+          "rssMiB": 99.6875,
+          "footprintMiB": 128.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 34.680456208,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.712512292,
+          "rssMiB": 99.6875,
+          "footprintMiB": 120.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 35.19953725,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.7141695,
+          "rssMiB": 99.6875,
+          "footprintMiB": 120.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 35.719876666,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.716200375,
+          "rssMiB": 99.6875,
+          "footprintMiB": 120.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 36.241039541,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.717802542,
+          "rssMiB": 99.6875,
+          "footprintMiB": 120.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 36.760757458,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.719601708,
+          "rssMiB": 99.6875,
+          "footprintMiB": 120.563667,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 37.280908791,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.721655792,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 37.795757041,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.723103583,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 38.314448291,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.724424208,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 38.828890375,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.72592625,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 39.348028166,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.727218792,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 39.86949475,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.728549958,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 40.383783583,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.729939083,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 40.904615333,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.731435542,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 41.4190235,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.732680167,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        },
+        {
+          "at": 41.939741875,
+          "phase": "settled",
+          "pid": 20768,
+          "cpuSeconds": 4.73396125,
+          "rssMiB": 99.71875,
+          "footprintMiB": 92.626167,
+          "lifetimePeakFootprintMiB": 339.423042,
+          "idleWakeups": 0
+        }
+      ]
+    },
+    {
+      "build": "candidate",
+      "binarySha256": "1c97d7d8e64c28fa5c386cc734284d7e5ccee55e579c02a57df1adc954ccc19b",
+      "completedPngSha256": "1239080bd0b08d77780c628a05b43fa76099fa8737d605c5689d1b72ffb3de7c",
+      "summary": {
+        "replay": {
+          "durationSeconds": 23.312508834000006,
+          "cpuPercent": 18.263411490017067,
+          "peakFootprintMiB": 284.844849,
+          "endFootprintMiB": 284.844849
+        },
+        "settled": {
+          "durationSeconds": 12.437986917000003,
+          "cpuPercent": 0.3355677673446769,
+          "peakFootprintMiB": 126.813644,
+          "endFootprintMiB": 91.016769
+        }
+      },
+      "samples": [
+        {
+          "at": 42.467085833,
+          "phase": "startup",
+          "pid": 21514,
+          "cpuSeconds": 0.003089875,
+          "rssMiB": 0.03125,
+          "footprintMiB": 0.078194,
+          "lifetimePeakFootprintMiB": 0.093819,
+          "idleWakeups": 0
+        },
+        {
+          "at": 42.97942875,
+          "phase": "startup",
+          "pid": 21514,
+          "cpuSeconds": 0.003089875,
+          "rssMiB": 0.03125,
+          "footprintMiB": 0.078194,
+          "lifetimePeakFootprintMiB": 0.093819,
+          "idleWakeups": 0
+        },
+        {
+          "at": 43.495972958,
+          "phase": "startup",
+          "pid": 21514,
+          "cpuSeconds": 0.003089875,
+          "rssMiB": 0.03125,
+          "footprintMiB": 0.078194,
+          "lifetimePeakFootprintMiB": 0.093819,
+          "idleWakeups": 0
+        },
+        {
+          "at": 44.001139791,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.1904685,
+          "rssMiB": 54.765625,
+          "footprintMiB": 279.204224,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 44.522562458,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.26309325,
+          "rssMiB": 53.921875,
+          "footprintMiB": 279.344849,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 45.033201541,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.272071542,
+          "rssMiB": 47.484375,
+          "footprintMiB": 279.360474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 45.546255791,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.272684792,
+          "rssMiB": 47.5625,
+          "footprintMiB": 272.047974,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 46.058633916,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.274521833,
+          "rssMiB": 47.5625,
+          "footprintMiB": 59.610474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 46.576351541,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.27592875,
+          "rssMiB": 47.5625,
+          "footprintMiB": 59.610474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 47.092097375,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.277343375,
+          "rssMiB": 47.5625,
+          "footprintMiB": 59.610474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 47.614557208,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.278938417,
+          "rssMiB": 47.5625,
+          "footprintMiB": 59.610474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 48.135640875,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.3208125,
+          "rssMiB": 50.203125,
+          "footprintMiB": 272.907349,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 48.655199708,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.418238458,
+          "rssMiB": 52.421875,
+          "footprintMiB": 274.360474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 49.173301791,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.559048875,
+          "rssMiB": 62.109375,
+          "footprintMiB": 280.376099,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 49.693863083,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.679105292,
+          "rssMiB": 63.921875,
+          "footprintMiB": 281.172974,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 50.210468625,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.780034625,
+          "rssMiB": 64.3125,
+          "footprintMiB": 281.532349,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 50.72831825,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 0.89592525,
+          "rssMiB": 64.828125,
+          "footprintMiB": 282.032349,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 51.243031583,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.00374075,
+          "rssMiB": 65.546875,
+          "footprintMiB": 282.672974,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 51.762405291,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.109333833,
+          "rssMiB": 65.671875,
+          "footprintMiB": 282.751099,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 52.281835708,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.21554525,
+          "rssMiB": 65.8125,
+          "footprintMiB": 282.860474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 52.804713333,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.318153542,
+          "rssMiB": 66.234375,
+          "footprintMiB": 283.251099,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 53.319499291,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.415522417,
+          "rssMiB": 66.3125,
+          "footprintMiB": 283.329224,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 53.839819,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.514042542,
+          "rssMiB": 66.75,
+          "footprintMiB": 283.719849,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 54.362944625,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.615480208,
+          "rssMiB": 66.84375,
+          "footprintMiB": 283.688599,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 54.8807845,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.71991175,
+          "rssMiB": 66.875,
+          "footprintMiB": 283.594849,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 55.402702166,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.830747292,
+          "rssMiB": 66.90625,
+          "footprintMiB": 283.626099,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 55.918638791,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 1.916299,
+          "rssMiB": 67.15625,
+          "footprintMiB": 283.860474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 56.4381615,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.013708958,
+          "rssMiB": 67.171875,
+          "footprintMiB": 283.797974,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 56.955489333,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.120936417,
+          "rssMiB": 67.5625,
+          "footprintMiB": 284.188599,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 57.472667208,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.212696792,
+          "rssMiB": 67.640625,
+          "footprintMiB": 284.219849,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 57.992794833,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.332261833,
+          "rssMiB": 67.6875,
+          "footprintMiB": 283.938599,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 58.504922583,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.43825925,
+          "rssMiB": 67.765625,
+          "footprintMiB": 284.001099,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 59.015943333,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.538217833,
+          "rssMiB": 67.8125,
+          "footprintMiB": 283.985474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 59.532991791,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.648234375,
+          "rssMiB": 67.9375,
+          "footprintMiB": 284.094849,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 60.052389291,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.745352458,
+          "rssMiB": 68.0625,
+          "footprintMiB": 284.204224,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 60.563573833,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.851104833,
+          "rssMiB": 68.25,
+          "footprintMiB": 284.360474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 61.078091416,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 2.942907042,
+          "rssMiB": 68.28125,
+          "footprintMiB": 284.391724,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 61.593489708,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.04112375,
+          "rssMiB": 68.328125,
+          "footprintMiB": 284.422974,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 62.111160791,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.152065208,
+          "rssMiB": 68.40625,
+          "footprintMiB": 284.501099,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 62.6297975,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.257396417,
+          "rssMiB": 68.421875,
+          "footprintMiB": 284.516724,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 63.150677583,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.362539958,
+          "rssMiB": 68.4375,
+          "footprintMiB": 284.532349,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 63.676821,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.484090042,
+          "rssMiB": 68.53125,
+          "footprintMiB": 284.626099,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 64.195272125,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.5863355,
+          "rssMiB": 68.5625,
+          "footprintMiB": 284.657349,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 64.714193083,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.690784167,
+          "rssMiB": 68.578125,
+          "footprintMiB": 284.672974,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 65.231091291,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.807920167,
+          "rssMiB": 68.703125,
+          "footprintMiB": 284.782349,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 65.750555791,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 3.893219042,
+          "rssMiB": 68.703125,
+          "footprintMiB": 284.704224,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 66.271050041,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 4.025864208,
+          "rssMiB": 68.703125,
+          "footprintMiB": 284.704224,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 66.79092675,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 4.117657708,
+          "rssMiB": 68.734375,
+          "footprintMiB": 284.735474,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 67.304078375,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 4.205439333,
+          "rssMiB": 68.78125,
+          "footprintMiB": 284.766724,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 67.816120583,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 4.302901333,
+          "rssMiB": 68.796875,
+          "footprintMiB": 284.782349,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 68.335663083,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 4.348522833,
+          "rssMiB": 68.8125,
+          "footprintMiB": 284.797974,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 68.852326125,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 4.41242175,
+          "rssMiB": 68.90625,
+          "footprintMiB": 284.829224,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 69.37114275,
+          "phase": "replay",
+          "pid": 21514,
+          "cpuSeconds": 4.53218125,
+          "rssMiB": 68.921875,
+          "footprintMiB": 284.844849,
+          "lifetimePeakFootprintMiB": 287.141724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 69.87741775,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.669295,
+          "rssMiB": 110.0,
+          "footprintMiB": 335.782394,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 70.387559291,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.671401125,
+          "rssMiB": 110.0,
+          "footprintMiB": 335.688644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 70.901699708,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.673006292,
+          "rssMiB": 110.0,
+          "footprintMiB": 335.688644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 71.419760625,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.67499225,
+          "rssMiB": 110.0,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 71.936389666,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.676796542,
+          "rssMiB": 110.0,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 72.453209416,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.678142792,
+          "rssMiB": 110.0,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 72.9688405,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.679819375,
+          "rssMiB": 110.0,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 73.499560125,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.681822792,
+          "rssMiB": 110.0,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 74.013079458,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.683687333,
+          "rssMiB": 110.0,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 74.536325166,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.685237167,
+          "rssMiB": 110.0,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 75.054332458,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.687875542,
+          "rssMiB": 109.5625,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 75.573459791,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.689924583,
+          "rssMiB": 109.5625,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 76.090062,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.69166725,
+          "rssMiB": 109.5625,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 76.606845125,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.693390458,
+          "rssMiB": 109.5625,
+          "footprintMiB": 126.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 77.118404333,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.694644208,
+          "rssMiB": 109.5625,
+          "footprintMiB": 118.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 77.635287083,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.696503083,
+          "rssMiB": 109.5625,
+          "footprintMiB": 118.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 78.145620375,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.698101708,
+          "rssMiB": 109.5625,
+          "footprintMiB": 118.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 78.666431166,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.699576708,
+          "rssMiB": 109.5625,
+          "footprintMiB": 118.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 79.184604625,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.701444833,
+          "rssMiB": 109.5625,
+          "footprintMiB": 118.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 79.704917916,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.703262708,
+          "rssMiB": 109.5625,
+          "footprintMiB": 118.813644,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 80.224885458,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.706908708,
+          "rssMiB": 109.578125,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 80.739941541,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.708314667,
+          "rssMiB": 109.578125,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 81.255414458,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.709489583,
+          "rssMiB": 109.578125,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 81.778310833,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.710967333,
+          "rssMiB": 109.578125,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 82.292053166,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.712446417,
+          "rssMiB": 109.578125,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 82.804161333,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.713674667,
+          "rssMiB": 109.578125,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 83.329868208,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.71507675,
+          "rssMiB": 109.5,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 83.856980666,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.716748125,
+          "rssMiB": 109.234375,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        },
+        {
+          "at": 84.374376583,
+          "phase": "settled",
+          "pid": 21514,
+          "cpuSeconds": 4.718534417,
+          "rssMiB": 108.609375,
+          "footprintMiB": 91.016769,
+          "lifetimePeakFootprintMiB": 335.782394,
+          "idleWakeups": 0
+        }
+      ]
+    },
+    {
+      "build": "candidate",
+      "binarySha256": "1c97d7d8e64c28fa5c386cc734284d7e5ccee55e579c02a57df1adc954ccc19b",
+      "completedPngSha256": "1239080bd0b08d77780c628a05b43fa76099fa8737d605c5689d1b72ffb3de7c",
+      "summary": {
+        "replay": {
+          "durationSeconds": 23.331538916,
+          "cpuPercent": 18.665320790363936,
+          "peakFootprintMiB": 288.532394,
+          "endFootprintMiB": 288.454269
+        },
+        "settled": {
+          "durationSeconds": 12.419883374999998,
+          "cpuPercent": 0.3356942391578612,
+          "peakFootprintMiB": 122.298065,
+          "endFootprintMiB": 94.50119
+        }
+      },
+      "samples": [
+        {
+          "at": 84.897251125,
+          "phase": "startup",
+          "pid": 23071,
+          "cpuSeconds": 0.005180083,
+          "rssMiB": 0.71875,
+          "footprintMiB": 0.687614,
+          "lifetimePeakFootprintMiB": 0.687614,
+          "idleWakeups": 0
+        },
+        {
+          "at": 85.414959916,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.175996875,
+          "rssMiB": 54.921875,
+          "footprintMiB": 283.579269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 0
+        },
+        {
+          "at": 85.934481,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.271432458,
+          "rssMiB": 55.109375,
+          "footprintMiB": 283.501144,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 86.443842166,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.27345475,
+          "rssMiB": 55.140625,
+          "footprintMiB": 273.751144,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 86.958479333,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.274809833,
+          "rssMiB": 55.140625,
+          "footprintMiB": 79.751144,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 87.480118875,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.276061958,
+          "rssMiB": 55.140625,
+          "footprintMiB": 69.313644,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 87.998413083,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.27749675,
+          "rssMiB": 55.140625,
+          "footprintMiB": 69.313644,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 88.514963,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.2790895,
+          "rssMiB": 55.140625,
+          "footprintMiB": 69.313644,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 89.030231666,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.280430417,
+          "rssMiB": 55.140625,
+          "footprintMiB": 69.313644,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 89.550729875,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.349731667,
+          "rssMiB": 53.65625,
+          "footprintMiB": 275.891769,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 90.069174375,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.473935333,
+          "rssMiB": 62.734375,
+          "footprintMiB": 281.454269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 90.588645833,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.579888375,
+          "rssMiB": 64.859375,
+          "footprintMiB": 283.204269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 91.10004,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.679901458,
+          "rssMiB": 65.140625,
+          "footprintMiB": 282.610519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 91.613816291,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.777135208,
+          "rssMiB": 65.890625,
+          "footprintMiB": 283.329269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 92.134664666,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.868670292,
+          "rssMiB": 66.375,
+          "footprintMiB": 283.782394,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 92.650918,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 0.968685625,
+          "rssMiB": 66.4375,
+          "footprintMiB": 283.813644,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 93.169560541,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.071347792,
+          "rssMiB": 66.8125,
+          "footprintMiB": 284.157394,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 93.683503833,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.179079625,
+          "rssMiB": 67.25,
+          "footprintMiB": 284.548019,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 94.223484666,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.278404,
+          "rssMiB": 67.59375,
+          "footprintMiB": 284.860519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 94.73972675,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.386979875,
+          "rssMiB": 67.984375,
+          "footprintMiB": 285.251144,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 95.262308041,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.513258625,
+          "rssMiB": 68.09375,
+          "footprintMiB": 285.360519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 95.786134333,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.614407375,
+          "rssMiB": 67.8125,
+          "footprintMiB": 285.735519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 96.307091,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.73093325,
+          "rssMiB": 67.671875,
+          "footprintMiB": 285.626144,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 96.825367083,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.8302025,
+          "rssMiB": 67.703125,
+          "footprintMiB": 285.610519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 97.346767833,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 1.920027583,
+          "rssMiB": 68.0,
+          "footprintMiB": 285.907394,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 97.863932083,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.028053458,
+          "rssMiB": 68.390625,
+          "footprintMiB": 286.298019,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 98.383885625,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.134918125,
+          "rssMiB": 68.421875,
+          "footprintMiB": 286.313644,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 98.894777875,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.248787417,
+          "rssMiB": 68.515625,
+          "footprintMiB": 286.079269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 99.414188666,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.353373167,
+          "rssMiB": 68.546875,
+          "footprintMiB": 286.079269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 99.928624416,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.467906167,
+          "rssMiB": 68.65625,
+          "footprintMiB": 286.157394,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 1
+        },
+        {
+          "at": 100.448054625,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.586555708,
+          "rssMiB": 67.046875,
+          "footprintMiB": 286.532394,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 100.96013825,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.681576958,
+          "rssMiB": 66.78125,
+          "footprintMiB": 286.641769,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 101.476905375,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.791988667,
+          "rssMiB": 67.03125,
+          "footprintMiB": 286.782394,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 101.997747083,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.88543075,
+          "rssMiB": 67.078125,
+          "footprintMiB": 286.829269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 102.515105541,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 2.982136125,
+          "rssMiB": 67.125,
+          "footprintMiB": 286.876144,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 103.03269125,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.076883417,
+          "rssMiB": 67.1875,
+          "footprintMiB": 286.891769,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 103.560954833,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.198256,
+          "rssMiB": 65.53125,
+          "footprintMiB": 287.548019,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 104.076143375,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.284363167,
+          "rssMiB": 62.46875,
+          "footprintMiB": 288.204269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 104.591727166,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.372216375,
+          "rssMiB": 62.53125,
+          "footprintMiB": 288.329269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 105.121678666,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.454920375,
+          "rssMiB": 60.0,
+          "footprintMiB": 288.469894,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 105.637431083,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.573610917,
+          "rssMiB": 60.046875,
+          "footprintMiB": 288.485519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 106.150792458,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.676510042,
+          "rssMiB": 60.1875,
+          "footprintMiB": 288.532394,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 106.664995291,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.782049417,
+          "rssMiB": 60.34375,
+          "footprintMiB": 288.329269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 107.18523725,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.870260375,
+          "rssMiB": 60.375,
+          "footprintMiB": 288.329269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 107.705839875,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 3.98257575,
+          "rssMiB": 60.515625,
+          "footprintMiB": 288.360519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 108.224598458,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 4.073466375,
+          "rssMiB": 60.5625,
+          "footprintMiB": 288.360519,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 108.735529791,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 4.183010708,
+          "rssMiB": 60.65625,
+          "footprintMiB": 288.391769,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 109.252967291,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 4.285995708,
+          "rssMiB": 60.703125,
+          "footprintMiB": 288.391769,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 109.772677416,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 4.408499875,
+          "rssMiB": 60.8125,
+          "footprintMiB": 288.423019,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 110.291622083,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 4.523863,
+          "rssMiB": 60.96875,
+          "footprintMiB": 288.423019,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 110.811657791,
+          "phase": "replay",
+          "pid": 23071,
+          "cpuSeconds": 4.630968542,
+          "rssMiB": 61.0,
+          "footprintMiB": 288.454269,
+          "lifetimePeakFootprintMiB": 293.266724,
+          "idleWakeups": 2
+        },
+        {
+          "at": 111.330659791,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.726418667,
+          "rssMiB": 102.578125,
+          "footprintMiB": 337.173065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 111.85069075,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.728305042,
+          "rssMiB": 102.578125,
+          "footprintMiB": 337.173065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 112.367757458,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.729689375,
+          "rssMiB": 102.578125,
+          "footprintMiB": 130.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 112.887178541,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.73160725,
+          "rssMiB": 102.578125,
+          "footprintMiB": 130.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 113.406372,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.7336755,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 113.927990708,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.7354315,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 114.437070416,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.737403417,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 114.947087,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.739408958,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 115.46436025,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.741626708,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 115.981970958,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.743473333,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 116.501486958,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.745678292,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 117.012386041,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.7470895,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 117.528358625,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.748723083,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 118.046945458,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.750524667,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 118.567232458,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.752433958,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 119.086454958,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.754260667,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 119.606207041,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.756337542,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 120.121412125,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.757920583,
+          "rssMiB": 102.578125,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 120.642519541,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.759760708,
+          "rssMiB": 102.390625,
+          "footprintMiB": 122.298065,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 121.155048791,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.762684125,
+          "rssMiB": 102.40625,
+          "footprintMiB": 104.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 121.674247,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.764058458,
+          "rssMiB": 102.40625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 122.192893916,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.765479417,
+          "rssMiB": 102.40625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 122.700664416,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.766881,
+          "rssMiB": 102.34375,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 123.222999791,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.767596167,
+          "rssMiB": 102.15625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 123.741344375,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.769085958,
+          "rssMiB": 102.15625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 124.260619708,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.770333042,
+          "rssMiB": 102.15625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 124.784037166,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.771862583,
+          "rssMiB": 102.15625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 125.306831166,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.773528458,
+          "rssMiB": 102.15625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        },
+        {
+          "at": 125.826255375,
+          "phase": "settled",
+          "pid": 23071,
+          "cpuSeconds": 4.775368333,
+          "rssMiB": 102.15625,
+          "footprintMiB": 94.50119,
+          "lifetimePeakFootprintMiB": 341.266815,
+          "idleWakeups": 2
+        }
+      ]
+    },
+    {
+      "build": "baseline",
+      "binarySha256": "5f5f722926e20a64a528f4c82c4be2bfe3f330e3b42cea689024839dd02469a6",
+      "completedPngSha256": "1239080bd0b08d77780c628a05b43fa76099fa8737d605c5689d1b72ffb3de7c",
+      "summary": {
+        "replay": {
+          "durationSeconds": 23.320005166999977,
+          "cpuPercent": 18.75516147478907,
+          "peakFootprintMiB": 279.172951,
+          "endFootprintMiB": 279.126076
+        },
+        "settled": {
+          "durationSeconds": 12.423877540999996,
+          "cpuPercent": 0.3303541174207052,
+          "peakFootprintMiB": 123.094849,
+          "endFootprintMiB": 87.594849
+        }
+      },
+      "samples": [
+        {
+          "at": 126.343401958,
+          "phase": "startup",
+          "pid": 23703,
+          "cpuSeconds": 0.005699125,
+          "rssMiB": 0.234375,
+          "footprintMiB": 0.234489,
+          "lifetimePeakFootprintMiB": 0.281364,
+          "idleWakeups": 0
+        },
+        {
+          "at": 126.863115666,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.190809375,
+          "rssMiB": 53.40625,
+          "footprintMiB": 265.469826,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 127.379541708,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.2498075,
+          "rssMiB": 53.59375,
+          "footprintMiB": 265.391701,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 127.898172958,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.25162,
+          "rssMiB": 53.640625,
+          "footprintMiB": 265.391701,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 128.414551291,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.252972458,
+          "rssMiB": 53.640625,
+          "footprintMiB": 71.391701,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 128.925446541,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.254739917,
+          "rssMiB": 53.640625,
+          "footprintMiB": 60.954201,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 129.445065208,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.256020583,
+          "rssMiB": 53.640625,
+          "footprintMiB": 60.954201,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 129.962670833,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.257509417,
+          "rssMiB": 53.640625,
+          "footprintMiB": 60.954201,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 130.481042333,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.258870458,
+          "rssMiB": 53.640625,
+          "footprintMiB": 60.954201,
+          "lifetimePeakFootprintMiB": 267.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 130.9994045,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.317633417,
+          "rssMiB": 56.765625,
+          "footprintMiB": 267.235451,
+          "lifetimePeakFootprintMiB": 268.235451,
+          "idleWakeups": 0
+        },
+        {
+          "at": 131.516188416,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.422578,
+          "rssMiB": 64.34375,
+          "footprintMiB": 271.922951,
+          "lifetimePeakFootprintMiB": 273.938576,
+          "idleWakeups": 0
+        },
+        {
+          "at": 132.03555725,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.534398333,
+          "rssMiB": 66.75,
+          "footprintMiB": 273.047951,
+          "lifetimePeakFootprintMiB": 275.047951,
+          "idleWakeups": 0
+        },
+        {
+          "at": 132.546594583,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.62432725,
+          "rssMiB": 67.015625,
+          "footprintMiB": 273.297951,
+          "lifetimePeakFootprintMiB": 275.047951,
+          "idleWakeups": 0
+        },
+        {
+          "at": 133.064618333,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.729441208,
+          "rssMiB": 67.640625,
+          "footprintMiB": 273.922951,
+          "lifetimePeakFootprintMiB": 275.297951,
+          "idleWakeups": 0
+        },
+        {
+          "at": 133.583109416,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.835874,
+          "rssMiB": 68.484375,
+          "footprintMiB": 274.735451,
+          "lifetimePeakFootprintMiB": 276.735451,
+          "idleWakeups": 0
+        },
+        {
+          "at": 134.099132916,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 0.929528375,
+          "rssMiB": 68.53125,
+          "footprintMiB": 274.766701,
+          "lifetimePeakFootprintMiB": 276.735451,
+          "idleWakeups": 0
+        },
+        {
+          "at": 134.61562075,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.034768167,
+          "rssMiB": 68.703125,
+          "footprintMiB": 274.907326,
+          "lifetimePeakFootprintMiB": 276.860451,
+          "idleWakeups": 0
+        },
+        {
+          "at": 135.133568583,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.12009125,
+          "rssMiB": 68.734375,
+          "footprintMiB": 274.922951,
+          "lifetimePeakFootprintMiB": 276.922951,
+          "idleWakeups": 0
+        },
+        {
+          "at": 135.657015166,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.236382708,
+          "rssMiB": 62.984375,
+          "footprintMiB": 276.063576,
+          "lifetimePeakFootprintMiB": 278.063576,
+          "idleWakeups": 0
+        },
+        {
+          "at": 136.169728833,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.352127125,
+          "rssMiB": 63.390625,
+          "footprintMiB": 276.469826,
+          "lifetimePeakFootprintMiB": 278.469826,
+          "idleWakeups": 0
+        },
+        {
+          "at": 136.702389958,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.455347542,
+          "rssMiB": 63.28125,
+          "footprintMiB": 276.626076,
+          "lifetimePeakFootprintMiB": 278.547951,
+          "idleWakeups": 0
+        },
+        {
+          "at": 137.215838666,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.564007792,
+          "rssMiB": 62.828125,
+          "footprintMiB": 276.532326,
+          "lifetimePeakFootprintMiB": 278.641701,
+          "idleWakeups": 0
+        },
+        {
+          "at": 137.732871958,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.664437625,
+          "rssMiB": 63.0625,
+          "footprintMiB": 276.641701,
+          "lifetimePeakFootprintMiB": 278.641701,
+          "idleWakeups": 0
+        },
+        {
+          "at": 138.25279975,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.777995458,
+          "rssMiB": 63.125,
+          "footprintMiB": 276.516701,
+          "lifetimePeakFootprintMiB": 278.641701,
+          "idleWakeups": 0
+        },
+        {
+          "at": 138.770178416,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.876524458,
+          "rssMiB": 63.171875,
+          "footprintMiB": 276.563576,
+          "lifetimePeakFootprintMiB": 278.641701,
+          "idleWakeups": 0
+        },
+        {
+          "at": 139.288323166,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 1.990286708,
+          "rssMiB": 63.59375,
+          "footprintMiB": 276.922951,
+          "lifetimePeakFootprintMiB": 278.641701,
+          "idleWakeups": 0
+        },
+        {
+          "at": 139.8072385,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.101478917,
+          "rssMiB": 64.296875,
+          "footprintMiB": 277.532326,
+          "lifetimePeakFootprintMiB": 278.641701,
+          "idleWakeups": 0
+        },
+        {
+          "at": 140.328029,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.205518917,
+          "rssMiB": 64.359375,
+          "footprintMiB": 277.563576,
+          "lifetimePeakFootprintMiB": 279.532326,
+          "idleWakeups": 0
+        },
+        {
+          "at": 140.843137625,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.321206417,
+          "rssMiB": 64.453125,
+          "footprintMiB": 277.266701,
+          "lifetimePeakFootprintMiB": 279.532326,
+          "idleWakeups": 0
+        },
+        {
+          "at": 141.359628708,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.433442833,
+          "rssMiB": 64.578125,
+          "footprintMiB": 277.313576,
+          "lifetimePeakFootprintMiB": 279.532326,
+          "idleWakeups": 0
+        },
+        {
+          "at": 141.877922833,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.534781583,
+          "rssMiB": 64.640625,
+          "footprintMiB": 277.360451,
+          "lifetimePeakFootprintMiB": 279.532326,
+          "idleWakeups": 4
+        },
+        {
+          "at": 142.393014458,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.646229333,
+          "rssMiB": 64.703125,
+          "footprintMiB": 277.422951,
+          "lifetimePeakFootprintMiB": 279.532326,
+          "idleWakeups": 4
+        },
+        {
+          "at": 142.9171455,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.757348083,
+          "rssMiB": 64.84375,
+          "footprintMiB": 277.547951,
+          "lifetimePeakFootprintMiB": 279.532326,
+          "idleWakeups": 4
+        },
+        {
+          "at": 143.435577791,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.863168458,
+          "rssMiB": 64.96875,
+          "footprintMiB": 277.610451,
+          "lifetimePeakFootprintMiB": 279.626076,
+          "idleWakeups": 4
+        },
+        {
+          "at": 143.95495425,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 2.9549945,
+          "rssMiB": 64.984375,
+          "footprintMiB": 277.610451,
+          "lifetimePeakFootprintMiB": 279.626076,
+          "idleWakeups": 4
+        },
+        {
+          "at": 144.473705291,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.0609745,
+          "rssMiB": 65.09375,
+          "footprintMiB": 277.719826,
+          "lifetimePeakFootprintMiB": 279.626076,
+          "idleWakeups": 4
+        },
+        {
+          "at": 144.9932565,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.170017042,
+          "rssMiB": 65.15625,
+          "footprintMiB": 277.782326,
+          "lifetimePeakFootprintMiB": 279.782326,
+          "idleWakeups": 4
+        },
+        {
+          "at": 145.510684083,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.26506775,
+          "rssMiB": 65.25,
+          "footprintMiB": 277.860451,
+          "lifetimePeakFootprintMiB": 279.860451,
+          "idleWakeups": 4
+        },
+        {
+          "at": 146.028799583,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.352463,
+          "rssMiB": 60.390625,
+          "footprintMiB": 279.094826,
+          "lifetimePeakFootprintMiB": 281.094826,
+          "idleWakeups": 4
+        },
+        {
+          "at": 146.548522083,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.467887792,
+          "rssMiB": 60.421875,
+          "footprintMiB": 279.126076,
+          "lifetimePeakFootprintMiB": 281.094826,
+          "idleWakeups": 4
+        },
+        {
+          "at": 147.060821666,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.583248333,
+          "rssMiB": 60.453125,
+          "footprintMiB": 279.001076,
+          "lifetimePeakFootprintMiB": 281.094826,
+          "idleWakeups": 4
+        },
+        {
+          "at": 147.577100458,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.67402975,
+          "rssMiB": 60.484375,
+          "footprintMiB": 279.032326,
+          "lifetimePeakFootprintMiB": 281.094826,
+          "idleWakeups": 4
+        },
+        {
+          "at": 148.100539916,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.792103583,
+          "rssMiB": 60.640625,
+          "footprintMiB": 279.157326,
+          "lifetimePeakFootprintMiB": 281.094826,
+          "idleWakeups": 4
+        },
+        {
+          "at": 148.624720208,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.893535833,
+          "rssMiB": 60.671875,
+          "footprintMiB": 279.172951,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 149.142225833,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 3.992702375,
+          "rssMiB": 60.734375,
+          "footprintMiB": 279.063576,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 149.662251875,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 4.095055667,
+          "rssMiB": 60.78125,
+          "footprintMiB": 279.110451,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 150.174314208,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 4.193627208,
+          "rssMiB": 60.8125,
+          "footprintMiB": 279.126076,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 150.694725333,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 4.306322,
+          "rssMiB": 60.96875,
+          "footprintMiB": 279.110451,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 151.205250708,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 4.410139042,
+          "rssMiB": 61.015625,
+          "footprintMiB": 279.141701,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 151.726,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 4.522660417,
+          "rssMiB": 61.15625,
+          "footprintMiB": 279.126076,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 152.245451708,
+          "phase": "replay",
+          "pid": 23703,
+          "cpuSeconds": 4.628444542,
+          "rssMiB": 61.15625,
+          "footprintMiB": 279.126076,
+          "lifetimePeakFootprintMiB": 281.172951,
+          "idleWakeups": 4
+        },
+        {
+          "at": 152.7601945,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.743183375,
+          "rssMiB": 102.875,
+          "footprintMiB": 329.954224,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 153.273564041,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.745342625,
+          "rssMiB": 102.875,
+          "footprintMiB": 329.954224,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 153.794254333,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.746548583,
+          "rssMiB": 102.84375,
+          "footprintMiB": 127.969849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 154.308340083,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.749012708,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 154.829111375,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.750561042,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 155.347716541,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.752321083,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 155.881169916,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.754273625,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 156.401448916,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.75638375,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 156.928805583,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.75844575,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 157.443779291,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.760233208,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 157.962528625,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.762282167,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 158.482125375,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.763958542,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 158.996502916,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.765658292,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 159.517976,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.767370417,
+          "rssMiB": 102.84375,
+          "footprintMiB": 123.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 160.038244,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.769197792,
+          "rssMiB": 102.84375,
+          "footprintMiB": 115.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 160.560993,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.771114792,
+          "rssMiB": 102.84375,
+          "footprintMiB": 115.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 161.075912541,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.772709708,
+          "rssMiB": 102.84375,
+          "footprintMiB": 115.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 161.594452833,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.774483583,
+          "rssMiB": 102.84375,
+          "footprintMiB": 115.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 162.105145,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.776155,
+          "rssMiB": 102.84375,
+          "footprintMiB": 115.094849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 162.623067708,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.780102333,
+          "rssMiB": 102.84375,
+          "footprintMiB": 97.297974,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 163.141683,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.781530125,
+          "rssMiB": 102.84375,
+          "footprintMiB": 87.297974,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 163.660496875,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.782788625,
+          "rssMiB": 102.84375,
+          "footprintMiB": 87.297974,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 164.165906125,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.783700625,
+          "rssMiB": 102.3125,
+          "footprintMiB": 87.297974,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 164.674999416,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.784952625,
+          "rssMiB": 61.9375,
+          "footprintMiB": 87.594849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 165.177985125,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.785651167,
+          "rssMiB": 61.890625,
+          "footprintMiB": 87.594849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 165.704633958,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.786164833,
+          "rssMiB": 61.890625,
+          "footprintMiB": 87.594849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 166.208982666,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.788147167,
+          "rssMiB": 61.890625,
+          "footprintMiB": 87.594849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 166.732567958,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.789933542,
+          "rssMiB": 61.875,
+          "footprintMiB": 87.594849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        },
+        {
+          "at": 167.252988916,
+          "phase": "settled",
+          "pid": 23703,
+          "cpuSeconds": 4.791603833,
+          "rssMiB": 61.875,
+          "footprintMiB": 87.594849,
+          "lifetimePeakFootprintMiB": 334.047974,
+          "idleWakeups": 4
+        }
+      ]
+    }
+  ]
+}

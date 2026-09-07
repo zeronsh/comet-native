@@ -21,6 +21,7 @@ struct NewSessionView: View {
     @State private var draft = ""
     @State private var showPicker = false
     @State private var showTraitPicker = false
+    @State private var showOptionPicker: ModelOptionInfo?
     @State private var showRefPicker = false
     @State private var showCheckoutPicker = false
     @State private var attachments: [StagedAttachment] = []
@@ -32,6 +33,7 @@ struct NewSessionView: View {
     @State private var liveHarnesses: [HarnessInfo]?
     /// Live per-harness catalogs from the space's device (static fallback).
     @State private var catalogs: [String: [ModelInfo]] = [:]
+    @State private var optionSelections: [String: String] = [:]
     @State private var refs: [RepoRef] = []
     @State private var selectedRef: String?
     @State private var checkoutKind: CheckoutKind = .local
@@ -61,6 +63,22 @@ struct NewSessionView: View {
         if selectedModel.reasoningLevels.isEmpty { return nil }
         if selectedModel.reasoningLevels.contains(storedReasoning) { return storedReasoning }
         return HarnessCatalog.defaultReasoning(for: selectedModel)
+    }
+
+    private func selectedChoice(for option: ModelOptionInfo) -> ModelOptionChoiceInfo {
+        HarnessCatalog.selectedChoice(for: option, selectedId: optionSelections[option.id])
+    }
+
+    /// Only non-default picks ride the run, matching the desktop picker.
+    private var resolvedModelOptions: [String: JSONValue] {
+        var result: [String: JSONValue] = [:]
+        for option in selectedModel.options {
+            let choice = selectedChoice(for: option)
+            if choice.id != option.defaultChoice {
+                result[option.id] = .string(choice.id)
+            }
+        }
+        return result
     }
 
     var body: some View {
@@ -187,6 +205,12 @@ struct NewSessionView: View {
                 set: { storedReasoning = $0 ?? "" }
             ), levels: selectedModel.reasoningLevels)
         }
+        .sheet(item: $showOptionPicker) { option in
+            ModelOptionPickerSheet(option: option, choiceId: Binding(
+                get: { selectedChoice(for: option).id },
+                set: { optionSelections[option.id] = $0 }
+            ))
+        }
         .photosPicker(isPresented: $showPhotoPicker, selection: $pickerItems,
                       maxSelectionCount: 8, matching: .images)
         .onChange(of: pickerItems) { _, items in
@@ -240,6 +264,12 @@ struct NewSessionView: View {
                     ComposerChip(label: HarnessCatalog.reasoningLabel(reasoning)) {
                         focused = false
                         showTraitPicker = true
+                    }
+                }
+                ForEach(selectedModel.options) { option in
+                    ComposerChip(label: selectedChoice(for: option).label) {
+                        focused = false
+                        showOptionPicker = option
                     }
                 }
             }
@@ -373,7 +403,8 @@ struct NewSessionView: View {
         let prompt = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         busy = true
         let config = ChatConfig(harness: harness, model: selectedModel.id,
-                                reasoning: reasoning, sandbox: "workspace-write")
+                                reasoning: reasoning, modelOptions: resolvedModelOptions,
+                                sandbox: "workspace-write")
         Task { @MainActor in
             var cwd: String?
             let branch = selectedRef
@@ -689,6 +720,61 @@ struct TraitPickerSheet: View {
         case "ultra": return "Highest Codex tier"
         case "ultracode": return "X-High plus the ultracode setting"
         case "ultrathink": return "Deep-thinking prompt mode"
+        default: return nil
+        }
+    }
+}
+
+// MARK: - Model option picker sheet
+
+/// Generic harness option picker. Codex uses it for Standard/Fast; decoding
+/// the wire shape keeps iOS ready for further server-advertised choices.
+struct ModelOptionPickerSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    let option: ModelOptionInfo
+    @Binding var choiceId: String
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 4) {
+                    SheetLabel(option.label)
+                    ForEach(option.choices) { choice in
+                        PickRow(title: choice.label,
+                                subtitle: hint(for: choice),
+                                selected: choiceId == choice.id) {
+                            UISelectionFeedbackGenerator().selectionChanged()
+                            choiceId = choice.id
+                        }
+                    }
+                }
+                .padding(20)
+                .padding(.bottom, 12)
+            }
+            .background(SheetStyle.panel)
+            .navigationTitle(option.label)
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button { dismiss() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 13, weight: .semibold))
+                    }
+                    .accessibilityLabel("Close")
+                }
+            }
+        }
+        .presentationDetents([.medium, .large])
+        .presentationDragIndicator(.visible)
+        .presentationCornerRadius(32)
+        .preferredColorScheme(.dark)
+    }
+
+    private func hint(for choice: ModelOptionChoiceInfo) -> String? {
+        guard option.id == "serviceTier" else { return nil }
+        switch choice.id {
+        case "default": return "Standard response speed"
+        case "fast": return "Faster responses with increased usage"
         default: return nil
         }
     }

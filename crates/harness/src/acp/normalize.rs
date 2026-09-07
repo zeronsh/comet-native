@@ -276,6 +276,21 @@ fn typed_call(update: &Value) -> ToolCall {
                 .unwrap_or_else(|| "Agent".into()),
             input: raw.cloned(),
         },
+        // Devin's run_subagent tool uses a coarse ACP kind; its private meta
+        // field is the stable identity across pending/in-progress frames.
+        _ if update
+            .get("_meta")
+            .and_then(|m| m.get("cognition.ai/inferenceToolName"))
+            .and_then(Value::as_str)
+            == Some("run_subagent") =>
+        {
+            ToolCall::Unknown {
+                name: raw_str("title")
+                    .map(|d| format!("Agent: {d}"))
+                    .unwrap_or_else(|| "Agent".into()),
+                input: raw.cloned(),
+            }
+        }
         // opencode's subagent spawn (`task` tool — rawInput carries
         // description/prompt/subagent_type): same naming as grok's, so the
         // chip and its subagent tab say what the agent is doing.
@@ -412,12 +427,19 @@ pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
             let commands = parse_commands(update.get("availableCommands"));
             vec![AgentEvent::AvailableCommands { commands }]
         }
-        // Context-window gauge, not per-turn input/output tokens — zeron's
-        // Usage event feeds rate-limit probes, so a wrong mapping is worse
-        // than none. Mode/config/session-info updates carry nothing we render.
-        "usage_update" | "current_mode_update" | "config_option_update" | "session_info_update" => {
-            Vec::new()
+        "usage_update" => {
+            let tokens = update.get("used").and_then(Value::as_u64);
+            let window = ["max", "limit", "size", "contextWindow", "context_window"]
+                .iter()
+                .find_map(|key| update.get(*key).and_then(Value::as_u64))
+                .filter(|n| *n > 0);
+            if tokens.is_some() || window.is_some() {
+                vec![AgentEvent::ContextUsage { tokens, window }]
+            } else {
+                Vec::new()
+            }
         }
+        "current_mode_update" | "config_option_update" | "session_info_update" => Vec::new(),
         _ => Vec::new(),
     }
 }

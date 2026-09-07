@@ -293,6 +293,14 @@ extension RenderToolCall {
         }
     }
 
+    /// Preserve full paths in the expanded row and on the clipboard.
+    var expandedDetail: String {
+        switch tag {
+        case "readFile", "writeFile", "editFile": return string("path") ?? ""
+        default: return chipDetail
+        }
+    }
+
     var chipSymbol: String {
         switch tag {
         case "exec": return "terminal"

@@ -49,6 +49,7 @@
 //! `QueueCommand`, and `WatchDocMessages`.
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::Deserialize;
@@ -908,6 +909,8 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_BRANCHES
             | methods::LIST_REFS
             | methods::LIST_GIT_HISTORY
+            | methods::SEARCH_GIT_HISTORY
+            | methods::RESOLVE_GIT_AVATARS
             | methods::FETCH_ALL
             | methods::SWITCH_REF
             | methods::LIST_FOLDERS
@@ -980,17 +983,25 @@ where
 /// full `reset` first, then only changed entries per commit — the whole-Vec
 /// serialization here was the per-tick cost that scaled with transcript size.
 fn doc_messages_stream(
-    rx: watch::Receiver<Vec<zeron_doc::SessionMessageEntry>>,
+    rx: watch::Receiver<std::sync::Arc<Vec<zeron_doc::SessionMessageEntry>>>,
+    doc: std::sync::Arc<zeron_doc::SessionDoc>,
 ) -> BoxStream<'static, serde_json::Value> {
     use zeron_doc::transcript_delta::{TranscriptFrame, diff_transcript};
     futures::stream::unfold(
-        (rx, None::<Vec<zeron_doc::SessionMessageEntry>>),
-        |(mut rx, mut prev)| async move {
+        (
+            rx,
+            None::<std::sync::Arc<Vec<zeron_doc::SessionMessageEntry>>>,
+            doc,
+            None,
+        ),
+        |(mut rx, mut prev, doc, mut previous_usage)| async move {
             loop {
                 if prev.is_some() {
                     rx.changed().await.ok()?;
                 }
-                let current: Vec<_> = rx.borrow_and_update().clone();
+                // Watchers retain the immutable published snapshot. Each
+                // connection used to deep-copy the entire transcript here.
+                let current = rx.borrow_and_update().clone();
                 let frame = match prev.as_deref() {
                     None => TranscriptFrame::reset(&current),
                     Some(prev) => diff_transcript(prev, &current),
@@ -998,11 +1009,17 @@ fn doc_messages_stream(
                 prev = Some(current);
                 // No-op commits (a second watcher attaching, command-only
                 // changes) produce empty deltas — skip the frame entirely.
-                if frame.is_empty_delta() {
+                let usage = doc.context_usage();
+                if frame.is_empty_delta() && usage == previous_usage {
                     continue;
                 }
-                let value = serde_json::to_value(&frame).ok()?;
-                return Some((value, (rx, prev)));
+                previous_usage = usage;
+                let value = serde_json::to_value(zeron_doc::TranscriptUpdate {
+                    frame,
+                    context_usage: usage,
+                })
+                .ok()?;
+                return Some((value, (rx, prev, doc, previous_usage)));
             }
         },
     )
@@ -1201,6 +1218,7 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 Ok(RpcReply::Stream(doc_messages_stream(
                     handle.watch_messages(),
+                    handle.doc_arc(),
                 )))
             }
             methods::PROBE_SYNC => {
@@ -1658,6 +1676,70 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&history)
             }
+            methods::SEARCH_GIT_HISTORY => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    cwd: String,
+                    query: String,
+                    #[serde(default)]
+                    cursor: usize,
+                    #[serde(default = "default_git_history_search_limit")]
+                    limit: usize,
+                }
+                fn default_git_history_search_limit() -> usize {
+                    crate::repos::GIT_HISTORY_DEFAULT_LIMIT
+                }
+                let p: P = parse_params(params)?;
+                let history = self
+                    .repos
+                    .search_history(std::path::Path::new(&p.cwd), &p.query, p.cursor, p.limit)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&history)
+            }
+            methods::RESOLVE_GIT_AVATARS => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    cwd: String,
+                    authors: Vec<GitAvatarAuthor>,
+                    #[serde(default)]
+                    cursor: usize,
+                    #[serde(default = "default_git_avatar_limit")]
+                    limit: usize,
+                }
+                #[derive(Deserialize)]
+                struct GitAvatarAuthor {
+                    sha: String,
+                    email: String,
+                }
+                fn default_git_avatar_limit() -> usize {
+                    crate::repos::GIT_HISTORY_DEFAULT_LIMIT
+                }
+                let p: P = parse_params(params)?;
+                let authors: Vec<_> = p
+                    .authors
+                    .into_iter()
+                    .take(crate::repos::GIT_HISTORY_MAX_LIMIT)
+                    .filter(|author| author.sha.len() <= 64 && author.email.len() <= 512)
+                    .map(|author| (author.sha, author.email))
+                    .collect();
+                let avatar_paths = self
+                    .repos
+                    .history_avatar_urls(std::path::Path::new(&p.cwd), &authors, p.cursor, p.limit)
+                    .await;
+                let mut avatars = std::collections::HashMap::new();
+                for (email, path) in avatar_paths {
+                    if let Ok(bytes) = tokio::fs::read(path).await {
+                        avatars.insert(
+                            email,
+                            base64::engine::general_purpose::STANDARD.encode(bytes),
+                        );
+                    }
+                }
+                RpcReply::value(&avatars)
+            }
             methods::FETCH_ALL => {
                 let p: RepoPathParams = parse_params(params)?;
                 self.repos
@@ -1925,7 +2007,9 @@ mod tests {
         assert!(!forwardable(methods::ENGINE_READY));
         assert!(forwardable(methods::QUEUE_COMMAND));
         assert!(forwardable(methods::SEARCH_FILES));
+        assert!(forwardable(methods::SEARCH_GIT_HISTORY));
         assert!(forwardable(methods::FETCH_ALL));
+        assert!(forwardable(methods::RESOLVE_GIT_AVATARS));
         assert!(forwardable(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
         assert!(is_stream_method(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
     }
@@ -1970,5 +2054,56 @@ mod tests {
             }),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod context_usage_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn context_only_commits_reach_remote_watch_and_reconnect() {
+        let host = zeron_doc::SessionDoc::init("context-chat").unwrap();
+        host.update_context_usage(Some(42000), Some(200000))
+            .unwrap();
+        // The viewing engine reads a replicated document, with no harness process.
+        let remote = Arc::new(zeron_doc::SessionDoc::from_doc(loro::LoroDoc::new()));
+        remote
+            .doc()
+            .import(&host.export_snapshot().unwrap())
+            .unwrap();
+        let (tx, rx) = watch::channel(Arc::new(Vec::new()));
+        let mut stream = doc_messages_stream(rx, remote.clone());
+        let first = stream.next().await.unwrap();
+        assert_eq!(first["contextUsage"]["tokens"], 42000);
+        assert!(first.get("reset").is_some());
+        let version = host.doc().oplog_vv();
+        host.update_context_usage(Some(0), None).unwrap();
+        remote
+            .doc()
+            .import(
+                &host
+                    .doc()
+                    .export(loro::ExportMode::updates(&version))
+                    .unwrap(),
+            )
+            .unwrap();
+        tx.send_replace(Arc::new(Vec::new()));
+        let update = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(update["contextUsage"]["tokens"], 0);
+        assert_eq!(update["contextUsage"]["window"], 200000);
+        let mut reconnect = doc_messages_stream(tx.subscribe(), remote.clone());
+        assert_eq!(
+            reconnect.next().await.unwrap()["contextUsage"],
+            update["contextUsage"]
+        );
+        remote.clear_context_usage().unwrap();
+        tx.send_replace(Arc::new(Vec::new()));
+        assert!(stream.next().await.unwrap()["contextUsage"].is_null());
     }
 }

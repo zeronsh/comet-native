@@ -20,6 +20,7 @@ pub mod change_requests;
 pub mod changes;
 pub mod comments;
 pub mod composer;
+mod context_usage;
 pub mod edge_fade;
 pub mod frost;
 pub mod history;
@@ -144,6 +145,13 @@ pub fn run_app(config: UiConfig) {
             ui_settings.theme_selection,
             ui_settings.accent,
             ui_settings.surface,
+            cx,
+        );
+        history::init(
+            ui_settings.git_history_columns,
+            ui_settings.git_history_column_widths,
+            ui_settings.git_history_column_order,
+            ui_settings.git_history_author_display,
             cx,
         );
         terminal::panel::init(cx);

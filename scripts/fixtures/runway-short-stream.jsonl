@@ -1,0 +1,19 @@
+{"event": {"type": "textDelta", "text": "## A short reply\n\nThe pr"}}
+{"event": {"type": "textDelta", "text": "ompt stays near the top "}}
+{"event": {"type": "textDelta", "text": "while this response stre"}}
+{"event": {"type": "textDelta", "text": "ams into the space below"}}
+{"event": {"type": "textDelta", "text": " it. Each new sentence c"}}
+{"event": {"type": "textDelta", "text": "onsumes that space witho"}}
+{"event": {"type": "textDelta", "text": "ut moving the viewport.\n"}}
+{"event": {"type": "textDelta", "text": "\nWhen the reply finishes"}}
+{"event": {"type": "textDelta", "text": ", the working indicator "}}
+{"event": {"type": "textDelta", "text": "disappears and the remai"}}
+{"event": {"type": "textDelta", "text": "ning space stays stable."}}
+{"event": {"type": "textDelta", "text": " The window can then set"}}
+{"event": {"type": "textDelta", "text": "tle without continuing t"}}
+{"event": {"type": "textDelta", "text": "o redraw the transcript."}}
+{"event": {"type": "textDelta", "text": "\n\nDownward wheel input r"}}
+{"event": {"type": "textDelta", "text": "emains available when re"}}
+{"event": {"type": "textDelta", "text": "turning from another win"}}
+{"event": {"type": "textDelta", "text": "dow."}}
+{"event": {"type": "done", "status": "completed"}}

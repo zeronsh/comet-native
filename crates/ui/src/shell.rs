@@ -16,10 +16,10 @@ use std::time::Duration;
 
 use chrono::Utc;
 use gpui::{
-    Action, AnyElement, App, ClipboardItem, Context, Empty, Entity, Focusable as _, IntoElement,
-    KeyBinding, Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent, MouseUpEvent,
-    Pixels, Point, Render, SharedString, Subscription, Task, Window, WindowControlArea, actions,
-    div, prelude::*, px,
+    Action, AnyElement, App, ClipboardItem, Context, Empty, Entity, FocusHandle, Focusable as _,
+    IntoElement, KeyBinding, Keystroke, ModifiersChangedEvent, MouseButton, MouseDownEvent,
+    MouseUpEvent, Pixels, Point, Render, SharedString, Subscription, Task, Window,
+    WindowControlArea, actions, div, prelude::*, px,
 };
 
 use gpui_tokio::Tokio;
@@ -73,6 +73,22 @@ actions!(
         ArchiveSession
     ]
 );
+
+/// Restore a default focus only after an in-flight handoff has had a frame to
+/// claim the window. A synchronous focus-lost fallback can otherwise steal
+/// focus from controls that are mounting in response to the same input event.
+pub(crate) fn restore_focus_if_empty_on_next_frame<T: 'static>(
+    focus: FocusHandle,
+    window: &mut Window,
+    cx: &mut Context<T>,
+) {
+    window.on_next_frame(move |window, cx| {
+        if window.focused(cx).is_none() {
+            window.focus(&focus, cx);
+        }
+    });
+    cx.notify();
+}
 
 #[derive(Clone, Copy)]
 enum ChatMenuPage {
@@ -385,10 +401,9 @@ fn right_pane_takeover_width(viewport: f32, sidebar: f32) -> f32 {
     (viewport - sidebar).max(0.0)
 }
 
-/// One right-pane surface tab (t3code RightPanelSurface, narrowed to our two
-/// kinds): a git-diff page (each tab its own [`Changes`] viewer — multiple
-/// diff panels, user request) or one embedded terminal keyed by its
-/// [`TerminalPanel`] tab key. `Picker` is the empty surface chooser.
+/// One right-pane surface tab (t3code RightPanelSurface): a Diff or History
+/// page (each backed by its own [`Changes`] viewer) or one embedded terminal
+/// keyed by its [`TerminalPanel`] tab key. `Picker` is the empty surface chooser.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum RightSurface {
     #[default]
@@ -978,8 +993,34 @@ struct SubagentTab {
     _events: Subscription,
 }
 
+/// Sidebar render identity lets transcript/caret frames reuse its GPUI scene.
+/// State and event handlers stay on Shell. Explicit Shell notifications still
+/// invalidate the sidebar, including selection, menus, theme and navigation.
+struct SidebarPane {
+    shell: gpui::WeakEntity<Shell>,
+    _observation: Subscription,
+}
+
+impl Render for SidebarPane {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::transcript::record_view_frame("sidebar");
+        let Some(shell) = self.shell.upgrade() else {
+            return div().into_any_element();
+        };
+        let inner = shell.update(cx, |shell, cx| {
+            let theme = Theme::of(cx).clone();
+            match shell.route {
+                Route::Settings(section) => shell.render_settings_nav(section, &theme, cx),
+                Route::Chat => shell.render_chat_sidebar(&theme, cx),
+            }
+        });
+        div().size_full().child(inner).into_any_element()
+    }
+}
+
 pub struct Shell {
     state: Entity<AppState>,
+    sidebar_pane: Entity<SidebarPane>,
     transcript: Entity<Transcript>,
     composer: Entity<Composer>,
     /// Measured height of the bottom chrome stack (status strip + composer +
@@ -1014,7 +1055,7 @@ pub struct Shell {
     /// entity from the bottom drawer's (own PTYs, own grid geometry; one
     /// panel can only size one visible grid at a time).
     right_terminal: Option<Entity<TerminalPanel>>,
-    /// The surface-tab strip's `+` menu (Terminal / Git diff rows).
+    /// The surface-tab strip's `+` menu (Terminal / Diffs / History rows).
     right_plus: popover::Popup<()>,
     /// Diff surfaces by id — each tab its own [`Changes`] viewer with its own
     /// scope/base pick and diff watch (multiple diff panels, user request).
@@ -1188,6 +1229,7 @@ pub struct Shell {
     _composer_events: Subscription,
     /// The primary transcript's spawn-chip events (subagent tabs).
     _transcript_events: Subscription,
+    _transcript_invalidation: Subscription,
 }
 
 impl Shell {
@@ -1218,8 +1260,12 @@ impl Shell {
         // Working-indicator heartbeat: notify once a second while a session is
         // live so elapsed time and the flavour word stay fresh.
         let ticker = cx.spawn(async move |this, cx| {
+            let mut displayed_minute = Utc::now().timestamp().div_euclid(60);
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
+                let minute = Utc::now().timestamp().div_euclid(60);
+                let minute_changed = minute != displayed_minute;
+                displayed_minute = minute;
                 let alive = this.update(cx, |shell: &mut Shell, cx| {
                     let live = {
                         let s = shell.state.read(cx);
@@ -1234,7 +1280,9 @@ impl Shell {
                                     | zeron_proto::ConnectivityState::Reconnecting
                             )
                     };
-                    if live {
+                    // Relative sidebar times still advance when unchanged
+                    // presence heartbeats no longer invalidate the whole UI.
+                    if live || minute_changed {
                         cx.notify();
                     }
                 });
@@ -1292,8 +1340,19 @@ impl Shell {
             Route::Chat => NavEntry::Chat(String::new()),
             Route::Settings(section) => NavEntry::Settings(section),
         });
+        // Parent notifications carry presentation changes (session status,
+        // elapsed labels, menus); sibling animation/caret ticks do not.
+        let transcript_invalidation = cx.observe_self(|shell, cx| {
+            shell.transcript.update(cx, |_, cx| cx.notify());
+        });
+        let shell = cx.entity();
+        let sidebar_pane = cx.new(|cx| SidebarPane {
+            shell: shell.downgrade(),
+            _observation: cx.observe(&shell, |_, _, cx| cx.notify()),
+        });
         Self {
             state,
+            sidebar_pane,
             transcript,
             composer,
             // Seed with the compact composer stack's rough height so the
@@ -1392,6 +1451,7 @@ impl Shell {
             _state_observation: observation,
             _composer_events: composer_events,
             _transcript_events: transcript_events,
+            _transcript_invalidation: transcript_invalidation,
         }
     }
 
@@ -1913,12 +1973,19 @@ impl Shell {
         cx.notify();
     }
 
-    /// The picker's Git card / the `+` menu's Diff row: every click opens a
+    /// The picker's Diffs card / the `+` menu's Diff row: every click opens a
     /// FRESH diff tab with its own scope/base selection (multiple diff
     /// panels, user request).
     fn add_diff_surface(&mut self, cx: &mut Context<Self>) {
         let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
         self.register_diff_surface(changes, cx);
+    }
+
+    /// The dedicated History surface. Keeping it as its own tab preserves its
+    /// graph/search state while Diff tabs retain their ordinary scope picker.
+    fn add_history_surface(&mut self, cx: &mut Context<Self>) {
+        let history = cx.new(|cx| Changes::for_history(self.state.clone(), cx));
+        self.register_diff_surface(history, cx);
     }
 
     /// A History row click: the commit opens as its own pinned diff tab
@@ -2244,6 +2311,10 @@ impl Shell {
     /// store owns the single debounce task and the only production writer.
     fn schedule_save(&mut self, cx: &mut Context<Self>) {
         self.settings.appearance = crate::appearance::mode(cx);
+        self.settings.git_history_columns = crate::history::configured_columns(cx);
+        self.settings.git_history_column_widths = crate::history::configured_column_widths(cx);
+        self.settings.git_history_column_order = crate::history::configured_column_order(cx);
+        self.settings.git_history_author_display = crate::history::configured_author_display(cx);
         self.settings.theme_selection = crate::appearance::themes(cx);
         self.settings.accent = crate::appearance::accent(cx);
         self.settings.surface = crate::appearance::surface(cx);
@@ -3684,15 +3755,16 @@ impl Shell {
         out
     }
 
-    fn render_sidebar(&mut self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_sidebar(&mut self, _cx: &mut Context<Self>) -> AnyElement {
         // The sidebar is part of the resolved theme. A second fixed-Zeron
         // palette here made imported families look split in half and froze
         // activity/glyph personality independently of the selected variant.
-        let theme = Theme::of(cx).clone();
-        let inner: AnyElement = match self.route {
-            Route::Settings(section) => self.render_settings_nav(section, &theme, cx),
-            Route::Chat => self.render_chat_sidebar(&theme, cx),
-        };
+        let inner = self.sidebar_pane.clone().cached(
+            gpui::StyleRefinement::default()
+                .w(px(self.settings.sidebar_width))
+                .h_full()
+                .flex_none(),
+        );
         let target = self.sidebar_target();
         // Transparent — the sidebar sits directly on the frost shell; the main
         // card's own border provides the separation. The content row spans the
@@ -3967,7 +4039,7 @@ impl Shell {
                             format!("chat-working-{id}"),
                             2.0,
                             theme.glyph,
-                            cx.entity_id(),
+                            self.sidebar_pane.entity_id(),
                             cx,
                         )
                         .into_any_element()
@@ -4218,7 +4290,7 @@ impl Shell {
                     "connection-spinner",
                     2.0,
                     theme.text_muted,
-                    cx.entity_id(),
+                    self.sidebar_pane.entity_id(),
                     cx,
                 )
                 .into_any_element(),
@@ -5539,7 +5611,10 @@ impl Shell {
         // at all → the onboarding card. The composer sits below the first two
         // (new-chat mode mints the chat id on first send).
         let outlet: AnyElement = if has_selection {
-            self.transcript.clone().into_any_element()
+            self.transcript
+                .clone()
+                .cached(gpui::StyleRefinement::default().size_full())
+                .into_any_element()
         } else if !has_spaces && !no_project {
             // Onboarding (first boot / after the destructive wipe): no folders
             // to work in yet — one clear affordance.
@@ -6138,14 +6213,21 @@ impl Shell {
                             }),
                         ),
                     )
-                    // Git only where there IS git — the pane itself no
-                    // longer gates on it (terminals work anywhere).
+                    // Git surfaces only where there IS git — the pane itself
+                    // no longer gates on it (terminals work anywhere).
                     .when(self.space_git_detected(cx), |el| {
-                        el.child(row("surface-card-git", icons::GIT_BRANCH, "Git").on_click(
+                        el.child(row("surface-card-diffs", icons::LIST, "Diffs").on_click(
                             cx.listener(|this, _, _, cx| {
                                 this.add_diff_surface(cx);
                             }),
                         ))
+                        .child(
+                            row("surface-card-history", icons::GIT_BRANCH, "History").on_click(
+                                cx.listener(|this, _, _, cx| {
+                                    this.add_history_surface(cx);
+                                }),
+                            ),
+                        )
                     }),
             )
             .into_any_element()
@@ -6317,9 +6399,19 @@ impl Shell {
         for (ix, (surface, title)) in rows.into_iter().enumerate() {
             let is_active = surface == active;
             let icon_path = match surface {
-                RightSurface::Diff(_) => icons::GIT_BRANCH,
+                RightSurface::Diff(id) => self
+                    .diffs
+                    .get(&id)
+                    .map(|changes| {
+                        if changes.read(cx).is_history() {
+                            icons::GIT_BRANCH
+                        } else {
+                            icons::LIST
+                        }
+                    })
+                    .unwrap_or(icons::LIST),
                 RightSurface::Subagent(_) => icons::BOT,
-                _ => icons::TERMINAL,
+                RightSurface::Terminal(_) | RightSurface::Picker => icons::TERMINAL,
             };
             // A live subagent tab swaps its icon for the mini working
             // spinner (the history fetch button's in-flight recipe) — the
@@ -6489,7 +6581,7 @@ impl Shell {
             };
             strip = strip.child(wrapped);
         }
-        // The `+` — a small menu offering the two surfaces (t3 "Add panel
+        // The `+` — a small menu offering the available surfaces (t3 "Add panel
         // surface"); mirrors the picker cards.
         let plus_open = self.right_plus.get().is_some();
         let plus_fade = "right-surface-add-fade";
@@ -6563,14 +6655,25 @@ impl Shell {
                                         this.close_right_plus(cx);
                                     }))
                                     .child(
+                                        icon(icons::LIST)
+                                            .size(px(13.0))
+                                            .text_color(theme.text_muted),
+                                    )
+                                    .child(SharedString::from("Diffs")),
+                            )
+                            .child(
+                                popover::menu_row(&theme, false, "right-plus-history")
+                                    .id("right-plus-history-row")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.add_history_surface(cx);
+                                        this.close_right_plus(cx);
+                                    }))
+                                    .child(
                                         icon(icons::GIT_BRANCH)
                                             .size(px(13.0))
                                             .text_color(theme.text_muted),
                                     )
-                                    // "Git", not "Git diff" — the surface hosts
-                                    // history and per-commit views too (user
-                                    // request; matches the picker card).
-                                    .child(SharedString::from("Git")),
+                                    .child(SharedString::from("History")),
                             )
                         }),
                 )
@@ -7315,6 +7418,7 @@ fn header_icon_button(
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::transcript::record_view_frame("shell");
         self.viewport_width = f32::from(window.viewport_size().width);
         // Appearance actions persist independently of the shell. Mirror the
         // globals before any later debounced settings save can overwrite them.
@@ -7379,11 +7483,16 @@ impl Render for Shell {
         // Keyboard shortcuts (mod-s/b/j) dispatch through the window focus
         // chain — with nothing focused they go dead. Land initial focus on the
         // composer, and whenever focus is lost with no successor (e.g. the
-        // focused element unmounted), route it back there.
+        // focused element unmounted), route it back there after allowing any
+        // in-flight focus handoff to settle.
         if self.focus_sub.is_none() {
             self.focus_sub = Some(cx.on_focus_lost(window, |this: &mut Shell, window, cx| {
                 match this.route {
-                    Route::Chat => window.focus(&this.composer.focus_handle(cx), cx),
+                    Route::Chat => restore_focus_if_empty_on_next_frame(
+                        this.composer.focus_handle(cx),
+                        window,
+                        cx,
+                    ),
                     // No composer here — clear the stale handle so `focused()`
                     // reads None (the render hook below re-lands focus when the
                     // route returns to Chat; a lingering unmounted handle would
@@ -7456,9 +7565,7 @@ impl Render for Shell {
             // forward the slot instead of eating it.
             .on_action(cx.listener(|this, jump: &JumpSession, _, cx| {
                 let pickers = this.composer.read(cx).pickers().clone();
-                let handled = pickers.update(cx, |pickers, cx| {
-                    pickers.jump_model_slot(jump.0, cx)
-                });
+                let handled = pickers.update(cx, |pickers, cx| pickers.jump_model_slot(jump.0, cx));
                 if !handled && !this.overlay_owns_keyboard(cx) {
                     this.jump_to_session(jump.0, cx)
                 }

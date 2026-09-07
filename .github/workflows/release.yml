@@ -49,9 +49,8 @@ jobs:
           path: target/package/*.tar.gz
           if-no-files-found: error
 
-  # Heads-up: the macOS cfg paths (Keychain in agent_accounts.rs) have never
-  # been type-checked against the Apple SDK — this job may surface errors on
-  # its first runs. continue-on-error keeps the Linux release shippable.
+  # All desktop artifacts must build before publishing the release and updater
+  # manifest. A macOS failure must not publish a Linux-only version as latest.
   #
   # Signing/notarization (both optional — absent secrets fall back to an
   # ad-hoc-signed build):
@@ -62,7 +61,6 @@ jobs:
   #     script notarizes and staples the app + dmg (no Gatekeeper warning).
   macos:
     runs-on: macos-latest # Apple silicon
-    continue-on-error: true
     env:
       MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
       MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}

@@ -211,6 +211,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anes"
+version = "0.1.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4b46cbb362ab8752921c97e041f5e366ee6297bd428a31275b9fcf1e380f7299"
+
+[[package]]
 name = "anstream"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -676,12 +682,27 @@ dependencies = [
 
 [[package]]
 name = "bit-set"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
+dependencies = [
+ "bit-vec 0.8.0",
+]
+
+[[package]]
+name = "bit-set"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "34ddef2995421ab6a5c779542c81ee77c115206f4ad9d5a8e05f4ff49716a3dd"
 dependencies = [
- "bit-vec",
+ "bit-vec 0.9.1",
 ]
+
+[[package]]
+name = "bit-vec"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
 
 [[package]]
 name = "bit-vec"
@@ -888,6 +909,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cast"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
+
+[[package]]
 name = "cbc"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -979,6 +1006,33 @@ dependencies = [
  "serde",
  "wasm-bindgen",
  "windows-link 0.2.1",
+]
+
+[[package]]
+name = "ciborium"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "42e69ffd6f0917f5c029256a24d0161db17cea3997d185db0d35926308770f0e"
+dependencies = [
+ "ciborium-io",
+ "ciborium-ll",
+ "serde",
+]
+
+[[package]]
+name = "ciborium-io"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05afea1e0a06c9be33d539b876f1ce3692f4afea2cb41f740e7743225ed1c757"
+
+[[package]]
+name = "ciborium-ll"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "57663b653d948a338bfb3eeba9bb2fd5fcfaecb9e199e87e1eda4d9e8b240fd9"
+dependencies = [
+ "ciborium-io",
+ "half",
 ]
 
 [[package]]
@@ -1126,7 +1180,7 @@ dependencies = [
 [[package]]
 name = "collections"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "gpui_util",
  "indexmap",
@@ -1207,6 +1261,15 @@ name = "convert_case"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "633458d4ef8c78b72454de2d54fd6ab2e60f9e02be22f3c6104cdc8a4e0fceb9"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "convert_case"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "affbf0190ed2caf063e3def54ff444b449371d55c58e513a95ab98eca50adb49"
 dependencies = [
  "unicode-segmentation",
 ]
@@ -1398,10 +1461,55 @@ dependencies = [
 ]
 
 [[package]]
+name = "criterion"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f2b12d017a929603d80db1831cd3a24082f8137ce19c69e6447f54f5fc8d692f"
+dependencies = [
+ "anes",
+ "cast",
+ "ciborium",
+ "clap",
+ "criterion-plot",
+ "is-terminal",
+ "itertools 0.10.5",
+ "num-traits",
+ "once_cell",
+ "oorandom",
+ "plotters",
+ "rayon",
+ "regex",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "tinytemplate",
+ "walkdir",
+]
+
+[[package]]
+name = "criterion-plot"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b50826342786a51a89e2da3a28f1c32b06e387201bc2d19791f622c673706b1"
+dependencies = [
+ "cast",
+ "itertools 0.10.5",
+]
+
+[[package]]
 name = "critical-section"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "790eea4361631c5e7d22598ecd5723ff611904e3344ce8720784c93e3d83d40b"
+
+[[package]]
+name = "crossbeam-channel"
+version = "0.5.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d85363c37faeca707aef026efa9f3b34d077bce547e48f770770625c6013679e"
+dependencies = [
+ "crossbeam-utils",
+]
 
 [[package]]
 name = "crossbeam-deque"
@@ -1548,7 +1656,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case",
+ "convert_case 0.10.0",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -1559,7 +1667,7 @@ dependencies = [
 [[package]]
 name = "derive_refineable"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2446,12 +2554,13 @@ dependencies = [
 [[package]]
 name = "gpui"
 version = "0.2.2"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "accesskit",
  "anyhow",
  "async-channel",
  "async-task",
+ "backtrace",
  "bindgen",
  "bitflags 2.13.1",
  "block",
@@ -2465,6 +2574,7 @@ dependencies = [
  "core-graphics 0.24.0",
  "core-text",
  "core-video",
+ "criterion",
  "ctor",
  "derive_more",
  "embed-resource",
@@ -2476,6 +2586,7 @@ dependencies = [
  "gpui_macros",
  "gpui_shared_string",
  "gpui_util",
+ "hdrhistogram",
  "heapless 0.9.3",
  "http_client",
  "image",
@@ -2495,6 +2606,7 @@ dependencies = [
  "pollster 0.4.0",
  "postage",
  "profiling",
+ "proptest",
  "rand 0.9.5",
  "raw-window-handle",
  "refineable",
@@ -2528,7 +2640,7 @@ dependencies = [
 [[package]]
 name = "gpui_linux"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "accesskit",
  "accesskit_unix",
@@ -2580,7 +2692,7 @@ dependencies = [
 [[package]]
 name = "gpui_macos"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "accesskit",
  "accesskit_macos",
@@ -2629,7 +2741,7 @@ dependencies = [
 [[package]]
 name = "gpui_macros"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "heck 0.5.0",
  "proc-macro2",
@@ -2640,7 +2752,7 @@ dependencies = [
 [[package]]
 name = "gpui_platform"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "console_error_panic_hook",
  "gpui",
@@ -2653,7 +2765,7 @@ dependencies = [
 [[package]]
 name = "gpui_shared_string"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "schemars",
  "serde",
@@ -2663,7 +2775,7 @@ dependencies = [
 [[package]]
 name = "gpui_tokio"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "anyhow",
  "gpui",
@@ -2674,7 +2786,7 @@ dependencies = [
 [[package]]
 name = "gpui_util"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "anyhow",
  "log",
@@ -2684,7 +2796,7 @@ dependencies = [
 [[package]]
 name = "gpui_web"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
@@ -2708,7 +2820,7 @@ dependencies = [
 [[package]]
 name = "gpui_wgpu"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "anyhow",
  "bytemuck",
@@ -2737,7 +2849,7 @@ dependencies = [
 [[package]]
 name = "gpui_windows"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "accesskit",
  "accesskit_windows",
@@ -2853,6 +2965,20 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ba4ff7128dee98c7dc9794b6a411377e1404dba1c97deb8d1a55297bd25d8af"
 dependencies = [
  "hashbrown 0.14.5",
+]
+
+[[package]]
+name = "hdrhistogram"
+version = "7.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f49d1053f4708f0af3cf9fc5bffc7e68a914a3c45becb231c80068c9c3f78bea"
+dependencies = [
+ "base64",
+ "byteorder",
+ "crossbeam-channel",
+ "flate2",
+ "nom 8.0.0",
+ "num-traits",
 ]
 
 [[package]]
@@ -2982,7 +3108,7 @@ dependencies = [
 [[package]]
 name = "http_client"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "anyhow",
  "async-compression",
@@ -3259,7 +3385,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
- "quick-error",
+ "quick-error 2.0.1",
 ]
 
 [[package]]
@@ -3382,6 +3508,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "is-terminal"
+version = "0.4.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
+dependencies = [
+ "hermit-abi",
+ "libc",
+ "windows-sys 0.52.0",
+]
+
+[[package]]
 name = "is-wsl"
 version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3396,6 +3533,15 @@ name = "is_terminal_polyfill"
 version = "1.70.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+
+[[package]]
+name = "itertools"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b0fd2260e829bddf4cb6ea802289de2f86d6a7a690192fbe91b3f46e0f2c8473"
+dependencies = [
+ "either",
+]
 
 [[package]]
 name = "itertools"
@@ -4014,7 +4160,7 @@ checksum = "490cc448043f947bae3cbee9c203358d62dbee0db12107a74be5c30ccfd09771"
 [[package]]
 name = "media"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "anyhow",
  "bindgen",
@@ -4137,7 +4283,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b2bf919621e7975acb27d881bae2fb993e0d45c8e0446e85e6272971e00dc8df"
 dependencies = [
  "arrayvec",
- "bit-set",
+ "bit-set 0.9.1",
  "bitflags 2.13.1",
  "cfg-if",
  "cfg_aliases",
@@ -4710,6 +4856,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "oorandom"
+version = "11.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d6790f58c7ff633d8771f42965289203411a5e5c68388703c06e14f24770b41e"
+
+[[package]]
 name = "open"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4823,7 +4975,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 [[package]]
 name = "perf"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "collections",
  "serde",
@@ -4981,6 +5133,34 @@ dependencies = [
  "quick-xml",
  "serde",
  "time",
+]
+
+[[package]]
+name = "plotters"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5aeb6f403d7a4911efb1e33402027fc44f29b5bf6def3effcc22d7bb75f2b747"
+dependencies = [
+ "num-traits",
+ "plotters-backend",
+ "plotters-svg",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
+name = "plotters-backend"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df42e13c12958a16b3f7f4386b9ab1f3e7933914ecea48da7139435263a4172a"
+
+[[package]]
+name = "plotters-svg"
+version = "0.3.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51bae2ac328883f7acdfea3d66a7c35751187f870bc81f94563733a154d7a670"
+dependencies = [
+ "plotters-backend",
 ]
 
 [[package]]
@@ -5220,6 +5400,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "proptest"
+version = "1.10.0"
+source = "git+https://github.com/proptest-rs/proptest?rev=3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b#3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b"
+dependencies = [
+ "bit-set 0.8.0",
+ "bit-vec 0.8.0",
+ "bitflags 2.13.1",
+ "num-traits",
+ "proptest-macro",
+ "rand 0.9.5",
+ "rand_chacha 0.9.0",
+ "rand_xorshift",
+ "regex-syntax",
+ "rusty-fork",
+ "tempfile",
+ "unarray",
+]
+
+[[package]]
+name = "proptest-macro"
+version = "0.5.0"
+source = "git+https://github.com/proptest-rs/proptest?rev=3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b#3dca198a8fef1b32e3a66f1e1897c955b4dc5b5b"
+dependencies = [
+ "convert_case 0.11.0",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "psm"
 version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5285,6 +5495,12 @@ checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
 dependencies = [
  "bytemuck",
 ]
+
+[[package]]
+name = "quick-error"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-error"
@@ -5476,6 +5692,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rand_xorshift"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
+dependencies = [
+ "rand_core 0.9.5",
+]
+
+[[package]]
 name = "rand_xoshiro"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5540,7 +5765,7 @@ dependencies = [
  "avif-serialize",
  "imgref",
  "loop9",
- "quick-error",
+ "quick-error 2.0.1",
  "rav1e",
  "rayon",
  "rgb",
@@ -5664,7 +5889,7 @@ dependencies = [
 [[package]]
 name = "refineable"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "derive_refineable",
 ]
@@ -5920,6 +6145,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
+name = "rusty-fork"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
+dependencies = [
+ "fnv",
+ "quick-error 1.2.3",
+ "tempfile",
+ "wait-timeout",
+]
+
+[[package]]
 name = "rustybuzz"
 version = "0.20.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5955,7 +6192,7 @@ dependencies = [
 [[package]]
 name = "scheduler"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "async-task",
  "backtrace",
@@ -6568,13 +6805,11 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 [[package]]
 name = "sum_tree"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "heapless 0.9.3",
  "log",
  "rayon",
- "tracing",
- "ztracing",
 ]
 
 [[package]]
@@ -6883,7 +7118,7 @@ dependencies = [
  "fax",
  "flate2",
  "half",
- "quick-error",
+ "quick-error 2.0.1",
  "weezl",
  "zune-jpeg",
 ]
@@ -6961,6 +7196,16 @@ checksum = "b1e27c91459209c2986af3dcf603a5a74a4368754ce37414f59acc971167f643"
 dependencies = [
  "displaydoc",
  "zerovec",
+]
+
+[[package]]
+name = "tinytemplate"
+version = "1.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be4d6b5f19ff7664e8c98d03e2139cb510db9b0a60b55f8e8709b689d939b6bc"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -7598,6 +7843,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "unarray"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
+
+[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7735,7 +7986,7 @@ checksum = "06abde3611657adf66d383f00b093d7faecc7fa57071cce2578660c9f1010821"
 [[package]]
 name = "util_macros"
 version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
+source = "git+https://github.com/zeronsh/zui?rev=de9f26e0dfc115ea97a7f08077163fa757241837#de9f26e0dfc115ea97a7f08077163fa757241837"
 dependencies = [
  "perf",
  "quote",
@@ -7852,6 +8103,15 @@ dependencies = [
  "log",
  "memchr",
  "serde",
+]
+
+[[package]]
+name = "wait-timeout"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -8153,8 +8413,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2f519832254e56965a9940c4af57dcb75f702b6f6fa4a0b172f685395843a4d7"
 dependencies = [
  "arrayvec",
- "bit-set",
- "bit-vec",
+ "bit-set 0.9.1",
+ "bit-vec 0.9.1",
  "bitflags 2.13.1",
  "bytemuck",
  "cfg_aliases",
@@ -8215,7 +8475,7 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
- "bit-set",
+ "bit-set 0.9.1",
  "bitflags 2.13.1",
  "block2 0.6.2",
  "bytemuck",
@@ -9162,7 +9422,7 @@ dependencies = [
 
 [[package]]
 name = "zeron"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "anyhow",
  "clap",
@@ -9181,7 +9441,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-doc"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "chrono",
  "loro",
@@ -9195,7 +9455,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-engine"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9231,7 +9491,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-harness"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9252,7 +9512,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-proto"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "chrono",
  "serde",
@@ -9262,7 +9522,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-rpc"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -9281,7 +9541,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-sync"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "block2 0.6.2",
  "chrono",
@@ -9304,7 +9564,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-syntax"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "thiserror 2.0.20",
  "tree-sitter",
@@ -9338,7 +9598,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-theme"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "anyhow",
  "clap",
@@ -9353,7 +9613,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-ui"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "alacritty_terminal",
  "anyhow",
@@ -9365,6 +9625,7 @@ dependencies = [
  "gpui",
  "gpui_platform",
  "gpui_tokio",
+ "mimalloc",
  "objc",
  "pulldown-cmark",
  "serde",
@@ -9374,8 +9635,10 @@ dependencies = [
  "tempfile",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "ttf-parser",
  "unicode-segmentation",
+ "unicode-width",
  "uuid",
  "zeron-doc",
  "zeron-engine",
@@ -9389,7 +9652,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-update"
-version = "0.2.29"
+version = "0.2.46"
 dependencies = [
  "anyhow",
  "futures",
@@ -9436,37 +9699,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "zlog"
-version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
-dependencies = [
- "anyhow",
- "chrono",
- "collections",
- "log",
-]
-
-[[package]]
 name = "zmij"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b"
-
-[[package]]
-name = "ztracing"
-version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
-dependencies = [
- "tracing",
- "tracing-subscriber",
- "zlog",
- "ztracing_macro",
-]
-
-[[package]]
-name = "ztracing_macro"
-version = "0.1.0"
-source = "git+https://github.com/wingleeio/zed?rev=e2ddcc6805f8c5088e62a60dfe517abcccd61a9a#e2ddcc6805f8c5088e62a60dfe517abcccd61a9a"
 
 [[package]]
 name = "zune-core"
