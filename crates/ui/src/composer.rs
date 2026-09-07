@@ -3112,7 +3112,9 @@ impl gpui::Element for ComposerTextElement {
         );
         let fade = gpui::EdgeFade {
             bounds,
-            band: px(12.0),
+            // Match the sidebar/transcript ramp: a 12px band is shorter than
+            // a text row and still reads as a hard cutoff while scrolling.
+            band: px(Theme::TRANSCRIPT_FADE_BAND),
             band_top: None,
             band_bottom: None,
             top: scroll > 1.0,
