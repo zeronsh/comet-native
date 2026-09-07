@@ -49,6 +49,7 @@ thiserror.workspace = true
 objc = "0.2"
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 mimalloc.workspace = true
 tracing-subscriber.workspace = true

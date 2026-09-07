@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.45"
+version = "0.2.46"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -41,6 +41,7 @@ loro-protocol = "0.3"
 
 # gpui — zeronsh/zui, extracted from wingleeio/zed e2ddcc6 with identical
 # crate sources; adds bounded blur passes and shared Gaussian weights.
+# Removes the GPL tracing crates from sum_tree while preserving frame recovery.
 # Preserved fork history: upstream f14fea9 + commits on
 # `comet/edge-fade-horizontal` (tip of `comet/line-wrap-closing-punctuation`
 # + 5d1f83d horizontal per-pixel EdgeFade for quads/images; rebase when bumping the
@@ -61,15 +62,15 @@ loro-protocol = "0.3"
 # stopped vending CABackdropLayer for Selection — window blur went dead);
 # b68970e rasterizes BackdropBlur in the wgpu renderer (frosted floats on
 # Linux — the Metal path's snapshot/blur/composite, ported).
-gpui = { git = "https://github.com/zeronsh/zui", rev = "a1efdb9b7a4fb97824330af4bf49170a3deef986" }
-gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "a1efdb9b7a4fb97824330af4bf49170a3deef986", features = [
+gpui = { git = "https://github.com/zeronsh/zui", rev = "de9f26e0dfc115ea97a7f08077163fa757241837" }
+gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "de9f26e0dfc115ea97a7f08077163fa757241837", features = [
     "wayland",
     "x11",
     "font-kit",
     "runtime_shaders",
 ] }
-gpui_tokio = { git = "https://github.com/zeronsh/zui", rev = "a1efdb9b7a4fb97824330af4bf49170a3deef986" }
-gpui-base = { git = "https://github.com/jsgrrchg/gpui-component", rev = "dd823ee7331740f34e30db403ee06a5eec176914" }
+gpui_tokio = { git = "https://github.com/zeronsh/zui", rev = "de9f26e0dfc115ea97a7f08077163fa757241837" }
+gpui-base = { git = "https://github.com/jsgrrchg/gpui-component", rev = "c5dca15e20b9d697c41ef173239d432e5de30ced" }
 
 # diffs
 similar = "2"

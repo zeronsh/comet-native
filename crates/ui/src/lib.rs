@@ -150,6 +150,13 @@ pub fn run_app(config: UiConfig) {
             ui_settings.surface,
             cx,
         );
+        history::init(
+            ui_settings.git_history_columns,
+            ui_settings.git_history_column_widths,
+            ui_settings.git_history_column_order,
+            ui_settings.git_history_author_display,
+            cx,
+        );
         composer::init(cx);
         terminal::panel::init(cx);
         app_menus::init(cx);

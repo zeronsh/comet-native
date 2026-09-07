@@ -1472,6 +1472,8 @@ impl ComposerInput {
         }
     }
 
+    /// Override the text metrics for compact one-line surfaces such as
+    /// toolbar searches without changing the main composer typography.
     pub fn with_text_metrics(mut self, text_size: f32, line_height: f32) -> Self {
         self.text_size = text_size;
         self.configured_line_height = line_height;
