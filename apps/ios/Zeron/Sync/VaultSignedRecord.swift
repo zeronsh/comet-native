@@ -36,6 +36,11 @@ struct VaultUnverifiedRecord: CustomStringConvertible, CustomDebugStringConverti
 
     var untrustedBinding: VaultRecordBinding { binding }
     var untrustedRevisionId: Data { revisionId }
+    /// Payload bytes BEFORE verification — for decoding public routing
+    /// fields only (a policy record's device list must be read to find the
+    /// key that verifies it). Nothing decoded from here is trusted until
+    /// `verify` succeeds against an independently expected binding.
+    var untrustedPayload: Data { payload }
     var description: String { "UnverifiedRecord([REDACTED])" }
     var debugDescription: String { description }
 
@@ -203,6 +208,11 @@ struct VaultRecordReader {
         let start = offset
         offset += count
         return data[start..<offset]
+    }
+
+    /// Raw bytes after a length argument the caller already consumed.
+    mutating func takeBytes(_ count: Int) throws -> Data {
+        try take(count)
     }
 
     mutating func argument(major: UInt8) throws -> UInt64 {

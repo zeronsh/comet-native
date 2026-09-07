@@ -738,6 +738,48 @@ Table of Contents
    No compatibility with earlier unshipped draft encryption is required.
 
 
+7.8. Control-plane records implemented in this PR
+
+   Policy records use the signed wrapper with kind = 1, object ID = sixteen
+   zero bytes, epoch = the record's active epoch, and membership hash = the
+   PARENT record's hash (genesis: zeros). The payload is one deterministic
+   CBOR map:
+
+      0 version (1)   1 sequence   2 parent hash (32)   3 profile hash (32)
+      4 epoch         5 operation: 1 genesis, 2 add device, 3 revoke device,
+                        4 rotate recovery, 5 recovery transition
+      6 recovery signing key (32)   7 recovery encryption key (32)
+      8 devices: array of [id 16, signing 32, encryption 32, status 0|1]
+
+   Membership hash = SHA-256("zeron/membership/v1" 00 || record bytes).
+   Profile hash = SHA-256("zeron/profile/v1" 00 || org || 00 || user).
+   Recovery authority ID = first 16 bytes of SHA-256("zeron/recovery-id/v1"
+   00 || recovery signing key). Add keeps the epoch; every other operation
+   increments it. Existing devices keep their index; a revoked device is
+   never revived; recovery keys change both-or-neither.
+
+   Key envelopes use kind = 2 with payload {0 version, 1 recipient kind
+   (1 device, 2 recovery, 3 epoch), 2 recipient id (16), 3 encapsulation or
+   salt (32), 4 ciphertext}. Keyring envelopes are HPKE base mode
+   (DHKEM X25519/HKDF-SHA256, AES-256-GCM) with info =
+   "zeron/keyring-envelope/v1" 00 || C || H(0..2). Object keys are wrapped
+   under an epoch key with K = HKDF(epoch key, salt, "zeron/object-key/v1"
+   00 || C || H(0..3)), AAD = "zeron/object-key/aad/v1" 00 || C || H(0..3),
+   one zero-nonce AES-256-GCM over id || key. The keyring is
+   {0: 1, 1: [[epoch, key32] ...]} with ascending epochs.
+
+   Enrollment proofs sign "zeron/enroll/v1" 00 || vault || request || device
+   || signing key || encryption key. The pairing code is the first 32 bits of
+   SHA-256("zeron/pairing-code/v1" 00 || those fields || genesis hash) mod
+   10^8, shown as NNNN-NNNN; binding the genesis hash lets the user detect a
+   relay that presents a substitute vault to the pending device.
+
+   Object IDs are the first 16 bytes of SHA-256("zeron/object-id/v1" 00 ||
+   kind || 00 || id). Encrypted profiles publish chats to a separate room
+   (chat2/{id}-e1) whose local cursor carries doc epoch 3; the plaintext room
+   is retained, never silently deleted (Section 12.3).
+
+
 8. Chat Log, Checkpoint, and Cursor Integration
 ----------------------------------------------
 
