@@ -4,7 +4,8 @@
 //! (`/registry/{orgId}/ws` → room `reg1/{orgId}/{userId}`, offline-tolerant —
 //! spaces/sessions are private to their owner, never org-visible), the device
 //! registry row for THIS device, and the typed watch channels the
-//! WatchChats/WatchDevices/WatchSessions RPC streams are fed from.
+//! WatchChats/WatchDevices/WatchSessions/WatchSidebarPreferences RPC streams
+//! are fed from.
 //!
 //! Writer discipline (kept from the doc schema): this host writes its own device row,
 //! its own session-status rows, and rows for chats it hosts; renames/archives are LWW

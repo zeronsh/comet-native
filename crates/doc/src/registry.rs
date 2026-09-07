@@ -25,7 +25,7 @@ use zeron_proto::{Chat, ChatConfig, Device, MAX_SIDEBAR_PINS, Session, SidebarPr
 use crate::schema::DocError;
 use crate::workspace::{DeletedSpace, WorkspaceState};
 
-/// Row kinds — the four sidebar tables.
+/// Row kinds — synced sidebar entities plus user preferences.
 pub const KIND_DEVICES: &str = "devices";
 pub const KIND_SPACES: &str = "spaces";
 pub const KIND_CHATS: &str = "chats";

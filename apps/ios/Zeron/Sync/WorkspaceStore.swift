@@ -2,8 +2,9 @@
 // host (crates/doc/src/registry.rs + crates/engine WorkspaceHost). Joins the
 // per-user `/registry/{orgId}/ws` room, projects the row table into typed
 // rows, and performs the writes the writer discipline allows a viewer device:
-// chat creates, archives, renames and seen marks. iOS is a viewport, not an
-// engine device, so it owns no device row; it does publish a presence beat
+// chat creates, archives, renames, seen marks and sidebar preferences. iOS is
+// a viewport, not an engine device, so it owns no device row; it does publish
+// a presence beat
 // (registry presence replaced the old ws room's ephemeral store).
 //
 // Reads are OVERLAY reads: the server's authoritative rows plus the pending

@@ -1944,6 +1944,20 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_preferences_mutation_accepts_desktop_wire_shape() {
+        let p: MutateParams = parse_params(serde_json::json!({
+            "op": "setSidebarPinnedSessions",
+            "pinnedSessionIds": ["chat-b", "chat-a"],
+        }))
+        .expect("sidebar preferences params");
+        assert!(matches!(
+            p,
+            MutateParams::SetSidebarPinnedSessions { pinned_session_ids }
+                if pinned_session_ids == ["chat-b", "chat-a"]
+        ));
+    }
+
+    #[test]
     fn local_device_is_not_forwardable() {
         assert!(!forwardable(methods::LOCAL_DEVICE));
         assert!(!forwardable(methods::ENGINE_INFO));

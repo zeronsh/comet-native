@@ -871,6 +871,44 @@ fn sidebar_preferences_reject_invalid_lists() {
 }
 
 #[test]
+fn sidebar_preferences_converge_between_devices() {
+    let mut desktop = RegistryDoc::new("desktop");
+    let mut phone = RegistryDoc::new("phone");
+    let mut server = HashMap::new();
+    let mut seq = 0u64;
+
+    desktop
+        .set_sidebar_pinned_sessions(&["chat-b".into(), "chat-a".into()])
+        .unwrap();
+    server_round(
+        &mut server,
+        &mut seq,
+        &mut [&mut desktop, &mut phone],
+    );
+    assert_eq!(
+        phone.sidebar_preferences().unwrap().pinned_session_ids,
+        vec!["chat-b", "chat-a"]
+    );
+
+    phone
+        .set_sidebar_pinned_sessions(&["chat-a".into(), "chat-b".into()])
+        .unwrap();
+    server_round(
+        &mut server,
+        &mut seq,
+        &mut [&mut desktop, &mut phone],
+    );
+    assert_eq!(
+        desktop.sidebar_preferences(),
+        phone.sidebar_preferences()
+    );
+    assert_eq!(
+        desktop.sidebar_preferences().unwrap().pinned_session_ids,
+        vec!["chat-a", "chat-b"]
+    );
+}
+
+#[test]
 fn migration_seeds_pending_upserts_that_lose_to_live_writes() {
     // Build a legacy loro workspace doc, materialize, seed.
     let legacy = crate::workspace::WorkspaceDoc::new();
