@@ -73,6 +73,8 @@ pub const MIN_COMPACT_INPUT_WIDTH: f32 = 200.0;
 /// Input text metrics: `text-[14px] leading-relaxed` = 14 × 1.625 = 22.75.
 pub const INPUT_LINE_HEIGHT: f32 = 22.75;
 pub const INPUT_TEXT_SIZE: f32 = 14.0;
+/// A compact ramp; the glyph-ascent inset keeps the clip edge invisible.
+const INPUT_FADE_BAND: f32 = 12.0;
 /// Single-select questions auto-advance after this long.
 pub const AUTO_ADVANCE_MS: u64 = 220;
 /// Drag-selection autoscroll runs at the display-friendly 60fps cadence.
@@ -183,7 +185,11 @@ fn input_scroll_offset_for_cursor(
     cursor_height: f32,
     content_height: f32,
     viewport_height: f32,
+    settled_height: Option<f32>,
 ) -> f32 {
+    // Resize the reveal, not the scroll position: existing text stays fixed
+    // relative to the input origin throughout the height animation.
+    let viewport_height = settled_height.unwrap_or(viewport_height);
     let mut next = current;
     if cursor_top < next {
         next = cursor_top;
@@ -2445,7 +2451,11 @@ impl ComposerInput {
         }
         let next = (self.scroll_top + delta).clamp(
             0.0,
-            input_max_scroll(self.content_height, f32::from(bounds.size.height)),
+            input_max_scroll(
+                self.content_height,
+                self.settled_viewport_height
+                    .unwrap_or(f32::from(bounds.size.height)),
+            ),
         );
         if next == self.scroll_top {
             self.drag_autoscroll_active = false;
@@ -2469,7 +2479,9 @@ impl ComposerInput {
         let Some(bounds) = self.last_bounds else {
             return;
         };
-        let viewport_height = f32::from(bounds.size.height);
+        let viewport_height = self
+            .settled_viewport_height
+            .unwrap_or(f32::from(bounds.size.height));
         let delta_y = f32::from(event.delta.pixel_delta(self.line_height).y);
         let next = input_scroll_offset(
             self.scroll_top,
@@ -2656,12 +2668,17 @@ impl ComposerInput {
                     f32::from(self.line_height),
                     self.content_height,
                     element_height,
+                    self.settled_viewport_height,
                 );
             }
         }
-        self.scroll_top = self
-            .scroll_top
-            .clamp(0.0, input_max_scroll(self.content_height, element_height));
+        self.scroll_top = self.scroll_top.clamp(
+            0.0,
+            input_max_scroll(
+                self.content_height,
+                self.settled_viewport_height.unwrap_or(element_height),
+            ),
+        );
         self.scroll_top != previous
     }
 }
@@ -3243,8 +3260,13 @@ impl Render for ComposerInput {
             .font_family(theme.font_sans.clone())
             .child({
                 let input = cx.entity();
+                let ascent = self
+                    .last_lines
+                    .iter()
+                    .map(|line| f32::from(line.unwrapped_layout.ascent))
+                    .fold(INPUT_TEXT_SIZE, f32::max);
                 crate::edge_fade::edge_faded(
-                    Theme::TRANSCRIPT_FADE_BAND,
+                    INPUT_FADE_BAND,
                     true,
                     true,
                     ComposerTextElement {
@@ -3254,10 +3276,10 @@ impl Render for ComposerInput {
                             .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
                     },
                 )
-                // Like the transcript's titlebar inset, reach zero inside the
-                // clip boundary. One text row also covers GPUI's baseline-based
-                // glyph fade sampling, so the clip cannot slice visible ink.
-                .inset_top(INPUT_LINE_HEIGHT)
+                // Reuse the transcript's inset, but reserve only the font's
+                // ascent rather than a full text row. GPUI samples a glyph's
+                // baseline; this makes clipped ink invisible without dead space.
+                .inset_top(ascent)
                 .fade_overflow_y_with(move |cx| {
                     let input = input.read(cx);
                     let visible_height = input
@@ -6883,21 +6905,21 @@ mod tests {
     fn input_scroll_reveals_only_when_caret_leaves_viewport() {
         // A visible caret preserves the user's viewport.
         assert_eq!(
-            input_scroll_offset_for_cursor(40.0, 60.0, 20.0, 300.0, 100.0),
+            input_scroll_offset_for_cursor(40.0, 60.0, 20.0, 300.0, 100.0, None),
             40.0
         );
         // Moving above or below reveals the row with the smallest adjustment.
         assert_eq!(
-            input_scroll_offset_for_cursor(80.0, 30.0, 20.0, 300.0, 100.0),
+            input_scroll_offset_for_cursor(80.0, 30.0, 20.0, 300.0, 100.0, None),
             30.0
         );
         assert_eq!(
-            input_scroll_offset_for_cursor(20.0, 130.0, 20.0, 300.0, 100.0),
+            input_scroll_offset_for_cursor(20.0, 130.0, 20.0, 300.0, 100.0, None),
             50.0
         );
         // Revealing the final row clamps exactly to the content end.
         assert_eq!(
-            input_scroll_offset_for_cursor(0.0, 290.0, 20.0, 300.0, 100.0),
+            input_scroll_offset_for_cursor(0.0, 290.0, 20.0, 300.0, 100.0, None),
             200.0
         );
     }
@@ -6939,6 +6961,32 @@ mod tests {
         assert_eq!(
             flip_morph_step(Some(m), false, 124.0, 300.0, false, false),
             None
+        );
+    }
+
+    #[test]
+    fn resize_keeps_text_anchored_to_the_input_origin() {
+        // A fitting draft grows from one row to seven. Caret-follow must
+        // never temporarily scroll earlier lines through the top clip.
+        for visible in [0.0, 22.75, 60.0, 110.0, 159.25] {
+            assert_eq!(
+                input_scroll_offset_for_cursor(0.0, 136.5, 22.75, 159.25, visible, Some(159.25),),
+                0.0
+            );
+        }
+        // A genuinely overflowing draft keeps the same caret-follow offset
+        // through every frame of the reveal, rather than chasing its height.
+        for visible in [30.0, 100.0, 180.0, 240.0] {
+            assert_eq!(
+                input_scroll_offset_for_cursor(160.0, 377.25, 22.75, 400.0, visible, Some(240.0),),
+                160.0
+            );
+        }
+        // Deleting back to a fitting draft resets scroll immediately, even
+        // while the old, larger viewport is still shrinking.
+        assert_eq!(
+            input_scroll_offset_for_cursor(160.0, 77.25, 22.75, 100.0, 240.0, Some(100.0),),
+            0.0
         );
     }
 
