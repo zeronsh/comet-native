@@ -1253,6 +1253,20 @@ fn expand_home(cwd: &str) -> String {
     }
 }
 
+/// Unresolved tools (except the live-plan chip) and unanswered questions.
+/// The live-plan chip is a singleton that never resolves.
+fn fold_has_in_flight_work(folded: &[MessagePart]) -> bool {
+    folded.iter().any(|part| match part {
+        MessagePart::Tool {
+            id,
+            resolved: false,
+            ..
+        } => id != zeron_proto::LIVE_PLAN_TOOL_ID,
+        MessagePart::Input { resolved: false, .. } => true,
+        _ => false,
+    })
+}
+
 /// Resume bookkeeping for one run task: which user entry the run answers (so
 /// the startup-crash retry re-dispatches idempotently against the same doc
 /// entry), whether `dispatch` injected the resume id itself (only
@@ -1437,7 +1451,15 @@ async fn drive_run(
                 session_id: None,
             },
             _ = live_heartbeat.tick() => {
-                inner.touch_session(&chat_id);
+                // A parked persistent session is already Idle. A live turn
+                // whose fold has completed output and nothing in flight
+                // (the dropped-reply / mid-run hang shape) must be allowed
+                // to age out of the UI's 45s Working gate instead of being
+                // kept fresh by this tick. Open tools and questions still
+                // get the heartbeat — those silences are real work.
+                if idle_since.is_none() && fold_has_in_flight_work(&folded) {
+                    inner.touch_session(&chat_id);
+                }
                 continue;
             }
             // Idle reaper (zeron SESSION_IDLE_MS): a parked persistent session
@@ -1525,13 +1547,7 @@ async fn drive_run(
                 && idle_since.is_none()
                 && !interrupted
                 && steerable
-                && !folded.iter().any(|p| match p {
-                    MessagePart::Tool { id, resolved: false, .. } => {
-                        id != zeron_proto::LIVE_PLAN_TOOL_ID
-                    }
-                    MessagePart::Input { resolved: false, .. } => true,
-                    _ => false,
-                }) =>
+                && !fold_has_in_flight_work(&folded) =>
             {
                 tracing::warn!(
                     chat = %chat_id,
@@ -2244,3 +2260,72 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod fold_liveness_tests {
+    use super::fold_has_in_flight_work;
+    use zeron_doc::MessagePart;
+    use zeron_proto::{LIVE_PLAN_TOOL_ID, ToolCall, UserInputQuestion};
+
+    fn open_tool(id: &str) -> MessagePart {
+        MessagePart::Tool {
+            id: id.into(),
+            call: ToolCall::Exec {
+                command: "make".into(),
+            },
+            is_error: false,
+            resolved: false,
+            output: None,
+            diff: None,
+            output_ref: None,
+            output_bytes: None,
+            diff_ref: None,
+            diff_stats: None,
+            subagent_ref: None,
+            subagent_status: None,
+            subagent_tail: None,
+        }
+    }
+
+    fn text(t: &str) -> MessagePart {
+        MessagePart::Text {
+            id: "t0".into(),
+            text: t.into(),
+        }
+    }
+
+    #[test]
+    fn completed_text_fold_has_no_in_flight_work() {
+        assert!(!fold_has_in_flight_work(&[text("done")]));
+        assert!(!fold_has_in_flight_work(&[]));
+    }
+
+    #[test]
+    fn open_tool_and_question_still_need_the_heartbeat() {
+        assert!(fold_has_in_flight_work(&[
+            text("working"),
+            open_tool("build-1")
+        ]));
+        assert!(fold_has_in_flight_work(&[MessagePart::Input {
+            id: "q0".into(),
+            request_id: "r0".into(),
+            questions: vec![UserInputQuestion {
+                id: "q".into(),
+                header: "ok?".into(),
+                question: "continue?".into(),
+                options: vec![],
+                multi_select: false,
+            }],
+            resolved: false,
+        }]));
+    }
+
+    #[test]
+    fn live_plan_chip_alone_is_not_in_flight_work() {
+        assert!(!fold_has_in_flight_work(&[
+            text("plan updated"),
+            open_tool(LIVE_PLAN_TOOL_ID)
+        ]));
+    }
+}
+
