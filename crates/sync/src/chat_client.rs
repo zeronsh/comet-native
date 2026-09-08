@@ -1461,7 +1461,7 @@ impl Actor {
                     let contained = state.checkpoint_size == 0
                         || (!repair_causal_history && sink.contains_frontier(&state_frame.payload));
                     let plan = plan_catch_up(cursor, &state, contained);
-                    if let CatchUpPlan::CheckpointThenRows { .. } = plan {
+                    if let CatchUpPlan::CheckpointThenRows { after } = plan {
                         let fetched =
                             tokio::time::timeout(CHECKPOINT_FETCH_DEADLINE, fetcher.fetch()).await;
                         match fetched {

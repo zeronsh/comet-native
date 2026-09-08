@@ -9473,7 +9473,7 @@ dependencies = [
 
 [[package]]
 name = "zeron-crypto"
-version = "0.2.33"
+version = "0.2.46"
 dependencies = [
  "curve25519-dalek",
  "ring",

@@ -874,12 +874,12 @@ mod tests {
         let store = Arc::new(DocsStore::open(dir.path()).unwrap());
         let target = Arc::new(SessionDoc::from_doc(loro::LoroDoc::new()));
         let sink = EngineChatSink::new(&target, store.clone(), "chat");
-        sink.persist_with_cursor(0);
+        sink.persist_with_cursor(0).unwrap();
         assert_eq!(sink.apply_row(&row, 1), ApplyOutcome::PendingDependencies);
         let (_, cursor, _) = store.load_snapshot_with_cursor("chat").unwrap().unwrap();
         assert_eq!(cursor, 0, "a restart must retry the invisible update");
 
-        sink.apply_checkpoint(&checkpoint, 0).unwrap();
+        assert_eq!(sink.apply_checkpoint(&checkpoint, 0), ApplyOutcome::Applied);
         assert_eq!(sink.apply_row(&row, 1), ApplyOutcome::Applied);
         let (snapshot, cursor, _) = store.load_snapshot_with_cursor("chat").unwrap().unwrap();
         assert_eq!(cursor, 1);
@@ -889,7 +889,10 @@ mod tests {
 
         let incomplete = Arc::new(SessionDoc::from_doc(loro::LoroDoc::new()));
         let incomplete_sink = EngineChatSink::new(&incomplete, store.clone(), "incomplete");
-        assert!(incomplete_sink.apply_checkpoint(&row, 1).is_err());
+        assert_eq!(
+            incomplete_sink.apply_checkpoint(&row, 1),
+            ApplyOutcome::PendingDependencies
+        );
         assert!(
             store
                 .load_snapshot_with_cursor("incomplete")
