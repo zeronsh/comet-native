@@ -89,7 +89,7 @@ impl Hex {
     }
 
     pub fn bytes(&self) -> Option<Vec<u8>> {
-        if !self.0.len().is_multiple_of(2) {
+        if !self.0.is_ascii() || !self.0.len().is_multiple_of(2) {
             return None;
         }
         (0..self.0.len())
@@ -159,6 +159,14 @@ pub struct PendingEnrollment {
 #[serde(rename_all = "camelCase")]
 pub struct LocalVaultState {
     pub version: u32,
+    #[serde(default)]
+    pub pending_membership: Option<String>,
+    #[serde(default)]
+    pub setup_recovery: Option<Secret>,
+    #[serde(default)]
+    pub pending_approval: Option<(Hex, i64)>,
+    #[serde(default)]
+    pub owed_envelope_records: std::collections::BTreeMap<String, String>,
     pub device: Option<DeviceIdentity>,
     pub vault: Option<PinnedVault>,
     /// Encoded keyring (`zeron_crypto::keyring::Keyring::encode`), hex.
@@ -300,14 +308,21 @@ impl VaultStore {
         };
         let bytes = serde_json::to_vec_pretty(&file)
             .map_err(|err| VaultStoreError::Corrupt(format!("serialize: {err}")))?;
+        if bytes.len() > MAX_STATE_BYTES {
+            return Err(VaultStoreError::Corrupt("state file too large".into()));
+        }
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let temp = self
             .path
-            .with_extension(format!("tmp-{}", std::process::id()));
+            .with_extension(format!("tmp-{}", uuid::Uuid::new_v4()));
         write_private(&temp, &bytes)?;
         std::fs::rename(&temp, &self.path)?;
+        #[cfg(unix)]
+        if let Some(parent) = self.path.parent() {
+            std::fs::File::open(parent)?.sync_all()?;
+        }
         Ok(())
     }
 }
@@ -315,7 +330,7 @@ impl VaultStore {
 fn write_private(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -593,6 +608,13 @@ mod tests {
             format!("{:?}", state.device.as_ref().unwrap().signing_seed),
             "[REDACTED]"
         );
+    }
+
+    #[test]
+    fn malformed_hex_is_rejected_without_panicking() {
+        for value in ["aéa", "xyz", "gg", "00ffz0"] {
+            assert!(Hex(value.into()).bytes().is_none());
+        }
     }
 
     #[test]

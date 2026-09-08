@@ -2076,6 +2076,13 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&status)
             }
+            methods::VAULT_CONFIRM_RECOVERY => {
+                self.vault()?
+                    .confirm_recovery_kit()
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&serde_json::json!({ "ok": true }))
+            }
             methods::VAULT_SETUP => {
                 let kit = self
                     .vault()?

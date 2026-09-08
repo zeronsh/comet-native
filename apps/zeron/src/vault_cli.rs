@@ -86,13 +86,24 @@ pub async fn status(ipc_port: u16) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub async fn confirm_recovery(ipc_port: u16) -> anyhow::Result<()> {
+    client(ipc_port)
+        .await?
+        .call(methods::VAULT_CONFIRM_RECOVERY, serde_json::json!({}))
+        .await?;
+    println!("Recovery kit confirmed. The vault is ready.");
+    Ok(())
+}
+
 pub async fn setup(ipc_port: u16) -> anyhow::Result<()> {
     let client = client(ipc_port).await?;
     let kit = client
         .call(methods::VAULT_SETUP, serde_json::json!({}))
         .await
         .map_err(|e| anyhow::anyhow!("setup failed: {e}"))?;
-    println!("Encryption is set up. This device is the vault's first member.\n");
+    println!(
+        "Vault prepared. Encrypted writes remain paused until you save and confirm the recovery kit.\n"
+    );
     println!("Recovery key (save it in a password manager now):\n");
     println!("    {}\n", field(&kit, "kit"));
     println!("Recovery file (save alongside the key):\n");
@@ -102,7 +113,8 @@ pub async fn setup(ipc_port: u16) -> anyhow::Result<()> {
     );
     println!(
         "If you lose every approved device and your recovery key, we cannot recover your \
-         encrypted data. Resetting your account password will not restore access."
+         encrypted data. Resetting your account password will not restore access.\n\n\
+         After saving both, run `zeron vault confirm-recovery`."
     );
     Ok(())
 }

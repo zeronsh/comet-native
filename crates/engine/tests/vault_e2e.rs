@@ -65,6 +65,8 @@ async fn two_devices_pair_seal_open_revoke_and_recover() {
         }
     );
     let kit = a.setup().await.unwrap();
+    assert_eq!(a.status().phase, VaultPhase::RecoveryConfirmationRequired);
+    a.confirm_recovery_kit().await.unwrap();
     assert!(a.is_ready(), "{:?}", a.status().phase);
     assert_eq!(kit.kit.split('-').count(), 11);
     assert!(a.setup().await.is_err(), "second setup is refused");
@@ -233,6 +235,7 @@ async fn registry_fields_seal_open_and_bind_their_slot() {
     let a = device(dir_a.path(), &edge, &org, &user);
     a.refresh().await.unwrap();
     let _kit = a.setup().await.unwrap();
+    a.confirm_recovery_kit().await.unwrap();
     let b = device(dir_b.path(), &edge, &org, &user);
     b.refresh().await.unwrap();
     let (request_id, code) = b.request_enrollment().await.unwrap();

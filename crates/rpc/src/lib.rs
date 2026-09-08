@@ -91,6 +91,7 @@ pub mod methods {
     pub const VAULT_STATUS: &str = "VaultStatus";
     pub const VAULT_REFRESH: &str = "VaultRefresh";
     pub const VAULT_SETUP: &str = "VaultSetup";
+    pub const VAULT_CONFIRM_RECOVERY: &str = "VaultConfirmRecovery";
     pub const VAULT_REQUEST_ENROLLMENT: &str = "VaultRequestEnrollment";
     pub const VAULT_CANCEL_ENROLLMENT: &str = "VaultCancelEnrollment";
     pub const VAULT_PENDING_REQUESTS: &str = "VaultPendingRequests";

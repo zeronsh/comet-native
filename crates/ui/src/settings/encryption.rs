@@ -59,7 +59,7 @@ pub fn phase_copy(status: &Value) -> (&'static str, String) {
         .unwrap_or("")
         .to_string();
     match phase {
-        "ready" => ("Encrypted", "Synced content is encrypted on your devices. Only approved devices, or someone with your recovery key, can read it.".into()),
+        "ready" => ("Vault ready", "This device holds vault keys. Encrypted sync is a preview; migration, device channels and iOS integration are incomplete.".into()),
         "notEnrolled" => {
             if status.get("remoteVault").and_then(Value::as_bool) == Some(true) {
                 ("Approve this device", "This account already has an encrypted vault. Approve this device from another device, or use your recovery key.".into())
@@ -69,7 +69,8 @@ pub fn phase_copy(status: &Value) -> (&'static str, String) {
         }
         "pending" => ("Waiting for approval", "Open Settings → Encryption on an approved device and compare the code below before approving.".into()),
         "locked" => ("Unlock this device", format!("Secure key storage is unavailable: {reason}")),
-        "keyUpdateRequired" => ("Waiting for encryption keys", "Another device changed the vault's keys; sync resumes once the new keys arrive.".into()),
+        "recoveryConfirmationRequired" => ("Save recovery kit", "Save the recovery key and file, then confirm. Encrypted writes remain paused until confirmation.".into()),
+        "keyUpdateRequired" => ("Waiting for encryption keys", "A vault update or key delivery is pending. Refresh to retry safely.".into()),
         "verificationFailed" => ("Sync paused", format!("Data could not be verified: {reason}")),
         "revoked" => ("Removed", "This device was removed from the vault. Approve it again from another device to resume.".into()),
         "unavailable" => ("Not available", reason),
@@ -411,6 +412,16 @@ impl EncryptionPage {
         }
         let mut actions: Vec<AnyElement> = Vec::new();
         match phase.as_str() {
+            "recoveryConfirmationRequired" => {
+                actions.push(self.action_button(
+                    theme,
+                    "vault-show-recovery",
+                    "Show recovery kit",
+                    true,
+                    cx,
+                    |this, cx| this.setup(cx),
+                ));
+            }
             "notEnrolled" => {
                 if status.get("remoteVault").and_then(Value::as_bool) == Some(true) {
                     actions.push(self.action_button(
@@ -580,8 +591,14 @@ impl EncryptionPage {
                                             .id("vault-kit-done")
                                             .cursor_pointer()
                                             .on_click(cx.listener(|this, _, _, cx| {
-                                                this.kit = None;
-                                                cx.notify();
+                                                this.action(
+                                                    methods::VAULT_CONFIRM_RECOVERY,
+                                                    serde_json::json!({}),
+                                                    |page, _| {
+                                                        page.kit = None;
+                                                    },
+                                                    cx,
+                                                );
                                             })),
                                     ),
                             ),
@@ -781,8 +798,8 @@ impl Render for EncryptionPage {
             Some(WorkspaceScope::Local) => {
                 "This workspace is local-only; nothing is sent to a sync backend.".to_string()
             }
-            _ => "Sessions, files and workspace details are encrypted before they reach our \
-                  servers. Approved devices can read them; the sync backend stores ciphertext."
+            _ => "Encrypted-sync preview. Key management and selected sync paths are implemented, \
+                  but complete content coverage and migration are not ready for production use."
                 .to_string(),
         };
         let status = self.render_status(&theme, cx);
@@ -830,7 +847,7 @@ mod tests {
         assert!(phase_copy(&locked).1.contains("no keychain"));
         assert_eq!(
             phase_copy(&serde_json::json!({ "phase": "ready" })).0,
-            "Encrypted"
+            "Vault ready"
         );
         assert_eq!(
             phase_copy(&serde_json::json!({ "phase": "keyUpdateRequired" })).0,

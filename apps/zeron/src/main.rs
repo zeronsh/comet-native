@@ -53,6 +53,8 @@ enum Command {
 
 #[derive(Subcommand, Debug)]
 enum VaultCommand {
+    #[command(about = "Confirm that you saved the recovery key and file")]
+    ConfirmRecovery,
     /// Show this device's vault state and the approved devices.
     Status,
     /// Create this account's vault with this device as its first member and
@@ -223,6 +225,7 @@ fn main() -> anyhow::Result<()> {
             let port = engine_config_from_env().ipc_port;
             runtime.block_on(async move {
                 match command {
+                    VaultCommand::ConfirmRecovery => vault_cli::confirm_recovery(port).await,
                     VaultCommand::Status => vault_cli::status(port).await,
                     VaultCommand::Setup => vault_cli::setup(port).await,
                     VaultCommand::Pair => vault_cli::pair(port).await,

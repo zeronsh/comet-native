@@ -55,6 +55,7 @@ pub enum VaultPhase {
         expires_at: i64,
     },
     Ready,
+    RecoveryConfirmationRequired,
     /// Membership advanced to an epoch whose key this device does not hold.
     KeyUpdateRequired,
     /// Server data failed verification against local pins.
@@ -171,6 +172,16 @@ struct Guarded {
     locked: Option<String>,
     verification_failure: Option<String>,
     remote_vault: Option<bool>,
+}
+
+impl Guarded {
+    fn content_blocked(&self) -> bool {
+        self.locked.is_some()
+            || self.verification_failure.is_some()
+            || self.state.pending_membership.is_some()
+            || self.state.setup_recovery.is_some()
+            || !self.state.owed_envelopes.is_empty()
+    }
 }
 
 struct Inner {
@@ -333,6 +344,9 @@ impl VaultService {
                 reason: reason.clone(),
             });
         }
+        if guarded.state.pending_membership.is_some() {
+            return base(VaultPhase::KeyUpdateRequired);
+        }
         let Some(trust) = &guarded.trust else {
             if let Some(pending) = &guarded.state.enrollment {
                 let code = guarded
@@ -372,8 +386,12 @@ impl VaultService {
             .collect();
         let phase = if head.active_device(&trust.device_id).is_none() {
             VaultPhase::Revoked
-        } else if trust.keyring.epoch_key(head.epoch()).is_none() {
+        } else if trust.keyring.epoch_key(head.epoch()).is_none()
+            || !guarded.state.owed_envelopes.is_empty()
+        {
             VaultPhase::KeyUpdateRequired
+        } else if guarded.state.setup_recovery.is_some() {
+            VaultPhase::RecoveryConfirmationRequired
         } else {
             VaultPhase::Ready
         };
@@ -401,7 +419,119 @@ impl VaultService {
             self.inner.status.send_replace(self.compute_status(guarded));
             return Err(error.into());
         }
+        self.inner.status.send_replace(self.compute_status(guarded));
         Ok(())
+    }
+
+    async fn finish_pending_membership(&self, client: &VaultClient) -> Result<(), EngineError> {
+        let pending = {
+            let guarded = lock(&self.inner.guarded);
+            if guarded.state.pending_membership.is_none()
+                && guarded.state.owed_envelopes.is_empty()
+                && guarded.state.pending_approval.is_none()
+            {
+                return Ok(());
+            }
+            guarded.state.pending_membership.clone()
+        };
+        if let Some(encoded) = pending {
+            let (record, sequence) = {
+                let guarded = lock(&self.inner.guarded);
+                if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+                    return Err(EngineError::Other("vault is locked or unverified".into()));
+                }
+                let candidate = rebuild_trust(&guarded.state, &self.inner.profile_hash)
+                    .map_err(EngineError::Other)?
+                    .ok_or_else(|| {
+                        EngineError::Other("pending membership has no trust anchor".into())
+                    })?;
+                let record = decode_base64(&encoded)
+                    .ok_or_else(|| EngineError::Other("invalid pending membership".into()))?;
+                if policy::membership_hash(&record) != *candidate.head().hash() {
+                    return Err(EngineError::Other(
+                        "pending membership does not match the journal".into(),
+                    ));
+                }
+                (record, candidate.head().sequence())
+            };
+            if !matches!(client.post_membership(record).await, Ok(Ok(_))) {
+                let after = i64::try_from(sequence)
+                    .map_err(|_| EngineError::Other("membership sequence overflow".into()))?
+                    - 1;
+                let page = client.membership_after(after).await?;
+                if page.records.first() != Some(&encoded) {
+                    return Err(EngineError::Other(
+                        "pending membership was not accepted; journal retained".into(),
+                    ));
+                }
+            }
+            let mut guarded = lock(&self.inner.guarded);
+            guarded.trust = rebuild_trust(&guarded.state, &self.inner.profile_hash)
+                .map_err(EngineError::Other)?;
+            guarded.state.pending_membership = None;
+            self.commit(&mut guarded)?;
+        }
+        self.pull_membership(client).await?;
+        self.pull_keyring(client).await?;
+        self.publish_owed(client).await?;
+        let approval = lock(&self.inner.guarded).state.pending_approval.clone();
+        if !lock(&self.inner.guarded).state.owed_envelopes.is_empty() {
+            return Err(EngineError::Other(
+                "key envelopes are still pending; refresh to retry".into(),
+            ));
+        }
+        if let Some((request, sequence)) = approval {
+            let request = request
+                .decode::<16>()
+                .ok_or_else(|| EngineError::Other("invalid pending approval".into()))?;
+            client.approve_enrollment(&request, sequence).await?;
+            let mut guarded = lock(&self.inner.guarded);
+            guarded.state.pending_approval = None;
+            self.commit(&mut guarded)?;
+        }
+        self.publish_status();
+        Ok(())
+    }
+
+    fn setup_kit(&self) -> Result<RecoveryKit, EngineError> {
+        let guarded = lock(&self.inner.guarded);
+        if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+            return Err(EngineError::Other("vault is locked or unverified".into()));
+        }
+        let secret = guarded
+            .state
+            .setup_recovery
+            .as_ref()
+            .and_then(Secret::bytes)
+            .ok_or_else(|| EngineError::Other("no recovery kit awaits confirmation".into()))?;
+        let recovery =
+            RecoverySecret::from_bytes(&secret).map_err(|e| EngineError::Other(e.to_string()))?;
+        let trust = guarded
+            .trust
+            .as_ref()
+            .ok_or_else(|| EngineError::Other("vault setup is pending".into()))?;
+        Ok(RecoveryKit {
+            kit: recovery.to_kit().to_string(),
+            recovery_file: recovery_file(trust.head()),
+        })
+    }
+
+    pub async fn confirm_recovery_kit(&self) -> Result<(), EngineError> {
+        let _ops = self.inner.ops.lock().await;
+        if matches!(self.status().phase, VaultPhase::Ready) {
+            return Ok(());
+        }
+        if !matches!(
+            self.status().phase,
+            VaultPhase::RecoveryConfirmationRequired
+        ) {
+            return Err(EngineError::Other(
+                "recovery kit is not ready for confirmation".into(),
+            ));
+        }
+        let mut guarded = lock(&self.inner.guarded);
+        guarded.state.setup_recovery = None;
+        self.commit(&mut guarded)
     }
 
     /// Ensure this device has a private identity (generated once, persisted
@@ -436,6 +566,11 @@ impl VaultService {
     pub async fn setup(&self) -> Result<RecoveryKit, EngineError> {
         let _ops = self.inner.ops.lock().await;
         let client = self.client()?.clone();
+        let resuming = lock(&self.inner.guarded).state.setup_recovery.is_some();
+        if resuming {
+            self.finish_pending_membership(&client).await?;
+            return self.setup_kit();
+        }
         if lock(&self.inner.guarded).trust.is_some() {
             return Err(EngineError::Other("this device is already enrolled".into()));
         }
@@ -494,43 +629,11 @@ impl VaultService {
             .insert_fresh(1)
             .map_err(|e| EngineError::Other(e.to_string()))?;
 
-        // Publish order (RFC §5): the genesis first (it authorizes the
-        // envelopes), then envelopes for this device and the recovery
-        // authority, then local activation. A crash between leaves a vault
-        // no one can use except through `recover`, which is exactly why the
-        // kit is returned only after every step below succeeds.
-        match client.post_membership(genesis.clone()).await? {
-            Ok(_) => {}
-            Err(outcome) => {
-                return Err(EngineError::Other(format!(
-                    "vault creation refused: {}",
-                    outcome.error.unwrap_or_default()
-                )));
-            }
-        }
-        publish_keyring_envelope(
-            &client,
-            &state,
-            &identity.signer,
-            &keyring,
-            RecipientKind::Device,
-            &identity.device_id,
-            &identity.encryption.public_key(),
-        )
-        .await?;
-        publish_keyring_envelope(
-            &client,
-            &state,
-            &identity.signer,
-            &keyring,
-            RecipientKind::Recovery,
-            &state.recovery_authority_id(),
-            &recovery_encryption.public_key(),
-        )
-        .await?;
-
-        let recovery_file = recovery_file(&state);
-        let kit = recovery.to_kit().to_string();
+        // Publish order (RFC §5): journal keys and genesis before sending
+        // the membership record, then deliver the recipient envelopes.
+        // Recovery material stays protected locally until the user confirms
+        // saving the kit. Interrupted publication resumes the same intent;
+        // content remains paused until delivery and confirmation complete.
         {
             let mut guarded = lock(&self.inner.guarded);
             guarded.state.vault = Some(PinnedVault {
@@ -541,13 +644,17 @@ impl VaultService {
             });
             guarded.state.keyring = Some(Secret::of(&keyring.encode()));
             guarded.state.enrollment = None;
+            guarded.state.pending_membership = Some(encode_base64(&genesis));
+            guarded.state.setup_recovery = Some(Secret::of(recovery.expose_secret()));
+            guarded.state.owed_envelopes = vec![
+                (Hex::of(&identity.device_id), 1),
+                (Hex::of(&state.recovery_authority_id()), 1),
+            ];
             self.commit(&mut guarded)?;
-            guarded.trust = rebuild_trust(&guarded.state, &self.inner.profile_hash)
-                .map_err(EngineError::Other)?;
             guarded.remote_vault = Some(true);
         }
-        self.publish_status();
-        Ok(RecoveryKit { kit, recovery_file })
+        self.finish_pending_membership(&client).await?;
+        self.setup_kit()
     }
 
     // ── refresh ──────────────────────────────────────────────────────────────
@@ -561,16 +668,23 @@ impl VaultService {
         if lock(&self.inner.guarded).locked.is_some() {
             return Ok(self.status());
         }
+        self.finish_pending_membership(&client).await?;
         let descriptor = client.descriptor().await?;
         {
             let mut guarded = lock(&self.inner.guarded);
-            guarded.remote_vault = Some(descriptor.is_some());
+            let discovered = descriptor.is_some() && guarded.remote_vault != Some(true);
+            guarded.remote_vault = Some(descriptor.is_some() || guarded.remote_vault == Some(true));
+            if discovered {
+                guarded.encryption_required = true;
+                guarded.state.version = 1;
+                self.commit(&mut guarded)?;
+            }
         }
         let enrolled = lock(&self.inner.guarded).trust.is_some();
         if enrolled {
             self.pull_membership(&client).await?;
             self.pull_keyring(&client).await?;
-            self.publish_owed(&client).await;
+            self.publish_owed(&client).await?;
         } else if lock(&self.inner.guarded).state.enrollment.is_some() {
             self.poll_enrollment(&client).await?;
         }
@@ -668,33 +782,58 @@ impl VaultService {
     }
 
     /// Envelopes this device promised after a rotation it authored.
-    async fn publish_owed(&self, client: &VaultClient) {
+    async fn publish_owed(&self, client: &VaultClient) -> Result<(), EngineError> {
         let owed = lock(&self.inner.guarded).state.owed_envelopes.clone();
-        if owed.is_empty() {
-            return;
-        }
         let mut done = Vec::new();
         for (recipient, epoch) in owed {
-            let Some(recipient_id) = recipient.decode::<16>() else {
-                done.push((recipient, epoch));
-                continue;
-            };
+            let recipient_id = recipient
+                .decode::<16>()
+                .ok_or_else(|| EngineError::Other("invalid owed recipient".into()))?;
+            let slot = format!("{}:{epoch}", recipient.0);
             let sealed = {
-                let guarded = lock(&self.inner.guarded);
-                let Some(trust) = guarded.trust.as_ref() else {
-                    return;
+                let mut guarded = lock(&self.inner.guarded);
+                if guarded.locked.is_some()
+                    || guarded.verification_failure.is_some()
+                    || guarded.state.pending_membership.is_some()
+                {
+                    return Err(EngineError::Other(
+                        "vault update is not durable or verified".into(),
+                    ));
+                }
+                let trust = guarded
+                    .trust
+                    .as_ref()
+                    .ok_or_else(|| EngineError::Other("vault keys are unavailable".into()))?;
+                let cached = guarded
+                    .state
+                    .owed_envelope_records
+                    .get(&slot)
+                    .and_then(|encoded| decode_base64(encoded))
+                    .filter(|bytes| {
+                        UnverifiedRecord::parse(bytes, envelope::MAX_ENVELOPE_PAYLOAD_BYTES)
+                            .is_ok_and(|record| {
+                                record.untrusted_binding().membership_hash == *trust.head().hash()
+                            })
+                    });
+                let sealed = match cached {
+                    Some(record) => Some(Ok(record)),
+                    None => seal_keyring_for(trust, &recipient_id, epoch),
                 };
-                seal_keyring_for(trust, &recipient_id, epoch)
+                if let Some(Ok(record)) = &sealed {
+                    let encoded = encode_base64(record);
+                    if guarded.state.owed_envelope_records.get(&slot) != Some(&encoded) {
+                        guarded.state.owed_envelope_records.insert(slot, encoded);
+                        self.commit(&mut guarded)?;
+                    }
+                }
+                sealed
             };
             match sealed {
                 Some(Ok(record)) => match client.put_envelope(&recipient_id, record).await {
                     Ok(()) => done.push((recipient, epoch)),
                     Err(err) => tracing::warn!(error = %err, "vault: owed envelope publish failed"),
                 },
-                Some(Err(reason)) => {
-                    tracing::warn!(reason, "vault: owed envelope skipped");
-                    done.push((recipient, epoch));
-                }
+                Some(Err(reason)) => return Err(EngineError::Other(reason)),
                 None => done.push((recipient, epoch)),
             }
         }
@@ -704,8 +843,15 @@ impl VaultService {
                 .state
                 .owed_envelopes
                 .retain(|entry| !done.contains(entry));
-            let _ = self.commit(&mut guarded);
+            for (recipient, epoch) in done {
+                guarded
+                    .state
+                    .owed_envelope_records
+                    .remove(&format!("{}:{epoch}", recipient.0));
+            }
+            self.commit(&mut guarded)?;
         }
+        Ok(())
     }
 
     // ── enrollment (new device) ──────────────────────────────────────────────
@@ -966,8 +1112,12 @@ impl VaultService {
             ));
         }
         // Make sure our view of the head is current before authoring on it.
+        self.finish_pending_membership(&client).await?;
         self.pull_membership(&client).await?;
-        let (record, next_state, keyring_envelope) = {
+        if !self.is_ready() {
+            return Err(EngineError::Other("vault is not ready for approval".into()));
+        }
+        let (record, next_state) = {
             let guarded = lock(&self.inner.guarded);
             let trust = guarded
                 .trust
@@ -991,29 +1141,9 @@ impl VaultService {
             let next = head
                 .apply(&record)
                 .map_err(|e| EngineError::Other(format!("add device verify: {e}")))?;
-            let recipient_key = HpkePublicKey::from_bytes(&request.encryption_key)
-                .map_err(|e| EngineError::Other(e.to_string()))?;
-            let envelope = envelope::seal_keyring(
-                &next.envelope_binding(POLICY_OBJECT_ID, next.epoch(), trust.device_id),
-                RecipientKind::Device,
-                &request.device_id,
-                &recipient_key,
-                &trust.keyring,
-                &trust.signer,
-            )
-            .map_err(|e| EngineError::Other(format!("keyring envelope: {e}")))?;
-            (record, next, envelope.into_encoded())
+            (record, next)
         };
         let _ = identity;
-        match client.post_membership(record.clone()).await? {
-            Ok(_) => {}
-            Err(outcome) => {
-                return Err(EngineError::Other(format!(
-                    "approval refused by the vault: {}",
-                    outcome.error.unwrap_or_default()
-                )));
-            }
-        }
         {
             let mut guarded = lock(&self.inner.guarded);
             if let Some(vault) = guarded.state.vault.as_mut() {
@@ -1030,24 +1160,12 @@ impl VaultService {
                 .state
                 .owed_envelopes
                 .push((Hex::of(&request.device_id), next_state.epoch()));
+            guarded.state.pending_membership = Some(encode_base64(&record));
+            guarded.state.pending_approval =
+                Some((Hex::of(&request_id), next_state.sequence() as i64));
             self.commit(&mut guarded)?;
         }
-        client
-            .put_envelope(&request.device_id, keyring_envelope)
-            .await?;
-        {
-            let mut guarded = lock(&self.inner.guarded);
-            guarded
-                .state
-                .owed_envelopes
-                .retain(|(r, _)| r.0 != Hex::of(&request.device_id).0);
-            self.commit(&mut guarded)?;
-        }
-        client
-            .approve_enrollment(&request_id, next_state.sequence() as i64)
-            .await?;
-        self.publish_status();
-        Ok(())
+        self.finish_pending_membership(&client).await
     }
 
     pub async fn reject(&self, request_id_hex: &str) -> Result<(), EngineError> {
@@ -1069,7 +1187,13 @@ impl VaultService {
         let target = Hex(device_id_hex.to_string())
             .decode::<16>()
             .ok_or_else(|| EngineError::Other("bad device id".into()))?;
+        self.finish_pending_membership(&client).await?;
         self.pull_membership(&client).await?;
+        if !self.is_ready() {
+            return Err(EngineError::Other(
+                "vault is not ready for revocation".into(),
+            ));
+        }
         let (record, next_state, next_epoch, fresh_key) = {
             let guarded = lock(&self.inner.guarded);
             let trust = guarded
@@ -1079,6 +1203,11 @@ impl VaultService {
             let head = trust.head();
             if head.active_device(&trust.device_id).is_none() {
                 return Err(EngineError::Other("this device is revoked".into()));
+            }
+            if target == trust.device_id {
+                return Err(EngineError::Other(
+                    "use another approved device to revoke this device".into(),
+                ));
             }
             if head.active_device(&target).is_none() {
                 return Err(EngineError::Other(
@@ -1107,16 +1236,7 @@ impl VaultService {
             zeron_crypto::fill_random(&mut fresh).map_err(|e| EngineError::Other(e.to_string()))?;
             (record, next.clone(), next.epoch(), fresh)
         };
-        match client.post_membership(record.clone()).await? {
-            Ok(_) => {}
-            Err(outcome) => {
-                return Err(EngineError::Other(format!(
-                    "revocation refused by the vault: {}",
-                    outcome.error.unwrap_or_default()
-                )));
-            }
-        }
-        // Activate locally: new epoch key + owed envelopes for every retained
+        // Journal locally: new epoch key + owed envelopes for every retained
         // recipient. The revoked device is deliberately not a recipient.
         {
             let mut guarded = lock(&self.inner.guarded);
@@ -1147,11 +1267,10 @@ impl VaultService {
                     .owed_envelopes
                     .push((Hex::of(&recipient), next_epoch));
             }
+            guarded.state.pending_membership = Some(encode_base64(&record));
             self.commit(&mut guarded)?;
         }
-        self.publish_owed(&client).await;
-        self.publish_status();
-        Ok(())
+        self.finish_pending_membership(&client).await
     }
 
     // ── recovery ─────────────────────────────────────────────────────────────
@@ -1241,15 +1360,6 @@ impl VaultService {
         keyring
             .insert_fresh(next.epoch())
             .map_err(|e| EngineError::Other(e.to_string()))?;
-        match client.post_membership(record.clone()).await? {
-            Ok(_) => {}
-            Err(outcome) => {
-                return Err(EngineError::Other(format!(
-                    "recovery refused by the vault: {}",
-                    outcome.error.unwrap_or_default()
-                )));
-            }
-        }
         let recipients: Vec<[u8; 16]> = next
             .devices()
             .iter()
@@ -1275,14 +1385,13 @@ impl VaultService {
                     .owed_envelopes
                     .push((Hex::of(&recipient), next.epoch()));
             }
+            guarded.state.pending_membership = Some(encode_base64(&record));
             self.commit(&mut guarded)?;
             guarded.trust = rebuild_trust(&guarded.state, &self.inner.profile_hash)
                 .map_err(EngineError::Other)?;
             guarded.remote_vault = Some(true);
         }
-        self.publish_owed(&client).await;
-        self.publish_status();
-        Ok(())
+        self.finish_pending_membership(&client).await
     }
 
     // ── content key material ─────────────────────────────────────────────────
@@ -1294,7 +1403,7 @@ impl VaultService {
         let client = self.client()?.clone();
         let (epoch, cached) = {
             let guarded = lock(&self.inner.guarded);
-            if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+            if guarded.content_blocked() {
                 return Err(EngineError::Other(
                     "vault verification or storage is unavailable".into(),
                 ));
@@ -1335,8 +1444,7 @@ impl VaultService {
         let head = trust.head();
         if head.epoch() != epoch
             || head.active_device(&trust.device_id).is_none()
-            || guarded.locked.is_some()
-            || guarded.verification_failure.is_some()
+            || guarded.content_blocked()
         {
             return Err(EngineError::Other("vault state changed; retry".into()));
         }
@@ -1443,7 +1551,7 @@ impl VaultService {
     /// The binding a record sealed RIGHT NOW for `object_id` would carry.
     pub fn current_content_binding(&self, object_id: [u8; 16]) -> Option<RecordBinding> {
         let guarded = lock(&self.inner.guarded);
-        if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+        if guarded.content_blocked() {
             return None;
         }
         let trust = guarded.trust.as_ref()?;
@@ -1501,7 +1609,7 @@ impl VaultService {
             return Err(OpenFailure::NotAuthorized);
         }
         let guarded = lock(&self.inner.guarded);
-        if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+        if guarded.content_blocked() {
             return Err(OpenFailure::Unavailable);
         }
         let trust = guarded.trust.as_ref().ok_or(OpenFailure::Unavailable)?;
@@ -1796,6 +1904,13 @@ fn seal_keyring_for(
     epoch: u64,
 ) -> Option<Result<Vec<u8>, String>> {
     let head = trust.head();
+    if head.active_device(&trust.device_id).is_none()
+        || trust.keyring.epoch_key(head.epoch()).is_none()
+    {
+        return Some(Err(
+            "current membership and epoch key required for envelopes".into(),
+        ));
+    }
     let (kind, public) = if *recipient == head.recovery_authority_id() {
         (RecipientKind::Recovery, *head.recovery_encryption_key())
     } else {
@@ -1817,27 +1932,6 @@ fn seal_keyring_for(
         .map(|sealed| sealed.into_encoded())
         .map_err(|e| format!("seal: {e}")),
     )
-}
-
-async fn publish_keyring_envelope(
-    client: &VaultClient,
-    state: &MembershipState,
-    signer: &DeviceSigner,
-    keyring: &Keyring,
-    kind: RecipientKind,
-    recipient: &[u8; 16],
-    recipient_key: &HpkePublicKey,
-) -> Result<(), EngineError> {
-    let sealed = envelope::seal_keyring(
-        &state.envelope_binding(POLICY_OBJECT_ID, state.epoch(), *signer.author_id()),
-        kind,
-        recipient,
-        recipient_key,
-        keyring,
-        signer,
-    )
-    .map_err(|e| EngineError::Other(format!("keyring envelope: {e}")))?;
-    client.put_envelope(recipient, sealed.into_encoded()).await
 }
 
 async fn fetch_all_membership(client: &VaultClient) -> Result<Vec<String>, EngineError> {

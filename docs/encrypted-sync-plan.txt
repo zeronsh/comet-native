@@ -1725,4 +1725,37 @@ ES-16  Release controls, support, and staged activation
    Row lifecycle proofs and immutable registry retry records remain open.
 
 
+17.9. Resumable vault changes and recovery confirmation
+
+   Setup, approval, revocation, and recovery journal the signed membership
+   intent and associated key material in the protected local store BEFORE
+   publishing the membership record. An ambiguous response is reconciled
+   against the exact record at its expected sequence. Conflicting remote
+   history retains the intent and pauses rather than resetting local trust.
+   Refresh resumes pending publication, envelopes, and approval bookkeeping.
+   Owed envelopes are persisted before sending and retried byte-for-byte;
+   a changed membership head requires a newly sealed envelope revision.
+
+   Bootstrap keeps the recovery secret only in protected pending setup state
+   until explicit local confirmation. The desktop "I saved it" action and
+   `zeron vault confirm-recovery` durably acknowledge it; until then the phase
+   is RecoveryConfirmationRequired and content key use is blocked. Setup can
+   redisplay an unconfirmed kit after restart. This does not activate a
+   complete encrypted-sync release: the UI labels remaining coverage as a
+   preview. Self-revocation must be performed from another approved device.
+
+   The state file uses exclusive random temporary names, a size budget, and
+   directory fsync on Unix after rename. Malformed non-ASCII hex is rejected
+   without panicking. Three loopback HTTP fault tests cover rejected and
+   ambiguous membership writes, envelope failure, process reopen, identical
+   retries, confirmation, and retention of the exact staged rotation key.
+   Workspace all-target check, crypto tests, and engine suites passed;
+   live-service tests were not executed in this pass.
+
+   Broader verification also reproduced a peer-link sign-out bug: lagged
+   connectivity broadcasts terminated the credential watcher. The watcher
+   now survives lag and subscribes to credentials before spawning; the RPC
+   device-room suite passes with deterministic event overflow coverage.
+
+
                           -- End of Project Plan --
