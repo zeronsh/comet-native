@@ -452,6 +452,10 @@ async fn sign_out_closes_cached_peer_links() {
         .await
         .expect("link is live before sign-out");
 
+    for _ in 0..32 {
+        zeron_sync::wake::notify_online();
+    }
+    tokio::time::sleep(Duration::from_millis(20)).await;
     token.clear();
 
     tokio::time::timeout(Duration::from_secs(5), async {

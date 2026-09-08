@@ -819,23 +819,21 @@ impl LinkCache {
         // Skipped outside a runtime (sync unit tests).
         if tokio::runtime::Handle::try_current().is_ok() {
             let weak = Arc::downgrade(&cache);
+            let mut token_changes = cache.config.token.subscribe();
             tokio::spawn(async move {
                 let mut wake = zeron_sync::wake::subscribe();
                 let mut online = zeron_sync::wake::subscribe_online();
-                let mut token_changes = weak
-                    .upgrade()
-                    .and_then(|cache| cache.config.token.subscribe());
                 loop {
                     tokio::select! {
                         result = wake.recv() => {
-                            if result.is_err() { return; }
+                            if matches!(result, Err(tokio::sync::broadcast::error::RecvError::Closed)) { return; }
                             let Some(cache) = weak.upgrade() else { return };
                             lock(&cache.links).clear();
                             lock(&cache.dial_state).clear();
                             tracing::info!("peer: links + cooldowns cleared after wake");
                         }
                         result = online.recv() => {
-                            if result.is_err() { return; }
+                            if matches!(result, Err(tokio::sync::broadcast::error::RecvError::Closed)) { return; }
                             let Some(cache) = weak.upgrade() else { return };
                             lock(&cache.dial_state).clear();
                         }
