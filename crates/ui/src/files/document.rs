@@ -35,6 +35,7 @@ pub(super) struct PendingSave {
     pub revision: u64,
     pub text: String,
     pub expected_content_hash: String,
+    pub expected_checkout_id: String,
     pub encoding: WorkspaceWritableEncoding,
     pub line_ending: WorkspaceWritableLineEnding,
 }
@@ -193,6 +194,7 @@ impl FileDocument {
             revision: self.revision,
             text,
             expected_content_hash: self.saved_hash.clone()?,
+            expected_checkout_id: self.file.as_ref()?.checkout_id.clone(),
             encoding: self.encoding?,
             line_ending: self.line_ending?,
         };
@@ -387,6 +389,7 @@ mod tests {
 
     fn text_file() -> WorkspaceFileText {
         WorkspaceFileText {
+            checkout_id: "checkout-1".into(),
             path: "src/lib.rs".into(),
             text: Some("fn main() {}".into()),
             content_hash: Some("hash-1".into()),
@@ -456,6 +459,17 @@ mod tests {
         assert_eq!(document.saved_revision, 1);
         assert_eq!(document.revision, 2);
         assert!(document.can_autosave());
+    }
+
+    #[test]
+    fn save_uses_the_read_checkout_identity_not_the_chat_metadata() {
+        let mut document = FileDocument::loading(key("src/lib.rs"));
+        let mut file = text_file();
+        file.checkout_id = "checkout-returned-by-engine".into();
+        document.set_loaded(file);
+        document.mark_user_edit();
+        let pending = document.begin_save("preserved edit".into()).unwrap();
+        assert_eq!(pending.expected_checkout_id, "checkout-returned-by-engine");
     }
 
     #[test]

@@ -375,7 +375,9 @@ impl WorkspaceFiles {
         let cancel = Arc::new(AtomicBool::new(false));
         let cancel_on_drop = CancelOnDrop::new(cancel.clone());
         let result = tokio::task::spawn_blocking(move || {
-            read_file_blocking(&workspace.root, &relative, &cancel)
+            let mut file = read_file_blocking(&workspace.root, &relative, &cancel)?;
+            file.checkout_id = workspace.checkout_id;
+            Ok(file)
         })
         .await
         .map_err(|error| WorkspaceFilesError::Io(format!("file read worker failed: {error}")))?;
@@ -389,6 +391,14 @@ impl WorkspaceFiles {
     ) -> Result<WriteWorkspaceFileOutcome, WorkspaceFilesError> {
         let bytes = encode_write_text(&request)?;
         let workspace = self.resolve_target(&request.target).await?;
+        if request.expected_checkout_id.is_empty()
+            || request.expected_checkout_id != workspace.checkout_id
+        {
+            return Err(WorkspaceFilesError::Authorization(
+                "Workspace changed since this file was opened. Switch back to save your edits."
+                    .into(),
+            ));
+        }
         let relative = WorkspaceRelativePath::file(&request.path)?;
         let key = WorkspaceFileKey {
             checkout_id: workspace.checkout_id.clone(),
@@ -1175,6 +1185,7 @@ fn read_file_blocking(
     };
     if metadata.len() > MAX_PREVIEW_FILE_BYTES {
         return Ok(WorkspaceFileText {
+            checkout_id: String::new(),
             path: wire_path,
             text: None,
             content_hash: None,
@@ -1260,6 +1271,7 @@ fn non_text_file(
     reason: WorkspaceReadOnlyReason,
 ) -> WorkspaceFileText {
     WorkspaceFileText {
+        checkout_id: String::new(),
         path,
         text: None,
         content_hash: None,
@@ -1282,6 +1294,7 @@ fn classify_file_text(
     let modified_at = metadata.modified().ok().map(chrono::DateTime::from);
     if bytes.contains(&0) {
         return WorkspaceFileText {
+            checkout_id: String::new(),
             path,
             text: None,
             content_hash,
@@ -1301,6 +1314,7 @@ fn classify_file_text(
     };
     let Ok(source) = std::str::from_utf8(source) else {
         return WorkspaceFileText {
+            checkout_id: String::new(),
             path,
             text: None,
             content_hash,
@@ -1325,6 +1339,7 @@ fn classify_file_text(
         None
     };
     WorkspaceFileText {
+        checkout_id: String::new(),
         path,
         text: Some(text),
         content_hash,
@@ -2158,6 +2173,7 @@ mod tests {
         line_ending: WorkspaceWritableLineEnding,
     ) -> WriteWorkspaceFileRequest {
         WriteWorkspaceFileRequest {
+            expected_checkout_id: "checkout-test".into(),
             target: WorkspaceTarget {
                 chat_id: Some("chat".into()),
                 space_id: None,

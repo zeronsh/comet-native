@@ -33,29 +33,9 @@ use preview::FilePreviewState;
 use search::FileSearchState;
 
 static NEXT_REVIEW_COMMENT_FLUSH_SOURCE: AtomicU64 = AtomicU64::new(1);
-pub(super) const TOOLBAR_HEIGHT: f32 = 32.0;
-pub(super) const TOOLBAR_BUTTON_SIZE: f32 = 24.0;
-pub(super) const TOOLBAR_BUTTON_RADIUS: f32 = 6.0;
-
-/// Shared chrome keeps the editor and tree headers aligned across the divider.
-pub(super) fn toolbar(theme: &crate::theme::Theme) -> gpui::Div {
-    div()
-        .h(px(TOOLBAR_HEIGHT))
-        .w_full()
-        .flex_none()
-        .px(px(8.0))
-        .flex()
-        .items_center()
-        .gap(px(4.0))
-        .border_t_1()
-        .border_b_1()
-        .border_color(theme.border)
-        .bg(if theme.is_glass() {
-            theme.surface.opacity(0.26)
-        } else {
-            theme.surface
-        })
-}
+use crate::surface_chrome::{
+    CONTROL_RADIUS as TOOLBAR_BUTTON_RADIUS, CONTROL_SIZE as TOOLBAR_BUTTON_SIZE, toolbar,
+};
 
 pub(super) fn toolbar_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
     div()
@@ -861,9 +841,7 @@ impl FilesSurface {
         if self.preview.has_unsaved_changes() {
             self.target_change_pending = true;
             self.pending_request_context = next;
-            for path in self.preview.autosavable_dirty_paths() {
-                self.save_document(path, cx);
-            }
+            self.preview.cancel_autosaves();
             cx.notify();
             return false;
         }
@@ -915,7 +893,7 @@ impl FilesSurface {
                     .min_w_0()
                     .flex_1()
                     .px(px(8.0))
-                    .rounded(px(7.0))
+                    .rounded(px(TOOLBAR_BUTTON_RADIUS))
                     .bg(crate::theme::ink(0.035))
                     .flex()
                     .items_center()
@@ -948,7 +926,7 @@ impl FilesSurface {
                     } else {
                         crate::icons::EYE_CLOSED
                     })
-                    .size(px(12.5))
+                    .size(px(crate::surface_chrome::ICON_SIZE))
                     .text_color(if include_ignored {
                         theme.text
                     } else {

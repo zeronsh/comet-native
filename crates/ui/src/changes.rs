@@ -63,7 +63,7 @@ use zeron_syntax::LanguageId as Lang;
 // Layout numbers (analytic — they drive the fold tween)
 // ---------------------------------------------------------------------------
 
-pub const FILE_HEADER_HEIGHT: f32 = 36.0;
+pub const FILE_HEADER_HEIGHT: f32 = crate::surface_chrome::HEADER_HEIGHT;
 const STICKY_FILE_HEADER_BLUR: f32 = 16.0;
 /// Coverage of the theme's content-plane tint over the sticky header blur.
 /// Light needs substantially more coverage: dark text is much more vulnerable
@@ -3447,12 +3447,12 @@ impl Changes {
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
-            .size(px(24.0))
+            .size(px(crate::surface_chrome::CONTROL_SIZE))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .cursor_pointer()
             // Latched: the blend is neither read nor driven, and its listener
             // would dirty the whole window on every enter/leave for nothing.
@@ -3474,7 +3474,7 @@ impl Changes {
             })
             .child(
                 crate::icons::icon(icon_path)
-                    .size(px(14.0))
+                    .size(px(crate::surface_chrome::ICON_SIZE))
                     .text_color(if active {
                         theme.text
                     } else {
@@ -3533,13 +3533,13 @@ impl Changes {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(crate::surface_chrome::CONTROL_GAP))
                 .child(
                     div()
                         .flex_none()
-                        .h(px(22.0))
+                        .h(px(crate::surface_chrome::CONTROL_SIZE))
                         .px(px(6.0))
-                        .rounded(px(5.0))
+                        .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
                         .flex()
                         .items_center()
                         .bg(crate::theme::ink(0.05))
@@ -3585,14 +3585,14 @@ impl Changes {
             (scope == DiffScope::History).then(|| self.history_view_button(cx));
         let scope_trigger = div()
             .id("changes-scope-trigger")
-            .h(px(24.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .px(px(8.0))
             .flex_none()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.0))
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .cursor_pointer()
             .bg(motion::hover_blend(
                 "changes-scope-trigger",
@@ -3634,9 +3634,12 @@ impl Changes {
             // slot for the current branch instead of repeating the surface name.
             div()
                 .id("history-surface-title")
-                .h(px(24.0))
+                .min_w_0()
+                .max_w(px(160.0))
+                .truncate()
+                .h(px(crate::surface_chrome::CONTROL_SIZE))
                 .px(px(8.0))
-                .flex_none()
+                .flex_shrink(1.0)
                 .flex()
                 .items_center()
                 .font_family(theme.font_mono.clone())
@@ -3663,10 +3666,11 @@ impl Changes {
 
         let trailing: AnyElement = if scope == DiffScope::History {
             div()
-                .flex_none()
+                .min_w_0()
+                .flex_shrink(1.0)
                 .flex()
                 .items_center()
-                .gap(px(2.0))
+                .gap(px(crate::surface_chrome::CONTROL_GAP))
                 .children(history_search_control)
                 .children(history_fetch_button)
                 .children(history_view_button)
@@ -3685,7 +3689,7 @@ impl Changes {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(2.0))
+                .gap(px(crate::surface_chrome::CONTROL_GAP))
                 .child(self.split_toggle(&theme, cx))
                 .child(self.wrap_toggle(&theme, cx))
                 .child(
@@ -3703,14 +3707,15 @@ impl Changes {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(crate::surface_chrome::CONTROL_GAP))
             .child(trigger)
             .when_some(history_count, |element, count| {
                 element.child(
                     div()
                         .flex_1()
                         .min_w_0()
-                        .h(px(24.0))
+                        .overflow_hidden()
+                        .h(px(crate::surface_chrome::CONTROL_SIZE))
                         .flex()
                         .items_center()
                         .child(count),
@@ -3777,7 +3782,7 @@ impl Changes {
         let base_weight = (base.chars().count().max(1) as f32).powi(2);
         let trigger = div()
             .id("changes-ref-trigger")
-            .h(px(22.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .px(px(6.0))
             // Shrinkable, like the branch label beside it — a flex_none
             // trigger with a long base name plowed over the header buttons
@@ -3849,7 +3854,7 @@ impl Changes {
                 .gap(px(6.0))
                 // Extra room off the scope dropdown (row gap alone read
                 // cramped — user report).
-                .ml(px(6.0))
+                .ml(px(crate::surface_chrome::CONTROL_GAP))
                 .child(
                     div()
                         .min_w_0()
@@ -3958,7 +3963,7 @@ impl Changes {
         Some(
             div()
                 .flex_none()
-                .h(px(36.0))
+                .h(px(crate::surface_chrome::HEADER_HEIGHT))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -5240,7 +5245,10 @@ rename to new_name.rs
         assert_eq!(sticky_header_push_offset(None), 0.0);
         assert_eq!(sticky_header_push_offset(Some(80.0)), 0.0);
         assert_eq!(sticky_header_push_offset(Some(FILE_HEADER_HEIGHT)), 0.0);
-        assert_eq!(sticky_header_push_offset(Some(24.0)), -12.0);
+        assert_eq!(
+            sticky_header_push_offset(Some(FILE_HEADER_HEIGHT - 12.0)),
+            -12.0
+        );
         assert_eq!(sticky_header_push_offset(Some(0.0)), -FILE_HEADER_HEIGHT);
     }
 

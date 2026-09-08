@@ -139,6 +139,7 @@ async fn workspace_file_rpcs_list_search_read_write_and_watch() {
                 "chatId": "chat-files",
                 "path": "README.md",
                 "text": "updated\n",
+                "expectedCheckoutId": read.checkout_id,
                 "expectedContentHash": original_hash,
                 "encoding": "utf8",
                 "lineEnding": "lf",
@@ -164,6 +165,7 @@ async fn workspace_file_rpcs_list_search_read_write_and_watch() {
                 "chatId": "chat-files",
                 "path": "README.md",
                 "text": "stale overwrite\n",
+                "expectedCheckoutId": read.checkout_id,
                 "expectedContentHash": "stale",
                 "encoding": "utf8",
                 "lineEnding": "lf",
@@ -195,7 +197,8 @@ async fn workspace_file_rpcs_list_search_read_write_and_watch() {
             "chatId": "chat-files",
             "path": "README.md",
             "text": "concurrent\n",
-            "expectedContentHash": concurrent_hash.clone(),
+            "expectedCheckoutId": read.checkout_id,
+                "expectedContentHash": concurrent_hash.clone(),
             "encoding": "utf8",
             "lineEnding": "lf",
         }),
@@ -206,7 +209,8 @@ async fn workspace_file_rpcs_list_search_read_write_and_watch() {
             "chatId": "chat-files",
             "path": "README.md",
             "text": "concurrent\n",
-            "expectedContentHash": concurrent_hash,
+            "expectedCheckoutId": read.checkout_id,
+                "expectedContentHash": concurrent_hash,
             "encoding": "utf8",
             "lineEnding": "lf",
         }),
@@ -307,4 +311,101 @@ async fn workspace_file_rpcs_preserve_plain_folder_search_support() {
             .is_some_and(|entries| entries.iter().any(|entry| entry["path"] == "notes.txt"))
     );
     core.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn write_rejects_changed_checkout_even_when_contents_match() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let repo = temp.path().join("repo");
+    let worktree = temp.path().join("worktree");
+    init_repo(&repo).await;
+    git(
+        &repo,
+        &["worktree", "add", "-b", "other", worktree.to_str().unwrap()],
+    )
+    .await;
+    let core = assemble(&temp.path().join("data"), "device-files");
+    core.workspace
+        .create_space(
+            "space-files",
+            &core.device_id,
+            repo.to_str().unwrap(),
+            None,
+            true,
+        )
+        .unwrap();
+    core.workspace
+        .create_chat("chat-files", Some("space-files"), None, None, None)
+        .unwrap();
+    let client = zeron_rpc::memory_client(core.rpc_service());
+    let read = client
+        .call(
+            methods::READ_WORKSPACE_FILE,
+            serde_json::json!({
+                "chatId": "chat-files", "path": "README.md"
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(!read["checkoutId"].as_str().unwrap().is_empty());
+    core.workspace
+        .set_chat_cwd("chat-files", worktree.to_str().unwrap())
+        .unwrap();
+    let other = client
+        .call(
+            methods::READ_WORKSPACE_FILE,
+            serde_json::json!({
+                "chatId": "chat-files", "path": "README.md"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(read["contentHash"], other["contentHash"]);
+    assert_ne!(read["checkoutId"], other["checkoutId"]);
+    let mut request = serde_json::json!({
+        "chatId": "chat-files", "path": "README.md", "text": "pending original edit\n",
+        "expectedContentHash": read["contentHash"], "expectedCheckoutId": read["checkoutId"],
+        "encoding": "utf8", "lineEnding": "lf"
+    });
+    let error = client
+        .call(methods::WRITE_WORKSPACE_FILE, request.clone())
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("Workspace changed"), "{error}");
+    request
+        .as_object_mut()
+        .unwrap()
+        .remove("expectedCheckoutId");
+    assert!(
+        client
+            .call(methods::WRITE_WORKSPACE_FILE, request.clone())
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "hello\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).unwrap(),
+        "hello\n"
+    );
+    // Returning to the original checkout allows the preserved edit to be saved.
+    core.workspace
+        .set_chat_cwd("chat-files", repo.to_str().unwrap())
+        .unwrap();
+    request["expectedCheckoutId"] = read["checkoutId"].clone();
+    let written = client
+        .call(methods::WRITE_WORKSPACE_FILE, request)
+        .await
+        .unwrap();
+    assert_eq!(written["status"], "written");
+    assert_eq!(
+        std::fs::read_to_string(repo.join("README.md")).unwrap(),
+        "pending original edit\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(worktree.join("README.md")).unwrap(),
+        "hello\n"
+    );
 }

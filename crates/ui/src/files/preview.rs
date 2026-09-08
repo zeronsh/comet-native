@@ -335,12 +335,10 @@ impl FilePreviewState {
             .collect()
     }
 
-    pub(super) fn autosavable_dirty_paths(&self) -> Vec<String> {
-        self.documents
-            .iter()
-            .filter(|(_, document)| document.can_autosave())
-            .map(|(path, _)| path.clone())
-            .collect()
+    pub(super) fn cancel_autosaves(&mut self) {
+        for document in self.documents.values_mut() {
+            document.autosave_task = None;
+        }
     }
 
     fn request_reload(&mut self, path: &str) -> ReloadDecision {
@@ -1208,6 +1206,9 @@ impl FilesSurface {
     }
 
     pub(super) fn save_document(&mut self, path: String, cx: &mut Context<Self>) {
+        if self.target_change_pending {
+            return;
+        }
         let Some(context) = self.request_context.clone() else {
             return;
         };
@@ -1241,6 +1242,7 @@ impl FilesSurface {
             return;
         };
         let request = WriteWorkspaceFileRequest {
+            expected_checkout_id: pending.expected_checkout_id.clone(),
             target: context.target.clone(),
             path: path.clone(),
             text: pending.text.clone(),
@@ -1756,18 +1758,21 @@ impl FilesSurface {
                         .bg(theme.warning.opacity(0.055))
                         .text_size(px(11.0))
                         .text_color(theme.warning_muted)
-                        .child(if lifecycle_blocked {
-                            "Changes could not be saved safely."
-                        } else if self.target_change_pending {
-                            "Saving changes before switching workspace…"
-                        } else {
-                            "Saving changes before closing…"
-                        })
-                        .when(lifecycle_blocked, |banner| {
+                        .child(div().min_w_0().max_w_full().whitespace_normal().child(
+                            if self.target_change_pending {
+                                "Workspace changed. Switch back to save, or discard these edits."
+                            } else if lifecycle_blocked {
+                                "Changes could not be saved safely."
+                            } else {
+                                "Saving changes before closing…"
+                            },
+                        ))
+                        .when(lifecycle_blocked || self.target_change_pending, |banner| {
                             banner
                                 .child(
                                     div()
                                         .id("files-retry-close-save")
+                                        .when(self.target_change_pending, |button| button.hidden())
                                         .ml_auto()
                                         .cursor_pointer()
                                         .text_color(theme.text)
@@ -1819,11 +1824,13 @@ impl FilesSurface {
                             .bg(theme.warning.opacity(0.055))
                             .text_size(px(11.0))
                             .text_color(theme.warning_muted)
-                            .child(if confirming_reload {
-                                "Discard unsaved changes?"
-                            } else {
-                                "This file changed outside Zeron."
-                            })
+                            .child(div().min_w_0().max_w_full().whitespace_normal().child(
+                                if confirming_reload {
+                                    "Discard unsaved changes?"
+                                } else {
+                                    "This file changed outside Zeron."
+                                },
+                            ))
                             .child(
                                 div()
                                     .ml_auto()
@@ -1895,11 +1902,12 @@ impl FilesSurface {
         let reveal_path = path.to_string();
         let save_path = path.to_string();
         let tooltip_path: SharedString = path.to_string().into();
-        let can_save = self
-            .preview
-            .documents
-            .get(path)
-            .is_some_and(FileDocument::can_save);
+        let can_save = !self.target_change_pending
+            && self
+                .preview
+                .documents
+                .get(path)
+                .is_some_and(FileDocument::can_save);
         let save_status =
             self.preview
                 .documents
@@ -2006,7 +2014,7 @@ impl FilesSurface {
                     .when(!can_save, |element| element.cursor_default().opacity(0.38))
                     .child(
                         icon(icons::FLOPPY_DISK)
-                            .size(px(12.0))
+                            .size(px(crate::surface_chrome::ICON_SIZE))
                             .text_color(theme.text_muted),
                     ),
             )
@@ -2030,7 +2038,7 @@ impl FilesSurface {
                     }))
                     .child(
                         icon(icons::FOLDER)
-                            .size(px(12.0))
+                            .size(px(crate::surface_chrome::ICON_SIZE))
                             .text_color(theme.text_muted),
                     ),
             )
@@ -2049,7 +2057,7 @@ impl FilesSurface {
                 .on_click(cx.listener(|this, _, window, cx| this.toggle_word_wrap(window, cx)))
                 .child(
                     icon(icons::LIST)
-                        .size(px(12.0))
+                        .size(px(crate::surface_chrome::ICON_SIZE))
                         .text_color(if self.preview.word_wrap() {
                             theme.text
                         } else {
@@ -2069,7 +2077,7 @@ impl FilesSurface {
                 .on_click(cx.listener(|this, _, _, cx| this.toggle_tree_sidebar(cx)))
                 .child(
                     icon(icons::SIDEBAR_MINIMALISTIC)
-                        .size(px(12.0))
+                        .size(px(crate::surface_chrome::ICON_SIZE))
                         .text_color(theme.text_muted),
                 ),
             )
@@ -2851,6 +2859,7 @@ mod tests {
             path: path.into(),
         });
         document.set_loaded(zeron_proto::WorkspaceFileText {
+            checkout_id: "checkout-1".into(),
             path: path.into(),
             text: Some(stale_source.into()),
             content_hash: Some(disk_hash.into()),
@@ -2904,6 +2913,7 @@ mod tests {
             path: path.into(),
         });
         document.set_loaded(zeron_proto::WorkspaceFileText {
+            checkout_id: "checkout-1".into(),
             path: path.into(),
             text: Some("fn main() {}".into()),
             content_hash: Some("hash-1".into()),

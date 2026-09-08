@@ -452,6 +452,8 @@ pub struct ReadWorkspaceFileRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileText {
+    /// Identity of the checkout this snapshot was read from.
+    pub checkout_id: String,
     pub path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -501,6 +503,8 @@ pub enum WorkspaceReadOnlyReason {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WriteWorkspaceFileRequest {
+    /// Must match the read snapshot, even if the chat has since changed cwd.
+    pub expected_checkout_id: String,
     #[serde(flatten)]
     pub target: WorkspaceTarget,
     pub path: String,

@@ -941,6 +941,7 @@ async fn workspace_file_surface_proxies_over_the_relay() {
                 "chatId": "chat-files",
                 "path": "src/remote.rs",
                 "text": "pub const REMOTE: bool = false;\n",
+                "expectedCheckoutId": read["checkoutId"],
                 "expectedContentHash": hash,
                 "encoding": "utf8",
                 "lineEnding": "lf",

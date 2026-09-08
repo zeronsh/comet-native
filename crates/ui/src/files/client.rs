@@ -286,6 +286,7 @@ mod tests {
             "path": "src/lib.rs",
             "text": "fn main() {}",
             "contentHash": "abc",
+            "checkoutId": "checkout-1",
             "size": 12,
             "modifiedAt": null,
             "encoding": "utf8",
@@ -337,6 +338,7 @@ mod tests {
                         "path": "src/lib.rs",
                         "text": "fn lib() {}",
                         "contentHash": "hash",
+                        "checkoutId": "checkout-1",
                         "size": 11,
                         "modifiedAt": null,
                         "encoding": "utf8",
@@ -396,6 +398,7 @@ mod tests {
             .unwrap();
         let outcome = client
             .write_file(WriteWorkspaceFileRequest {
+                expected_checkout_id: "checkout-1".into(),
                 target: target(),
                 path: "src/lib.rs".into(),
                 text: "fn main() {}".into(),
@@ -445,6 +448,7 @@ mod tests {
         let client = WorkspaceFilesClient::with_transport(transport.clone(), context);
         let outcome = client
             .write_file(WriteWorkspaceFileRequest {
+                expected_checkout_id: "checkout-1".into(),
                 target: target(),
                 path: "src/lib.rs".into(),
                 text: "changed".into(),

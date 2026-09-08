@@ -1550,14 +1550,14 @@ impl Render for GitHistoryFetchButton {
         let history = self.history.clone();
         div()
             .id("history-fetch-all")
-            .h(px(24.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .px(px(8.0))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
             .gap(px(6.0))
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .bg(if fetching {
                 crate::theme::wash(0.05)
             } else {
@@ -1591,7 +1591,7 @@ impl Render for GitHistoryFetchButton {
                 .into_any_element()
             } else {
                 crate::icons::icon(crate::icons::CLOUD)
-                    .size(px(12.0))
+                    .size(px(crate::surface_chrome::ICON_SIZE))
                     .text_color(theme.text_muted.opacity(0.75))
                     .into_any_element()
             })
@@ -1622,12 +1622,12 @@ impl Render for GitHistoryViewButton {
 
         div()
             .id("history-view-trigger")
-            .size(px(24.0))
+            .size(px(crate::surface_chrome::CONTROL_SIZE))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .cursor_pointer()
             .bg(if showing_tips {
                 theme.accent.opacity(0.12)
@@ -1656,7 +1656,7 @@ impl Render for GitHistoryViewButton {
             })
             .child(
                 crate::icons::icon(crate::icons::FOLD_VERTICAL)
-                    .size(px(12.0))
+                    .size(px(crate::surface_chrome::ICON_SIZE))
                     .text_color(if showing_tips {
                         theme.accent
                     } else {
@@ -1680,12 +1680,12 @@ impl Render for GitHistorySearchControl {
             let control = cx.entity().downgrade();
             return div()
                 .id("history-search-trigger")
-                .size(px(24.0))
+                .size(px(crate::surface_chrome::CONTROL_SIZE))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(6.0))
+                .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
                 .cursor_pointer()
                 .bg(crate::motion::hover_blend(
                     "history-search-trigger",
@@ -1704,7 +1704,7 @@ impl Render for GitHistorySearchControl {
                 })
                 .child(
                     crate::icons::icon(crate::icons::MAGNIFER)
-                        .size(px(12.0))
+                        .size(px(crate::surface_chrome::ICON_SIZE))
                         .text_color(theme.text_muted),
                 )
                 .tooltip(|_, cx| {
@@ -1744,19 +1744,18 @@ impl Render for GitHistorySearchControl {
         };
         div()
             .id("history-search-expanded")
-            .h(px(22.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .w(px(HISTORY_SEARCH_WIDTH))
-            .flex_none()
+            .min_w(px(80.0))
+            .flex_shrink(1.0)
             .overflow_hidden()
             .flex()
             .items_center()
-            .gap(px(4.0))
-            .pl(px(6.0))
+            .gap(px(6.0))
+            .pl(px(crate::surface_chrome::EDGE_INSET))
             .pr(px(2.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(theme.border.opacity(0.8))
-            .bg(theme.surface_raised.opacity(0.86))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
+            .bg(crate::theme::ink(0.035))
             .child(
                 div()
                     .size(px(14.0))
@@ -1774,11 +1773,6 @@ impl Render for GitHistorySearchControl {
                     .flex()
                     .items_center()
                     .overflow_hidden()
-                    .relative()
-                    // The shaped text's ascent sits above its line box;
-                    // nudge the compact input down to the icon's visual
-                    // center rather than relying on flex-box geometry alone.
-                    .top(px(3.0))
                     .child(self.input.clone()),
             )
             .child(

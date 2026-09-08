@@ -6682,15 +6682,7 @@ impl Shell {
                         .size_full()
                         .flex()
                         .flex_col()
-                        .child(
-                            div()
-                                .flex_none()
-                                .h(px(36.0))
-                                .px(px(8.0))
-                                .border_b_1()
-                                .border_color(theme.border)
-                                .child(controls),
-                        )
+                        .child(crate::surface_chrome::toolbar(&theme).child(controls))
                         .child(div().flex_1().min_h_0().child(changes))
                         .into_any_element()
                 }
