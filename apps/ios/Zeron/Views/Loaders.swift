@@ -171,7 +171,7 @@ struct TranscriptSkeleton: View {
     }
 
     private func bubble(_ width: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: Theme.bubbleRadius)
+        RoundedRectangle(cornerRadius: Theme.bubbleRadius, style: .continuous)
             .fill(whiteAlpha(0.07))
             .frame(width: width, height: 42)
             .frame(maxWidth: .infinity, alignment: .trailing)

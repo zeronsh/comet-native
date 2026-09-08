@@ -27,7 +27,7 @@ use gpui::{App, Context, Entity, Task};
 use gpui_tokio::Tokio;
 use serde::de::DeserializeOwned;
 
-use crate::comments::DiffComment;
+use crate::comments::ReviewComment;
 use zeron_doc::{SessionMessageEntry, TranscriptDesync, TranscriptFrame};
 use zeron_engine::{Engine, EngineConfig, EngineRuntime, InstanceLock, rpc::AuthRpc};
 use zeron_proto::{
@@ -627,6 +627,7 @@ pub struct AppState {
     deep_link_notice: Option<String>,
     /// Joined transcript of the selected chat (continuations folded engine-side).
     pub transcript: Vec<SessionMessageEntry>,
+    pub context_usage: Option<zeron_proto::ContextUsage>,
     /// The selected chat's opening `WatchDocMessages` reset has landed. An
     /// empty transcript is otherwise indistinguishable from the pre-replay
     /// gap after selection, where optimistic echoes may already be visible.
@@ -647,7 +648,11 @@ pub struct AppState {
     /// percent ring, present exactly while bytes are moving.
     transfers: HashMap<String, (u64, u64)>,
     /// Written by the changes pane, read by the composer.
-    diff_comments: HashMap<String, Vec<DiffComment>>,
+    review_comments: HashMap<String, Vec<ReviewComment>>,
+    /// File surfaces whose editor-backed comments currently cite a buffer
+    /// revision that has not reached disk yet. A chat remains blocked until
+    /// every surface waiting on a workspace write has finished or cancelled.
+    review_comment_flushes: HashMap<String, HashSet<u64>>,
     /// This engine's device id (best-effort `LocalDevice` probe; `None` until
     /// the engine serves it — views degrade gracefully).
     pub local_device_id: Option<String>,
@@ -712,13 +717,15 @@ impl AppState {
             selected_device: None,
             selected_chat: None,
             transcript: Vec::new(),
+            context_usage: None,
             transcript_replayed: false,
             transcript_revision: 0,
             echoes: HashMap::new(),
             pending_sends: HashMap::new(),
             upload_progress: None,
             transfers: HashMap::new(),
-            diff_comments: HashMap::new(),
+            review_comments: HashMap::new(),
+            review_comment_flushes: HashMap::new(),
             local_device_id: None,
             update: None,
             data_dir: None,
@@ -745,35 +752,83 @@ impl AppState {
         self.selected_chat.clone().unwrap_or_default()
     }
 
-    pub fn diff_comments(&self, key: &str) -> &[DiffComment] {
-        self.diff_comments
+    pub fn review_comments(&self, key: &str) -> &[ReviewComment] {
+        self.review_comments
             .get(key)
             .map(|v| v.as_slice())
             .unwrap_or(&[])
     }
 
-    pub fn add_diff_comment(&mut self, key: &str, comment: DiffComment) {
-        self.diff_comments
+    pub fn add_review_comment(&mut self, key: &str, comment: ReviewComment) {
+        self.review_comments
             .entry(key.to_string())
             .or_default()
             .push(comment);
     }
 
-    pub fn remove_diff_comment(&mut self, key: &str, id: &str) {
-        if let Some(list) = self.diff_comments.get_mut(key) {
+    pub fn remove_review_comment(&mut self, key: &str, id: &str) {
+        if let Some(list) = self.review_comments.get_mut(key) {
             list.retain(|c| c.id != id);
             if list.is_empty() {
-                self.diff_comments.remove(key);
+                self.review_comments.remove(key);
+                self.review_comment_flushes.remove(key);
             }
         }
     }
 
-    pub fn take_diff_comments(&mut self, key: &str) -> Vec<DiffComment> {
-        self.diff_comments.remove(key).unwrap_or_default()
+    pub fn update_review_comment_line(&mut self, key: &str, id: &str, line: u32) {
+        if let Some(comment) = self
+            .review_comments
+            .get_mut(key)
+            .and_then(|comments| comments.iter_mut().find(|comment| comment.id == id))
+        {
+            comment.line = line;
+        }
     }
 
-    pub fn purge_diff_comments(&mut self, key: &str) {
-        self.diff_comments.remove(key);
+    pub fn rename_review_comment_path(&mut self, key: &str, old_path: &str, new_path: &str) {
+        if let Some(comments) = self.review_comments.get_mut(key) {
+            for comment in comments
+                .iter_mut()
+                .filter(|comment| comment.is_file() && comment.path == old_path)
+            {
+                comment.path = new_path.to_string();
+            }
+        }
+    }
+
+    pub fn take_review_comments(&mut self, key: &str) -> Vec<ReviewComment> {
+        self.review_comment_flushes.remove(key);
+        self.review_comments.remove(key).unwrap_or_default()
+    }
+
+    pub fn purge_review_comments(&mut self, key: &str) {
+        self.review_comment_flushes.remove(key);
+        self.review_comments.remove(key);
+    }
+
+    pub fn begin_review_comment_flush(&mut self, key: &str, source: u64) {
+        self.review_comment_flushes
+            .entry(key.to_string())
+            .or_default()
+            .insert(source);
+    }
+
+    pub fn finish_review_comment_flush(&mut self, key: &str, source: u64) {
+        let remove_key = self
+            .review_comment_flushes
+            .get_mut(key)
+            .is_some_and(|sources| {
+                sources.remove(&source);
+                sources.is_empty()
+            });
+        if remove_key {
+            self.review_comment_flushes.remove(key);
+        }
+    }
+
+    pub fn review_comment_flush_pending(&self, key: &str) -> bool {
+        self.review_comment_flushes.contains_key(key)
     }
 
     // ---- reducers (pure) ----
@@ -788,6 +843,7 @@ impl AppState {
             // Selected chat vanished (deleted elsewhere): drop selection + transcript.
             self.selected_chat = None;
             self.transcript.clear();
+            self.context_usage = None;
             self.transcript_revision = self.transcript_revision.wrapping_add(1);
             self.transcript_replayed = false;
             self.transcript_task = None;
@@ -1488,6 +1544,7 @@ impl AppState {
         self.chats_synced = false;
         self.spaces_synced = false;
         self.transcript.clear();
+        self.context_usage = None;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.transcript_replayed = false;
         self.echoes.clear();
@@ -1705,6 +1762,7 @@ impl AppState {
         self.selected_chat = chat_id.clone();
         self.auto_selected = true;
         self.transcript.clear();
+        self.context_usage = None;
         self.transcript_revision = self.transcript_revision.wrapping_add(1);
         self.transcript_replayed = false;
         self.transcript_task = None;
@@ -2091,7 +2149,7 @@ fn spawn_transcript_watch(
                 }
             };
             while let Some(value) = rx.recv().await {
-                let frame: TranscriptFrame = match serde_json::from_value(value) {
+                let update: zeron_doc::TranscriptUpdate = match serde_json::from_value(value) {
                     Ok(frame) => frame,
                     Err(err) => {
                         // Schema skew (a newer peer's entry shape arriving
@@ -2103,10 +2161,18 @@ fn spawn_transcript_watch(
                         continue 'resubscribe;
                     }
                 };
+                let zeron_doc::TranscriptUpdate {
+                    frame,
+                    context_usage: usage,
+                } = update;
                 let mut desync = false;
                 let alive = this.update(cx, |state, cx| {
                     // Guard against a stale pump racing a newer selection.
                     if state.selected_chat.as_deref() == Some(chat_id.as_str()) {
+                        if state.context_usage != usage {
+                            state.context_usage = usage;
+                            cx.notify();
+                        }
                         if let Err(err) = state.receive_transcript_frame(frame, cx) {
                             tracing::warn!(%chat_id, error = %err, "resubscribing transcript");
                             desync = true;
@@ -3668,6 +3734,21 @@ mod tests {
             1
         );
         assert!(parse_orgs(&serde_json::json!("nope")).is_empty());
+    }
+
+    #[test]
+    fn review_comment_flush_waits_for_every_file_surface() {
+        let mut state = AppState::new();
+
+        state.begin_review_comment_flush("chat-1", 1);
+        state.begin_review_comment_flush("chat-1", 2);
+        assert!(state.review_comment_flush_pending("chat-1"));
+
+        state.finish_review_comment_flush("chat-1", 1);
+        assert!(state.review_comment_flush_pending("chat-1"));
+
+        state.finish_review_comment_flush("chat-1", 2);
+        assert!(!state.review_comment_flush_pending("chat-1"));
     }
 
     #[test]

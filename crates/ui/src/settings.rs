@@ -19,6 +19,7 @@ pub mod appearance;
 pub mod archived;
 pub mod composer;
 pub mod devices;
+pub mod files;
 pub mod harnesses;
 pub mod notifications;
 pub mod shortcuts;
@@ -48,7 +49,110 @@ pub const TERMINAL_DEFAULT_HEIGHT: f32 = 280.0;
 /// Debounce for settings writes after a drag/toggle.
 pub const SAVE_DEBOUNCE_MS: u64 = 400;
 
+pub const FILES_AUTOSAVE_DELAY_DEFAULT_MS: u64 = 900;
+pub const FILES_AUTOSAVE_DELAY_MIN_MS: u64 = 100;
+pub const FILES_AUTOSAVE_DELAY_MAX_MS: u64 = 10_000;
+pub const FILES_EDITOR_FONT_SIZE_DEFAULT: f32 = 13.0;
+pub const FILES_EDITOR_FONT_SIZE_MIN: f32 = 9.0;
+pub const FILES_EDITOR_FONT_SIZE_MAX: f32 = 24.0;
+
 const FILE_NAME: &str = "ui-settings.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GitHistoryColumns {
+    pub author: bool,
+    pub date: bool,
+    pub sha: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GitHistoryColumn {
+    Author,
+    Date,
+    Sha,
+}
+
+/// Stable order for the optional Git History columns. Hidden columns remain in
+/// the sequence so showing one again restores the position chosen by the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct GitHistoryColumnOrder(pub Vec<GitHistoryColumn>);
+
+impl GitHistoryColumnOrder {
+    pub fn normalized(mut self) -> Self {
+        let mut columns = Vec::with_capacity(3);
+        for column in self.0.drain(..) {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        }
+        for column in [
+            GitHistoryColumn::Author,
+            GitHistoryColumn::Date,
+            GitHistoryColumn::Sha,
+        ] {
+            if !columns.contains(&column) {
+                columns.push(column);
+            }
+        }
+        Self(columns)
+    }
+}
+
+impl Default for GitHistoryColumnOrder {
+    fn default() -> Self {
+        Self(vec![
+            GitHistoryColumn::Author,
+            GitHistoryColumn::Date,
+            GitHistoryColumn::Sha,
+        ])
+    }
+}
+
+/// Persisted widths for the fixed Git History data columns. The commit column
+/// remains elastic and occupies the space left after these columns and the
+/// topology graph, so resizing its first divider adjusts the adjacent column.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct GitHistoryColumnWidths {
+    pub author: f32,
+    pub date: f32,
+    pub sha: f32,
+}
+
+impl GitHistoryColumnWidths {
+    pub const AUTHOR_MIN: f32 = 44.0;
+    pub const AUTHOR_MAX: f32 = 220.0;
+    pub const DATE_MIN: f32 = 68.0;
+    pub const DATE_MAX: f32 = 180.0;
+    pub const SHA_MIN: f32 = 58.0;
+    pub const SHA_MAX: f32 = 140.0;
+
+    pub fn clamped(mut self) -> Self {
+        let defaults = Self::default();
+        self.author = clamp_or(
+            self.author,
+            Self::AUTHOR_MIN,
+            Self::AUTHOR_MAX,
+            defaults.author,
+        );
+        self.date = clamp_or(self.date, Self::DATE_MIN, Self::DATE_MAX, defaults.date);
+        self.sha = clamp_or(self.sha, Self::SHA_MIN, Self::SHA_MAX, defaults.sha);
+        self
+    }
+}
+
+impl Default for GitHistoryColumnWidths {
+    fn default() -> Self {
+        Self {
+            author: 88.0,
+            date: 88.0,
+            sha: 74.0,
+        }
+    }
+}
 
 /// Whether a settings mutation should wait for the normal coalescing window or
 /// reach disk before returning to the event loop.
@@ -162,6 +266,24 @@ fn schedule(policy: SavePolicy, cx: &mut App) {
     }
 }
 
+impl Default for GitHistoryColumns {
+    fn default() -> Self {
+        Self {
+            author: true,
+            date: true,
+            sha: true,
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum GitHistoryAuthorDisplay {
+    #[default]
+    Avatar,
+    Name,
+}
+
 /// Persist the latest revision. Safe to call at shutdown.
 pub fn flush(cx: &mut App) {
     if !cx.has_global::<SettingsStore>() {
@@ -269,6 +391,14 @@ pub struct UiSettings {
     pub keymap: KeymapConfig,
     /// Light/dark preference. Defaults to following the OS.
     pub appearance: crate::appearance::AppearanceMode,
+    /// Optional columns shown in every Git History pane.
+    pub git_history_columns: GitHistoryColumns,
+    /// User-adjusted widths for the resizable Git History columns.
+    pub git_history_column_widths: GitHistoryColumnWidths,
+    /// User-selected order for the optional Git History columns.
+    pub git_history_column_order: GitHistoryColumnOrder,
+    /// How authors are represented in Git History rows.
+    pub git_history_author_display: GitHistoryAuthorDisplay,
     /// Interface and conversational-prose family. Device-local by design.
     pub ui_font_family: crate::typography::UiFontFamily,
     /// Base size for interface and conversational prose. Code-related surfaces
@@ -283,6 +413,16 @@ pub struct UiSettings {
     /// Agent-sent Markdown fences: wrap long lines to the chat width instead
     /// of exposing their horizontal scroll plane.
     pub code_fences_fit_content: bool,
+    /// Save edited workspace files automatically after the configured delay.
+    pub files_autosave_enabled: bool,
+    /// Idle time before an edited workspace file is saved automatically.
+    pub files_autosave_delay_ms: u64,
+    /// Wrap long lines in workspace file editors and previews.
+    pub files_word_wrap: bool,
+    /// Font size used by editable workspace-file buffers.
+    pub files_editor_font_size: f32,
+    /// Include hidden and ignored entries in workspace file trees.
+    pub files_show_all: bool,
     /// Interactive identity overlay; imported themes default to their own accent.
     pub accent: zeron_theme::AccentSelection,
     /// Glass policy, independent from the selected appearance, theme, and accent.
@@ -318,12 +458,21 @@ impl Default for UiSettings {
             terminal_open: false,
             keymap: KeymapConfig::default(),
             appearance: crate::appearance::AppearanceMode::default(),
+            git_history_columns: GitHistoryColumns::default(),
+            git_history_column_widths: GitHistoryColumnWidths::default(),
+            git_history_column_order: GitHistoryColumnOrder::default(),
+            git_history_author_display: GitHistoryAuthorDisplay::default(),
             ui_font_family: crate::typography::UiFontFamily::default(),
             ui_font_size: crate::typography::UiFontSize::default(),
             theme_selection: zeron_theme::ThemeSelection::default(),
             diff_split: false,
             diff_wrap: false,
             code_fences_fit_content: false,
+            files_autosave_enabled: false,
+            files_autosave_delay_ms: FILES_AUTOSAVE_DELAY_DEFAULT_MS,
+            files_word_wrap: false,
+            files_editor_font_size: FILES_EDITOR_FONT_SIZE_DEFAULT,
+            files_show_all: false,
             accent: zeron_theme::AccentSelection::default(),
             surface: zeron_theme::SurfacePreference::default(),
             legacy_accent_color: None,
@@ -360,6 +509,7 @@ const JUMP_LABELS: [&str; JUMP_SLOTS] = [
 /// rather than panicking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ShortcutId {
+    SaveFile,
     ToggleSidebar,
     ToggleChanges,
     ToggleTerminal,
@@ -371,7 +521,8 @@ pub enum ShortcutId {
 }
 
 impl ShortcutId {
-    pub const ALL: [ShortcutId; 7 + JUMP_SLOTS] = [
+    pub const ALL: [ShortcutId; 8 + JUMP_SLOTS] = [
+        ShortcutId::SaveFile,
         ShortcutId::ToggleSidebar,
         ShortcutId::ToggleChanges,
         ShortcutId::ToggleTerminal,
@@ -393,6 +544,7 @@ impl ShortcutId {
     /// Row label (zeron lib/shortcuts.ts `SHORTCUT_DEFINITIONS`, verbatim).
     pub fn label(self) -> &'static str {
         match self {
+            ShortcutId::SaveFile => "Save file",
             ShortcutId::ToggleSidebar => "Toggle left sidebar",
             ShortcutId::ToggleChanges => "Toggle right sidebar",
             ShortcutId::ToggleTerminal => "Toggle terminal",
@@ -413,8 +565,9 @@ impl ShortcutId {
     /// this guards against only exists off macOS).
     pub fn default_combo_on(self, mac: bool) -> &'static str {
         match self {
-            ShortcutId::ToggleSidebar => "mod-s",
-            ShortcutId::ToggleChanges => "mod-b",
+            ShortcutId::SaveFile => "mod-s",
+            ShortcutId::ToggleSidebar => "mod-b",
+            ShortcutId::ToggleChanges => "mod-r",
             ShortcutId::ToggleTerminal => "mod-j",
             ShortcutId::NewSession => "mod-n",
             // Ctrl+Tab on every platform — but spelled the way THAT platform's
@@ -453,6 +606,7 @@ impl ShortcutId {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KeymapConfig {
+    pub save_file: String,
     pub toggle_sidebar: String,
     pub toggle_changes: String,
     pub toggle_terminal: String,
@@ -470,6 +624,7 @@ pub struct KeymapConfig {
 impl Default for KeymapConfig {
     fn default() -> Self {
         Self {
+            save_file: ShortcutId::SaveFile.default_combo().into(),
             toggle_sidebar: ShortcutId::ToggleSidebar.default_combo().into(),
             toggle_changes: ShortcutId::ToggleChanges.default_combo().into(),
             toggle_terminal: ShortcutId::ToggleTerminal.default_combo().into(),
@@ -485,6 +640,7 @@ impl Default for KeymapConfig {
 impl KeymapConfig {
     pub fn get(&self, id: ShortcutId) -> &str {
         match id {
+            ShortcutId::SaveFile => &self.save_file,
             ShortcutId::ToggleSidebar => &self.toggle_sidebar,
             ShortcutId::ToggleChanges => &self.toggle_changes,
             ShortcutId::ToggleTerminal => &self.toggle_terminal,
@@ -502,6 +658,7 @@ impl KeymapConfig {
 
     pub fn set(&mut self, id: ShortcutId, combo: String) {
         match id {
+            ShortcutId::SaveFile => self.save_file = combo,
             ShortcutId::ToggleSidebar => self.toggle_sidebar = combo,
             ShortcutId::ToggleChanges => self.toggle_changes = combo,
             ShortcutId::ToggleTerminal => self.toggle_terminal = combo,
@@ -725,6 +882,17 @@ impl UiSettings {
             TERMINAL_ABS_MAX_HEIGHT,
             TERMINAL_DEFAULT_HEIGHT,
         );
+        self.files_autosave_delay_ms = self
+            .files_autosave_delay_ms
+            .clamp(FILES_AUTOSAVE_DELAY_MIN_MS, FILES_AUTOSAVE_DELAY_MAX_MS);
+        self.files_editor_font_size = clamp_or(
+            self.files_editor_font_size,
+            FILES_EDITOR_FONT_SIZE_MIN,
+            FILES_EDITOR_FONT_SIZE_MAX,
+            FILES_EDITOR_FONT_SIZE_DEFAULT,
+        );
+        self.git_history_column_widths = self.git_history_column_widths.clamped();
+        self.git_history_column_order = self.git_history_column_order.normalized();
         self.ui_font_size = self.ui_font_size.normalized();
         self.keymap.heal_jump_slots();
         self
@@ -733,13 +901,71 @@ impl UiSettings {
     /// Load from `{data_dir}/ui-settings.json`; defaults on any failure.
     pub fn load(data_dir: &Path) -> Self {
         match std::fs::read_to_string(Self::path(data_dir)) {
-            Ok(text) => match serde_json::from_str::<UiSettings>(&text) {
-                Ok(settings) => settings.migrated().clamped(),
-                Err(err) => {
-                    tracing::warn!(error = %err, "ui-settings corrupt; using defaults");
-                    Self::default()
+            Ok(text) => {
+                match serde_json::from_str::<serde_json::Value>(&text).and_then(|mut value| {
+                    if let Some(keymap) = value
+                        .get_mut("keymap")
+                        .and_then(serde_json::Value::as_object_mut)
+                        && !keymap.contains_key("saveFile")
+                    {
+                        // Reserve customized chords before assigning any new defaults.
+                        // An older map may already use Cmd+S/B/R for another action.
+                        let mut migrating =
+                            vec![(ShortcutId::SaveFile, "saveFile", "", "mod-shift-s")];
+                        for (id, field, old, fallback) in [
+                            (
+                                ShortcutId::ToggleSidebar,
+                                "toggleSidebar",
+                                "mod-s",
+                                "mod-shift-b",
+                            ),
+                            (
+                                ShortcutId::ToggleChanges,
+                                "toggleChanges",
+                                "mod-b",
+                                "mod-shift-r",
+                            ),
+                        ] {
+                            if keymap
+                                .get(field)
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or(old)
+                                == old
+                            {
+                                migrating.push((id, field, old, fallback));
+                            }
+                        }
+                        for (_, field, _, _) in &migrating {
+                            keymap.insert((*field).into(), serde_json::json!(""));
+                        }
+                        let mut resolved: KeymapConfig =
+                            serde_json::from_value(serde_json::Value::Object(keymap.clone()))?;
+                        for (id, field, old, fallback) in migrating {
+                            let combo = [id.default_combo(), old, fallback]
+                                .into_iter()
+                                .find(|candidate| {
+                                    !candidate.is_empty()
+                                        && !ShortcutId::ALL.iter().any(|other| {
+                                            let existing = resolved.get(*other);
+                                            !existing.is_empty()
+                                                && platform_combo(existing)
+                                                    == platform_combo(candidate)
+                                        })
+                                })
+                                .unwrap_or("");
+                            resolved.set(id, combo.into());
+                            keymap.insert(field.into(), serde_json::json!(combo));
+                        }
+                    }
+                    serde_json::from_value::<UiSettings>(value)
+                }) {
+                    Ok(settings) => settings.migrated().clamped(),
+                    Err(err) => {
+                        tracing::warn!(error = %err, "ui-settings corrupt; using defaults");
+                        Self::default()
+                    }
                 }
-            },
+            }
             Err(_) => Self::default(),
         }
     }
@@ -822,6 +1048,22 @@ mod tests {
                 ..KeymapConfig::default()
             },
             appearance: crate::appearance::AppearanceMode::Light,
+            git_history_columns: GitHistoryColumns {
+                author: false,
+                date: true,
+                sha: false,
+            },
+            git_history_column_widths: GitHistoryColumnWidths {
+                author: 132.0,
+                date: 104.0,
+                sha: 82.0,
+            },
+            git_history_column_order: GitHistoryColumnOrder(vec![
+                GitHistoryColumn::Sha,
+                GitHistoryColumn::Author,
+                GitHistoryColumn::Date,
+            ]),
+            git_history_author_display: GitHistoryAuthorDisplay::Name,
             ui_font_family: crate::typography::UiFontFamily::Installed("Arial".into()),
             ui_font_size: crate::typography::UiFontSize::ALL[5],
             theme_selection: zeron_theme::ThemeSelection {
@@ -831,6 +1073,11 @@ mod tests {
             diff_split: true,
             diff_wrap: true,
             code_fences_fit_content: true,
+            files_autosave_enabled: true,
+            files_autosave_delay_ms: 1_500,
+            files_word_wrap: true,
+            files_editor_font_size: 15.0,
+            files_show_all: true,
             accent: zeron_theme::AccentSelection::Preset(zeron_theme::AccentPreset::Cyan),
             surface: zeron_theme::SurfacePreference::Frosted,
             legacy_accent_color: None,
@@ -930,6 +1177,17 @@ mod tests {
         assert_eq!(loaded.surface, zeron_theme::SurfacePreference::ThemeDefault);
         assert_eq!(loaded.sidebar_width, 300.0);
         assert!(!loaded.sound_enabled, "other keys still parse");
+        assert_eq!(
+            loaded.files_autosave_delay_ms,
+            FILES_AUTOSAVE_DELAY_DEFAULT_MS
+        );
+        assert!(!loaded.files_autosave_enabled);
+        assert!(!loaded.files_word_wrap);
+        assert_eq!(
+            loaded.files_editor_font_size,
+            FILES_EDITOR_FONT_SIZE_DEFAULT
+        );
+        assert!(!loaded.files_show_all);
         assert!(
             loaded.notifications_enabled,
             "pre-banner files default banners on"
@@ -937,6 +1195,26 @@ mod tests {
         assert!(
             loaded.notifications_background_only,
             "pre-banner files default background-only on"
+        );
+        assert_eq!(
+            loaded.git_history_columns,
+            GitHistoryColumns::default(),
+            "pre-column files show the complete History table"
+        );
+        assert_eq!(
+            loaded.git_history_column_widths,
+            GitHistoryColumnWidths::default(),
+            "pre-resize files use the original History column widths"
+        );
+        assert_eq!(
+            loaded.git_history_column_order,
+            GitHistoryColumnOrder::default(),
+            "pre-reorder files use the original History column order"
+        );
+        assert_eq!(
+            loaded.git_history_author_display,
+            GitHistoryAuthorDisplay::Avatar,
+            "pre-author-display files default to avatars"
         );
     }
 
@@ -1025,6 +1303,55 @@ mod tests {
         assert_eq!(loaded.sidebar_width, SIDEBAR_MAX);
         assert_eq!(loaded.right_pane_width, RIGHT_PANE_MIN);
         assert!(!loaded.code_fences_fit_content);
+        assert_eq!(
+            UiSettings {
+                files_autosave_delay_ms: 1,
+                ..Default::default()
+            }
+            .clamped()
+            .files_autosave_delay_ms,
+            FILES_AUTOSAVE_DELAY_MIN_MS
+        );
+        assert_eq!(
+            UiSettings {
+                files_editor_font_size: 100.0,
+                ..Default::default()
+            }
+            .clamped()
+            .files_editor_font_size,
+            FILES_EDITOR_FONT_SIZE_MAX
+        );
+    }
+
+    #[test]
+    fn git_history_column_widths_are_clamped_and_nan_heals() {
+        let widths = GitHistoryColumnWidths {
+            author: 10_000.0,
+            date: f32::NAN,
+            sha: 1.0,
+        }
+        .clamped();
+        assert_eq!(widths.author, GitHistoryColumnWidths::AUTHOR_MAX);
+        assert_eq!(widths.date, GitHistoryColumnWidths::default().date);
+        assert_eq!(widths.sha, GitHistoryColumnWidths::SHA_MIN);
+    }
+
+    #[test]
+    fn git_history_column_order_deduplicates_and_restores_missing_columns() {
+        let order = GitHistoryColumnOrder(vec![
+            GitHistoryColumn::Sha,
+            GitHistoryColumn::Sha,
+            GitHistoryColumn::Author,
+        ])
+        .normalized();
+        assert_eq!(
+            order,
+            GitHistoryColumnOrder(vec![
+                GitHistoryColumn::Sha,
+                GitHistoryColumn::Author,
+                GitHistoryColumn::Date,
+            ])
+        );
     }
 
     #[test]
@@ -1057,10 +1384,72 @@ mod tests {
     }
 
     #[test]
+    fn legacy_panel_defaults_migrate_and_custom_shortcuts_survive() {
+        let dir = tempfile::tempdir().unwrap();
+        for (sidebar, right, expected_sidebar, expected_right) in [
+            ("mod-s", "mod-b", "mod-b", "mod-r"),
+            ("mod-shift-x", "mod-alt-b", "mod-shift-x", "mod-alt-b"),
+        ] {
+            std::fs::write(
+                UiSettings::path(dir.path()),
+                serde_json::json!({
+                    "keymap": {"toggleSidebar": sidebar, "toggleChanges": right}
+                })
+                .to_string(),
+            )
+            .unwrap();
+            let settings = UiSettings::load(dir.path());
+            assert_eq!(settings.keymap.toggle_sidebar, expected_sidebar);
+            assert_eq!(settings.keymap.toggle_changes, expected_right);
+            assert_eq!(settings.keymap.save_file, "mod-s");
+        }
+        // Once the new map has been saved, old chords can be assigned deliberately.
+        let mut settings = UiSettings::default();
+        settings.keymap.save_file = "mod-shift-s".into();
+        settings.keymap.toggle_sidebar = "mod-s".into();
+        settings.save(dir.path()).unwrap();
+        assert_eq!(UiSettings::load(dir.path()).keymap, settings.keymap);
+    }
+
+    #[test]
+    fn legacy_migration_reserves_custom_chords_and_survives_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        for (custom, expected_save) in [
+            ("mod-s", "mod-shift-s"),
+            ("mod-b", "mod-s"),
+            ("mod-r", "mod-s"),
+        ] {
+            std::fs::write(UiSettings::path(dir.path()), serde_json::json!({
+                "keymap": {"toggleSidebar": "mod-shift-b", "toggleChanges": "mod-b", "newSession": custom}
+            }).to_string()).unwrap();
+            let loaded = UiSettings::load(dir.path());
+            assert_eq!(loaded.keymap.new_session, custom);
+            assert_eq!(loaded.keymap.toggle_sidebar, "mod-shift-b");
+            assert_eq!(loaded.keymap.save_file, expected_save);
+            assert!(conflicted_shortcuts(&loaded.keymap).is_empty());
+            loaded.save(dir.path()).unwrap();
+            assert_eq!(UiSettings::load(dir.path()).keymap, loaded.keymap);
+        }
+        // If every candidate is already custom-bound, leave the new action
+        // unbound rather than steal a working shortcut from another action.
+        std::fs::write(UiSettings::path(dir.path()), serde_json::json!({
+            "keymap": {"toggleSidebar": "mod-shift-s", "newSession": "mod-s", "toggleChanges": "mod-r"}
+        }).to_string()).unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.keymap.save_file, "");
+        assert_eq!(loaded.keymap.new_session, "mod-s");
+        assert!(conflicted_shortcuts(&loaded.keymap).is_empty());
+    }
+
+    #[test]
     fn keymap_defaults_and_reset() {
         let mut keymap = KeymapConfig::default();
-        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-s");
-        assert_eq!(keymap.get(ShortcutId::ToggleChanges), "mod-b");
+        assert_eq!(keymap.get(ShortcutId::SaveFile), "mod-s");
+        keymap.set(ShortcutId::SaveFile, "mod-shift-s".into());
+        keymap.reset(ShortcutId::SaveFile);
+        assert_eq!(keymap.get(ShortcutId::SaveFile), "mod-s");
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-b");
+        assert_eq!(keymap.get(ShortcutId::ToggleChanges), "mod-r");
         assert_eq!(keymap.get(ShortcutId::ToggleTerminal), "mod-j");
         let ctrl = if cfg!(target_os = "macos") {
             "ctrl"
@@ -1077,7 +1466,7 @@ mod tests {
         keymap.set(ShortcutId::ToggleSidebar, "mod-shift-x".into());
         assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-shift-x");
         keymap.reset(ShortcutId::ToggleSidebar);
-        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-s");
+        assert_eq!(keymap.get(ShortcutId::ToggleSidebar), "mod-b");
         keymap.set(ShortcutId::ArchiveSession, "mod-shift-y".into());
         assert_eq!(keymap.get(ShortcutId::ArchiveSession), "mod-shift-y");
         keymap.reset(ShortcutId::ArchiveSession);
@@ -1187,7 +1576,7 @@ mod tests {
     fn conflict_detection() {
         let mut keymap = KeymapConfig::default();
         assert!(conflicted_shortcuts(&keymap).is_empty());
-        keymap.set(ShortcutId::ToggleChanges, "mod-s".into());
+        keymap.set(ShortcutId::ToggleChanges, "mod-b".into());
         let conflicts = conflicted_shortcuts(&keymap);
         assert!(conflicts.contains(&ShortcutId::ToggleSidebar));
         assert!(conflicts.contains(&ShortcutId::ToggleChanges));

@@ -25,6 +25,7 @@ zeron-theme.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui_tokio.workspace = true
+gpui-base.workspace = true
 tokio.workspace = true
 futures.workspace = true
 async-trait.workspace = true
@@ -42,11 +43,13 @@ chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 sha2.workspace = true
+thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
 mimalloc.workspace = true
 tracing-subscriber.workspace = true

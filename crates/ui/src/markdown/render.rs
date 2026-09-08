@@ -82,6 +82,9 @@ pub struct RenderOptions {
     /// Code-block copy-button plumbing (round 9): `None` renders no button
     /// (previews outside the transcript).
     pub copy: Option<CopyUi>,
+    /// Optional owner-provided routing for links that belong inside the app.
+    /// Returning true prevents the ordinary external URL opener from running.
+    pub link: Option<LinkUi>,
     /// Agent-transcript-only fence layout controls and tracked horizontal
     /// scroll state, keyed by the same element discriminator passed to
     /// [`render_block`]. `None` keeps non-chat Markdown surfaces unchanged.
@@ -95,6 +98,11 @@ pub struct RenderOptions {
 pub struct CopyUi {
     pub handler: Rc<dyn Fn(usize, SharedString, &mut Window, &mut gpui::App)>,
     pub copied_ix: Option<usize>,
+}
+
+#[derive(Clone)]
+pub struct LinkUi {
+    pub handler: Rc<dyn Fn(&str, &mut Window, &mut gpui::App) -> bool>,
 }
 
 type HoverHandler = Rc<dyn Fn(bool, &mut Window, &mut gpui::App)>;
@@ -165,6 +173,7 @@ impl RenderOptions {
             cache: None,
             now: Instant::now(),
             copy: None,
+            link: None,
             code: None,
         }
     }
@@ -784,10 +793,16 @@ fn flat_text_element(
     } else {
         let (ranges, urls): (Vec<_>, Vec<_>) = flat.links.iter().cloned().unzip();
         let id: SharedString = format!("{}-t{ix}", opts.row_key).into();
+        let link_handler = opts.link.clone();
         InteractiveText::new(id, styled)
-            .on_click(ranges, move |clicked_ix, _window, cx| {
+            .on_click(ranges, move |clicked_ix, window, cx| {
                 if let Some(url) = urls.get(clicked_ix) {
-                    cx.open_url(url);
+                    let handled = link_handler
+                        .as_ref()
+                        .is_some_and(|link| (link.handler)(url, window, cx));
+                    if !handled {
+                        cx.open_url(url);
+                    }
                 }
             })
             .into_any_element()
@@ -901,6 +916,18 @@ struct RegEntry {
 
 thread_local! {
     static REGISTRY: RefCell<Vec<RegEntry>> = const { RefCell::new(Vec::new()) };
+}
+
+#[cfg(test)]
+pub(crate) fn selection_test_bounds(key: &str) -> gpui::Bounds<gpui::Pixels> {
+    REGISTRY.with(|r| {
+        r.borrow()
+            .iter()
+            .find(|entry| entry.key.as_ref() == key)
+            .expect("text must be registered")
+            .layout
+            .bounds()
+    })
 }
 
 /// A zero-size canvas that clears the selection registry — paint it FIRST in

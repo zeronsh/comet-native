@@ -496,7 +496,9 @@ pub struct Pickers {
 
 impl Pickers {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| ComposerInput::new("Search…", cx));
+        let search = cx.new(|cx| {
+            ComposerInput::new("Search…", cx).with_accessibility_role(gpui::Role::SearchInput)
+        });
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Edited => {
                 // Typing in a filter resets the highlight to the top of the
@@ -2472,7 +2474,9 @@ impl Pickers {
                         .unwrap_or_else(|| SharedString::from("No ref")),
                     &theme,
                 ));
-            return Some(row().child(left).child(right).into_any_element());
+            // The context indicator follows this footer in the composer;
+            // its own padding supplies the spacing after the branch label.
+            return Some(row().pr_0().child(left).child(right).into_any_element());
         }
 
         // New-session draft: checkout + ref only, LEFT-aligned (device +

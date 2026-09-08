@@ -427,12 +427,19 @@ pub(crate) fn map_update(update: &Value) -> Vec<AgentEvent> {
             let commands = parse_commands(update.get("availableCommands"));
             vec![AgentEvent::AvailableCommands { commands }]
         }
-        // Context-window gauge, not per-turn input/output tokens — zeron's
-        // Usage event feeds rate-limit probes, so a wrong mapping is worse
-        // than none. Mode/config/session-info updates carry nothing we render.
-        "usage_update" | "current_mode_update" | "config_option_update" | "session_info_update" => {
-            Vec::new()
+        "usage_update" => {
+            let tokens = update.get("used").and_then(Value::as_u64);
+            let window = ["max", "limit", "size", "contextWindow", "context_window"]
+                .iter()
+                .find_map(|key| update.get(*key).and_then(Value::as_u64))
+                .filter(|n| *n > 0);
+            if tokens.is_some() || window.is_some() {
+                vec![AgentEvent::ContextUsage { tokens, window }]
+            } else {
+                Vec::new()
+            }
         }
+        "current_mode_update" | "config_option_update" | "session_info_update" => Vec::new(),
         _ => Vec::new(),
     }
 }

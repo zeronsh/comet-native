@@ -46,9 +46,12 @@ use unicode_width::UnicodeWidthChar as _;
 use zeron_proto::{Chat, CheckoutDiff, GitHistoryCommit};
 use zeron_rpc::methods;
 
-use crate::comments::{self, CommentSide, DiffComment};
+use crate::comments::{self, CommentSide, ReviewComment};
 use crate::composer::{ComposerInput, ComposerInputEvent};
-use crate::history::{GitHistory, GitHistoryCount, GitHistoryEvent, GitHistoryFetchButton};
+use crate::history::{
+    GitHistory, GitHistoryCount, GitHistoryEvent, GitHistoryFetchButton, GitHistorySearchControl,
+    GitHistoryViewButton,
+};
 use crate::markdown::render;
 use crate::motion::{self, AnimationExt as _, CHEVRON, COLLAPSE};
 use crate::popover::{self, Popup};
@@ -60,7 +63,7 @@ use zeron_syntax::LanguageId as Lang;
 // Layout numbers (analytic — they drive the fold tween)
 // ---------------------------------------------------------------------------
 
-pub const FILE_HEADER_HEIGHT: f32 = 36.0;
+pub const FILE_HEADER_HEIGHT: f32 = crate::surface_chrome::HEADER_HEIGHT;
 const STICKY_FILE_HEADER_BLUR: f32 = 16.0;
 /// Coverage of the theme's content-plane tint over the sticky header blur.
 /// Light needs substantially more coverage: dark text is much more vulnerable
@@ -615,7 +618,7 @@ pub fn body_height(file: &FileDiff) -> f32 {
 
 pub fn body_height_with(
     file: &FileDiff,
-    comments: &[DiffComment],
+    comments: &[ReviewComment],
     draft: Option<(CommentSide, u32)>,
     mode: DiffMode,
 ) -> f32 {
@@ -840,7 +843,9 @@ pub enum DiffScope {
     Branch,
     /// Changes since the current chat's last turn started.
     LatestTurn,
-    /// Repository commit graph. Hosted here until the right pane becomes tabs.
+    /// Repository commit graph. History owns this scope in its own right-pane
+    /// surface tab; it remains a `Changes` variant so commit rows can open
+    /// their corresponding diff tabs through the existing event path.
     History,
     /// One commit's own changes (parent vs commit) — the per-commit tab a
     /// History row click opens. Never listed in the scope menu
@@ -849,12 +854,9 @@ pub enum DiffScope {
 }
 
 impl DiffScope {
-    pub const ALL: [DiffScope; 4] = [
-        Self::WorkingTree,
-        Self::Branch,
-        Self::LatestTurn,
-        Self::History,
-    ];
+    /// Scopes available from a Diff tab. History is selected from the surface
+    /// picker instead, so it can keep its own tab and toolbar state.
+    pub const ALL: [DiffScope; 3] = [Self::WorkingTree, Self::Branch, Self::LatestTurn];
 
     pub fn label(self) -> &'static str {
         match self {
@@ -959,7 +961,10 @@ pub fn apply_diff_frame(diffs: &mut Vec<CheckoutDiff>, value: serde_json::Value)
     }
 }
 
-fn comment_state_key(comments: &[DiffComment], draft: Option<&(String, CommentSide, u32)>) -> u64 {
+fn comment_state_key(
+    comments: &[ReviewComment],
+    draft: Option<&(String, CommentSide, u32)>,
+) -> u64 {
     let mut parts: Vec<String> = comments.iter().map(|comment| comment.id.clone()).collect();
     if let Some((path, side, line)) = draft {
         parts.push(format!("draft:{path}:{}:{line}", side.tag()));
@@ -1201,7 +1206,7 @@ pub enum DiffRow {
 impl DiffRow {
     /// `FoldingBody` is height-animated, so it reports 0 and never lands in a
     /// height sum.
-    fn height(self, comments: &[DiffComment]) -> f32 {
+    fn height(self, comments: &[ReviewComment]) -> f32 {
         match self {
             DiffRow::FileHeader { .. } => FILE_HEADER_HEIGHT,
             DiffRow::Notice { .. } => NOTICE_HEIGHT,
@@ -1228,20 +1233,20 @@ pub fn body_row_count(file: &FileDiff) -> usize {
 pub fn body_rows(
     file_ix: u32,
     file: &FileDiff,
-    comments: &[DiffComment],
+    comments: &[ReviewComment],
     draft: Option<(CommentSide, u32)>,
     mode: DiffMode,
 ) -> Vec<DiffRow> {
     fn push_cards(
         rows: &mut Vec<DiffRow>,
         file_ix: u32,
-        comments: &[DiffComment],
+        comments: &[ReviewComment],
         draft: Option<(CommentSide, u32)>,
         anchors: &[Option<(CommentSide, u32)>],
     ) {
         for anchor in anchors.iter().flatten() {
             for (ix, comment) in comments.iter().enumerate() {
-                if comment.anchor() == *anchor {
+                if comment.diff_anchor() == Some(*anchor) {
                     rows.push(DiffRow::CommentCard {
                         file: file_ix,
                         card: ix as u32,
@@ -1304,7 +1309,7 @@ pub fn body_rows(
 /// path's slice.
 pub fn flatten_rows(
     files: &[FileDiff],
-    comments: &[DiffComment],
+    comments: &[ReviewComment],
     draft: Option<(&str, CommentSide, u32)>,
     mode: DiffMode,
     mut collapsed: impl FnMut(usize) -> bool,
@@ -1315,9 +1320,9 @@ pub fn flatten_rows(
         let start = rows.len();
         rows.push(DiffRow::FileHeader { file: ix as u32 });
         if !collapsed(ix) {
-            let file_comments: Vec<DiffComment> = comments
+            let file_comments: Vec<ReviewComment> = comments
                 .iter()
-                .filter(|comment| comment.path == file.path)
+                .filter(|comment| !comment.is_file() && comment.path == file.path)
                 .cloned()
                 .collect();
             let file_draft = draft
@@ -1566,7 +1571,9 @@ pub struct Changes {
     comment_key: u64,
     history: Option<Entity<GitHistory>>,
     history_count: Option<Entity<GitHistoryCount>>,
+    history_search_control: Option<Entity<GitHistorySearchControl>>,
     history_fetch_button: Option<Entity<GitHistoryFetchButton>>,
+    history_view_button: Option<Entity<GitHistoryViewButton>>,
     history_events: Option<Subscription>,
     /// Pinned commit for a [`DiffScope::Commit`] pane (sha + subject drive
     /// the fetch and the surface-tab title).
@@ -1643,7 +1650,9 @@ impl Changes {
             comment_key: 0,
             history: None,
             history_count: None,
+            history_search_control: None,
             history_fetch_button: None,
+            history_view_button: None,
             history_events: None,
             commit: None,
             _observe: observe,
@@ -1661,6 +1670,18 @@ impl Changes {
         changes.scope = DiffScope::Commit;
         changes.commit = Some(commit);
         changes
+    }
+
+    /// A dedicated History surface. It shares the commit-opening event path
+    /// with diffs, but is never offered as an item in a Diff tab's scope menu.
+    pub fn for_history(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
+        let mut changes = Self::new(state, cx);
+        changes.scope = DiffScope::History;
+        changes
+    }
+
+    pub fn is_history(&self) -> bool {
+        self.scope == DiffScope::History
     }
 
     /// The surface-tab title (contextual, user request): the pinned commit's
@@ -2063,6 +2084,29 @@ impl Changes {
         button
     }
 
+    fn history_search_control(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Entity<GitHistorySearchControl> {
+        if let Some(control) = &self.history_search_control {
+            return control.clone();
+        }
+        let history = self.history_pane(cx);
+        let control = cx.new(|cx| GitHistorySearchControl::new(history, cx));
+        self.history_search_control = Some(control.clone());
+        control
+    }
+
+    fn history_view_button(&mut self, cx: &mut Context<Self>) -> Entity<GitHistoryViewButton> {
+        if let Some(button) = &self.history_view_button {
+            return button.clone();
+        }
+        let history = self.history_pane(cx);
+        let button = cx.new(|cx| GitHistoryViewButton::new(history, cx));
+        self.history_view_button = Some(button.clone());
+        button
+    }
+
     fn set_base_ref(&mut self, base: String, cx: &mut Context<Self>) {
         if self.base_ref.as_deref() != Some(base.as_str()) {
             self.base_ref = Some(base);
@@ -2377,9 +2421,9 @@ impl Changes {
                 0
             } else {
                 let file = &files[file_ix];
-                let comments: Vec<DiffComment> = staged
+                let comments: Vec<ReviewComment> = staged
                     .iter()
-                    .filter(|comment| comment.path == file.path)
+                    .filter(|comment| !comment.is_file() && comment.path == file.path)
                     .cloned()
                     .collect();
                 body_rows(
@@ -2496,15 +2540,15 @@ impl Changes {
     }
 
     /// Cloned because rendering borrows `self` mutably a moment later.
-    fn staged_comments(&self, cx: &App) -> Vec<DiffComment> {
+    fn staged_comments(&self, cx: &App) -> Vec<ReviewComment> {
         let state = self.state.read(cx);
-        state.diff_comments(&state.composer_key()).to_vec()
+        state.review_comments(&state.composer_key()).to_vec()
     }
 
-    fn comments_for(&self, path: &str, cx: &App) -> Vec<DiffComment> {
+    fn comments_for(&self, path: &str, cx: &App) -> Vec<ReviewComment> {
         self.staged_comments(cx)
             .into_iter()
-            .filter(|comment| comment.path == path)
+            .filter(|comment| !comment.is_file() && comment.path == path)
             .collect()
     }
 
@@ -2577,9 +2621,9 @@ impl Changes {
             {
                 continue;
             }
-            let comments: Vec<DiffComment> = staged
+            let comments: Vec<ReviewComment> = staged
                 .iter()
-                .filter(|comment| comment.path == file.path)
+                .filter(|comment| !comment.is_file() && comment.path == file.path)
                 .cloned()
                 .collect();
             let body = body_rows(
@@ -2671,13 +2715,13 @@ impl Changes {
             cx.notify();
             return;
         }
-        let comment =
-            DiffComment::new(draft.path, draft.side, draft.line, body).renamed_from(draft.old_path);
+        let comment = ReviewComment::new(draft.path, draft.side, draft.line, body)
+            .renamed_from(draft.old_path);
         // `draft.key`, not the live one: the note stages onto the composer it
         // was written against even if the selection moved under it.
         let key = draft.key;
         self.state.update(cx, |state, cx| {
-            state.add_diff_comment(&key, comment);
+            state.add_review_comment(&key, comment);
             cx.notify();
         });
         self.sync_comment_rows(cx);
@@ -2687,7 +2731,7 @@ impl Changes {
     fn remove_comment(&mut self, id: &str, cx: &mut Context<Self>) {
         self.state.update(cx, |state, cx| {
             let key = state.composer_key();
-            state.remove_diff_comment(&key, id);
+            state.remove_review_comment(&key, id);
             cx.notify();
         });
         self.sync_comment_rows(cx);
@@ -3403,12 +3447,12 @@ impl Changes {
     ) -> gpui::Stateful<gpui::Div> {
         div()
             .id(id)
-            .size(px(24.0))
+            .size(px(crate::surface_chrome::CONTROL_SIZE))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .cursor_pointer()
             // Latched: the blend is neither read nor driven, and its listener
             // would dirty the whole window on every enter/leave for nothing.
@@ -3430,7 +3474,7 @@ impl Changes {
             })
             .child(
                 crate::icons::icon(icon_path)
-                    .size(px(14.0))
+                    .size(px(crate::surface_chrome::ICON_SIZE))
                     .text_color(if active {
                         theme.text
                     } else {
@@ -3489,13 +3533,13 @@ impl Changes {
                 .flex()
                 .flex_row()
                 .items_center()
-                .gap(px(8.0))
+                .gap(px(crate::surface_chrome::CONTROL_GAP))
                 .child(
                     div()
                         .flex_none()
-                        .h(px(22.0))
+                        .h(px(crate::surface_chrome::CONTROL_SIZE))
                         .px(px(6.0))
-                        .rounded(px(5.0))
+                        .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
                         .flex()
                         .items_center()
                         .bg(crate::theme::ink(0.05))
@@ -3525,19 +3569,30 @@ impl Changes {
                 .into_any_element();
         }
         let scope = self.scope;
+        let history_branch = (scope == DiffScope::History).then(|| {
+            self.state
+                .read(cx)
+                .selected_chat_row()
+                .and_then(|chat| chat.branch.clone())
+                .unwrap_or_else(|| "HEAD".to_string())
+        });
         let history_count = (scope == DiffScope::History).then(|| self.history_count(cx));
+        let history_search_control =
+            (scope == DiffScope::History).then(|| self.history_search_control(cx));
         let history_fetch_button =
             (scope == DiffScope::History).then(|| self.history_fetch_button(cx));
-        let trigger = div()
+        let history_view_button =
+            (scope == DiffScope::History).then(|| self.history_view_button(cx));
+        let scope_trigger = div()
             .id("changes-scope-trigger")
-            .h(px(24.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .px(px(8.0))
             .flex_none()
             .flex()
             .flex_row()
             .items_center()
             .gap(px(6.0))
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .cursor_pointer()
             .bg(motion::hover_blend(
                 "changes-scope-trigger",
@@ -3565,6 +3620,7 @@ impl Changes {
             .child(
                 div()
                     .text_size(px(12.0))
+                    .line_height(px(14.0))
                     .text_color(theme.text)
                     .child(SharedString::from(scope.label())),
             )
@@ -3573,26 +3629,51 @@ impl Changes {
                     .size(px(12.0))
                     .text_color(theme.text_muted.opacity(0.7)),
             );
-        let trigger = if self.scope_menu.get().is_some() {
+        let trigger = if scope == DiffScope::History {
+            // The tab already identifies this as History; use the fixed title
+            // slot for the current branch instead of repeating the surface name.
+            div()
+                .id("history-surface-title")
+                .min_w_0()
+                .max_w(px(160.0))
+                .truncate()
+                .h(px(crate::surface_chrome::CONTROL_SIZE))
+                .px(px(8.0))
+                .flex_shrink(1.0)
+                .flex()
+                .items_center()
+                .font_family(theme.font_mono.clone())
+                .text_size(px(11.5))
+                .line_height(px(14.0))
+                .text_color(theme.text_dim)
+                .child(SharedString::from(history_branch.unwrap_or_default()))
+                .into_any_element()
+        } else if self.scope_menu.get().is_some() {
             let closing = self.scope_menu.closing_since();
             let menu = self.render_scope_menu(&theme, cx);
-            trigger.relative().child(popover::anchored_menu_below_gap(
-                "changes-scope-menu",
-                menu,
-                closing,
-                10.0,
-            ))
+            scope_trigger
+                .relative()
+                .child(popover::anchored_menu_below_gap(
+                    "changes-scope-menu",
+                    menu,
+                    closing,
+                    10.0,
+                ))
+                .into_any_element()
         } else {
-            trigger
+            scope_trigger.into_any_element()
         };
 
         let trailing: AnyElement = if scope == DiffScope::History {
             div()
-                .flex_none()
+                .min_w_0()
+                .flex_shrink(1.0)
                 .flex()
                 .items_center()
-                .gap(px(2.0))
+                .gap(px(crate::surface_chrome::CONTROL_GAP))
+                .children(history_search_control)
                 .children(history_fetch_button)
+                .children(history_view_button)
                 .child(
                     Self::header_button("history-refresh", crate::icons::REFRESH, &theme).on_click(
                         cx.listener(|this, _, _, cx| {
@@ -3608,7 +3689,7 @@ impl Changes {
                 .flex_none()
                 .flex()
                 .items_center()
-                .gap(px(2.0))
+                .gap(px(crate::surface_chrome::CONTROL_GAP))
                 .child(self.split_toggle(&theme, cx))
                 .child(self.wrap_toggle(&theme, cx))
                 .child(
@@ -3626,10 +3707,19 @@ impl Changes {
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(6.0))
+            .gap(px(crate::surface_chrome::CONTROL_GAP))
             .child(trigger)
             .when_some(history_count, |element, count| {
-                element.child(div().flex_1().min_w_0().h_full().child(count))
+                element.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .h(px(crate::surface_chrome::CONTROL_SIZE))
+                        .flex()
+                        .items_center()
+                        .child(count),
+                )
             })
             .children(self.render_ref_selector(&theme, cx))
             .when(scope != DiffScope::History, |element| {
@@ -3692,7 +3782,7 @@ impl Changes {
         let base_weight = (base.chars().count().max(1) as f32).powi(2);
         let trigger = div()
             .id("changes-ref-trigger")
-            .h(px(22.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .px(px(6.0))
             // Shrinkable, like the branch label beside it — a flex_none
             // trigger with a long base name plowed over the header buttons
@@ -3764,7 +3854,7 @@ impl Changes {
                 .gap(px(6.0))
                 // Extra room off the scope dropdown (row gap alone read
                 // cramped — user report).
-                .ml(px(6.0))
+                .ml(px(crate::surface_chrome::CONTROL_GAP))
                 .child(
                     div()
                         .min_w_0()
@@ -3873,7 +3963,7 @@ impl Changes {
         Some(
             div()
                 .flex_none()
-                .h(px(36.0))
+                .h(px(crate::surface_chrome::HEADER_HEIGHT))
                 .flex()
                 .flex_row()
                 .items_center()
@@ -4401,7 +4491,11 @@ fn render_comment_adder(
         .into_any_element()
 }
 
-fn render_comment_card(comment: &DiffComment, theme: &Theme, cx: &Context<Changes>) -> AnyElement {
+fn render_comment_card(
+    comment: &ReviewComment,
+    theme: &Theme,
+    cx: &Context<Changes>,
+) -> AnyElement {
     let group: SharedString = format!("cmt-card-{}", comment.id).into();
     let id = comment.id.clone();
     div()
@@ -4488,7 +4582,7 @@ fn comment_accent_bar(color: gpui::Hsla) -> gpui::Div {
     div().w(px(ACCENT_BAR_WIDTH)).h_full().flex_none().bg(color)
 }
 
-/// Mirrors [`DiffComment::cite_path`] for the not-yet-staged note.
+/// Mirrors [`ReviewComment::cite_path`] for the not-yet-staged note.
 fn draft_cite_path(draft: &CommentDraft) -> &str {
     match draft.side {
         CommentSide::Old => draft.old_path.as_deref().unwrap_or(&draft.path),
@@ -5151,7 +5245,10 @@ rename to new_name.rs
         assert_eq!(sticky_header_push_offset(None), 0.0);
         assert_eq!(sticky_header_push_offset(Some(80.0)), 0.0);
         assert_eq!(sticky_header_push_offset(Some(FILE_HEADER_HEIGHT)), 0.0);
-        assert_eq!(sticky_header_push_offset(Some(24.0)), -12.0);
+        assert_eq!(
+            sticky_header_push_offset(Some(FILE_HEADER_HEIGHT - 12.0)),
+            -12.0
+        );
         assert_eq!(sticky_header_push_offset(Some(0.0)), -FILE_HEADER_HEIGHT);
     }
 
@@ -5408,7 +5505,7 @@ rename to new_name.rs
     fn split_rows_carry_the_comments_of_both_columns() {
         let files = parse_patch(PATCH);
         // A context row must not stack the same card twice.
-        let comment = DiffComment::new("src/main.rs", CommentSide::New, 1, "why");
+        let comment = ReviewComment::new("src/main.rs", CommentSide::New, 1, "why");
         let rows = body_rows(0, &files[0], &[comment], None, DiffMode::Split);
         assert_eq!(
             rows.iter()
@@ -5419,8 +5516,8 @@ rename to new_name.rs
 
         // Both sides of one paired row hang off that row, in column order.
         let staged = vec![
-            DiffComment::new("src/main.rs", CommentSide::Old, 2, "left"),
-            DiffComment::new("src/main.rs", CommentSide::New, 2, "right"),
+            ReviewComment::new("src/main.rs", CommentSide::Old, 2, "left"),
+            ReviewComment::new("src/main.rs", CommentSide::New, 2, "right"),
         ];
         let rows = body_rows(0, &files[0], &staged, None, DiffMode::Split);
         let edit = rows
@@ -5760,6 +5857,19 @@ rename to new_name.rs
         assert_eq!(DiffScope::Branch.mode(), "branch");
         assert_eq!(DiffScope::LatestTurn.mode(), "turn");
         assert_eq!(DiffScope::default(), DiffScope::WorkingTree);
+    }
+
+    #[test]
+    fn diff_scope_menu_keeps_history_as_a_separate_surface() {
+        assert_eq!(
+            DiffScope::ALL,
+            [
+                DiffScope::WorkingTree,
+                DiffScope::Branch,
+                DiffScope::LatestTurn,
+            ]
+        );
+        assert!(!DiffScope::ALL.contains(&DiffScope::History));
     }
 
     #[test]

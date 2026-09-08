@@ -59,6 +59,8 @@ icon_assets![
     (LIST, "list"),
     (FOLDER_WITH_FILES, "folder-with-files"),
     (FOLDER, "folder"),
+    // Hand-drawn floppy disk in the Solar Linear style. Workspace editor save.
+    (FLOPPY_DISK, "floppy-disk"),
     // Hand-drawn git-branch glyph in the Solar Linear style (like the
     // terminal/plus/return ports) — the set has no branch icon.
     (GIT_BRANCH, "git-branch"),
@@ -112,6 +114,8 @@ icon_assets![
     (RESTART, "restart"),
     (ADD_CIRCLE, "add-circle"),
     (TUNING, "tuning"),
+    (EYE, "eye"),
+    (EYE_CLOSED, "eye-closed"),
     (PAPERCLIP, "paperclip"),
     (PEN, "pen"),
     (ARCHIVE_MINIMALISTIC, "archive-minimalistic"),
