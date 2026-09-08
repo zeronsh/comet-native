@@ -323,14 +323,27 @@ impl NativePage {
     pub fn discover_favicon(&self, page: String) {
         let host = self.0.borrow();
         let tx = host.tx.clone();
-        let _ = host.web.evaluate_script_with_callback(
-            "(() => { const link = document.querySelector('link[rel~=icon]'); return link ? link.href : new URL('/favicon.ico', location.href).href; })()",
-            move |value| {
-                if let Ok(url) = serde_json::from_str::<String>(&value) {
-                    let _ = tx.try_send(NativeEvent::Favicon { page: page.clone(), url });
-                }
-            },
-        );
+        // Our navigation delegate owns readiness, so Wry's private pending-
+        // script queue is intentionally bypassed. This runs only after finish.
+        let completion = block2::RcBlock::new(move |value: *mut AnyObject, error: *mut NSError| {
+            if !error.is_null() {
+                return;
+            }
+            if let Some(url) =
+                unsafe { value.as_ref() }.and_then(|value| value.downcast_ref::<NSString>())
+            {
+                let _ = tx.try_send(NativeEvent::Favicon {
+                    page: page.clone(),
+                    url: url.to_string(),
+                });
+            }
+        });
+        unsafe {
+            host.view.evaluateJavaScript_completionHandler(
+                &NSString::from_str("(() => { const link = document.querySelector('link[rel~=icon]'); return link ? link.href : new URL('/favicon.ico', location.href).href; })()"),
+                Some(&completion),
+            );
+        }
     }
 }
 
@@ -406,6 +419,7 @@ impl Host {
         let thumbnail_width = width.min(1024.0).min(1024.0 * width / height.max(1.0));
         unsafe {
             config.setSnapshotWidth(Some(&NSNumber::new_f64(thumbnail_width)));
+            config.setAfterScreenUpdates(false);
         }
         let completion = block2::RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
             if generation.get() != epoch || !error.is_null() {
@@ -470,6 +484,11 @@ impl NativePage {
         !self.0.borrow().view.isHidden()
     }
     pub fn fixture_eval(&self, script: &str) {
-        self.0.borrow().web.evaluate_script(script).unwrap();
+        unsafe {
+            self.0
+                .borrow()
+                .view
+                .evaluateJavaScript_completionHandler(&NSString::from_str(script), None);
+        }
     }
 }
