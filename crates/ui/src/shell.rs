@@ -423,6 +423,7 @@ pub enum RightSurface {
     Picker,
     Files,
     File(u64),
+    Browser(u64),
     Diff(u64),
     Terminal(u64),
     /// A subagent's transcript, read-only (per-subagent viz) — the handle
@@ -1141,6 +1142,9 @@ pub struct Shell {
     /// [`Transcript`] pinned to its subagent doc.
     subagent_tabs: std::collections::HashMap<u64, SubagentTab>,
     subagent_seq: u64,
+    browsers: std::collections::HashMap<u64, Entity<crate::browser::BrowserSurface>>,
+    browser_subs: std::collections::HashMap<u64, Subscription>,
+    browser_seq: u64,
     /// Ordered surface tabs per panel key (drag-reorderable; stale entries —
     /// closed terminals/diffs — are skipped at read time).
     right_tabs: std::collections::HashMap<String, Vec<RightSurface>>,
@@ -1470,6 +1474,9 @@ impl Shell {
             diff_seq: 0,
             subagent_tabs: std::collections::HashMap::new(),
             subagent_seq: 0,
+            browsers: std::collections::HashMap::new(),
+            browser_subs: std::collections::HashMap::new(),
+            browser_seq: 0,
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
@@ -2015,6 +2022,15 @@ impl Shell {
                     .subagent_tabs
                     .get(id)
                     .map(|tab| (*surface, tab.title.clone(), false, None)),
+                RightSurface::Browser(id) => self.browsers.get(id).map(|browser| {
+                    let browser = browser.read(cx);
+                    (
+                        *surface,
+                        browser.title(),
+                        false,
+                        browser.page.url.clone().map(Into::into),
+                    )
+                }),
                 RightSurface::Picker => None,
             })
             .collect()
@@ -2034,7 +2050,8 @@ impl Shell {
             RightSurface::Picker
             | RightSurface::Diff(_)
             | RightSurface::Terminal(_)
-            | RightSurface::Subagent(_) => {
+            | RightSurface::Subagent(_)
+            | RightSurface::Browser(_) => {
                 return None;
             }
         };
@@ -2122,7 +2139,7 @@ impl Shell {
             }
             // The tab's feed (watch or snapshot) runs from open to close —
             // activation needs no revalidation.
-            RightSurface::Subagent(_) => {}
+            RightSurface::Subagent(_) | RightSurface::Browser(_) => {}
             RightSurface::Picker => {}
         }
         cx.notify();
@@ -2134,6 +2151,12 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if let RightSurface::Browser(id) = surface {
+            if let Some(browser) = self.browsers.get(&id).cloned() {
+                browser.update(cx, |browser, cx| browser.focus_address(window, cx));
+            }
+            return;
+        }
         let key = self.panel_key(cx);
         let files = match surface {
             RightSurface::Files => self.files.get(&key).cloned(),
@@ -2212,6 +2235,58 @@ impl Shell {
     /// The picker's Diffs card / the `+` menu's Diff row: every click opens a
     /// FRESH diff tab with its own scope/base selection (multiple diff
     /// panels, user request).
+    fn add_browser_surface(
+        &mut self,
+        url: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_chat.is_empty() {
+            return;
+        }
+        let key = self.panel_key(cx);
+        let remote = {
+            let state = self.state.read(cx);
+            state.selected_chat_row().is_some_and(|chat| {
+                Some(chat.device_id.as_str()) != state.local_device_id.as_deref()
+            })
+        };
+        self.browser_seq += 1;
+        let id = self.browser_seq;
+        let browser = cx.new(|cx| crate::browser::BrowserSurface::new(remote, window, cx));
+        let owner = key.clone();
+        let sub = cx.subscribe_in(&browser, window, move |this, _, event, window, cx| {
+            match event {
+                crate::browser::BrowserEvent::Changed => cx.notify(),
+                crate::browser::BrowserEvent::NewTab(url) => {
+                    // A background page cannot open a tab in the wrong session.
+                    if this.panel_key(cx) == owner
+                        && this.resolved_right_active(cx) == RightSurface::Browser(id)
+                    {
+                        this.add_browser_surface(url.clone(), window, cx);
+                    }
+                }
+                crate::browser::BrowserEvent::Close => {
+                    this.close_right_surface(RightSurface::Browser(id), window, cx)
+                }
+            }
+        });
+        self.browsers.insert(id, browser.clone());
+        self.browser_subs.insert(id, sub);
+        self.right_tabs
+            .entry(key)
+            .or_default()
+            .push(RightSurface::Browser(id));
+        self.set_right_active(RightSurface::Browser(id), cx);
+        browser.update(cx, |browser, cx| {
+            if let Some(url) = url {
+                browser.navigate(&url, window, cx);
+            } else {
+                browser.focus_address(window, cx);
+            }
+        });
+    }
+
     fn add_diff_surface(&mut self, cx: &mut Context<Self>) {
         let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
         self.register_diff_surface(changes, cx);
@@ -2597,6 +2672,13 @@ impl Shell {
         }
         match surface {
             RightSurface::Files | RightSurface::File(_) => {}
+            RightSurface::Browser(id) => {
+                if let Some(browser) = self.browsers.remove(&id) {
+                    browser.update(cx, |browser, _| browser.close());
+                }
+                self.browser_subs.remove(&id);
+                window.focus(&self.composer.focus_handle(cx), cx);
+            }
             RightSurface::Diff(id) => {
                 // Dropping the entity tears down its diff watch.
                 self.diffs.remove(&id);
@@ -6745,6 +6827,12 @@ impl Shell {
                         .child(div().flex_1().min_h_0().child(changes))
                         .into_any_element()
                 }
+                RightSurface::Browser(id) => self
+                    .browsers
+                    .get(&id)
+                    .cloned()
+                    .map(|browser| browser.into_any_element())
+                    .unwrap_or_else(|| self.render_surface_picker(cx)),
                 RightSurface::Terminal(tab) => {
                     let panel = self.right_terminal_panel(cx);
                     // Keep the embedded panel's own active tab aligned with
@@ -6883,6 +6971,11 @@ impl Shell {
                                 this.add_files_surface(window, cx);
                             }),
                         ),
+                    )
+                    .child(
+                        row("surface-card-browser", icons::GLOBE, "Browser").on_click(cx.listener(
+                            |this, _, window, cx| this.add_browser_surface(None, window, cx),
+                        )),
                     )
                     .child(
                         row("surface-card-terminal", icons::TERMINAL, "Terminal").on_click(
@@ -7092,13 +7185,25 @@ impl Shell {
                     .unwrap_or(icons::LIST),
                 RightSurface::Subagent(_) => icons::BOT,
                 RightSurface::Terminal(_) => icons::TERMINAL,
+                RightSurface::Browser(_) => icons::GLOBE,
                 RightSurface::Picker => icons::PLUS,
             };
             // A live subagent tab swaps its icon for the mini working
             // spinner (the history fetch button's in-flight recipe) — the
             // doc's streaming tail entry IS the run's liveness, so the swap
             // settles by itself when the subagent finishes.
+            let browser_favicon = match surface {
+                RightSurface::Browser(id) => self
+                    .browsers
+                    .get(&id)
+                    .and_then(|b| b.read(cx).favicon.clone()),
+                _ => None,
+            };
             let subagent_running = match surface {
+                RightSurface::Browser(id) => self
+                    .browsers
+                    .get(&id)
+                    .is_some_and(|b| b.read(cx).page.loading),
                 RightSurface::Subagent(id) => self.subagent_tabs.get(&id).is_some_and(|tab| {
                     self.state
                         .read(cx)
@@ -7216,6 +7321,8 @@ impl Shell {
                                         cx,
                                     )
                                     .into_any_element()
+                                } else if let Some(favicon) = browser_favicon {
+                                    gpui::img(favicon).size(px(12.0)).into_any_element()
                                 } else {
                                     icon(icon_path)
                                         .size(px(12.0))
@@ -7355,6 +7462,20 @@ impl Shell {
                                         .text_color(theme.text_muted),
                                 )
                                 .child(SharedString::from("Files")),
+                        )
+                        .child(
+                            popover::menu_row(&theme, false, "right-plus-browser")
+                                .id("right-plus-browser-row")
+                                .on_click(cx.listener(|this, _, window, cx| {
+                                    this.add_browser_surface(None, window, cx);
+                                    this.close_right_plus(cx);
+                                }))
+                                .child(
+                                    icon(icons::GLOBE)
+                                        .size(px(13.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Browser")),
                         )
                         .child(
                             popover::menu_row(&theme, false, "right-plus-terminal")
@@ -8192,6 +8313,35 @@ impl Render for Shell {
             .debug_gate
             .clone()
             .unwrap_or_else(|| self.state.read(cx).gate());
+
+        let browser_active = matches!(gate, GatePhase::Ready)
+            && !restart_required
+            && matches!(self.route, Route::Chat)
+            && self.right_pane_open(cx);
+        let browser_covered = self.right_plus.get().is_some()
+            || self.chat_menu.get().is_some()
+            || self.user_menu.get().is_some()
+            || self.spaces_menu.get().is_some()
+            || self.sidebar_view_menu.get().is_some()
+            || self.rename_dialog.is_some()
+            || self.delete_confirm.is_some()
+            || self.overlay_owns_keyboard(cx)
+            || self.pending_exit.is_some()
+            || self.sync_flow != SyncFlow::Idle
+            || self.tween_active(self.right_tween)
+            || self.tween_active(self.sidebar_tween)
+            || cx.has_active_drag();
+        let selected_surface = self.resolved_right_active(cx);
+        for (id, browser) in &self.browsers {
+            let presentation = crate::browser::model::presentation(
+                browser_active && selected_surface == RightSurface::Browser(*id),
+                browser_covered,
+            );
+            browser.update(cx, |browser, cx| {
+                browser.set_shortcuts(&self.settings.keymap);
+                browser.set_presentation(presentation, cx);
+            });
+        }
 
         // Fullscreen hides the macOS traffic lights — reflow the control
         // cluster with a 200ms ease-out tween (§1.1). A fullscreen transition
