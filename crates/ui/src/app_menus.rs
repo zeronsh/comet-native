@@ -409,7 +409,10 @@ mod native_quit {
                 >(should_terminate),
                 c"Q@:@".as_ptr(),
             );
-            assert!(added != 0, "GPUI termination delegate contract changed");
+            assert!(
+                added == objc::runtime::YES,
+                "GPUI termination delegate contract changed"
+            );
         }
     }
 }
