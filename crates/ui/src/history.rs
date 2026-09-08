@@ -40,8 +40,11 @@ const HISTORY_NODE_RADIUS: f32 = 3.0;
 const HISTORY_HEAD_RING_PADDING: f32 = 2.0;
 const HISTORY_STROKE_WIDTH: f32 = 1.5;
 const HISTORY_GRAPH_SATURATION: f32 = 0.72;
-const HISTORY_GRAPH_SIDE_PADDING: f32 = 5.0;
-const HISTORY_GRAPH_TRAILING_PADDING: f32 = 20.0;
+// Align the first lane center with the header text gutter. The HEAD ring
+// must also have breathing room against the pane border.
+const HISTORY_GRAPH_SIDE_PADDING: f32 =
+    crate::surface_chrome::EDGE_INSET * 2.0 - HISTORY_NODE_RADIUS;
+const HISTORY_GRAPH_TRAILING_PADDING: f32 = 12.0;
 const HISTORY_GRAPH_MIN_COMPACT_WIDTH: f32 = 48.0;
 const HISTORY_GRAPH_MAX_WIDTH_RATIO: f32 = 0.34;
 const HISTORY_GRAPH_RESIZE_STEP: f32 = 2.0;
