@@ -44,10 +44,10 @@ use crate::settings::harnesses::HarnessesPage;
 use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
-    self, CHAT_PANEL_MIN, JUMP_SLOTS, KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN,
-    SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, SavePolicy, ShortcutId, SidebarOrganization,
-    SidebarSort, TERMINAL_DEFAULT_HEIGHT, UiSettings, badge_combo, jump_hints_visible,
-    platform_combo,
+    self, CHAT_PANEL_MIN, ComposerSendBehavior, JUMP_SLOTS, KeymapConfig, RIGHT_PANE_DEFAULT,
+    RIGHT_PANE_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, SavePolicy, ShortcutId,
+    SidebarOrganization, SidebarSort, TERMINAL_DEFAULT_HEIGHT, UiSettings, badge_combo,
+    jump_hints_visible, modifier_send_hint_visible, platform_combo,
 };
 use crate::state::{
     AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator, OrgRow,
@@ -261,7 +261,11 @@ pub fn cluster_clearance(
 /// (Re-)apply the whole app keymap: clears every binding, restores the composer
 /// map, then binds the customizable shortcuts from `keymap` (feature-inventory
 /// §1.4). Invalid persisted combos fall back to that shortcut's default.
-pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
+pub fn apply_keymap(
+    cx: &mut App,
+    keymap: &KeymapConfig,
+    composer_send_behavior: ComposerSendBehavior,
+) {
     fn valid_or_default(combo: &str, fallback: &str) -> String {
         let candidate = platform_combo(combo);
         if Keystroke::parse(&candidate).is_ok() {
@@ -274,10 +278,9 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     cx.clear_key_bindings();
     // `clear_key_bindings` also removes the contextual editing actions that
     // gpui-base installed at startup. Reinitialize the component layer before
-    // rebuilding Zeron's bindings so Backspace, navigation, selection, undo,
-    // and the rest of the editor keymap continue to reach focused inputs.
+    // rebuilding Zeron's bindings so the file editor keymap remains active.
     gpui_base::init(cx);
-    crate::composer::init(cx);
+    crate::composer::init(cx, composer_send_behavior);
     // Fixed app-level shortcuts (Settings on every platform; ⌘Q quit, ⌘W
     // close, ⌘M minimize, ⌘H hide on macOS) — these back the native menu
     // key equivalents and must survive keymap re-application.
@@ -1341,6 +1344,14 @@ impl Shell {
                         t.on_own_send(chat_id.clone(), message_id.clone(), cx)
                     });
                 }
+                ComposerEvent::Queued {
+                    chat_id,
+                    message_id,
+                } => {
+                    transcript.update(cx, |t, cx| {
+                        t.on_own_queued_send(chat_id.clone(), message_id.clone(), cx)
+                    });
+                }
             }
         });
         // Spawn chips open their subagent's transcript as a right-pane tab.
@@ -1385,7 +1396,7 @@ impl Shell {
             state.set_change_requests_visible(settings.sidebar_show_pull_request, cx)
         });
         // Bind the customizable shortcuts from the persisted keymap.
-        apply_keymap(cx, &settings.keymap);
+        apply_keymap(cx, &settings.keymap, settings.composer_send_behavior);
         // Dev/testing knob: `ZERON_OPEN_ROUTE=settings[/<section>]` boots
         // straight into a settings section — these pages have no deep link and
         // synthetic input can't reach them on headless compositors.
@@ -3148,14 +3159,37 @@ impl Shell {
                 if self.shortcuts_page.is_none() {
                     let state = self.state.clone();
                     let keymap = self.settings.keymap.clone();
-                    let page = cx.new(|cx| ShortcutsPage::new(state, keymap, cx));
-                    // Persist + re-apply the keymap whenever the page changes it.
+                    let composer_send_behavior = self.settings.composer_send_behavior;
+                    let active_turn_send_behavior = self.settings.active_turn_send_behavior;
+                    let page = cx.new(|cx| {
+                        ShortcutsPage::new(
+                            state,
+                            keymap,
+                            composer_send_behavior,
+                            active_turn_send_behavior,
+                            cx,
+                        )
+                    });
+                    // Persist + re-apply shortcut preferences whenever the page changes them.
                     self.shortcuts_sub = Some(cx.subscribe(
                         &page,
                         |this: &mut Shell, _, event: &ShortcutsEvent, cx| {
-                            let ShortcutsEvent::Changed(keymap) = event;
-                            this.settings.keymap = keymap.clone();
-                            apply_keymap(cx, keymap);
+                            match event {
+                                ShortcutsEvent::KeymapChanged(keymap) => {
+                                    this.settings.keymap = keymap.clone();
+                                }
+                                ShortcutsEvent::ComposerSendBehaviorChanged(behavior) => {
+                                    this.settings.composer_send_behavior = *behavior;
+                                }
+                                ShortcutsEvent::ActiveTurnSendBehaviorChanged(behavior) => {
+                                    this.settings.active_turn_send_behavior = *behavior;
+                                }
+                            }
+                            apply_keymap(
+                                cx,
+                                &this.settings.keymap,
+                                this.settings.composer_send_behavior,
+                            );
                             this.schedule_save(cx);
                             cx.notify();
                         },
@@ -3297,8 +3331,8 @@ impl Shell {
         self.add_space.is_some() || self.composer.read(cx).pickers().read(cx).is_open()
     }
 
-    /// Track the held modifiers so the sidebar can show its jump hints. Only a
-    /// change in visibility repaints — modifier traffic is otherwise constant.
+    /// Track held modifiers for sidebar jump hints and the queue's submit hint.
+    /// Only a visibility change repaints; modifier traffic is otherwise constant.
     fn on_modifiers_changed(&mut self, event: &ModifiersChangedEvent, cx: &mut Context<Self>) {
         let mods = &event.modifiers;
         let primary = if cfg!(target_os = "macos") {
@@ -3312,6 +3346,12 @@ impl Shell {
             && !self.overlay_owns_keyboard(cx)
             && jump_hints_visible(&self.settings.keymap, primary, mods.alt, mods.shift);
         self.set_jump_hints(visible, cx);
+        let queue_shortcut_revealed = matches!(self.route, Route::Chat)
+            && !self.overlay_owns_keyboard(cx)
+            && modifier_send_hint_visible(primary, mods.alt, mods.shift);
+        self.composer.update(cx, |composer, cx| {
+            composer.set_queue_shortcut_revealed(queue_shortcut_revealed, cx)
+        });
     }
 
     pub(super) fn set_jump_hints(&mut self, visible: bool, cx: &mut Context<Self>) {
@@ -8224,6 +8264,9 @@ impl Render for Shell {
                 |this: &mut Shell, window, cx| {
                     if !window.is_window_active() {
                         this.set_jump_hints(false, cx);
+                        this.composer.update(cx, |composer, cx| {
+                            composer.set_queue_shortcut_revealed(false, cx)
+                        });
                     }
                 },
             ));
