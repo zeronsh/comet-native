@@ -130,7 +130,16 @@ mod tests {
     #[test]
     fn corpus_renders_through_gpui_in_both_themes() {
         let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(crate::icons::Assets));
-        for (mode, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+        let mut light_mono = Theme::light();
+        light_mono.font_sans = "Geist Mono".into();
+        let mut dark_mono = Theme::dark();
+        dark_mono.font_sans = "Geist Mono".into();
+        for (mode, theme) in [
+            ("light", Theme::light()),
+            ("dark", Theme::dark()),
+            ("light-mono", light_mono),
+            ("dark-mono", dark_mono),
+        ] {
             let palette = Palette::from_theme(&theme);
             for (name, source) in CORPUS {
                 let svg = render(source, &palette).unwrap_or_else(|e| panic!("{mode}/{name}: {e}"));

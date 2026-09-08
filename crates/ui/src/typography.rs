@@ -222,6 +222,11 @@ const GEIST_MONO: [&[u8]; 8] = [
     include_bytes!("../assets/fonts/GeistMono-BoldItalic.ttf"),
 ];
 
+/// Font faces shared by the interface and SVG text-to-path conversion.
+pub(crate) fn bundled_font_faces() -> impl Iterator<Item = &'static [u8]> {
+    GEIST.iter().chain(GEIST_MONO.iter()).copied()
+}
+
 fn register_family(cx: &App, family: &UiFontFamily, faces: &'static [&'static [u8]]) -> bool {
     let fonts = faces.iter().map(|face| Cow::Borrowed(*face)).collect();
     match cx.text_system().add_fonts(fonts) {

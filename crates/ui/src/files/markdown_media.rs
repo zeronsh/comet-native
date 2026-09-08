@@ -73,9 +73,15 @@ pub(super) fn svg_options() -> usvg::Options<'static> {
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
             db.load_system_fonts();
-            db.load_font_data(include_bytes!("../../assets/fonts/Geist.ttf").to_vec());
-            db.load_font_data(include_bytes!("../../assets/fonts/Geist-Bold.ttf").to_vec());
+            for face in crate::typography::bundled_font_faces() {
+                db.load_font_data(face.to_vec());
+            }
             db.set_sans_serif_family("Geist");
+            db.set_monospace_family("Geist Mono");
+            // usvg appends generic serif when a requested family is unavailable
+            // (including GPUI's virtual .SystemUIFont). Its default may refer to
+            // an uninstalled font, silently deleting text during outlining.
+            db.set_serif_family("Geist");
             Arc::new(db)
         })
         .clone();
@@ -137,6 +143,39 @@ pub(crate) fn decode_image(mime: &str, bytes: Vec<u8>) -> Result<MediaImage, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn assert_svg_text_is_visible(family: &str) {
+        let svg = format!(
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="80"><text x="10" y="45" font-family="{family}" font-size="24" fill="black">Modelo de datos</text></svg>"#
+        );
+        let media = decode_image("image/svg+xml", svg.into_bytes()).unwrap();
+        let raster = media
+            .image
+            .to_image_data(gpui::SvgRenderer::new(Arc::new(crate::icons::Assets)))
+            .unwrap();
+        let visible_pixels = raster
+            .as_bytes(0)
+            .unwrap()
+            .chunks_exact(4)
+            .filter(|pixel| pixel[3] > 128)
+            .count();
+        assert!(
+            visible_pixels > 100,
+            "{family}: text disappeared ({visible_pixels} visible pixels)"
+        );
+    }
+
+    #[test]
+    fn svg_text_survives_bundled_mono_font_selection() {
+        assert_svg_text_is_visible("Geist Mono");
+    }
+
+    #[test]
+    fn svg_text_survives_an_unavailable_font() {
+        assert_svg_text_is_visible("Zeron Missing SVG Test Font");
+        assert_svg_text_is_visible(".SystemUIFont");
+    }
+
     #[test]
     fn image_collection_preserves_nested_and_repeated_media() {
         let tree = crate::markdown::parser::parse_full(
