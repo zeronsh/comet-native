@@ -2658,6 +2658,7 @@ impl Shell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let was_active = self.resolved_right_active(cx) == surface;
         let key = self.panel_key(cx);
         let files = match surface {
             RightSurface::Files => self.files.get(&key).cloned(),
@@ -2686,7 +2687,9 @@ impl Shell {
                     browser.update(cx, |browser, cx| browser.close(cx));
                 }
                 self.browser_subs.remove(&id);
-                window.focus(&self.composer.focus_handle(cx), cx);
+                if was_active {
+                    window.focus(&self.composer.focus_handle(cx), cx);
+                }
             }
             RightSurface::Diff(id) => {
                 // Dropping the entity tears down its diff watch.
@@ -9589,6 +9592,84 @@ mod tests {
 mod exit_regressions {
     use super::*;
     use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn browser_tabs_keep_session_ownership_and_release_on_close(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        let weak = window
+            .update(cx, |shell, window, cx| {
+                // A fresh-session canvas never accumulates ownerless tabs.
+                shell.add_browser_surface(None, window, cx);
+                assert!(shell.browsers.is_empty());
+                shell.active_chat = "first-session".into();
+                shell.add_browser_surface(None, window, cx);
+                let first = shell.browser_seq;
+                let weak = shell.browsers[&first].downgrade();
+                shell.add_browser_surface(None, window, cx);
+                let second = shell.browser_seq;
+                assert_ne!(first, second);
+                assert_eq!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Browser(second)
+                );
+                shell.active_chat = "second-session".into();
+                assert!(shell.right_surface_rows(cx).is_empty());
+                shell.add_browser_surface(None, window, cx);
+                let other = shell.browser_seq;
+                shell.active_chat = "first-session".into();
+                assert_eq!(shell.right_surface_rows(cx).len(), 2);
+                assert_eq!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Browser(second)
+                );
+                // Closing a background tab preserves the selected address input.
+                let focus = window.focused(cx);
+                shell.close_right_surface(RightSurface::Browser(first), window, cx);
+                assert_eq!(window.focused(cx), focus);
+                assert_eq!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Browser(second)
+                );
+                shell.close_right_surface(RightSurface::Browser(second), window, cx);
+                assert_eq!(shell.resolved_right_active(cx), RightSurface::Picker);
+                shell.active_chat = "second-session".into();
+                assert_eq!(
+                    shell.resolved_right_active(cx),
+                    RightSurface::Browser(other)
+                );
+                shell.close_right_surface(RightSurface::Browser(other), window, cx);
+                assert!(shell.browsers.is_empty());
+                assert!(shell.browser_subs.is_empty());
+                weak
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(
+            weak.upgrade().is_none(),
+            "closed browser retained by callbacks"
+        );
+    }
 
     #[gpui::test]
     fn lifecycle_actions_keep_pending_and_failed_file_saves_alive(cx: &mut TestAppContext) {

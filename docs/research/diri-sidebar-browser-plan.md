@@ -8,6 +8,53 @@ Diri reference: [`c564784199cfbeabd29f011bac28467a2b12fccf`](https://github.com/
 
 Waku reference: [`e3e47aa6b53fba8b0b09491b29b186a7916aa29d`](https://github.com/egoist/waku/tree/e3e47aa6b53fba8b0b09491b29b186a7916aa29d). Following discussion, v1 now favors Waku's system-webview and compositing architecture; CEF remains a possible later backend.
 
+## Implementation
+
+The implementation uses `browser/{mod,model,view,macos}.rs`, with Wry restricted
+to macOS dependencies. The real shell owns session-specific browser entities;
+blank tabs allocate no WebKit view. Existing tabs retain their page when hidden.
+Closing a tab or deleting its session detaches the native view and removes its
+observers and event monitor. A profile change clears the browser registry and
+its shared nonpersistent website data store. Hiding a tab does **not** promise
+to reclaim its WebKit memory; closing releases the host, while WebKit manages
+its shared process caches.
+
+V1 uses the snapshot fallback without changing Zui: native content is hidden
+beneath app overlays, toolbar/tab tooltips, pane animations and GPUI drags.
+Snapshots are captured on demand, bounded in size, and released after the
+transition. If capture fails, the theme background is the temporary fallback.
+Ordinary window resizing updates the child from measured logical bounds. Manual
+pane dragging uses the same frozen snapshot fallback, rather than the live
+hit-test passthrough discussed in the original plan below.
+
+The browser accepts HTTP(S) addresses only and has no engine IPC bridge.
+Downloads and non-displayable responses are unsupported in the preview; users
+can open the current address externally. Browser tabs are not restored after
+restart. Linux uses the same chrome with an explicit external-browser message.
+Localhost addresses always refer to the UI device, with a hint for remote chats.
+
+`browser-fixture` runs the actual shell with isolated synthetic chat data and a
+loopback HTML server. It captures the empty state, live native page, an open menu,
+light appearance and a load failure. Native checks cover DOM navigation,
+back/forward availability, SPA URL/title updates, independent tabs, shared
+nonpersistent cookies, overlay snapshots, visibility, resizing/takeover and
+teardown. It is gated behind an opt-in feature and is excluded from app builds.
+
+```sh
+cargo test --locked -p zeron-ui --lib -- --test-threads=1
+cargo run --release --locked -p zeron-ui --example browser-fixture \
+  --features browser-fixture -- /tmp/browser-captures
+```
+
+Run the fixture in a logged-in macOS desktop session for native validation and
+screenshots. On Linux it needs an X11 session plus `xdotool` and ImageMagick; its
+screenshots explicitly show the external-only fallback. The macOS CI job uploads
+its captures as `browser-macos-captures`. These automated checks do not establish
+clipboard/IME compatibility across websites or provide an idle-memory benchmark.
+
+The sections below preserve the source findings and original implementation
+plan; this section records the choices actually made for v1.
+
 ## Recommendation
 
 Add `Browser(id)` to Zeron's existing right-pane surfaces. Build the address bar and navigation controls in GPUI, and embed a lazily created `WKWebView` through Wry for page content on macOS. Reuse the existing tab strip, per-session ownership, resize seam, and expand control. On Linux, initially offer an explicitly labeled external-browser fallback, matching Diri; embedded Linux browsing is a separate milestone.

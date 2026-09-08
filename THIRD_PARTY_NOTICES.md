@@ -97,3 +97,11 @@ The common MIT permission notice for the adaptations above follows:
 
 The pinned Shades of Purple license additionally says that anything built with
 it should also be MIT licensed. Zeron is distributed under MIT terms.
+
+## Native browser host
+
+The macOS browser uses [Wry 0.56.0](https://github.com/tauri-apps/wry/tree/wry-v0.56.0)
+(MIT OR Apache-2.0) to host the system WebKit engine, with the `objc2` family
+of bindings (MIT) and `block2` (MIT). Exact versions and transitive dependencies
+are pinned in `Cargo.lock`. The browser integration is independently written
+Zeron code; no GPL Waku application code is included.

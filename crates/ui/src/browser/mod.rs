@@ -20,9 +20,11 @@ pub(crate) fn bind_keys(cx: &mut App, keymap: &crate::settings::KeymapConfig) {
     // already assign mod-shift-r to the right pane.
     let available = |combo: &str, own: Option<ShortcutId>| {
         !combo.is_empty()
-            && !ShortcutId::ALL
-                .iter()
-                .any(|id| Some(*id) != own && keymap.get(*id) == combo)
+            && !ShortcutId::ALL.iter().any(|id| {
+                Some(*id) != own
+                    && gpui::Keystroke::parse(&platform_combo(keymap.get(*id))).ok()
+                        == gpui::Keystroke::parse(&platform_combo(combo)).ok()
+            })
     };
     macro_rules! bind {
         ($combo:literal, $action:ident) => {
@@ -475,5 +477,56 @@ impl BrowserSurface {
         }
         #[cfg(not(target_os = "macos"))]
         let _ = script;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[gpui::test]
+    fn customized_app_shortcuts_win_over_browser_defaults(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            let mut config = crate::settings::KeymapConfig::default();
+            bind_keys(cx, &config);
+            assert_eq!(
+                cx.key_bindings()
+                    .borrow()
+                    .bindings_for_action(&FocusAddress)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                cx.key_bindings()
+                    .borrow()
+                    .bindings_for_action(&Reload)
+                    .count(),
+                1
+            );
+            cx.clear_key_bindings();
+            config.toggle_sidebar = crate::settings::platform_combo("mod-l");
+            config.toggle_changes = "mod-shift-r".into();
+            bind_keys(cx, &config);
+            assert_eq!(
+                cx.key_bindings()
+                    .borrow()
+                    .bindings_for_action(&FocusAddress)
+                    .count(),
+                0
+            );
+            assert_eq!(
+                cx.key_bindings()
+                    .borrow()
+                    .bindings_for_action(&Reload)
+                    .count(),
+                0
+            );
+            assert_eq!(
+                cx.key_bindings()
+                    .borrow()
+                    .bindings_for_action(&NewTab)
+                    .count(),
+                1
+            );
+        });
     }
 }
