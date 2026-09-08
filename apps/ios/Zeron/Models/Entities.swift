@@ -16,6 +16,21 @@ struct DeviceRow: Identifiable, Hashable {
     /// Engine version stamped by the device ("0.2.12"); gates the queued-
     /// attachment flow and other capability checks. nil reads as "too old".
     var version: String?
+    /// Explicit feature declarations; unlike semver, these distinguish a
+    /// personal integration build from upstream built at the same version.
+    var capabilities: [String] = []
+
+    func supports(_ capability: String) -> Bool {
+        capabilities.contains(capability)
+    }
+}
+
+enum EngineCapability {
+    static let messageQueueV1 = "message-queue-v1"
+    static let messageQueueActionsV1 = "message-queue-actions-v1"
+    static let messageQueueAttachmentsV1 = "message-queue-attachments-v1"
+    static let messageQueueCleanAttachmentTextV1 = "message-queue-clean-attachment-text-v1"
+    static let messageQueueEditLeaseV1 = "message-queue-edit-lease-v1"
 }
 
 /// proto/src/lib.rs version_triple: parse a leading major.minor.patch,

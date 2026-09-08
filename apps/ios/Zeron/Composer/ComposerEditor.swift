@@ -39,16 +39,29 @@ final class ComposerEditorController: NSObject, UITextViewDelegate {
     func textViewDidEndEditing(_ textView: UITextView) { focusChanged(false) }
 }
 
+final class ComposerTextView: UITextView {
+    var modifiedSubmit: () -> Void = {}
+    override var keyCommands: [UIKeyCommand]? {
+        let command = UIKeyCommand(input: "\r", modifierFlags: .command,
+                                   action: #selector(submitFromKeyboard))
+        command.discoverabilityTitle = "Send message or advance queue"
+        command.wantsPriorityOverSystemBehavior = true
+        return (super.keyCommands ?? []) + [command]
+    }
+    @objc func submitFromKeyboard() { modifiedSubmit() }
+}
+
 struct ComposerEditor: UIViewRepresentable {
     @Binding var text: String
     @Binding var focused: Bool
     let placeholder: String
     let maxLines: Int
     let controller: ComposerEditorController
+    var onModifiedSubmit: () -> Void = {}
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        let view = ComposerTextView()
         view.backgroundColor = .clear
         view.textContainerInset = .zero
         view.textContainer.lineFragmentPadding = 0
@@ -62,6 +75,7 @@ struct ComposerEditor: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UITextView, context: Context) {
+        (view as? ComposerTextView)?.modifiedSubmit = onModifiedSubmit
         controller.textChanged = { if text != $0 { text = $0 } }
         controller.focusChanged = { if focused != $0 { focused = $0 } }
         view.font = UIFontMetrics(forTextStyle: .body).scaledFont(

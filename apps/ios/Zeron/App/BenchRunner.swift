@@ -56,7 +56,7 @@ enum BenchRunner {
         // Stage 1 — projection. Unchanged in cost; the fix moved it off the
         // main thread, so this is the main-thread stall that used to happen.
         var entries: [MessageEntry] = []
-        let decode = time { entries = SessionStore.decodeEntries(from: doc) ?? [] }
+        let decode = time { entries = SessionStore.decodeEntries(from: doc)?.entries ?? [] }
 
         // Stage 2 — cold row build (empty caches). The OLD per-rebuild cost.
         var rowCount = 0
@@ -110,7 +110,7 @@ enum BenchRunner {
     /// A big synthetic transcript for the `-big` demo route — stresses the
     /// scroll-settle path with far more lazy rows than the demo dataset has.
     static func syntheticEntries(turns: Int) -> [MessageEntry] {
-        SessionStore.decodeEntries(from: buildDoc(turns: turns)) ?? []
+        SessionStore.decodeEntries(from: buildDoc(turns: turns))?.entries ?? []
     }
 
     // MARK: Synthetic doc (schema.rs shape — see SessionStore.entryFrom)

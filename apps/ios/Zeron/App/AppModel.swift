@@ -677,6 +677,31 @@ final class AppModel {
         return workspace?.deviceVersionAtLeast(deviceId, Self.queuedAttachmentsMin) ?? false
     }
 
+    /// The visible message queue is a personal-cut capability, not a semver
+    /// promise: an upstream host can have the same version without its doc/RPC
+    /// surface. Attachments require the stronger queue capability.
+    func hostSupportsMessageQueue(_ chat: Chat, attachments: Bool = false) -> Bool {
+        guard demo == nil else { return false }
+        let capability = attachments
+            ? EngineCapability.messageQueueAttachmentsV1
+            : EngineCapability.messageQueueV1
+        return workspace?.deviceSupports(chat.deviceId, capability) ?? false
+    }
+
+    func hostSupportsCleanQueueAttachmentText(_ chat: Chat) -> Bool {
+        guard demo == nil else { return false }
+        return workspace?.deviceSupports(
+            chat.deviceId,
+            EngineCapability.messageQueueCleanAttachmentTextV1
+        ) ?? false
+    }
+
+    func hostSupportsQueueEditLease(_ chat: Chat) -> Bool {
+        guard demo == nil else { return false }
+        return workspace?.deviceSupports(chat.deviceId, EngineCapability.messageQueueEditLeaseV1)
+            ?? false
+    }
+
     /// Whether a send to this chat would queue rather than deliver promptly:
     /// OS offline, the chat's room degraded (graced), or the host device
     /// presence-dark. Every chat is remote-hosted on the phone — there is no
