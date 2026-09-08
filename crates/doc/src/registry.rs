@@ -575,6 +575,10 @@ impl RegistryDoc {
         }
     }
 
+    pub fn authoritative_row(&self, kind: &str, id: &str) -> Option<&RegistryRow> {
+        self.authoritative.get(kind)?.get(id)
+    }
+
     fn put_authoritative(&mut self, row: RegistryRow) {
         self.authoritative
             .entry(row.kind.clone())

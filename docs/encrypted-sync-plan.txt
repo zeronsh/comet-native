@@ -1710,4 +1710,19 @@ ES-16  Release controls, support, and staged activation
    fencing, native iOS lifecycle, and the remaining security gates are open.
 
 
+17.8. Preserve verified registry fields
+
+   Inbound field verification now merges against the authoritative local
+   baseline: failed, omitted, and older fields cannot erase verified values
+   or advance their clocks. Authenticated null remains a field deletion.
+   Unauthenticated clock-only entries are ignored. A full sync with withheld
+   rows applies only a delta and holds the cursor, rather than replacing
+   cached rows and spuriously enqueueing them for re-seeding.
+
+   Verification: zeron-doc and zeron-sync suites with mock-server enabled
+   pass (87 doc unit tests, 35 sync unit tests, 9 encrypted-outbox tests,
+   13 registry integration tests, plus the document integration test).
+   Row lifecycle proofs and immutable registry retry records remain open.
+
+
                           -- End of Project Plan --

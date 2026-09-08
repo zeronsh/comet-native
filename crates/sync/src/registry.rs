@@ -233,18 +233,34 @@ pub fn seal_ops(codec: &dyn RegistryCodec, ops: &[RowOp]) -> Option<Vec<RowOp>> 
 
 /// Open every field of `rows`. Rows with a field whose key is not held are
 /// withheld (returned count); rejected fields are dropped from their row.
-pub fn open_rows(codec: &dyn RegistryCodec, rows: Vec<RegistryRow>) -> (Vec<RegistryRow>, usize) {
+pub fn open_rows(
+    codec: &dyn RegistryCodec,
+    rows: Vec<RegistryRow>,
+    baseline: &RegistryDoc,
+) -> (Vec<RegistryRow>, usize) {
     let mut out = Vec::with_capacity(rows.len());
     let mut withheld = 0;
     'rows: for mut row in rows {
-        let mut fields = std::collections::BTreeMap::new();
+        let previous = baseline.authoritative_row(&row.kind, &row.id);
+        let mut fields = previous.map(|r| r.fields.clone()).unwrap_or_default();
+        let mut clocks = previous.map(|r| r.clocks.clone()).unwrap_or_default();
         for (field, wire) in &row.fields {
             let clock = row.clocks.get(field).map_or("", String::as_str);
             match codec.open_field(&row.kind, &row.id, field, clock, wire) {
-                Ok(Some(value)) => {
-                    fields.insert(field.clone(), value);
+                Ok(value) => {
+                    if clocks.get(field).is_some_and(|old| old.as_str() >= clock) {
+                        continue;
+                    }
+                    clocks.insert(field.clone(), clock.to_string());
+                    match value {
+                        Some(value) => {
+                            fields.insert(field.clone(), value);
+                        }
+                        None => {
+                            fields.remove(field);
+                        }
+                    }
                 }
-                Ok(None) => {}
                 Err(FieldOpenFailure::KeyUnavailable) => {
                     withheld += 1;
                     continue 'rows;
@@ -255,6 +271,7 @@ pub fn open_rows(codec: &dyn RegistryCodec, rows: Vec<RegistryRow>) -> (Vec<Regi
             }
         }
         row.fields = fields;
+        row.clocks = clocks;
         out.push(row);
     }
     (out, withheld)
@@ -677,15 +694,15 @@ fn apply_opened(
     codec: Option<&Arc<dyn RegistryCodec>>,
     doc: &Mutex<RegistryDoc>,
     rows: Vec<RegistryRow>,
-    apply: impl FnOnce(&mut RegistryDoc, Vec<RegistryRow>),
+    apply: impl FnOnce(&mut RegistryDoc, Vec<RegistryRow>, bool),
 ) {
+    let mut doc = lock(doc);
     let (rows, withheld) = match codec {
-        Some(codec) => open_rows(codec.as_ref(), rows),
+        Some(codec) => open_rows(codec.as_ref(), rows, &doc),
         None => (rows, 0),
     };
-    let mut doc = lock(doc);
     let previous = doc.cursor();
-    apply(&mut doc, rows);
+    apply(&mut doc, rows, withheld == 0);
     if withheld > 0 {
         tracing::info!(
             withheld,
@@ -921,15 +938,20 @@ impl Actor {
         };
         {
             let stats = self.stats.clone();
-            apply_opened(self.codec.as_ref(), &self.doc, rows, |doc, rows| {
-                let outcome = doc.apply_state(seq, full, gc_floor, rows);
-                if full {
-                    stats.full_resyncs.fetch_add(1, Relaxed);
-                }
-                if outcome == StateOutcome::Reseeded {
-                    tracing::info!("registry: server behind local state; re-seeding");
-                }
-            });
+            apply_opened(
+                self.codec.as_ref(),
+                &self.doc,
+                rows,
+                |doc, rows, complete| {
+                    let outcome = doc.apply_state(seq, full && complete, gc_floor, rows);
+                    if full {
+                        stats.full_resyncs.fetch_add(1, Relaxed);
+                    }
+                    if outcome == StateOutcome::Reseeded {
+                        tracing::info!("registry: server behind local state; re-seeding");
+                    }
+                },
+            );
         }
         {
             let now = tokio::time::Instant::now();
@@ -1122,8 +1144,8 @@ impl Actor {
                     }
                     match serde_json::from_str::<PullBody>(&body) {
                         Ok(pull) => {
-                            apply_opened(codec.as_ref(), &doc, pull.rows, |d, rows| {
-                                d.apply_state(pull.seq, pull.full, pull.gc_floor, rows);
+                            apply_opened(codec.as_ref(), &doc, pull.rows, |d, rows, complete| {
+                                d.apply_state(pull.seq, pull.full && complete, pull.gc_floor, rows);
                             });
                             let now = tokio::time::Instant::now();
                             let mut map = lock(&presence);
@@ -1188,7 +1210,7 @@ impl Actor {
         match frame {
             ServerFrame::Rows { seq, rows } => {
                 let mut contiguous = true;
-                apply_opened(self.codec.as_ref(), &self.doc, rows, |doc, rows| {
+                apply_opened(self.codec.as_ref(), &self.doc, rows, |doc, rows, _| {
                     contiguous = doc.apply_rows(seq, rows);
                 });
                 self.stats.last_pushed_ms.store(epoch_ms(), Relaxed);
@@ -1222,9 +1244,14 @@ impl Actor {
             } => {
                 // Servers only send state as a hello answer, but applying a
                 // late duplicate is harmless and simpler than special-casing.
-                apply_opened(self.codec.as_ref(), &self.doc, rows, |doc, rows| {
-                    doc.apply_state(seq, full, gc_floor, rows);
-                });
+                apply_opened(
+                    self.codec.as_ref(),
+                    &self.doc,
+                    rows,
+                    |doc, rows, complete| {
+                        doc.apply_state(seq, full && complete, gc_floor, rows);
+                    },
+                );
                 let now = tokio::time::Instant::now();
                 let mut map = lock(&self.presence);
                 for (device, at) in presence {
@@ -1243,3 +1270,109 @@ impl Actor {
 
 #[cfg(any(test, feature = "mock-server"))]
 pub mod mock_server;
+
+#[cfg(test)]
+mod encryption_tests {
+    use super::*;
+
+    struct Codec;
+
+    impl RegistryCodec for Codec {
+        fn seal_field(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            value: &serde_json::Value,
+        ) -> Result<serde_json::Value, String> {
+            Ok(value.clone())
+        }
+
+        fn open_field(
+            &self,
+            _: &str,
+            _: &str,
+            _: &str,
+            _: &str,
+            value: &serde_json::Value,
+        ) -> Result<Option<serde_json::Value>, FieldOpenFailure> {
+            match value.as_str() {
+                Some("bad") => Err(FieldOpenFailure::Rejected),
+                Some("missing") => Err(FieldOpenFailure::KeyUnavailable),
+                _ if value.is_null() => Ok(None),
+                _ => Ok(Some(value.clone())),
+            }
+        }
+    }
+
+    fn row(title: &str, cwd: &str, clock: &str) -> RegistryRow {
+        serde_json::from_value(serde_json::json!({
+            "kind": "chats", "id": "chat", "seq": 2,
+            "fields": {"title": title, "cwd": cwd},
+            "clocks": {"title": clock, "cwd": clock}
+        }))
+        .unwrap()
+    }
+
+    fn saved(doc: &Mutex<RegistryDoc>) -> serde_json::Value {
+        serde_json::from_slice(&lock(doc).to_bytes().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn rejected_field_preserves_verified_value_and_clock() {
+        let doc = Mutex::new(RegistryDoc::new("device"));
+        lock(&doc).apply_state(1, true, 0, vec![row("trusted", "old", "1")]);
+        let codec: Arc<dyn RegistryCodec> = Arc::new(Codec);
+        apply_opened(
+            Some(&codec),
+            &doc,
+            vec![row("bad", "new", "2")],
+            |doc, rows, _| {
+                assert!(doc.apply_rows(2, rows));
+            },
+        );
+        let state = saved(&doc);
+        assert_eq!(state["rows"][0]["fields"]["title"], "trusted");
+        assert_eq!(state["rows"][0]["clocks"]["title"], "1");
+        assert_eq!(state["rows"][0]["fields"]["cwd"], "new");
+        assert_eq!(state["rows"][0]["clocks"]["cwd"], "2");
+    }
+
+    #[test]
+    fn authenticated_deletion_and_replay_preserve_field_clocks() {
+        let mut baseline = RegistryDoc::new("device");
+        baseline.apply_state(1, true, 0, vec![row("trusted", "old", "2")]);
+        let mut incoming = row("stale", "new", "1");
+        incoming
+            .fields
+            .insert("cwd".into(), serde_json::Value::Null);
+        incoming.clocks.insert("cwd".into(), "3".into());
+        incoming.clocks.insert("injected".into(), "9".into());
+        let (opened, withheld) = open_rows(&Codec, vec![incoming], &baseline);
+        assert_eq!(withheld, 0);
+        assert_eq!(opened[0].fields["title"], "trusted");
+        assert_eq!(opened[0].clocks["title"], "2");
+        assert!(!opened[0].fields.contains_key("cwd"));
+        assert_eq!(opened[0].clocks["cwd"], "3");
+        assert!(!opened[0].clocks.contains_key("injected"));
+    }
+
+    #[test]
+    fn full_sync_missing_keys_keeps_cached_rows_without_reseeding() {
+        let doc = Mutex::new(RegistryDoc::new("device"));
+        lock(&doc).apply_state(1, true, 0, vec![row("trusted", "old", "1")]);
+        let codec: Arc<dyn RegistryCodec> = Arc::new(Codec);
+        apply_opened(
+            Some(&codec),
+            &doc,
+            vec![row("missing", "new", "2")],
+            |doc, rows, complete| {
+                doc.apply_state(2, complete, 0, rows);
+            },
+        );
+        assert_eq!(saved(&doc)["rows"][0]["fields"]["title"], "trusted");
+        assert_eq!(lock(&doc).cursor(), 1);
+        assert_eq!(lock(&doc).pending_len(), 0);
+    }
+}
