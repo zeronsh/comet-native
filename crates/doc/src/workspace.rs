@@ -106,6 +106,10 @@ impl WorkspaceDoc {
         set_opt_ms(&row, "lastSeenAt", device.last_seen_at)?;
         set_opt_ms(&row, "createdAt", device.created_at)?;
         set_opt_str(&row, "version", device.version.as_deref())?;
+        row.insert(
+            "capabilities",
+            crate::schema::loro_value_from_json(&serde_json::json!(&device.capabilities)),
+        )?;
         self.doc.commit();
         Ok(())
     }
@@ -595,6 +599,8 @@ pub(crate) struct RawDevice {
     created_at: Option<i64>,
     #[serde(default)]
     version: Option<String>,
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 impl From<RawDevice> for Device {
@@ -606,6 +612,7 @@ impl From<RawDevice> for Device {
             last_seen_at: raw.last_seen_at.map(dt),
             created_at: raw.created_at.map(dt),
             version: raw.version,
+            capabilities: raw.capabilities,
         }
     }
 }
@@ -769,6 +776,7 @@ mod tests {
             last_seen_at: Some(ts(1_000)),
             created_at: Some(ts(500)),
             version: Some("0.1.0".into()),
+            capabilities: Vec::new(),
         }
     }
 
@@ -882,13 +890,15 @@ mod tests {
     #[test]
     fn rows_round_trip() {
         let ws = WorkspaceDoc::new();
-        ws.upsert_device(&device("dev-a", "laptop")).unwrap();
+        let mut device = device("dev-a", "laptop");
+        device.capabilities = vec![zeron_proto::capabilities::MESSAGE_QUEUE_V1.into()];
+        ws.upsert_device(&device).unwrap();
         ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
         ws.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))
             .unwrap();
 
         let state = ws.read_all().unwrap();
-        assert_eq!(state.devices, vec![device("dev-a", "laptop")]);
+        assert_eq!(state.devices, vec![device]);
         assert_eq!(state.chats, vec![chat("chat-1", "dev-a")]);
         assert_eq!(
             state.sessions,

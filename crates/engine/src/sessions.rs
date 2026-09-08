@@ -35,7 +35,7 @@ use zeron_proto::{
 };
 
 use crate::doc_host::{ChatDocHandle, DocHost};
-use crate::registry::HarnessRegistry;
+use crate::registry::{HarnessDescriptor, HarnessRegistry};
 use crate::run_journal::RunJournal;
 use crate::{EngineError, new_id, now_ms};
 
@@ -248,15 +248,33 @@ impl SessionsEngine {
         lock(&self.inner.statuses).get(chat_id).cloned()
     }
 
+    /// Whether this harness takes a prompt *during* a turn, rather than only at
+    /// the boundary between turns. The queue drain's central question: a
+    /// mid-turn agent gets the message now, everything else holds it until the
+    /// turn ends. Catalog lookup only — never spawns.
+    pub fn steers_mid_turn(&self, harness: HarnessId) -> bool {
+        self.inner
+            .registry
+            .descriptors()
+            .iter()
+            .find(|d| d.id == harness)
+            .is_some_and(HarnessDescriptor::steers_mid_turn)
+    }
+
+    /// Whether this chat has a turn in flight — streaming, or parked on a
+    /// question it is still owed an answer to (see [`is_active`]). A persistent
+    /// session parked BETWEEN turns is not: it holds a warm child with nothing
+    /// outstanding, and takes the next prompt straight through its mailbox.
+    pub fn turn_in_flight(&self, chat_id: &str) -> bool {
+        lock(&self.inner.statuses)
+            .get(chat_id)
+            .is_some_and(is_active)
+    }
+
     /// Any run currently working or blocked on input — the auto-updater's
     /// "don't restart from under a session" gate.
     pub fn any_active(&self) -> bool {
-        lock(&self.inner.statuses).values().any(|s| {
-            matches!(
-                s.status,
-                zeron_proto::SessionStatus::Working | zeron_proto::SessionStatus::AwaitingInput
-            )
-        })
+        lock(&self.inner.statuses).values().any(is_active)
     }
 
     /// The last request dispatched for a chat (steer→new-turn fallback).
@@ -990,6 +1008,16 @@ impl Inner {
 }
 
 // ── run task ────────────────────────────────────────────────────────────────
+
+/// A turn is in flight: streaming, or parked on a question it is still owed an
+/// answer to. Notably NOT a persistent session that has parked between turns —
+/// that holds a warm child with nothing outstanding.
+fn is_active(session: &Session) -> bool {
+    matches!(
+        session.status,
+        SessionStatus::Working | SessionStatus::AwaitingInput
+    )
+}
 
 // ── subagent docs ───────────────────────────────────────────────────────────
 

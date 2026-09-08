@@ -37,6 +37,16 @@ pub struct HarnessDescriptor {
     pub enabled: Option<bool>,
 }
 
+impl HarnessDescriptor {
+    /// Whether this harness can accept a prompt inside the turn that is
+    /// currently running. Turn-boundary steering is still useful to the
+    /// automatic queue drain, but it is not the non-interrupting "Steer"
+    /// action exposed on an individual queued row.
+    pub fn steers_mid_turn(&self) -> bool {
+        self.supports_steering && self.steering_mode == SteeringMode::StepBoundary
+    }
+}
+
 fn default_installed() -> bool {
     true
 }
@@ -543,6 +553,27 @@ pub fn default_registry() -> HarnessRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mid_turn_steering_requires_support_and_a_step_boundary() {
+        let mut descriptor = HarnessDescriptor {
+            id: HarnessId::Mock,
+            name: "Mock".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::StepBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            enabled: Some(true),
+        };
+        assert!(descriptor.steers_mid_turn());
+
+        descriptor.steering_mode = SteeringMode::TurnBoundary;
+        assert!(!descriptor.steers_mid_turn());
+
+        descriptor.steering_mode = SteeringMode::StepBoundary;
+        descriptor.supports_steering = false;
+        assert!(!descriptor.steers_mid_turn());
+    }
 
     #[test]
     fn lazy_slot_lists_without_resolving() {
