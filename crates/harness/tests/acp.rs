@@ -30,6 +30,10 @@ fn harness() -> AcpHarness {
     AcpHarness::grok().with_executable(fixture_path())
 }
 
+fn cline_harness() -> AcpHarness {
+    AcpHarness::cline().with_executable(fixture_path())
+}
+
 fn request(prompt: &str) -> RunRequest {
     RunRequest {
         prompt: prompt.into(),
@@ -211,6 +215,30 @@ async fn happy_path_maps_chunks_tools_diffs_plans_and_commands() {
     }));
     assert!(!events.iter().any(|e| matches!(e, AgentEvent::Usage { .. })));
 
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+}
+
+#[tokio::test]
+async fn cline_spec_runs_the_same_fixture_turn() {
+    let (controls, _steer, _token) = controls();
+    let mut req = request("scenario:happy");
+    req.model = None;
+    let events = run_to_end(&cline_harness(), req, controls).await;
+    // SessionStarted carries the CLINE harness id from session/new.
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            AgentEvent::SessionStarted { harness, session_id, cwd, .. }
+                if *harness == HarnessId::Cline && session_id == "s-1" && cwd == "/tmp"
+        )),
+        "{events:?}"
+    );
+    assert!(
+        events.contains(&AgentEvent::TextDelta {
+            text: "Hello".into()
+        }),
+        "{events:?}"
+    );
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
 }
 

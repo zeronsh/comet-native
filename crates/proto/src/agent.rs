@@ -20,6 +20,9 @@ pub enum HarnessId {
     /// protocol (`opencode serve` — the same wire the opencode desktop app
     /// speaks).
     Opencode,
+    /// Cline's open-source coding agent, driven over its native ACP server
+    /// (`cline --acp` — the same wire Zed/Neovim drive).
+    Cline,
     /// Test harness; never shown in production pickers.
     Mock,
 }

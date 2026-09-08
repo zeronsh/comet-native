@@ -537,6 +537,29 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::OpencodeHarness::new().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::OpencodeHarness::new()) as Arc<dyn Harness>)),
     );
+    // Cline over its native ACP server (`cline --acp`), same lazy pattern:
+    // the static descriptor mirrors AcpHarness::cline() exactly. No
+    // `_session/steering` extension documented — turn-boundary steering; the
+    // effort ladder mirrors the CLI's --thinking levels.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Cline,
+            name: "Cline".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: vec![
+                ReasoningLevel::Minimal,
+                ReasoningLevel::Low,
+                ReasoningLevel::Medium,
+                ReasoningLevel::High,
+                ReasoningLevel::XHigh,
+            ],
+            installed: true,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::AcpHarness::cline().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::cline()) as Arc<dyn Harness>)),
+    );
     registry
 }
 
@@ -595,7 +618,8 @@ mod tests {
                 HarnessId::Grok,
                 HarnessId::Hermes,
                 HarnessId::Pi,
-                HarnessId::Opencode
+                HarnessId::Opencode,
+                HarnessId::Cline
             ]
         );
         assert!(registry.resolve(HarnessId::Mock).is_ok());

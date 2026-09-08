@@ -453,6 +453,94 @@ fn pi_spec() -> AcpAgentSpec {
     }
 }
 
+fn cline_install_paths() -> Vec<PathBuf> {
+    npm_global_bins("cline")
+}
+
+/// Cline's `--thinking` values (none|low|medium|high|xhigh). Preference-ordered
+/// per level; the first value the agent actually advertises wins, and a
+/// missing `thought_level` config option degrades to the agent default.
+fn cline_effort_values(
+    reasoning: Option<ReasoningLevel>,
+    _model: Option<&str>,
+) -> Vec<&'static str> {
+    let Some(level) = reasoning else {
+        return Vec::new();
+    };
+    match level {
+        ReasoningLevel::Minimal => vec!["none", "low"],
+        ReasoningLevel::Low => vec!["low", "none"],
+        ReasoningLevel::Medium => vec!["medium"],
+        ReasoningLevel::High => vec!["high"],
+        ReasoningLevel::XHigh => vec!["xhigh", "x-high", "high"],
+        ReasoningLevel::Max
+        | ReasoningLevel::Ultra
+        | ReasoningLevel::Ultracode
+        | ReasoningLevel::Ultrathink => vec!["xhigh", "high"],
+    }
+}
+
+fn cline_spec() -> AcpAgentSpec {
+    AcpAgentSpec {
+        id: HarnessId::Cline,
+        display_name: "Cline",
+        executable: "cline",
+        env_override: "CLINE_EXECUTABLE",
+        args: &["--acp"],
+        // cline IS the npm package (`npm i -g cline` — platform binaries land
+        // on PATH): no separate managed adapter, so resolution is PATH + the
+        // npm/version-manager dirs only.
+        npm_package: None,
+        extra_paths: cline_install_paths,
+        cli_executable: "cline",
+        cli_extra_paths: cline_install_paths,
+        install_hint: "cline (searched PATH, the login shell's PATH, npm global bins, \
+             /opt/homebrew/bin, /usr/local/bin, and fnm/nvm/volta/pnpm/bun install dirs; \
+             install with `npm install -g cline`; set CLINE_EXECUTABLE to override)",
+        // ACP model discovery is the source of truth (Cline advertises the
+        // active provider's catalog and provider switching); this pass-through
+        // answers when nothing is advertised. Unknown ids are skipped by the
+        // config-option set.
+        models: || {
+            vec![Model {
+                id: "default".into(),
+                label: "Cline default".into(),
+                description: Some("Runs the model configured in Cline (`cline auth`)".into()),
+                reasoning_levels: vec![
+                    ReasoningLevel::Minimal,
+                    ReasoningLevel::Low,
+                    ReasoningLevel::Medium,
+                    ReasoningLevel::High,
+                    ReasoningLevel::XHigh,
+                ],
+                options: Vec::new(),
+            }]
+        },
+        // No `_session/steering` extension documented: steers deliver at turn
+        // boundaries.
+        steering_mode: SteeringMode::TurnBoundary,
+        // Cline's --thinking ladder (none|low|medium|high|xhigh, default
+        // medium); delivered via the `thought_level` config option when the
+        // agent advertises one.
+        reasoning_levels: &[
+            ReasoningLevel::Minimal,
+            ReasoningLevel::Low,
+            ReasoningLevel::Medium,
+            ReasoningLevel::High,
+            ReasoningLevel::XHigh,
+        ],
+        prompt_transform: identity_transform,
+        effort_values: cline_effort_values,
+        ladder_extras: &[],
+        // No prompt-complete extension observed in the ACP docs; the prompt
+        // response settles the turn and the engine's quiesce watchdogs stay.
+        prompt_complete_extension: false,
+        // The binary is a Node-runtime bundle — a cold start can take seconds.
+        prompt_stall: Some(Duration::from_secs(30)),
+        stall_hint: "The agent process is likely wedged.",
+    }
+}
+
 /// Background-install managed npm adapters for agents whose CLI is present
 /// on this device, so a first chat never pays (or trips over) an npm run.
 /// Skips agents whose adapter is already resolvable; failures are logged and
@@ -571,6 +659,12 @@ impl AcpHarness {
     /// pi's RPC mode.
     pub fn pi() -> Self {
         Self::with_spec(pi_spec())
+    }
+
+    /// Cline (`cline --acp`) — Cline Bot's open-source coding agent speaking
+    /// ACP natively.
+    pub fn cline() -> Self {
+        Self::with_spec(cline_spec())
     }
 
     /// Use a fixed agent binary instead of PATH/known-location resolution.

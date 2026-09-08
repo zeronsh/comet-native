@@ -258,6 +258,7 @@ fn harness_from_env() -> zeron_engine::HarnessId {
         Ok("grok") => zeron_engine::HarnessId::Grok,
         Ok("hermes") => zeron_engine::HarnessId::Hermes,
         Ok("pi") => zeron_engine::HarnessId::Pi,
+        Ok("cline") => zeron_engine::HarnessId::Cline,
         _ => zeron_engine::HarnessId::ClaudeCode,
     }
 }
