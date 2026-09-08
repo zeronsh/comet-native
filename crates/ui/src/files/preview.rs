@@ -101,27 +101,12 @@ impl TreeSidebarMotion {
         let duration = crate::motion::RESIZE
             .total()
             .mul_f32(crate::motion::speed_scale());
-        let current = self
-            .started
-            .map(|started| {
-                let raw =
-                    now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32();
-                crate::motion::lerp(
-                    self.from,
-                    f32::from(self.target.unwrap_or(visible)),
-                    crate::motion::RESIZE.progress(raw.min(1.0)),
-                )
-            })
-            .unwrap_or_else(|| f32::from(self.target.unwrap_or(visible)));
-        if reduced || self.target.is_none() {
+        // Layout and file activation changes are immediate. Only the toggle
+        // action starts a transition through animate_to.
+        if reduced || self.target != Some(visible) {
             self.target = Some(visible);
             self.started = None;
             return (end, false);
-        }
-        if self.target != Some(visible) {
-            self.from = current;
-            self.target = Some(visible);
-            self.started = Some(now);
         }
         if let Some(started) = self.started {
             let raw = now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32();
@@ -134,6 +119,12 @@ impl TreeSidebarMotion {
             self.started = None;
         }
         (end, false)
+    }
+
+    fn animate_to(&mut self, previous: bool, visible: bool, now: Instant) {
+        self.from = self.sample(previous, now, false).0;
+        self.target = Some(visible);
+        self.started = Some(now);
     }
 }
 
@@ -332,12 +323,15 @@ impl FilePreviewState {
     }
 
     fn toggle_tree_sidebar(&mut self) {
-        if self.tree_sidebar_visible() {
+        let previous = self.tree_sidebar_visible();
+        if previous {
             self.tree_sidebar_visible = false;
             self.tree_sidebar_dismissed = true;
         } else {
             self.show_tree_sidebar();
         }
+        self.tree_motion
+            .animate_to(previous, self.tree_sidebar_visible(), Instant::now());
     }
 
     fn word_wrap(&self) -> bool {
@@ -3021,10 +3015,53 @@ mod tests {
     }
 
     #[test]
+    fn sidebar_layout_changes_are_immediate_without_a_user_toggle() {
+        let mut preview = FilePreviewState::new(false, 900, false, 11.5);
+        let now = Instant::now();
+        assert_eq!(
+            preview
+                .tree_motion
+                .sample(preview.tree_sidebar_visible(), now, false),
+            (0.0, false)
+        );
+        // A newly opened surface measures its width after the first render.
+        preview.surface_width.set(WIDE_BREAKPOINT);
+        assert_eq!(
+            preview
+                .tree_motion
+                .sample(preview.tree_sidebar_visible(), now, false),
+            (1.0, false)
+        );
+        preview.surface_width.set(WIDE_BREAKPOINT - 1.0);
+        assert_eq!(
+            preview
+                .tree_motion
+                .sample(preview.tree_sidebar_visible(), now, false),
+            (0.0, false)
+        );
+        preview.show_tree_sidebar();
+        assert_eq!(
+            preview
+                .tree_motion
+                .sample(preview.tree_sidebar_visible(), now, false),
+            (1.0, false)
+        );
+        preview.toggle_tree_sidebar();
+        let started = preview.tree_motion.started.unwrap();
+        assert_eq!(
+            preview
+                .tree_motion
+                .sample(preview.tree_sidebar_visible(), started, false),
+            (1.0, true)
+        );
+    }
+
+    #[test]
     fn sidebar_motion_reverses_from_its_current_width() {
         let mut motion = TreeSidebarMotion::default();
         let now = Instant::now();
         assert_eq!(motion.sample(true, now, false), (1.0, false));
+        motion.animate_to(true, false, now);
         assert_eq!(motion.sample(false, now, false), (1.0, true));
         let midway = now
             + crate::motion::RESIZE
@@ -3032,12 +3069,13 @@ mod tests {
                 .mul_f32(crate::motion::speed_scale() * 0.4);
         let closing = motion.sample(false, midway, false).0;
         assert!(closing > 0.0 && closing < 1.0);
+        motion.animate_to(false, true, midway);
         assert_eq!(motion.sample(true, midway, false), (closing, true));
         assert_eq!(
             motion.sample(true, midway + Duration::from_secs(10), false),
             (1.0, false)
         );
-        motion.sample(false, midway + Duration::from_secs(10), false);
+        motion.animate_to(true, false, midway + Duration::from_secs(10));
         assert_eq!(
             motion.sample(false, midway + Duration::from_secs(20), false),
             (0.0, false)
@@ -3049,7 +3087,7 @@ mod tests {
         let mut motion = TreeSidebarMotion::default();
         let now = Instant::now();
         motion.sample(true, now, false);
-        motion.sample(false, now, false);
+        motion.animate_to(true, false, now);
         assert_eq!(motion.sample(false, now, true), (0.0, false));
         assert_eq!(motion.sample(true, now, true), (1.0, false));
         assert_eq!(motion.sample(true, now, false), (1.0, false));
