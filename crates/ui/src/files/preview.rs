@@ -87,6 +87,56 @@ enum ReloadDecision {
     AwaitDiscardConfirmation,
 }
 
+/// Openness is independent of the dragged width, so resizing remains direct.
+#[derive(Default)]
+struct TreeSidebarMotion {
+    target: Option<bool>,
+    from: f32,
+    started: Option<Instant>,
+}
+
+impl TreeSidebarMotion {
+    fn sample(&mut self, visible: bool, now: Instant, reduced: bool) -> (f32, bool) {
+        let end = f32::from(visible);
+        let duration = crate::motion::RESIZE
+            .total()
+            .mul_f32(crate::motion::speed_scale());
+        let current = self
+            .started
+            .map(|started| {
+                let raw =
+                    now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32();
+                crate::motion::lerp(
+                    self.from,
+                    f32::from(self.target.unwrap_or(visible)),
+                    crate::motion::RESIZE.progress(raw.min(1.0)),
+                )
+            })
+            .unwrap_or_else(|| f32::from(self.target.unwrap_or(visible)));
+        if reduced || self.target.is_none() {
+            self.target = Some(visible);
+            self.started = None;
+            return (end, false);
+        }
+        if self.target != Some(visible) {
+            self.from = current;
+            self.target = Some(visible);
+            self.started = Some(now);
+        }
+        if let Some(started) = self.started {
+            let raw = now.saturating_duration_since(started).as_secs_f32() / duration.as_secs_f32();
+            if raw < 1.0 {
+                return (
+                    crate::motion::lerp(self.from, end, crate::motion::RESIZE.progress(raw)),
+                    true,
+                );
+            }
+            self.started = None;
+        }
+        (end, false)
+    }
+}
+
 pub(super) struct FilePreviewState {
     documents: HashMap<String, FileDocument>,
     document_recency: VecDeque<String>,
@@ -105,6 +155,7 @@ pub(super) struct FilePreviewState {
     tree_sidebar_visible: bool,
     tree_sidebar_dismissed: bool,
     tree_width: f32,
+    tree_motion: TreeSidebarMotion,
     comment_anchors: HashMap<String, HashMap<String, EditorCommentAnchor>>,
     comment_draft: Option<EditorCommentDraft>,
     active_comment: Option<String>,
@@ -135,6 +186,7 @@ impl FilePreviewState {
             tree_sidebar_visible: false,
             tree_sidebar_dismissed: false,
             tree_width: TREE_SPLIT_DEFAULT,
+            tree_motion: TreeSidebarMotion::default(),
             comment_anchors: HashMap::new(),
             comment_draft: None,
             active_comment: None,
@@ -150,6 +202,7 @@ impl FilePreviewState {
         self.reload_confirmation = None;
         self.close_requested = false;
         self.tree_sidebar_visible = false;
+        self.tree_motion = TreeSidebarMotion::default();
         self.comment_anchors.clear();
         self.comment_draft = None;
         self.active_comment = None;
@@ -317,6 +370,18 @@ impl FilePreviewState {
             }
         }
         pending
+    }
+
+    pub(super) fn tree_sidebar_frame(&mut self, window: &mut Window, cx: &App) -> f32 {
+        let (openness, active) = self.tree_motion.sample(
+            self.tree_sidebar_visible(),
+            Instant::now(),
+            crate::motion::reduced_motion(cx),
+        );
+        if active {
+            window.request_animation_frame();
+        }
+        openness
     }
 
     pub(super) fn tree_width(&self) -> f32 {
@@ -560,8 +625,12 @@ impl FilesSurface {
         cx.notify();
     }
 
-    fn toggle_tree_sidebar(&mut self, cx: &mut Context<Self>) {
+    fn toggle_tree_sidebar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.preview.toggle_tree_sidebar();
+        if !self.preview.tree_sidebar_visible() {
+            // A hidden search input must not keep receiving editor keystrokes.
+            self.focus_editor(window, cx);
+        }
         cx.notify();
     }
 
@@ -1712,7 +1781,6 @@ impl FilesSurface {
         let Some(active) = self.preview.active.clone() else {
             return gpui::Empty.into_any_element();
         };
-        let breadcrumb = self.render_breadcrumb(&active, &theme, cx);
         let external = self.preview.documents.get(&active).is_some_and(|document| {
             matches!(
                 document.phase,
@@ -1733,7 +1801,6 @@ impl FilesSurface {
             .min_w_0()
             .flex()
             .flex_col()
-            .child(breadcrumb)
             .when(lifecycle_pending, |element| {
                 element.child(
                     div()
@@ -1884,6 +1951,44 @@ impl FilesSurface {
             .into_any_element()
     }
 
+    pub(super) fn render_tree_toggle(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        toolbar(theme)
+            .w(px(
+                crate::surface_chrome::CONTROL_SIZE + crate::surface_chrome::EDGE_INSET
+            ))
+            .pl_0()
+            .child(
+                toolbar_button(
+                    "files-toggle-tree-sidebar",
+                    if self.preview.tree_sidebar_visible() {
+                        "Hide files sidebar"
+                    } else {
+                        "Show files sidebar"
+                    },
+                )
+                .on_click(cx.listener(|this, _, window, cx| this.toggle_tree_sidebar(window, cx)))
+                .child(
+                    icon(icons::SIDEBAR_MINIMALISTIC)
+                        .size(px(crate::surface_chrome::ICON_SIZE))
+                        .text_color(theme.text_muted),
+                ),
+            )
+            .into_any_element()
+    }
+
+    pub(super) fn render_editor_header(
+        &mut self,
+        theme: &Theme,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        let path = self.preview.active.clone()?;
+        Some(self.render_breadcrumb(&path, theme, cx))
+    }
+
     fn render_breadcrumb(
         &mut self,
         path: &str,
@@ -1976,6 +2081,7 @@ impl FilesSurface {
             })
             .tooltip_show_delay(Duration::from_millis(350));
         toolbar(theme)
+            .pr(px(crate::surface_chrome::CONTROL_GAP))
             .child(crumbs)
             .when_some(save_status, |element, (label, color, retry, detail)| {
                 element.child(
@@ -2061,22 +2167,6 @@ impl FilesSurface {
                         } else {
                             theme.text_muted
                         }),
-                ),
-            )
-            .child(
-                toolbar_button(
-                    "files-toggle-tree-sidebar",
-                    if self.preview.tree_sidebar_visible() {
-                        "Hide files sidebar"
-                    } else {
-                        "Show files sidebar"
-                    },
-                )
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_tree_sidebar(cx)))
-                .child(
-                    icon(icons::SIDEBAR_MINIMALISTIC)
-                        .size(px(crate::surface_chrome::ICON_SIZE))
-                        .text_color(theme.text_muted),
                 ),
             )
             .into_any_element()
@@ -2928,6 +3018,41 @@ mod tests {
         assert!(preview.set_autosave_delay_ms(600).is_empty());
         assert_eq!(preview.set_autosave_enabled(true), vec![path.to_string()]);
         assert!(preview.set_autosave_enabled(false).is_empty());
+    }
+
+    #[test]
+    fn sidebar_motion_reverses_from_its_current_width() {
+        let mut motion = TreeSidebarMotion::default();
+        let now = Instant::now();
+        assert_eq!(motion.sample(true, now, false), (1.0, false));
+        assert_eq!(motion.sample(false, now, false), (1.0, true));
+        let midway = now
+            + crate::motion::RESIZE
+                .total()
+                .mul_f32(crate::motion::speed_scale() * 0.4);
+        let closing = motion.sample(false, midway, false).0;
+        assert!(closing > 0.0 && closing < 1.0);
+        assert_eq!(motion.sample(true, midway, false), (closing, true));
+        assert_eq!(
+            motion.sample(true, midway + Duration::from_secs(10), false),
+            (1.0, false)
+        );
+        motion.sample(false, midway + Duration::from_secs(10), false);
+        assert_eq!(
+            motion.sample(false, midway + Duration::from_secs(20), false),
+            (0.0, false)
+        );
+    }
+
+    #[test]
+    fn sidebar_motion_snaps_when_reduced_motion_is_enabled() {
+        let mut motion = TreeSidebarMotion::default();
+        let now = Instant::now();
+        motion.sample(true, now, false);
+        motion.sample(false, now, false);
+        assert_eq!(motion.sample(false, now, true), (0.0, false));
+        assert_eq!(motion.sample(true, now, true), (1.0, false));
+        assert_eq!(motion.sample(true, now, false), (1.0, false));
     }
 
     #[test]

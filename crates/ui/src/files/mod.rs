@@ -247,13 +247,16 @@ impl Render for FilesSurface {
         } else {
             self.render_tree(cx)
         };
+        let split_editor = self.presentation.is_editor() && self.preview.has_active();
         let watch_error = self.watch_error.clone();
         let tree_pane = div()
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .child(self.render_header(&theme, cx))
+            .when(!split_editor, |pane| {
+                pane.child(self.render_header(&theme, cx))
+            })
             .when_some(watch_error, |element, error| {
                 element.child(
                     div()
@@ -298,11 +301,52 @@ impl Render for FilesSurface {
             })
             .child(content);
         let is_editor = self.presentation.is_editor();
-        let wide = is_editor
-            && self.preview.has_active()
-            && self.preview.is_wide()
-            && self.preview.tree_sidebar_visible();
-        let body = if wide {
+        let mut header = None;
+        let body = if split_editor {
+            let wide = self.preview.is_wide();
+            let tree_width = if wide {
+                self.preview.tree_width()
+            } else {
+                self.preview.narrow_tree_width()
+            };
+            let openness = self.preview.tree_sidebar_frame(window, cx);
+            // Same arrangement as the outer right-sidebar toggle: the trigger
+            // is outside the animated controls, in a permanently mounted slot.
+            let toggle_width =
+                crate::surface_chrome::CONTROL_SIZE + crate::surface_chrome::EDGE_INSET;
+            let tree_header = self
+                .render_header(&theme, cx)
+                .pr(px(crate::surface_chrome::CONTROL_GAP))
+                .border_l_1()
+                .border_color(theme.border);
+            header = Some(
+                div()
+                    .w_full()
+                    .h(px(crate::surface_chrome::HEADER_HEIGHT))
+                    .flex_none()
+                    .flex()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .children(self.render_editor_header(&theme, cx)),
+                    )
+                    .child(
+                        div()
+                            .w(px((tree_width * openness - toggle_width).max(0.0)))
+                            .h_full()
+                            .flex_none()
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .w(px(tree_width - toggle_width))
+                                    .h_full()
+                                    .child(tree_header),
+                            ),
+                    )
+                    .child(self.render_tree_toggle(&theme, cx)),
+            );
+
             div()
                 .size_full()
                 .min_w_0()
@@ -315,37 +359,26 @@ impl Render for FilesSurface {
                 )
                 .child(
                     div()
-                        .w(px(self.preview.tree_width()))
+                        .w(px(tree_width * openness))
                         .h_full()
-                        .relative()
                         .flex_none()
-                        .border_l_1()
-                        .border_color(theme.border)
-                        .child(tree_pane)
-                        .child(self.preview_split_handle(cx)),
+                        .relative()
+                        .child(
+                            div().size_full().overflow_hidden().child(
+                                div()
+                                    .w(px(tree_width))
+                                    .h_full()
+                                    .relative()
+                                    .border_l_1()
+                                    .border_color(theme.border)
+                                    .child(tree_pane),
+                            ),
+                        )
+                        .when(wide && self.preview.tree_sidebar_visible(), |pane| {
+                            pane.child(self.preview_split_handle(cx))
+                        }),
                 )
                 .into_any_element()
-        } else if is_editor && self.preview.has_active() {
-            let preview = self.render_preview(window, cx);
-            if self.preview.tree_sidebar_visible() {
-                div()
-                    .size_full()
-                    .min_w_0()
-                    .flex()
-                    .child(div().flex_1().min_w_0().child(preview))
-                    .child(
-                        div()
-                            .w(px(self.preview.narrow_tree_width()))
-                            .h_full()
-                            .flex_none()
-                            .border_l_1()
-                            .border_color(theme.border)
-                            .child(tree_pane),
-                    )
-                    .into_any_element()
-            } else {
-                preview
-            }
         } else {
             tree_pane.into_any_element()
         };
@@ -381,7 +414,9 @@ impl Render for FilesSurface {
                         .inset_0(),
                     )
             })
-            .child(body)
+            .flex_col()
+            .children(header)
+            .child(div().flex_1().min_h_0().w_full().child(body))
             .children(editor_context_menu)
     }
 }
