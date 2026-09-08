@@ -2333,6 +2333,7 @@ pub struct Transcript {
     /// frames reuse settled blocks' text+runs; the incremental parser's stable
     /// boundary invalidates only the live tail per commit.
     render_cache: Rc<RefCell<RenderCache>>,
+    workspace_link: Option<render::LinkUi>,
     rendered_rows: HashSet<SharedString>,
     /// Last UI typography generation reflected in `list` item measurements.
     /// Family and size changes can alter prose wrapping without changing row
@@ -2453,6 +2454,9 @@ pub enum TranscriptEvent {
 impl gpui::EventEmitter<TranscriptEvent> for Transcript {}
 
 impl Transcript {
+    pub(crate) fn set_workspace_link_handler(&mut self, handler: render::LinkUi) {
+        self.workspace_link = Some(handler);
+    }
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         Self::build(state, None, true, cx)
     }
@@ -2559,6 +2563,7 @@ impl Transcript {
             veil_baseline: std::collections::HashSet::new(),
             veil_attach_pending: true,
             render_cache: Rc::new(RefCell::new(RenderCache::default())),
+            workspace_link: None,
             rendered_rows: HashSet::new(),
             typography_generation: crate::typography::generation(cx),
             code_fences_generation: crate::settings::code_fences_generation(cx),
@@ -4837,6 +4842,7 @@ impl Transcript {
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
                     copy: Some(self.copy_ui_for(&row.id, cx)),
+                    link: self.workspace_link.clone(),
                     code,
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);
@@ -4881,6 +4887,7 @@ impl Transcript {
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
                     now: Instant::now(),
                     copy: Some(self.copy_ui_for(&row.id, cx)),
+                    link: self.workspace_link.clone(),
                     code,
                 };
                 let highlight = self.code_highlight_for(&row.id, tree, Some(*block_ix), cx);

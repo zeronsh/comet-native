@@ -123,6 +123,13 @@ pub mod methods {
     pub const LIST_DRIVES: &str = "ListDrives";
     /// Fuzzy relative-path search rooted in a known chat or space checkout.
     pub const SEARCH_FILES: &str = "SearchFiles";
+    // Device-local workspace filesystem operations. All are relay-forwardable;
+    // WatchWorkspaceFiles is the only streaming method in this group.
+    pub const LIST_WORKSPACE_DIRECTORY: &str = "ListWorkspaceDirectory";
+    pub const SEARCH_WORKSPACE_FILES: &str = "SearchWorkspaceFiles";
+    pub const READ_WORKSPACE_FILE: &str = "ReadWorkspaceFile";
+    pub const WRITE_WORKSPACE_FILE: &str = "WriteWorkspaceFile";
+    pub const WATCH_WORKSPACE_FILES: &str = "WatchWorkspaceFiles";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).

@@ -1,5 +1,5 @@
-//! Diff comments: notes pinned to a line of the changes pane, staged on the
-//! composer and folded into the next prompt as plain text.
+//! Review comments pinned to lines in a diff or editable workspace file,
+//! staged on the composer and folded into the next prompt as plain text.
 //!
 //! [`with_comments`] appends them; [`extract_badge`] reads the same block back
 //! out for the transcript. There is no second data model.
@@ -20,20 +20,27 @@ impl CommentSide {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DiffComment {
-    pub id: String,
-    /// The diff's own path — post-rename when the file moved. This is the
-    /// grouping key the changes pane looks cards up by, NOT necessarily the
-    /// path the citation names (see [`DiffComment::cite_path`]).
-    pub path: String,
-    /// Pre-rename path, when the file moved. `None` otherwise.
-    pub old_path: Option<String>,
-    pub side: CommentSide,
-    pub line: u32,
-    pub body: String,
+pub enum CommentSource {
+    Diff {
+        side: CommentSide,
+        old_path: Option<String>,
+    },
+    File,
 }
 
-impl DiffComment {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReviewComment {
+    pub id: String,
+    /// The current workspace path. For an old-side diff comment on a renamed
+    /// file, [`Self::cite_path`] returns the pre-rename path instead.
+    pub path: String,
+    pub line: u32,
+    pub body: String,
+    pub source: CommentSource,
+}
+
+impl ReviewComment {
+    /// Create a comment anchored to one side of a diff.
     pub fn new(
         path: impl Into<String>,
         side: CommentSide,
@@ -43,31 +50,66 @@ impl DiffComment {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
             path: path.into(),
-            old_path: None,
-            side,
             line,
             body: body.into(),
+            source: CommentSource::Diff {
+                side,
+                old_path: None,
+            },
+        }
+    }
+
+    /// Create a comment anchored to the current contents of an editable file.
+    pub fn file(path: impl Into<String>, line: u32, body: impl Into<String>) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            path: path.into(),
+            line,
+            body: body.into(),
+            source: CommentSource::File,
         }
     }
 
     /// Tag the comment with the file's pre-rename path so an `Old`-side line
     /// cites where that line actually lives.
     pub fn renamed_from(mut self, old_path: Option<impl Into<String>>) -> Self {
-        self.old_path = old_path.map(Into::into);
+        if let CommentSource::Diff {
+            old_path: current, ..
+        } = &mut self.source
+        {
+            *current = old_path.map(Into::into);
+        }
         self
     }
 
-    pub fn anchor(&self) -> (CommentSide, u32) {
-        (self.side, self.line)
+    pub fn diff_anchor(&self) -> Option<(CommentSide, u32)> {
+        match self.source {
+            CommentSource::Diff { side, .. } => Some((side, self.line)),
+            CommentSource::File => None,
+        }
+    }
+
+    pub fn is_file(&self) -> bool {
+        matches!(self.source, CommentSource::File)
+    }
+
+    pub fn side(&self) -> Option<CommentSide> {
+        match self.source {
+            CommentSource::Diff { side, .. } => Some(side),
+            CommentSource::File => None,
+        }
     }
 
     /// The path the line number is valid in. An `Old`-side line only exists in
     /// the pre-rename file, so citing `path` there points the agent at a line
     /// of a file that never held it.
     pub fn cite_path(&self) -> &str {
-        match self.side {
-            CommentSide::Old => self.old_path.as_deref().unwrap_or(&self.path),
-            CommentSide::New => &self.path,
+        match &self.source {
+            CommentSource::Diff {
+                side: CommentSide::Old,
+                old_path,
+            } => old_path.as_deref().unwrap_or(&self.path),
+            CommentSource::Diff { .. } | CommentSource::File => &self.path,
         }
     }
 
@@ -79,12 +121,14 @@ impl DiffComment {
 pub const COMMENT_ONLY_TEXT: &str = "Address the review comments below.";
 
 pub const COMMENT_BLOCK_HEADER: &str = "Comments on the diff (each cites the file and line it belongs to; L = line number in the original file, R = in the changed file):";
+pub const REVIEW_COMMENT_BLOCK_HEADER: &str =
+    "Review comments (each cites the workspace file and line it belongs to):";
 
 fn side_marker(side: CommentSide) -> String {
     format!(" ({}): ", side.tag())
 }
 
-pub fn with_comments(text: &str, comments: &[DiffComment]) -> String {
+pub fn with_comments(text: &str, comments: &[ReviewComment]) -> String {
     if comments.is_empty() {
         return text.to_string();
     }
@@ -92,11 +136,11 @@ pub fn with_comments(text: &str, comments: &[DiffComment]) -> String {
         .iter()
         .map(|comment| {
             let body = comment.body.trim().replace('\n', "\n  ");
-            format!(
-                "- {}{}{body}",
-                comment.location(),
-                side_marker(comment.side)
-            )
+            let separator = comment
+                .side()
+                .map(side_marker)
+                .unwrap_or_else(|| ": ".to_string());
+            format!("- {}{separator}{body}", comment.location())
         })
         .collect();
     let body = if text.is_empty() {
@@ -104,14 +148,25 @@ pub fn with_comments(text: &str, comments: &[DiffComment]) -> String {
     } else {
         text
     };
-    format!("{body}\n\n{COMMENT_BLOCK_HEADER}\n{}", bullets.join("\n"))
+    let header = if comments.iter().all(|comment| !comment.is_file()) {
+        COMMENT_BLOCK_HEADER
+    } else {
+        REVIEW_COMMENT_BLOCK_HEADER
+    };
+    format!("{body}\n\n{header}\n{}", bullets.join("\n"))
 }
 
 /// [`crate::badges::Extractor`] for the comment block. Matched only as a whole
 /// trailing block, so a prompt quoting the header mid-body is left alone.
 pub fn extract_badge(text: &str) -> Option<(String, crate::badges::MessageBadge)> {
-    let marker = format!("\n\n{COMMENT_BLOCK_HEADER}\n");
-    let at = text.rfind(&marker)?;
+    let markers = [
+        format!("\n\n{COMMENT_BLOCK_HEADER}\n"),
+        format!("\n\n{REVIEW_COMMENT_BLOCK_HEADER}\n"),
+    ];
+    let (at, marker) = markers
+        .iter()
+        .filter_map(|marker| text.rfind(marker).map(|at| (at, marker)))
+        .max_by_key(|(at, _)| *at)?;
     let block = &text[at + marker.len()..];
     if block.is_empty()
         || !block
@@ -152,16 +207,43 @@ fn parse_bullets(block: &str) -> Vec<crate::badges::BadgeDetail> {
                 bullet.find(&marker).map(|at| (at, marker.len(), side))
             })
             .min_by_key(|(at, _, _)| *at);
-        let Some((at, marker_len, side)) = split else {
+        let file_split = split_file_bullet(bullet);
+        if let Some((at, location, body)) = file_split
+            && split.is_none_or(|(side_at, _, _)| at < side_at)
+        {
+            details.push(crate::badges::BadgeDetail {
+                location: location.into(),
+                tag: None,
+                body: body.into(),
+            });
             continue;
-        };
-        details.push(crate::badges::BadgeDetail {
-            location: bullet[..at].into(),
-            tag: Some(side.tag().into()),
-            body: bullet[at + marker_len..].into(),
-        });
+        }
+        if let Some((at, marker_len, side)) = split {
+            details.push(crate::badges::BadgeDetail {
+                location: bullet[..at].into(),
+                tag: Some(side.tag().into()),
+                body: bullet[at + marker_len..].into(),
+            });
+            continue;
+        }
+        if let Some((_, location, body)) = file_split {
+            details.push(crate::badges::BadgeDetail {
+                location: location.into(),
+                tag: None,
+                body: body.into(),
+            });
+        }
     }
     details
+}
+
+fn split_file_bullet(bullet: &str) -> Option<(usize, &str, &str)> {
+    bullet.match_indices(": ").find_map(|(at, separator)| {
+        let location = &bullet[..at];
+        let (_, line) = location.rsplit_once(':')?;
+        line.parse::<u32>().ok()?;
+        Some((at, location, &bullet[at + separator.len()..]))
+    })
 }
 
 pub fn chip_label(count: usize) -> String {
@@ -176,6 +258,7 @@ pub const CARD_PAD_V: f32 = 20.0;
 pub const CARD_HEADER_HEIGHT: f32 = 22.0;
 pub const CARD_LINE_HEIGHT: f32 = 18.0;
 pub const DRAFT_CARD_HEIGHT: f32 = 116.0;
+pub const COMMENT_ADDER_SIZE: f32 = 16.0;
 const CARD_GAP: f32 = 6.0;
 const CARD_WRAP_COLUMNS: usize = 64;
 const CARD_MAX_LINES: usize = 8;
@@ -197,8 +280,8 @@ pub fn card_height(body: &str) -> f32 {
 mod tests {
     use super::*;
 
-    fn comment(path: &str, side: CommentSide, line: u32, body: &str) -> DiffComment {
-        DiffComment::new(path, side, line, body)
+    fn comment(path: &str, side: CommentSide, line: u32, body: &str) -> ReviewComment {
+        ReviewComment::new(path, side, line, body)
     }
 
     #[test]
@@ -228,6 +311,51 @@ mod tests {
     fn multiline_bodies_indent_under_their_bullet() {
         let staged = vec![comment("a.rs", CommentSide::New, 3, "first\nsecond")];
         assert!(with_comments("x", &staged).contains("- a.rs:3 (R): first\n  second"));
+    }
+
+    #[test]
+    fn file_comments_use_current_workspace_locations_without_diff_tags() {
+        let staged = vec![ReviewComment::file(
+            "crates/ui/src/files/preview.rs",
+            1494,
+            "Keep this branch explicit",
+        )];
+        let out = with_comments("review this", &staged);
+        assert!(out.contains(REVIEW_COMMENT_BLOCK_HEADER));
+        assert!(out.contains("- crates/ui/src/files/preview.rs:1494: Keep this branch explicit"));
+        assert!(!out.contains("(R)"));
+
+        let (text, badge) = extract_badge(&out).unwrap();
+        assert_eq!(text, "review this");
+        assert_eq!(
+            badge.details[0].location.as_ref(),
+            "crates/ui/src/files/preview.rs:1494"
+        );
+        assert_eq!(badge.details[0].tag, None);
+        assert_eq!(badge.details[0].body.as_ref(), "Keep this branch explicit");
+    }
+
+    #[test]
+    fn mixed_editor_and_diff_comments_share_one_review_block() {
+        let staged = vec![
+            comment("a.rs", CommentSide::Old, 3, "why removed?"),
+            ReviewComment::file("odd:path.rs", 8, "change this: please"),
+        ];
+        let (text, badge) = extract_badge(&with_comments("x", &staged)).unwrap();
+        assert_eq!(text, "x");
+        assert_eq!(badge.details.len(), 2);
+        assert_eq!(badge.details[0].tag.as_deref(), Some("L"));
+        assert_eq!(badge.details[1].location.as_ref(), "odd:path.rs:8");
+        assert_eq!(badge.details[1].body.as_ref(), "change this: please");
+    }
+
+    #[test]
+    fn file_comment_body_may_quote_a_diff_side_marker() {
+        let staged = vec![ReviewComment::file("a.rs", 2, "compare with (L): old code")];
+        let (_, badge) = extract_badge(&with_comments("x", &staged)).unwrap();
+        assert_eq!(badge.details[0].location.as_ref(), "a.rs:2");
+        assert_eq!(badge.details[0].tag, None);
+        assert_eq!(badge.details[0].body.as_ref(), "compare with (L): old code");
     }
 
     #[test]
