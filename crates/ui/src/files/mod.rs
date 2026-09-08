@@ -33,8 +33,53 @@ use preview::FilePreviewState;
 use search::FileSearchState;
 
 static NEXT_REVIEW_COMMENT_FLUSH_SOURCE: AtomicU64 = AtomicU64::new(1);
-pub(super) const TOOLBAR_BUTTON_SIZE: f32 = 22.0;
-pub(super) const TOOLBAR_BUTTON_RADIUS: f32 = 5.0;
+pub(super) const TOOLBAR_HEIGHT: f32 = 32.0;
+pub(super) const TOOLBAR_BUTTON_SIZE: f32 = 24.0;
+pub(super) const TOOLBAR_BUTTON_RADIUS: f32 = 6.0;
+
+/// Shared chrome keeps the editor and tree headers aligned across the divider.
+pub(super) fn toolbar(theme: &crate::theme::Theme) -> gpui::Div {
+    div()
+        .h(px(TOOLBAR_HEIGHT))
+        .w_full()
+        .flex_none()
+        .px(px(8.0))
+        .flex()
+        .items_center()
+        .gap(px(4.0))
+        .border_t_1()
+        .border_b_1()
+        .border_color(theme.border)
+        .bg(if theme.is_glass() {
+            theme.surface.opacity(0.26)
+        } else {
+            theme.surface
+        })
+}
+
+pub(super) fn toolbar_button(id: &'static str, label: &'static str) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .size(px(TOOLBAR_BUTTON_SIZE))
+        .flex_none()
+        .rounded(px(TOOLBAR_BUTTON_RADIUS))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .role(gpui::Role::Button)
+        .aria_label(label)
+        .occlude()
+        .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+            window.prevent_default()
+        })
+        .hover(|style| style.bg(crate::theme::wash(0.14)))
+        .tooltip(move |_, cx| {
+            cx.new(|_| preview::FileEditorTooltip { text: label.into() })
+                .into()
+        })
+        .tooltip_show_delay(Duration::from_millis(350))
+}
 
 /// A workspace-relative file or directory dragged out of a Files surface.
 ///
@@ -222,18 +267,13 @@ impl Render for FilesSurface {
         } else {
             self.render_tree(cx)
         };
-        let header_bg = if theme.is_glass() {
-            theme.surface.opacity(0.26)
-        } else {
-            theme.surface
-        };
         let watch_error = self.watch_error.clone();
         let tree_pane = div()
             .size_full()
             .min_w_0()
             .flex()
             .flex_col()
-            .child(self.render_header(&theme, header_bg, cx))
+            .child(self.render_header(&theme, cx))
             .when_some(watch_error, |element, error| {
                 element.child(
                     div()
@@ -293,15 +333,16 @@ impl Render for FilesSurface {
                         .min_w_0()
                         .child(self.render_preview(window, cx)),
                 )
-                .child(self.preview_split_handle(cx))
                 .child(
                     div()
                         .w(px(self.preview.tree_width()))
                         .h_full()
+                        .relative()
                         .flex_none()
                         .border_l_1()
                         .border_color(theme.border)
-                        .child(tree_pane),
+                        .child(tree_pane)
+                        .child(self.preview_split_handle(cx)),
                 )
                 .into_any_element()
         } else if is_editor && self.preview.has_active() {
@@ -865,36 +906,9 @@ impl FilesSurface {
             .reset_with_uniform_height(self.tree.visible_rows().len(), px(tree::TREE_ROW_HEIGHT));
     }
 
-    fn render_header(
-        &mut self,
-        theme: &crate::theme::Theme,
-        background: gpui::Hsla,
-        cx: &mut Context<Self>,
-    ) -> gpui::Div {
+    fn render_header(&mut self, theme: &crate::theme::Theme, cx: &mut Context<Self>) -> gpui::Div {
         let include_ignored = self.tree.include_ignored();
-        let icon_button = |id: &'static str| {
-            div()
-                .id(id)
-                .size(px(TOOLBAR_BUTTON_SIZE))
-                .flex_none()
-                .rounded(px(TOOLBAR_BUTTON_RADIUS))
-                .flex()
-                .items_center()
-                .justify_center()
-                .cursor_pointer()
-                .hover(|style| style.bg(crate::theme::wash(0.09)))
-        };
-        div()
-            .h(px(31.0))
-            .flex_none()
-            .px(px(8.0))
-            .flex()
-            .items_center()
-            .gap(px(5.0))
-            .border_t_1()
-            .border_b_1()
-            .border_color(theme.border)
-            .bg(background)
+        toolbar(theme)
             .child(
                 div()
                     .h(px(TOOLBAR_BUTTON_SIZE))
@@ -916,30 +930,31 @@ impl FilesSurface {
                     .child(div().min_w_0().flex_1().child(self.search.clone())),
             )
             .child(
-                icon_button("files-toggle-ignored")
-                    .role(gpui::Role::Button)
-                    .aria_label(if include_ignored {
+                toolbar_button(
+                    "files-toggle-ignored",
+                    if include_ignored {
                         "Hide hidden and ignored files"
                     } else {
                         "Show all files (even hidden)"
+                    },
+                )
+                .when(include_ignored, |element| {
+                    element.bg(crate::theme::wash(0.1))
+                })
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_ignored(cx)))
+                .child(
+                    crate::icons::icon(if include_ignored {
+                        crate::icons::EYE
+                    } else {
+                        crate::icons::EYE_CLOSED
                     })
-                    .when(include_ignored, |element| {
-                        element.bg(crate::theme::wash(0.1))
-                    })
-                    .on_click(cx.listener(|this, _, _, cx| this.toggle_ignored(cx)))
-                    .child(
-                        crate::icons::icon(if include_ignored {
-                            crate::icons::EYE
-                        } else {
-                            crate::icons::EYE_CLOSED
-                        })
-                        .size(px(12.5))
-                        .text_color(if include_ignored {
-                            theme.text
-                        } else {
-                            theme.text_muted
-                        }),
-                    ),
+                    .size(px(12.5))
+                    .text_color(if include_ignored {
+                        theme.text
+                    } else {
+                        theme.text_muted
+                    }),
+                ),
             )
     }
 }
