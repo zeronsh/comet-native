@@ -164,6 +164,23 @@ fn conversation_width(viewport: f32, sidebar: f32, right: f32) -> f32 {
     (viewport - sidebar - right).max(0.0)
 }
 
+/// The host-resolved checkout root for a chat, falling back to its current
+/// working directory when source context has not landed yet. Source context
+/// from a previous cwd must not make a retargeted chat copy the old checkout.
+fn chat_checkout_path(chat: &zeron_proto::Chat) -> Option<&str> {
+    let cwd = chat
+        .cwd
+        .as_deref()
+        .map(str::trim)
+        .filter(|cwd| !cwd.is_empty() && std::path::Path::new(cwd).is_absolute())?;
+    chat.source_context
+        .as_ref()
+        .filter(|source| source.cwd.trim() == cwd)
+        .map(|source| source.repo_root.trim())
+        .filter(|root| !root.is_empty() && std::path::Path::new(root).is_absolute())
+        .or(Some(cwd))
+}
+
 fn titlebar_new_session_alpha(is_chat_route: bool, has_selected_chat: bool) -> f32 {
     if is_chat_route && has_selected_chat {
         1.0
@@ -2947,6 +2964,22 @@ impl Shell {
         if let Some(id) = id.filter(|id| !id.trim().is_empty()) {
             cx.write_to_clipboard(ClipboardItem::new_string(id));
             self.sidebar_notice = Some("Harness session ID copied".into());
+        }
+        self.close_chat_menu(cx);
+        cx.notify();
+    }
+
+    fn copy_chat_checkout_path(&mut self, chat_id: &str, cx: &mut Context<Self>) {
+        let path = self
+            .state
+            .read(cx)
+            .chats
+            .iter()
+            .find(|chat| chat.id == chat_id)
+            .and_then(chat_checkout_path)
+            .map(str::to_owned);
+        if let Some(path) = path {
+            cx.write_to_clipboard(ClipboardItem::new_string(path));
         }
         self.close_chat_menu(cx);
         cx.notify();
@@ -5945,9 +5978,11 @@ impl Shell {
                         .as_ref()
                         .and_then(|chat| chat.harness_session_id.as_deref())
                         .is_some_and(|id| !id.trim().is_empty());
+                    let has_checkout_path = chat.as_ref().and_then(chat_checkout_path).is_some();
                     let zeron_id = chat_id.clone();
                     let harness_id = chat_id.clone();
                     let session_chat_id = chat_id.clone();
+                    let path_chat_id = chat_id.clone();
                     menu.child(
                         popover::menu_row(&theme, false, format!("chat-copy-back-{chat_id}"))
                             .id("chat-copy-back")
@@ -5965,6 +6000,21 @@ impl Shell {
                             .child(SharedString::from("Back")),
                     )
                     .child(popover::menu_separator())
+                    .when(has_checkout_path, |menu| {
+                        menu.child(
+                            popover::menu_row(&theme, false, format!("chat-copy-path-{chat_id}"))
+                                .id("chat-copy-path")
+                                .on_click(cx.listener(move |this, _, _, cx| {
+                                    this.copy_chat_checkout_path(&path_chat_id, cx)
+                                }))
+                                .child(
+                                    icon(icons::COPY)
+                                        .size(px(16.0))
+                                        .text_color(theme.text_muted),
+                                )
+                                .child(SharedString::from("Copy Path")),
+                        )
+                    })
                     .child(
                         popover::menu_row(&theme, false, format!("chat-copy-zeron-{chat_id}"))
                             .id("chat-copy-zeron")
@@ -8617,6 +8667,71 @@ impl Render for Shell {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn chat_with_checkout_path(
+        cwd: Option<&str>,
+        source: Option<(&str, &str)>,
+    ) -> zeron_proto::Chat {
+        zeron_proto::Chat {
+            id: "chat".into(),
+            device_id: "remote-device".into(),
+            title: None,
+            archived: false,
+            cwd: cwd.map(str::to_owned),
+            branch: None,
+            checkout_id: None,
+            source_context: source.map(|(source_cwd, repo_root)| {
+                zeron_proto::ConversationSourceContext {
+                    checkout_id: "checkout".into(),
+                    repo_root: repo_root.into(),
+                    cwd: source_cwd.into(),
+                    branch: "main".into(),
+                    head_sha: None,
+                    observed_at: chrono::Utc::now(),
+                }
+            }),
+            config: None,
+            last_message_preview: None,
+            last_message_at: None,
+            created_at: chrono::Utc::now(),
+            harness_session_id: None,
+            harness_session_cwd: None,
+            space_id: None,
+            last_seen_at: None,
+            room_gen: None,
+        }
+    }
+
+    #[test]
+    fn copy_path_prefers_the_matching_host_resolved_checkout_root() {
+        let chat = chat_with_checkout_path(
+            Some("/remote/repo/packages/app"),
+            Some(("/remote/repo/packages/app", "/remote/repo")),
+        );
+
+        assert_eq!(chat_checkout_path(&chat), Some("/remote/repo"));
+    }
+
+    #[test]
+    fn copy_path_falls_back_to_current_cwd_when_source_context_is_stale() {
+        let chat = chat_with_checkout_path(
+            Some("/remote/worktrees/new-checkout"),
+            Some(("/remote/repo", "/remote/repo")),
+        );
+
+        assert_eq!(
+            chat_checkout_path(&chat),
+            Some("/remote/worktrees/new-checkout")
+        );
+    }
+
+    #[test]
+    fn copy_path_is_unavailable_without_an_absolute_checkout_path() {
+        for cwd in [None, Some(""), Some("~"), Some(".")] {
+            let chat = chat_with_checkout_path(cwd, None);
+            assert_eq!(chat_checkout_path(&chat), None);
+        }
+    }
 
     #[test]
     fn every_default_shortcut_binds_on_this_platform() {
