@@ -21,6 +21,7 @@ use std::{
 const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MEDIA_ENTRIES: usize = 32;
 const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
+const MAX_PREVIEW_CONTENT_WIDTH: f32 = 900.0;
 
 fn release_media(
     images: impl IntoIterator<Item = super::markdown_media::MediaImage>,
@@ -618,6 +619,7 @@ impl MarkdownPreview {
             .id(id)
             .w_full()
             .max_w(px(loaded.width))
+            .mx_auto()
             .max_h(px(480.0))
             .aspect_ratio(loaded.width / loaded.height)
             .cursor_pointer()
@@ -879,17 +881,26 @@ impl MarkdownPreview {
                 });
                 Some(
                     div()
+                        .w_full()
+                        .flex()
+                        .justify_center()
                         .px(px(24.0))
                         .pb(px(render::MD_BLOCK_GAP))
-                        .child(render::render_block(
-                            &top.block,
-                            ix,
-                            ix,
-                            &opts,
-                            &theme,
-                            window,
-                            self.highlights.get(&ix).map(|h| h.lines.as_slice()),
-                        ))
+                        .child(
+                            div()
+                                .w_full()
+                                .max_w(px(MAX_PREVIEW_CONTENT_WIDTH))
+                                .min_w_0()
+                                .child(render::render_block(
+                                    &top.block,
+                                    ix,
+                                    ix,
+                                    &opts,
+                                    &theme,
+                                    window,
+                                    self.highlights.get(&ix).map(|h| h.lines.as_slice()),
+                                )),
+                        )
                         .into_any_element(),
                 )
             })
@@ -1094,7 +1105,7 @@ mod layout_tests {
     fn rendered_image_opens_centered_lightbox_and_escape_restores_focus() {
         gpui_platform::headless().run(|cx| {
             cx.set_global(Theme::dark());
-            let window = cx.open_window(gpui::WindowOptions { window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(Point::default(), gpui::size(px(800.0), px(600.0))))), ..Default::default() }, |_, cx| {
+            let window = cx.open_window(gpui::WindowOptions { window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(Point::default(), gpui::size(px(1200.0), px(600.0))))), ..Default::default() }, |_, cx| {
                 cx.new(|cx| {
                     let mut view = MarkdownPreview::new("README.md".into(), Rc::new(|_, _| {}), cx);
                     view.tree = parser::parse_full("![Example](example.svg)"); view.list.reset(1);
@@ -1108,7 +1119,7 @@ mod layout_tests {
             cx.update_window(window.into(), |_, window, cx| { window.refresh(); let _ = window.draw(cx); }).unwrap();
             let bounds = view.read(cx).list.bounds_for_item(0).unwrap();
             assert!(bounds.size.height > px(100.0));
-            let position = gpui::point(bounds.left() + px(80.0), bounds.top() + px(60.0));
+            let position = bounds.center();
             cx.update_window(window.into(), |_, window, cx| {
                 window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Left, position, click_count: 1, ..Default::default() }), cx);
                 window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position, click_count: 1, ..Default::default() }), cx);
