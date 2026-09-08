@@ -83,6 +83,7 @@ impl FilesSurface {
         );
         self.watch_sequence = Some(frame.sequence);
         if frame.resync_required || gap {
+            self.invalidate_markdown_images(None, cx);
             self.refresh(cx);
             self.reconcile_open_documents(cx);
             return;
@@ -90,6 +91,10 @@ impl FilesSurface {
 
         let mut parents = HashSet::new();
         for change in frame.changes {
+            self.invalidate_markdown_images(Some(&change.path), cx);
+            if let Some(old_path) = &change.old_path {
+                self.invalidate_markdown_images(Some(old_path), cx);
+            }
             match change.kind {
                 WorkspaceFileChangeKind::Created => {
                     self.reconcile_created_documents(&change.path, cx);

@@ -93,7 +93,7 @@ const TOOL_TEXT_SIZE: f32 = 12.0;
 ///
 /// GPUI list offsets increase toward the document bottom. The quadratic ramp
 /// keeps entry into the edge zone gentle and reaches full speed at the edge.
-fn selection_scroll_step(bounds: Bounds<Pixels>, position: Point<Pixels>) -> f32 {
+pub(crate) fn selection_scroll_step(bounds: Bounds<Pixels>, position: Point<Pixels>) -> f32 {
     let height = f32::from(bounds.size.height);
     if height <= 0.0 {
         return 0.0;

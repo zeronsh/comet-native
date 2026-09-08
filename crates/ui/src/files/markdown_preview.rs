@@ -18,6 +18,23 @@ use std::{
     time::Duration,
 };
 
+const MAX_MEDIA_BYTES: usize = 64 * 1024 * 1024;
+const MAX_MEDIA_ENTRIES: usize = 32;
+const MAX_MARKDOWN_BYTES: usize = 2 * 1024 * 1024;
+
+fn release_media(
+    images: impl IntoIterator<Item = super::markdown_media::MediaImage>,
+    cx: &mut gpui::App,
+) {
+    let images: Vec<_> = images.into_iter().map(|media| media.image).collect();
+    // After the active window returns to App, release its atlas tiles as well.
+    cx.defer(move |cx| {
+        for image in images {
+            gpui::ImageSource::Image(image).evict(None, cx);
+        }
+    });
+}
+
 pub(super) fn is_markdown(path: &str) -> bool {
     path.rsplit_once('.')
         .is_some_and(|(_, ext)| matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown"))
@@ -25,6 +42,9 @@ pub(super) fn is_markdown(path: &str) -> bool {
 
 /// URL path resolution is independent of the UI host's filesystem.
 pub(super) fn relative_target(document: &str, target: &str) -> Option<(String, Option<String>)> {
+    if let Some(target) = target.strip_prefix("zeron-file:") {
+        return relative_target("", target);
+    }
     if target.starts_with('/') || target.contains(':') || target.contains('\\') {
         return None;
     }
@@ -73,6 +93,7 @@ pub(super) struct MarkdownPreview {
     pub focus: FocusHandle,
     pub version: Option<(u64, u64, Option<String>)>,
     path: String,
+    media_location: Option<(Option<String>, String)>,
     scope: String,
     tree: BlockTree,
     list: ListState,
@@ -86,6 +107,17 @@ pub(super) struct MarkdownPreview {
     pub media_client: Option<(super::client::WorkspaceFilesClient, String)>,
     images: HashMap<String, Result<super::markdown_media::MediaImage, String>>,
     image_task: Option<Task<()>>,
+    image_generation: u64,
+    media_dirty: bool,
+    image_allowed: Rc<HashSet<String>>,
+    diagram_allowed: Rc<HashSet<String>>,
+    image_snapshot: Rc<HashMap<String, Result<super::markdown_media::MediaImage, String>>>,
+    diagram_snapshot: Rc<HashMap<String, Result<super::markdown_media::MediaImage, String>>>,
+    visible_rows: HashSet<gpui::SharedString>,
+    needs_focus: bool,
+    suspended: bool,
+    selection_pointer: Option<gpui::Point<gpui::Pixels>>,
+    selection_task: Option<Task<()>>,
     diagrams: HashMap<String, Result<super::markdown_media::MediaImage, String>>,
     diagram_task: Option<Task<()>>,
     diagram_style: u32,
@@ -101,7 +133,28 @@ impl MarkdownPreview {
         open_file: Rc<dyn Fn(String, &mut gpui::App)>,
         cx: &mut Context<Self>,
     ) -> Self {
+        cx.on_release(|view, cx| {
+            render::clear_selection_surface(&view.scope);
+            let media = view
+                .images
+                .drain()
+                .chain(view.diagrams.drain())
+                .filter_map(|(_, result)| result.ok());
+            release_media(media, cx);
+        })
+        .detach();
         Self {
+            image_generation: 0,
+            media_dirty: true,
+            image_allowed: Rc::default(),
+            diagram_allowed: Rc::default(),
+            image_snapshot: Rc::default(),
+            diagram_snapshot: Rc::default(),
+            visible_rows: HashSet::new(),
+            needs_focus: true,
+            suspended: false,
+            selection_pointer: None,
+            selection_task: None,
             diagrams: HashMap::new(),
             diagram_task: None,
             diagram_style: 0,
@@ -114,6 +167,7 @@ impl MarkdownPreview {
             focus: cx.focus_handle(),
             version: None,
             path,
+            media_location: None,
             scope: format!("md-preview-{}|", cx.entity_id()),
             tree: BlockTree::default(),
             list: ListState::new(0, ListAlignment::Top, px(400.0)),
@@ -128,11 +182,24 @@ impl MarkdownPreview {
         }
     }
 
-    pub fn set_source(&mut self, source: String, truncated: bool, cx: &mut Context<Self>) {
-        self.epoch += 1;
+    pub fn set_source(&mut self, mut source: String, truncated: bool, cx: &mut Context<Self>) {
+        let clipped = source.len() > MAX_MARKDOWN_BYTES;
+        if clipped {
+            let mut end = MAX_MARKDOWN_BYTES;
+            while !source.is_char_boundary(end) {
+                end -= 1;
+            }
+            source.truncate(end);
+        }
+        render::clear_selection_surface(&self.scope);
+        self.epoch = self.epoch.wrapping_add(1);
+        self.image_task = None;
+        self.diagram_task = None;
+        self.preview_image = None;
+        self.source_visible.clear();
         let epoch = self.epoch;
         self.loading = self.tree.is_empty();
-        self.truncated = truncated;
+        self.truncated = truncated || clipped;
         self.parse_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(120))
@@ -201,16 +268,36 @@ impl MarkdownPreview {
     }
 
     fn load_images(&mut self, cx: &mut Context<Self>) {
+        self.media_dirty = true;
+        self.image_generation = self.image_generation.wrapping_add(1);
+        let generation = self.image_generation;
         use futures::{StreamExt as _, stream};
         let sources = super::markdown_media::image_sources(&self.tree);
-        self.images.retain(|source, _| sources.contains(source));
+        self.image_allowed = Rc::new(sources.iter().take(MAX_MEDIA_ENTRIES).cloned().collect());
+        let removed: Vec<_> = self
+            .images
+            .keys()
+            .filter(|source| !sources.contains(source))
+            .cloned()
+            .collect();
+        release_media(
+            removed
+                .into_iter()
+                .filter_map(|source| self.images.remove(&source).and_then(Result::ok)),
+            cx,
+        );
         let Some((client, checkout)) = self.media_client.clone() else {
+            for source in sources.into_iter().take(MAX_MEDIA_ENTRIES) {
+                self.images
+                    .entry(source)
+                    .or_insert_with(|| Err("Workspace image connection unavailable".into()));
+            }
             return;
         };
         let jobs: Vec<_> = sources
             .into_iter()
+            .take(MAX_MEDIA_ENTRIES)
             .filter(|s| !self.images.contains_key(s))
-            .take(32)
             .collect::<Vec<_>>()
             .into_iter()
             .filter_map(|source| {
@@ -236,7 +323,17 @@ impl MarkdownPreview {
                     let checkout = checkout.clone();
                     let executor = executor.clone();
                     async move {
-                        let result = match client.read_image(path, checkout).await {
+                        let read = Box::pin(client.read_image(path, checkout));
+                        let deadline = Box::pin(executor.timer(Duration::from_secs(30)));
+                        let response = match futures::future::select(read, deadline).await {
+                            futures::future::Either::Left((result, _)) => result,
+                            futures::future::Either::Right(_) => {
+                                Err(super::client::FilesClientError::Transport(
+                                    "Image preview timed out".into(),
+                                ))
+                            }
+                        };
+                        let result = match response {
                             Ok((mime, bytes)) => {
                                 executor
                                     .spawn(async move {
@@ -253,11 +350,13 @@ impl MarkdownPreview {
             while let Some((source, result)) = results.next().await {
                 if this
                     .update(cx, |view, cx| {
-                        if view.epoch != epoch {
+                        if view.epoch != epoch || view.image_generation != generation {
                             return;
                         }
+                        let result = view.admit_media(result);
                         view.images.insert(source, result);
-                        view.list.remeasure();
+                        view.media_dirty = true;
+                        view.list.remeasure_items(0..view.tree.len());
                         cx.notify();
                     })
                     .is_err()
@@ -269,18 +368,35 @@ impl MarkdownPreview {
     }
 
     fn load_diagrams(&mut self, cx: &mut Context<Self>) {
+        self.media_dirty = true;
         let sources = super::markdown_media::diagram_sources(&self.tree);
-        self.diagrams.retain(|code, _| sources.contains(code));
+        self.diagram_allowed = Rc::new(sources.iter().take(MAX_MEDIA_ENTRIES).cloned().collect());
+        let removed: Vec<_> = self
+            .diagrams
+            .keys()
+            .filter(|code| !sources.contains(code))
+            .cloned()
+            .collect();
+        release_media(
+            removed
+                .into_iter()
+                .filter_map(|code| self.diagrams.remove(&code).and_then(Result::ok)),
+            cx,
+        );
         let style = crate::theme::style_generation();
         if self.diagram_style != style {
-            self.diagrams.clear();
+            self.preview_image = None;
+            release_media(
+                self.diagrams.drain().filter_map(|(_, result)| result.ok()),
+                cx,
+            );
             self.diagram_style = style;
         }
         let palette = crate::markdown::mermaid::Palette::from_theme(Theme::of(cx));
         let jobs: Vec<_> = sources
             .into_iter()
+            .take(MAX_MEDIA_ENTRIES)
             .filter(|code| !self.diagrams.contains_key(code))
-            .take(24)
             .collect();
         let epoch = self.epoch;
         self.diagram_task = Some(cx.spawn(async move |this, cx| {
@@ -299,8 +415,10 @@ impl MarkdownPreview {
                         if view.epoch != epoch || view.diagram_style != style {
                             return;
                         }
+                        let result = view.admit_media(result);
                         view.diagrams.insert(code, result);
-                        view.list.remeasure();
+                        view.media_dirty = true;
+                        view.list.remeasure_items(0..view.tree.len());
                         cx.notify();
                     })
                     .is_err()
@@ -308,6 +426,180 @@ impl MarkdownPreview {
                     return;
                 }
             }
+        }));
+    }
+
+    fn admit_media(
+        &self,
+        result: Result<super::markdown_media::MediaImage, String>,
+    ) -> Result<super::markdown_media::MediaImage, String> {
+        let used: usize = self
+            .images
+            .values()
+            .chain(self.diagrams.values())
+            .filter_map(|r| r.as_ref().ok())
+            .map(|m| m.bytes)
+            .sum();
+        result.and_then(|media| {
+            if used.saturating_add(media.bytes) > MAX_MEDIA_BYTES {
+                Err("Document media preview memory limit reached".into())
+            } else {
+                Ok(media)
+            }
+        })
+    }
+
+    pub fn activate(
+        &mut self,
+        path: &str,
+        location: &(Option<String>, String),
+        cx: &mut Context<Self>,
+    ) {
+        if self.path != path || self.media_location.as_ref() != Some(location) {
+            self.path = path.to_string();
+            self.media_location = Some(location.clone());
+            self.version = None;
+            self.image_generation = self.image_generation.wrapping_add(1);
+            self.image_task = None;
+            self.preview_image = None;
+            release_media(
+                self.images.drain().filter_map(|(_, result)| result.ok()),
+                cx,
+            );
+            self.media_dirty = true;
+        }
+        if self.suspended {
+            self.suspended = false;
+            self.needs_focus = true;
+            self.version = None;
+        }
+    }
+
+    pub fn suspend(&mut self, cx: &mut Context<Self>) {
+        if self.suspended {
+            return;
+        }
+        self.suspended = true;
+        self.media_dirty = true;
+        self.epoch = self.epoch.wrapping_add(1);
+        self.parse_task = None;
+        self.image_task = None;
+        self.diagram_task = None;
+        self.selection_task = None;
+        self.preview_image = None;
+        self.image_snapshot = Rc::default();
+        self.diagram_snapshot = Rc::default();
+        self.image_allowed = Rc::default();
+        self.diagram_allowed = Rc::default();
+        self.version = None;
+        self.tree = BlockTree::default();
+        self.highlights.clear();
+        self.anchors.clear();
+        self.cache.borrow_mut().clear();
+        render::clear_selection_surface(&self.scope);
+        release_media(
+            self.images
+                .drain()
+                .chain(self.diagrams.drain())
+                .filter_map(|(_, result)| result.ok()),
+            cx,
+        );
+    }
+
+    pub fn invalidate_images(&mut self, changed: Option<&str>, cx: &mut Context<Self>) {
+        let removed: Vec<_> = self
+            .images
+            .keys()
+            .filter(|source| {
+                changed.is_none_or(|changed| {
+                    relative_target(&self.path, source).is_some_and(|(path, _)| {
+                        path == changed || path.starts_with(&format!("{changed}/"))
+                    })
+                })
+            })
+            .cloned()
+            .collect();
+        // Include pending loads in invalidation: a watcher can arrive before the first response.
+        let affected = changed.is_none_or(|changed| {
+            super::markdown_media::image_sources(&self.tree)
+                .iter()
+                .any(|source| {
+                    relative_target(&self.path, source).is_some_and(|(path, _)| {
+                        path == changed || path.starts_with(&format!("{changed}/"))
+                    })
+                })
+        });
+        if !affected {
+            return;
+        }
+        self.preview_image = None;
+        release_media(
+            removed
+                .into_iter()
+                .filter_map(|source| self.images.remove(&source).and_then(Result::ok)),
+            cx,
+        );
+        if !self.suspended {
+            self.load_images(cx);
+        }
+        self.list.remeasure_items(0..self.tree.len());
+        cx.notify();
+    }
+
+    fn owns_selection(&self) -> bool {
+        crate::markdown::selection::anchor_key().is_some_and(|key| key.starts_with(&self.scope))
+    }
+
+    fn selection_move(
+        &mut self,
+        event: &gpui::MouseMoveEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !event.dragging() || !self.owns_selection() || !crate::markdown::selection::is_dragging()
+        {
+            self.selection_task = None;
+            self.selection_pointer = None;
+            return;
+        }
+        self.selection_pointer = Some(event.position);
+        if render::update_drag_at(event.position) {
+            cx.notify();
+        }
+        self.schedule_selection_scroll(cx);
+    }
+
+    fn schedule_selection_scroll(&mut self, cx: &mut Context<Self>) {
+        if self.selection_task.is_some() {
+            return;
+        }
+        let Some(position) = self.selection_pointer else {
+            return;
+        };
+        if crate::transcript::selection_scroll_step(self.list.viewport_bounds(), position) == 0.0 {
+            return;
+        }
+        self.selection_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(16))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.selection_task = None;
+                if !view.owns_selection() || !crate::markdown::selection::is_dragging() {
+                    return;
+                }
+                let Some(position) = view.selection_pointer else {
+                    return;
+                };
+                render::update_drag_at(position);
+                view.list
+                    .scroll_by(px(crate::transcript::selection_scroll_step(
+                        view.list.viewport_bounds(),
+                        position,
+                    )));
+                cx.notify();
+                view.schedule_selection_scroll(cx);
+            });
         }));
     }
 
@@ -345,6 +637,11 @@ impl MarkdownPreview {
                     .object_fit(gpui::ObjectFit::Contain),
             )
             .into_any_element()
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_tree(&self) -> &BlockTree {
+        &self.tree
     }
 
     fn render_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -389,18 +686,23 @@ impl MarkdownPreview {
             .filter_map(|ix| {
                 let top = self.tree.blocks.get(ix)?;
                 let mut opts = RenderOptions::settled(format!("{}{ix}", self.scope).into());
+                self.visible_rows.insert(opts.row_key.clone());
                 opts.cache = Some(self.cache.clone());
-                let images = self.images.clone();
+                let images = self.image_snapshot.clone();
                 let image_owner = cx.weak_entity();
                 let image_link = link.clone();
                 let diagram_owner = cx.weak_entity();
-                let diagrams = self.diagrams.clone();
+                let diagrams = self.diagram_snapshot.clone();
                 let source_visible = self.source_visible.clone();
+                let image_allowed = self.image_allowed.clone();
+                let diagram_allowed = self.diagram_allowed.clone();
                 opts.media = Some(render::MediaUi {
                     diagram: Some(Rc::new(move |code, id, theme| {
                         let state = diagrams.get(code);
+                        let allowed = diagram_allowed.contains(code);
                         let source_shown = source_visible.contains(id.as_ref())
-                            || state.is_some_and(Result::is_err);
+                            || state.is_some_and(Result::is_err)
+                            || !allowed;
                         let owner = diagram_owner.clone();
                         let toggle_id = id.to_string();
                         let source = code.to_string();
@@ -426,7 +728,7 @@ impl MarkdownPreview {
                                         if !view.source_visible.remove(&toggle_id) {
                                             view.source_visible.insert(toggle_id.clone());
                                         }
-                                        view.list.remeasure();
+                                        view.list.remeasure_items(0..view.tree.len());
                                         cx.notify();
                                     });
                                 })
@@ -483,10 +785,13 @@ impl MarkdownPreview {
                             }
                             None => {
                                 card = card.child(
-                                    div()
-                                        .p(px(12.0))
-                                        .text_color(theme.text_muted)
-                                        .child("Rendering diagram…"),
+                                    div().p(px(12.0)).text_color(theme.text_muted).child(
+                                        if diagram_allowed.contains(code) {
+                                            "Rendering diagram…"
+                                        } else {
+                                            "Document diagram preview limit reached"
+                                        },
+                                    ),
                                 );
                             }
                             _ => {}
@@ -543,7 +848,11 @@ impl MarkdownPreview {
                                     state
                                         .and_then(|s| s.as_ref().err())
                                         .map(String::as_str)
-                                        .unwrap_or("Loading image…")
+                                        .unwrap_or(if image_allowed.contains(&image.source) {
+                                            "Loading image…"
+                                        } else {
+                                            "Document image preview limit reached"
+                                        })
                                 )
                             };
                             let target = image.source.clone();
@@ -591,8 +900,20 @@ impl MarkdownPreview {
 impl Render for MarkdownPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        if self.needs_focus {
+            self.needs_focus = false;
+            window.focus(&self.focus, cx);
+        }
+        self.cache
+            .borrow_mut()
+            .retain_rows(&std::mem::take(&mut self.visible_rows));
         if self.diagram_style != crate::theme::style_generation() {
             self.load_diagrams(cx);
+        }
+        if self.media_dirty {
+            self.media_dirty = false;
+            self.image_snapshot = Rc::new(self.images.clone());
+            self.diagram_snapshot = Rc::new(self.diagrams.clone());
         }
         let mut root = div()
             .id("markdown-file-preview")
@@ -608,6 +929,18 @@ impl Render for MarkdownPreview {
             .on_mouse_down(
                 gpui::MouseButton::Left,
                 cx.listener(|view, _, window, cx| window.focus(&view.focus, cx)),
+            )
+            .on_mouse_move(cx.listener(Self::selection_move))
+            .on_mouse_up(
+                gpui::MouseButton::Left,
+                cx.listener(|view, _, _, cx| {
+                    if view.owns_selection() {
+                        crate::markdown::selection::end_active_drag();
+                        view.selection_task = None;
+                        view.selection_pointer = None;
+                        cx.notify();
+                    }
+                }),
             )
             .on_key_down(cx.listener(|_, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "c"
@@ -691,6 +1024,72 @@ mod layout_tests {
     use super::*;
     use gpui::{AppContext, Bounds, Point};
 
+    struct Pair(gpui::Entity<MarkdownPreview>, gpui::Entity<MarkdownPreview>);
+    impl Render for Pair {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .child(div().w(px(400.0)).h_full().child(self.0.clone()))
+                .child(render::selection_frame_reset())
+                .child(div().w(px(400.0)).h_full().child(self.1.clone()))
+        }
+    }
+
+    #[test]
+    fn selection_stays_in_its_document_with_two_markdown_surfaces() {
+        gpui_platform::headless().run(|cx| {
+            cx.set_global(Theme::dark());
+            let make = |text: &str, cx: &mut gpui::App| {
+                cx.new(|cx| {
+                    let mut view = MarkdownPreview::new("README.md".into(), Rc::new(|_, _| {}), cx);
+                    view.tree = parser::parse_full(text);
+                    view.list.reset(view.tree.len());
+                    view.diagram_style = crate::theme::style_generation();
+                    view
+                })
+            };
+            let left = make("Left document text", cx);
+            let right = make("Right document text", cx);
+            let left_key = format!("{}0:0", left.read(cx).scope);
+            let right_key = format!("{}0:0", right.read(cx).scope);
+            let window = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(
+                            Point::default(),
+                            gpui::size(px(800.0), px(600.0)),
+                        ))),
+                        ..Default::default()
+                    },
+                    |_, cx| cx.new(|_| Pair(left, right)),
+                )
+                .unwrap();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            let left_bounds = render::selection_test_bounds(&left_key);
+            let right_bounds = render::selection_test_bounds(&right_key);
+            assert!(right_bounds.left() > left_bounds.left());
+            crate::markdown::selection::begin(&left_key, 0);
+            assert!(render::update_drag_at(gpui::point(
+                right_bounds.right(),
+                right_bounds.top() + px(3.0)
+            )));
+            assert_eq!(
+                crate::markdown::selection::selected_text().as_deref(),
+                Some("Left document text")
+            );
+            crate::markdown::selection::clear_if_owner(&left_key);
+            cx.spawn(async move |cx| {
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+    }
+
     #[test]
     fn rendered_image_opens_centered_lightbox_and_escape_restores_focus() {
         gpui_platform::headless().run(|cx| {
@@ -723,6 +1122,79 @@ mod layout_tests {
             assert!(view.read(cx).preview_image.is_none());
             cx.update_window(window.into(), |_, window, cx| { assert!(view.read(cx).focus.is_focused(window)); }).unwrap();
             cx.spawn(async move |cx| { cx.update(|cx| cx.quit()); }).detach();
+        });
+    }
+}
+
+#[cfg(test)]
+mod async_tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn edits_and_suspension_cancel_obsolete_preview_work(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let view = cx.new(|cx| MarkdownPreview::new("README.md".into(), Rc::new(|_, _| {}), cx));
+        view.update(cx, |view, cx| {
+            view.set_source("# Old".into(), false, cx);
+            view.set_source("# Current".into(), false, cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            let Block::Heading { runs, .. } = &view.tree.blocks[0].block else {
+                panic!("missing heading");
+            };
+            assert_eq!(runs[0].text, "Current");
+        });
+        view.update(cx, |view, cx| {
+            view.set_source("# Hidden".into(), false, cx);
+            view.suspend(cx);
+        });
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        view.read_with(cx, |view, _| {
+            assert!(view.tree.is_empty());
+            assert!(view.images.is_empty());
+            assert!(view.diagrams.is_empty());
+        });
+        let weak = view.downgrade();
+        drop(view);
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[gpui::test]
+    fn referenced_image_change_invalidates_cache_and_memory_is_bounded(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::dark()));
+        let view =
+            cx.new(|cx| MarkdownPreview::new("docs/README.md".into(), Rc::new(|_, _| {}), cx));
+        view.update(cx, |view, cx| {
+            view.tree = parser::parse_full("![a](../image.png)");
+            let mut media = super::super::markdown_media::decode_image(
+                "image/svg+xml",
+                br#"<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"/>"#.to_vec(),
+            )
+            .unwrap();
+            media.bytes = MAX_MEDIA_BYTES;
+            assert!(view.admit_media(Ok(media.clone())).is_ok());
+            view.images.insert("../image.png".into(), Ok(media.clone()));
+            assert!(view.admit_media(Ok(media)).is_err());
+            view.invalidate_images(Some("unrelated.png"), cx);
+            assert!(view.images["../image.png"].is_ok());
+            view.invalidate_images(Some("image.png"), cx);
+            assert!(view.images["../image.png"].is_err());
+            let generation = view.image_generation;
+            view.activate(
+                "docs/README.md",
+                &(Some("other-device".into()), "other-checkout".into()),
+                cx,
+            );
+            assert!(view.images.is_empty());
+            assert!(view.image_generation > generation);
+            assert!(view.version.is_none());
         });
     }
 }

@@ -1210,15 +1210,26 @@ fn read_image_blocking(
             "Image exceeds 8 MiB preview limit".into(),
         ));
     }
-    let file = std::fs::File::open(root.join(relative.as_path()))
+    let mut file = std::fs::File::open(root.join(relative.as_path()))
         .map_err(|e| WorkspaceFilesError::Io(e.to_string()))?;
+    let opened = file
+        .metadata()
+        .map_err(|e| WorkspaceFilesError::Io(e.to_string()))?;
+    if !same_file_revision(&before, &opened) {
+        return Err(WorkspaceFilesError::Io("Image changed before open".into()));
+    }
     let mut bytes = Vec::new();
-    file.take(MAX_WORKSPACE_IMAGE_BYTES as u64 + 1)
+    (&mut file)
+        .take(MAX_WORKSPACE_IMAGE_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| WorkspaceFilesError::Io(e.to_string()))?;
     let after = checked_file_metadata(root, relative)?;
+    let handle_after = file
+        .metadata()
+        .map_err(|e| WorkspaceFilesError::Io(e.to_string()))?;
     if bytes.len() > MAX_WORKSPACE_IMAGE_BYTES
         || !same_file_revision(&before, &after)
+        || !same_file_revision(&opened, &handle_after)
         || bytes.len() as u64 != after.len()
     {
         return Err(WorkspaceFilesError::Io(

@@ -600,6 +600,18 @@ impl Render for FileEditorTooltip {
 
 impl FilesSurface {
     pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self
+            .preview
+            .active
+            .as_ref()
+            .and_then(|path| self.preview.documents.get(path))
+            .filter(|d| d.show_markdown)
+            .and_then(|d| d.markdown.clone())
+        {
+            let focus = view.read(cx).focus.clone();
+            window.defer(cx, move |window, cx| focus.focus(window, cx));
+            return;
+        }
         let Some(editor) = self
             .preview
             .active
@@ -918,6 +930,23 @@ impl FilesSurface {
     }
 
     pub(super) fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
+        if self
+            .preview
+            .active
+            .as_ref()
+            .is_some_and(|active| active != &path)
+        {
+            if let Some(view) = self
+                .preview
+                .active
+                .as_ref()
+                .and_then(|active| self.preview.documents.get(active))
+                .and_then(|d| d.markdown.clone())
+            {
+                view.update(cx, |view, cx| view.suspend(cx));
+            }
+        }
+
         let leaving_reload_confirmation = self
             .preview
             .reload_confirmation
@@ -1571,6 +1600,18 @@ impl FilesSurface {
         }
     }
 
+    pub(super) fn invalidate_markdown_images(
+        &mut self,
+        path: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        for document in self.preview.documents.values() {
+            if let Some(view) = &document.markdown {
+                view.update(cx, |view, cx| view.invalidate_images(path, cx));
+            }
+        }
+    }
+
     pub(super) fn mark_document_deleted(&mut self, path: &str, cx: &mut Context<Self>) {
         let mut changed = false;
         for (document_path, document) in &mut self.preview.documents {
@@ -2100,6 +2141,11 @@ impl FilesSurface {
                         };
                         if let Some(document) = this.preview.documents.get_mut(&path) {
                             document.show_markdown = !document.show_markdown;
+                            if !document.show_markdown {
+                                if let Some(view) = &document.markdown {
+                                    view.update(cx, |view, cx| view.suspend(cx));
+                                }
+                            }
                         }
                         if this
                             .preview
@@ -2211,6 +2257,80 @@ impl FilesSurface {
             .into_any_element()
     }
 
+    fn prepare_markdown_preview(
+        &mut self,
+        path: &str,
+        editor: Option<&Entity<super::editor::FileEditorState>>,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<super::markdown_preview::MarkdownPreview>> {
+        if !self.preview.documents.get(path).is_some_and(|d| {
+            d.show_markdown
+                && !matches!(d.phase, DocumentPhase::Loading | DocumentPhase::Error(_))
+                && d.file.as_ref().is_some_and(|f| f.text.is_some())
+        }) {
+            return None;
+        }
+        let document = self.preview.documents.get_mut(path).unwrap();
+        let version = (
+            document.generation,
+            document.revision,
+            document.loaded_hash.clone(),
+        );
+        let view = document
+            .markdown
+            .get_or_insert_with(|| {
+                let owner = cx.weak_entity();
+                cx.new(|cx| {
+                    super::markdown_preview::MarkdownPreview::new(
+                        path.to_string(),
+                        Rc::new(move |path, cx| {
+                            let _ =
+                                owner.update(cx, |surface, cx| surface.open_tree_file(path, cx));
+                        }),
+                        cx,
+                    )
+                })
+            })
+            .clone();
+        let media_client = self
+            .request_context
+            .clone()
+            .zip(self.state.read(cx).engine().cloned())
+            .map(|(context, engine)| {
+                (
+                    WorkspaceFilesClient::new(engine, context),
+                    document.file.as_ref().unwrap().checkout_id.clone(),
+                )
+            });
+        let location = (
+            self.request_context
+                .as_ref()
+                .and_then(|context| context.target_device_id.clone()),
+            document.file.as_ref().unwrap().checkout_id.clone(),
+        );
+        view.update(cx, |view, cx| {
+            view.media_client = media_client;
+            view.activate(path, &location, cx);
+        });
+        if view.read(cx).version.as_ref() != Some(&version) {
+            let source = editor
+                .map(|editor| editor.read(cx).value().to_string())
+                .unwrap_or_else(|| {
+                    document
+                        .file
+                        .as_ref()
+                        .and_then(|f| f.text.clone())
+                        .unwrap_or_default()
+                });
+            let truncated = document.file.as_ref().is_some_and(|f| f.truncated);
+            view.update(cx, |view, cx| {
+                view.version = Some(version);
+                view.set_source(source, truncated, cx);
+            });
+        }
+        Some(view)
+    }
+
     fn render_document_body(
         &mut self,
         path: &str,
@@ -2220,62 +2340,7 @@ impl FilesSurface {
     ) -> AnyElement {
         self.apply_pending_external_reload(path, window, cx);
         let editor = self.ensure_editor(path, theme, window, cx);
-        if self
-            .preview
-            .documents
-            .get(path)
-            .is_some_and(|d| d.show_markdown && d.file.as_ref().is_some_and(|f| f.text.is_some()))
-        {
-            let document = self.preview.documents.get_mut(path).unwrap();
-            let version = (
-                document.generation,
-                document.revision,
-                document.loaded_hash.clone(),
-            );
-            let view = document
-                .markdown
-                .get_or_insert_with(|| {
-                    let owner = cx.weak_entity();
-                    cx.new(|cx| {
-                        super::markdown_preview::MarkdownPreview::new(
-                            path.to_string(),
-                            Rc::new(move |path, cx| {
-                                let _ = owner
-                                    .update(cx, |surface, cx| surface.open_tree_file(path, cx));
-                            }),
-                            cx,
-                        )
-                    })
-                })
-                .clone();
-            let media_client = self
-                .request_context
-                .clone()
-                .zip(self.state.read(cx).engine().cloned())
-                .map(|(context, engine)| {
-                    (
-                        WorkspaceFilesClient::new(engine, context),
-                        document.file.as_ref().unwrap().checkout_id.clone(),
-                    )
-                });
-            view.update(cx, |view, _| view.media_client = media_client);
-            if view.read(cx).version.as_ref() != Some(&version) {
-                let source = editor
-                    .as_ref()
-                    .map(|editor| editor.read(cx).value().to_string())
-                    .unwrap_or_else(|| {
-                        document
-                            .file
-                            .as_ref()
-                            .and_then(|f| f.text.clone())
-                            .unwrap_or_default()
-                    });
-                let truncated = document.file.as_ref().is_some_and(|f| f.truncated);
-                view.update(cx, |view, cx| {
-                    view.version = Some(version);
-                    view.set_source(source, truncated, cx);
-                });
-            }
+        if let Some(view) = self.prepare_markdown_preview(path, editor.as_ref(), cx) {
             return view.into_any_element();
         }
 
@@ -3388,5 +3453,90 @@ impl FilesSurface {
             DocumentPhase::Saving
         };
         self.preview.documents.insert("test.rs".into(), document);
+    }
+}
+
+#[cfg(test)]
+mod markdown_buffer_tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn preview_reads_unsaved_buffer_without_starting_a_save(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| crate::state::AppState::new());
+            FilesSurface::new(state, "chat".into(), false, 1000, 13.0, false, false, cx)
+        });
+        let preview = window
+            .update(cx, |surface, window, cx| {
+                let mut document = FileDocument::loading(DocumentKey {
+                    chat_id: "chat".into(),
+                    checkout_id: Some("checkout".into()),
+                    path: "README.md".into(),
+                });
+                document.set_loaded(zeron_proto::WorkspaceFileText {
+                    checkout_id: "checkout".into(),
+                    path: "README.md".into(),
+                    text: Some("# Disk".into()),
+                    content_hash: Some("disk-hash".into()),
+                    size: 6,
+                    modified_at: None,
+                    encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
+                    line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                    read_only_reason: None,
+                    truncated: false,
+                });
+                let theme = Theme::of(cx).clone();
+                document.editor = Some(super::super::editor::new_file_editor(
+                    "# Unsaved",
+                    "README.md",
+                    false,
+                    &theme,
+                    window,
+                    cx,
+                ));
+                document.mark_user_edit();
+                document.show_markdown = true;
+                surface.preview.active = Some("README.md".into());
+                surface
+                    .preview
+                    .documents
+                    .insert("README.md".into(), document);
+                let editor = surface.preview.documents["README.md"].editor.clone();
+                surface
+                    .prepare_markdown_preview("README.md", editor.as_ref(), cx)
+                    .unwrap();
+                let document = &surface.preview.documents["README.md"];
+                assert!(document.is_dirty());
+                assert!(document.save_task.is_none());
+                assert!(document.autosave_task.is_none());
+                document.markdown.clone().unwrap()
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        preview.read_with(cx, |preview, _| {
+            let crate::markdown::parser::Block::Heading { runs, .. } =
+                &preview.test_tree().blocks[0].block
+            else {
+                panic!("missing heading");
+            };
+            assert_eq!(runs[0].text, "Unsaved");
+        });
+        let weak = preview.downgrade();
+        drop(preview);
+        window
+            .update(cx, |surface, _, cx| {
+                surface.preview.documents.clear();
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none());
     }
 }

@@ -532,4 +532,111 @@ mod tests {
         assert_eq!(calls[0].1["lineEnding"], "lf");
         assert!(calls[0].1.get("targetDeviceId").is_none());
     }
+    struct ImageTransport {
+        responses: Mutex<std::collections::VecDeque<Result<Value, RpcError>>>,
+        calls: Mutex<Vec<Value>>,
+    }
+    #[async_trait]
+    impl WorkspaceFilesTransport for ImageTransport {
+        async fn call(&self, method: &str, params: Value) -> Result<Value, RpcError> {
+            assert_eq!(method, methods::READ_WORKSPACE_IMAGE);
+            self.calls.lock().unwrap().push(params);
+            self.responses
+                .lock()
+                .unwrap()
+                .pop_front()
+                .expect("unexpected extra request")
+        }
+        async fn subscribe(&self, _: &str, _: Value) -> Result<mpsc::Receiver<Value>, RpcError> {
+            unreachable!()
+        }
+    }
+    fn image_client(
+        responses: Vec<Result<Value, RpcError>>,
+    ) -> (WorkspaceFilesClient, Arc<ImageTransport>) {
+        let transport = Arc::new(ImageTransport {
+            responses: Mutex::new(responses.into()),
+            calls: Mutex::new(Vec::new()),
+        });
+        let client = WorkspaceFilesClient {
+            transport: transport.clone(),
+            context: FilesRequestContext {
+                target: target(),
+                target_device_id: Some("remote".into()),
+                cwd: "/remote/checkout".into(),
+                checkout_id: Some("checkout".into()),
+            },
+        };
+        (client, transport)
+    }
+    fn image_chunk(data: &[u8], end: usize, done: bool) -> Value {
+        use base64::Engine as _;
+        serde_json::to_value(zeron_proto::WorkspaceImageChunk {
+            checkout_id: "checkout".into(),
+            content_hash: "hash".into(),
+            mime_type: "image/png".into(),
+            data: base64::engine::general_purpose::STANDARD.encode(data),
+            next_offset: end,
+            size: 4,
+            done,
+        })
+        .unwrap()
+    }
+    #[tokio::test]
+    async fn remote_images_keep_checkout_hash_and_offset_across_chunks() {
+        let (client, transport) = image_client(vec![
+            Ok(image_chunk(b"ab", 2, false)),
+            Ok(image_chunk(b"cd", 4, true)),
+        ]);
+        assert_eq!(
+            client
+                .read_image("docs/image.png".into(), "checkout".into())
+                .await
+                .unwrap(),
+            ("image/png".into(), b"abcd".to_vec())
+        );
+        let calls = transport.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0]["targetDeviceId"], "remote");
+        assert_eq!(calls[0]["path"], "docs/image.png");
+        assert_eq!(calls[0]["expectedCheckoutId"], "checkout");
+        assert_eq!(calls[1]["expectedContentHash"], "hash");
+        assert_eq!(calls[1]["offset"], 2);
+    }
+    #[tokio::test]
+    async fn image_reads_reject_inconsistent_or_unsupported_responses() {
+        for field in ["checkoutId", "contentHash", "mimeType"] {
+            let mut chunk = image_chunk(b"cd", 4, true);
+            chunk[field] = "changed".into();
+            let (client, _) = image_client(vec![Ok(image_chunk(b"ab", 2, false)), Ok(chunk)]);
+            assert!(
+                client
+                    .read_image("image.png".into(), "checkout".into())
+                    .await
+                    .is_err()
+            );
+        }
+        for chunk in [
+            image_chunk(b"ab", 0, false),
+            image_chunk(b"ab", 2, true),
+            image_chunk(b"", 0, false),
+        ] {
+            let (client, _) = image_client(vec![Ok(chunk)]);
+            assert!(
+                client
+                    .read_image("image.png".into(), "checkout".into())
+                    .await
+                    .is_err()
+            );
+        }
+        let (client, _) = image_client(vec![Err(RpcError::UnknownMethod(
+            methods::READ_WORKSPACE_IMAGE.into(),
+        ))]);
+        assert!(
+            client
+                .read_image("image.png".into(), "checkout".into())
+                .await
+                .is_err()
+        );
+    }
 }

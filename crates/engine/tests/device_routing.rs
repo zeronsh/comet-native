@@ -933,6 +933,25 @@ async fn workspace_file_surface_proxies_over_the_relay() {
             .is_some_and(|text| text.contains("REMOTE"))
     );
     let hash = read["contentHash"].as_str().expect("content hash");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20"/></svg>"#;
+    std::fs::write(repo_b.join("remote-image.svg"), svg).unwrap();
+    let image = client
+        .call(
+            methods::READ_WORKSPACE_IMAGE,
+            serde_json::json!({
+                "chatId": "chat-files", "path": "remote-image.svg", "targetDeviceId": "device-b",
+                "expectedCheckoutId": read["checkoutId"], "offset": 0,
+            }),
+        )
+        .await
+        .expect("remote workspace image");
+    assert_eq!(image["mimeType"], "image/svg+xml");
+    assert_eq!(image["size"], svg.len());
+    assert_eq!(image["done"], true);
+    assert!(client.call(methods::READ_WORKSPACE_IMAGE, serde_json::json!({
+        "chatId": "chat-files", "path": "remote-image.svg", "targetDeviceId": "device-b",
+        "expectedCheckoutId": "wrong-checkout", "offset": 0,
+    })).await.is_err());
 
     let written = client
         .call(

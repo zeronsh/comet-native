@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Clone)]
-pub(super) struct MediaImage {
+pub(crate) struct MediaImage {
     pub image: Arc<Image>,
     pub width: f32,
     pub height: f32,
@@ -73,6 +73,9 @@ pub(super) fn svg_options() -> usvg::Options<'static> {
         .get_or_init(|| {
             let mut db = usvg::fontdb::Database::new();
             db.load_system_fonts();
+            db.load_font_data(include_bytes!("../../assets/fonts/Geist.ttf").to_vec());
+            db.load_font_data(include_bytes!("../../assets/fonts/Geist-Bold.ttf").to_vec());
+            db.set_sans_serif_family("Geist");
             Arc::new(db)
         })
         .clone();
@@ -86,7 +89,7 @@ pub(super) fn svg_options() -> usvg::Options<'static> {
     }
 }
 
-pub(super) fn decode_image(mime: &str, bytes: Vec<u8>) -> Result<MediaImage, String> {
+pub(crate) fn decode_image(mime: &str, bytes: Vec<u8>) -> Result<MediaImage, String> {
     if bytes.len() > zeron_proto::MAX_WORKSPACE_IMAGE_BYTES {
         return Err("Image exceeds preview size limit".into());
     }

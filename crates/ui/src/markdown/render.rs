@@ -984,6 +984,16 @@ fn selection_scope(key: &str) -> &str {
     }
 }
 
+pub(crate) fn clear_selection_surface(prefix: &str) {
+    REGISTRY.with(|r| {
+        r.borrow_mut()
+            .retain(|entry| !entry.key.starts_with(prefix))
+    });
+    if let Some(anchor) = super::selection::anchor_key().filter(|key| key.starts_with(prefix)) {
+        super::selection::clear_if_owner(&anchor);
+    }
+}
+
 pub fn selection_surface_reset(prefix: String) -> impl IntoElement {
     canvas(
         |_, _, _| (),

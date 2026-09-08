@@ -20,8 +20,12 @@ pub struct Palette {
     accent: String,
 }
 
-fn color(color: gpui::Hsla) -> String {
-    let c = color.to_rgb();
+fn color(color: gpui::Hsla, background: gpui::Hsla) -> String {
+    let mut c = color.to_rgb();
+    let bg = background.to_rgb();
+    c.r = c.r * c.a + bg.r * (1.0 - c.a);
+    c.g = c.g * c.a + bg.g * (1.0 - c.a);
+    c.b = c.b * c.a + bg.b * (1.0 - c.a);
     format!(
         "#{:02x}{:02x}{:02x}",
         (c.r * 255.0).round() as u8,
@@ -35,12 +39,12 @@ impl Palette {
         Self {
             dark: theme.appearance.is_dark(),
             font: theme.font_sans.to_string(),
-            background: color(theme.surface),
-            raised: color(theme.surface_raised),
-            text: color(theme.text),
-            muted: color(theme.text_muted),
-            border: color(theme.border_strong),
-            accent: color(theme.accent),
+            background: color(theme.surface, theme.bg),
+            raised: color(theme.surface_raised, theme.bg),
+            text: color(theme.text, theme.bg),
+            muted: color(theme.text_muted, theme.bg),
+            border: color(theme.border_strong, theme.bg),
+            accent: color(theme.accent, theme.bg),
         }
     }
 }
@@ -133,10 +137,35 @@ mod tests {
                 assert!(!svg.contains("<foreignObject"));
                 let raster = renderer.render_single_frame(svg.as_bytes(), 1.0).unwrap();
                 assert!(raster.size(0).width.0 > 0);
+                let prepared = crate::files::markdown_media::decode_image(
+                    "image/svg+xml",
+                    svg.as_bytes().to_vec(),
+                )
+                .unwrap();
+                let prepared_raster = prepared
+                    .image
+                    .to_image_data(gpui::SvgRenderer::new(std::sync::Arc::new(
+                        crate::icons::Assets,
+                    )))
+                    .unwrap();
+                assert_eq!(raster.size(0), prepared_raster.size(0));
                 assert_eq!(svg, render(source, &palette).unwrap());
                 if let Ok(dir) = std::env::var("ZERON_MERMAID_ARTIFACTS") {
                     std::fs::create_dir_all(&dir).unwrap();
                     std::fs::write(format!("{dir}/{name}-{mode}.svg"), svg).unwrap();
+                    let size = prepared_raster.size(0);
+                    let mut rgba = prepared_raster.as_bytes(0).unwrap().to_vec();
+                    for pixel in rgba.chunks_exact_mut(4) {
+                        pixel.swap(0, 2);
+                    }
+                    image::save_buffer(
+                        format!("{dir}/{name}-{mode}.png"),
+                        &rgba,
+                        size.width.0 as u32,
+                        size.height.0 as u32,
+                        image::ColorType::Rgba8,
+                    )
+                    .unwrap();
                 }
             }
         }
