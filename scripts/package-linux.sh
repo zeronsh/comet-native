@@ -27,6 +27,31 @@ else
   BIN="$ROOT/target/debug/zeron"
 fi
 
+# --- glibc floor guard -------------------------------------------------------
+# A dynamically linked glibc binary hard-fails at load on any glibc older than
+# the one it was built against, so the build host's glibc silently becomes the
+# minimum Ubuntu we support. Assert the floor here instead of learning it from
+# a user's "cannot open shared object file" report.
+#
+# Note this is about the *version reference* recorded in .gnu.version_r, not
+# about whether the program really needs the newer glibc: Rust std emits a
+# weak, runtime-detected reference to pidfd_spawnp/pidfd_getpid (glibc 2.39)
+# whenever it is built against 2.39 headers, and ld.so validates every entry in
+# .gnu.version_r regardless of the symbols being weak. Building on 22.04 keeps
+# the reference from being emitted at all.
+GLIBC_MAX="${GLIBC_MAX:-2.35}" # Ubuntu 22.04 (standard support until 2027)
+needed="$(readelf -V "$BIN" | sed -n '/Version needs/,$p' \
+  | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -Vu | tail -1)"
+if [[ -n "$needed" && "$(printf '%s\nGLIBC_%s\n' "$needed" "$GLIBC_MAX" | sort -V | tail -1)" != "GLIBC_$GLIBC_MAX" ]]; then
+  echo "package-linux.sh: binary requires $needed but the floor is GLIBC_$GLIBC_MAX." >&2
+  echo "  It will not load on any system older than $needed. Symbols pulling it in:" >&2
+  objdump -T "$BIN" | grep -F "($needed)" | sed 's/^/    /' >&2
+  echo "  Fix: build on the oldest supported runner (see .github/workflows/release.yml)," >&2
+  echo "  or raise GLIBC_MAX to intentionally drop older distros." >&2
+  exit 1
+fi
+echo "glibc floor ok: requires ${needed:-none} (max allowed GLIBC_$GLIBC_MAX)"
+
 rm -rf "$STAGE" "$TARBALL"
 mkdir -p "$STAGE"
 install -m 755 "$BIN" "$STAGE/zeron"

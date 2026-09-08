@@ -21,12 +21,21 @@ permissions:
 
 jobs:
   linux:
+    # Build on the OLDEST Ubuntu we support, not the newest. A dynamically
+    # linked glibc binary carries a hard version floor equal to the glibc it
+    # was built against, and ld.so refuses to load it on anything older — so
+    # whatever runner is named here silently becomes the minimum supported
+    # distro. Building on 24.04 (glibc 2.39) made the tarballs unloadable on
+    # 22.04 (glibc 2.35), which is in standard support until 2027 and is what
+    # most cloud images still ship. glibc is backward compatible, so a 22.04
+    # build runs fine on 24.04+. Only bump this to intentionally drop 22.04
+    # (scripts/package-linux.sh asserts the floor and will fail if you do).
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-24.04 # x86_64
-          - runner: ubuntu-24.04-arm # aarch64
+          - runner: ubuntu-22.04 # x86_64
+          - runner: ubuntu-22.04-arm # aarch64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
