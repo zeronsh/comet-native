@@ -936,7 +936,30 @@ pub(crate) fn selection_test_bounds(key: &str) -> gpui::Bounds<gpui::Pixels> {
 pub fn selection_frame_reset() -> impl IntoElement {
     canvas(
         |_, _, _| (),
-        |_, _, _, _| REGISTRY.with(|r| r.borrow_mut().clear()),
+        |_, _, _, _| {
+            REGISTRY.with(|r| {
+                r.borrow_mut()
+                    .retain(|e| !selection_scope(&e.key).is_empty())
+            })
+        },
+    )
+    .absolute()
+    .w(px(0.0))
+    .h(px(0.0))
+}
+
+fn selection_scope(key: &str) -> &str {
+    if key.starts_with("md-preview-") {
+        key.split_once('|').map_or("", |(scope, _)| scope)
+    } else {
+        ""
+    }
+}
+
+pub fn selection_surface_reset(prefix: String) -> impl IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |_, _, _, _| REGISTRY.with(|r| r.borrow_mut().retain(|e| !e.key.starts_with(&prefix))),
     )
     .absolute()
     .w(px(0.0))
@@ -949,8 +972,12 @@ pub fn selection_frame_reset() -> impl IntoElement {
 fn registry_point(position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize)> {
     REGISTRY.with(|r| {
         let reg = r.borrow();
+        let anchor = super::selection::anchor_key().unwrap_or_default();
         let mut best: Option<(usize, f32)> = None;
         for (ei, entry) in reg.iter().enumerate() {
+            if selection_scope(&entry.key) != selection_scope(&anchor) {
+                continue;
+            }
             let b = entry.layout.bounds();
             let dy = if position.y < b.top() {
                 f32::from(b.top() - position.y)
@@ -980,11 +1007,23 @@ fn registry_point(position: gpui::Point<gpui::Pixels>) -> Option<(usize, usize)>
 fn resolve_drag(head: (usize, usize)) -> bool {
     REGISTRY.with(|r| {
         let reg = r.borrow();
-        let elements: Vec<(&str, &str)> = reg
+        let Some(entry) = reg.get(head.0) else {
+            return false;
+        };
+        let scope = selection_scope(&entry.key);
+        let filtered: Vec<_> = reg
             .iter()
-            .map(|e| (e.key.as_ref(), e.text.as_ref()))
+            .enumerate()
+            .filter(|(_, e)| selection_scope(&e.key) == scope)
             .collect();
-        super::selection::update_drag(&elements, head)
+        let Some(index) = filtered.iter().position(|(ix, _)| *ix == head.0) else {
+            return false;
+        };
+        let elements: Vec<_> = filtered
+            .iter()
+            .map(|(_, e)| (e.key.as_ref(), e.text.as_ref()))
+            .collect();
+        super::selection::update_drag(&elements, (index, head.1))
     })
 }
 

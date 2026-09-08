@@ -42,6 +42,8 @@ pub(super) struct PendingSave {
 
 #[allow(dead_code)]
 pub(super) struct FileDocument {
+    pub markdown: Option<Entity<super::markdown_preview::MarkdownPreview>>,
+    pub show_markdown: bool,
     pub key: DocumentKey,
     pub generation: u64,
     pub phase: DocumentPhase,
@@ -71,6 +73,8 @@ pub(super) struct FileDocument {
 impl FileDocument {
     pub fn loading(key: DocumentKey) -> Self {
         Self {
+            markdown: None,
+            show_markdown: false,
             key,
             generation: 1,
             phase: DocumentPhase::Loading,

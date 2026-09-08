@@ -21,6 +21,7 @@ pub mod client;
 pub mod document;
 pub mod editor;
 pub mod editor_adapter;
+mod markdown_preview;
 pub mod model;
 pub mod preview;
 pub mod search;

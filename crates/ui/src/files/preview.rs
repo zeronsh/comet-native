@@ -1989,6 +1989,12 @@ impl FilesSurface {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let markdown = super::markdown_preview::is_markdown(path);
+        let showing_markdown = self
+            .preview
+            .documents
+            .get(path)
+            .is_some_and(|d| d.show_markdown);
         let parts = path.split('/').collect::<Vec<_>>();
         let reveal_path = path.to_string();
         let tooltip_path: SharedString = path.to_string().into();
@@ -2077,6 +2083,45 @@ impl FilesSurface {
         toolbar(theme)
             .pr(px(crate::surface_chrome::CONTROL_GAP))
             .child(crumbs)
+            .when(markdown, |element| {
+                element.child(
+                    toolbar_button(
+                        "files-toggle-markdown",
+                        if showing_markdown {
+                            "Show Markdown code"
+                        } else {
+                            "Preview Markdown"
+                        },
+                    )
+                    .when(showing_markdown, |el| el.bg(crate::theme::wash(0.1)))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let Some(path) = this.preview.active.clone() else {
+                            return;
+                        };
+                        if let Some(document) = this.preview.documents.get_mut(&path) {
+                            document.show_markdown = !document.show_markdown;
+                        }
+                        if this
+                            .preview
+                            .documents
+                            .get(&path)
+                            .is_some_and(|d| !d.show_markdown)
+                        {
+                            this.focus_editor(window, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        icon(if showing_markdown {
+                            icons::FILE_CODE
+                        } else {
+                            icons::EYE
+                        })
+                        .size(px(crate::surface_chrome::ICON_SIZE))
+                        .text_color(theme.text_muted),
+                    ),
+                )
+            })
             .when_some(save_status, |element, (label, color, retry, detail)| {
                 element.child(
                     div()
@@ -2175,6 +2220,54 @@ impl FilesSurface {
     ) -> AnyElement {
         self.apply_pending_external_reload(path, window, cx);
         let editor = self.ensure_editor(path, theme, window, cx);
+        if self
+            .preview
+            .documents
+            .get(path)
+            .is_some_and(|d| d.show_markdown && d.file.as_ref().is_some_and(|f| f.text.is_some()))
+        {
+            let document = self.preview.documents.get_mut(path).unwrap();
+            let version = (
+                document.generation,
+                document.revision,
+                document.loaded_hash.clone(),
+            );
+            let view = document
+                .markdown
+                .get_or_insert_with(|| {
+                    let owner = cx.weak_entity();
+                    cx.new(|cx| {
+                        super::markdown_preview::MarkdownPreview::new(
+                            path.to_string(),
+                            Rc::new(move |path, cx| {
+                                let _ = owner
+                                    .update(cx, |surface, cx| surface.open_tree_file(path, cx));
+                            }),
+                            cx,
+                        )
+                    })
+                })
+                .clone();
+            if view.read(cx).version.as_ref() != Some(&version) {
+                let source = editor
+                    .as_ref()
+                    .map(|editor| editor.read(cx).value().to_string())
+                    .unwrap_or_else(|| {
+                        document
+                            .file
+                            .as_ref()
+                            .and_then(|f| f.text.clone())
+                            .unwrap_or_default()
+                    });
+                let truncated = document.file.as_ref().is_some_and(|f| f.truncated);
+                view.update(cx, |view, cx| {
+                    view.version = Some(version);
+                    view.set_source(source, truncated, cx);
+                });
+            }
+            return view.into_any_element();
+        }
+
         let Some(document) = self.preview.documents.get(path) else {
             return gpui::Empty.into_any_element();
         };
