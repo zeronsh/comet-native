@@ -1758,4 +1758,42 @@ ES-16  Release controls, support, and staged activation
    device-room suite passes with deterministic event overflow coverage.
 
 
+17.10. Relay refusal gates and runtime coverage
+
+   The pending edge framing/fence work now checks the encrypted payload's
+   format, suite, and purpose as well as the signed wrapper. Registry values
+   must be purpose-4 field envelopes; chat updates, checkpoints, frontiers,
+   tails, diffs, and blobs must match their respective purposes. This is
+   framing hygiene only, not server-side signature or decryption authority.
+
+   Only an explicit absent-vault response permits plaintext. Lookup errors
+   fail closed, absence is never memoized, and the positive refusal cache is
+   bounded. The Worker overwrites the internal org stamp from authenticated
+   claims. Chat/registry sockets retain that scope and check again on pushes;
+   legacy session sockets also check before processing binary frames. Device
+   relay bytes and plaintext device-sidecar writes are refused for encrypted
+   profiles until an authenticated encrypted device channel is implemented.
+
+   VaultRoom rechecks its membership head after asynchronous signature work
+   and before SQL writes, so concurrent membership/envelope operations cannot
+   commit using a superseded authorization decision.
+
+   Verification: edge typecheck, 51 Node tests, and 18 actual-workerd tests.
+   Seven new runtime cases exercise existing-socket fencing, encrypted-room
+   HTTP refusal, device relay/sidecar refusal, competing genesis requests,
+   and identical sealed bytes across WS push, HTTPS retry, and HTTPS pull.
+   The offline Rust crypto/doc/sync/RPC/engine suites and workspace all-target
+   check pass. Clippy completes with existing warnings; an obsolete test
+   helper loop and the new fault test's guard scope were cleaned up.
+
+   These are request/frame refusal gates, NOT atomic migration activation.
+   Client-side quiescence and live mode cutover must prevent plaintext from
+   being serialized at all; refusal cannot undo bytes already transmitted.
+   Authoritative legacy ownership mappings and a cross-room cutover barrier
+   remain release blockers, as do native iOS lifecycle/live sync, encrypted
+   device channels, registry lifecycle proofs/immutable retry records,
+   accepted-history closure after revocation, immutable checkpoint provenance,
+   and independent security review. No production deployment was performed.
+
+
                           -- End of Project Plan --

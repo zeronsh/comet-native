@@ -321,6 +321,35 @@ export const epochRecipientId = (epoch: bigint): Uint8Array => {
   return out;
 };
 
+/** Protocol-framing check (RFC 0001 §12.2): does `bytes` parse as a signed
+ * wrapper of kind = content? No signature or membership check — only the
+ * relay's refusal to store bytes that are not even ciphertext-shaped in an
+ * encrypted room. `maxPayloadBytes` bounds the parse. */
+export const looksLikeSealedContent = (bytes: Uint8Array, maxPayloadBytes: number, expectedPurpose?: bigint): boolean => {
+  try {
+    const record = parseSignedRecord(bytes, maxPayloadBytes);
+    if (record.binding.kind !== RecordKind.content) return false;
+    const reader = new Reader(record.payload);
+    if (reader.argument(5) !== 6n || reader.uintField(0) !== 1n || reader.uintField(1) !== 1n) return false;
+    const purpose = reader.uintField(2);
+    if (purpose < 1n || purpose > 8n || (expectedPurpose !== undefined && purpose !== expectedPurpose)) return false;
+    reader.fixedField(3, 16);
+    reader.fixedField(4, 32);
+    const ciphertext = reader.bytesField(5, maxPayloadBytes);
+    reader.finish();
+    return ciphertext.length >= 16;
+  } catch {
+    return false;
+  }
+};
+
+export const looksLikeSealedField = (value: unknown, maxPayloadBytes: number): boolean => {
+  if (typeof value !== "object" || value === null || Array.isArray(value) || Object.keys(value).length !== 1) return false;
+  if (!("e1" in value) || typeof value.e1 !== "string" || value.e1.length > (maxPayloadBytes + MAX_RECORD_OVERHEAD) * 2) return false;
+  const bytes = decodeBase64(value.e1);
+  return bytes !== undefined && looksLikeSealedContent(bytes, maxPayloadBytes, 4n);
+};
+
 // ── digests and signatures ──────────────────────────────────────────────────
 
 export const sha256 = async (...parts: Uint8Array[]): Promise<Uint8Array> =>

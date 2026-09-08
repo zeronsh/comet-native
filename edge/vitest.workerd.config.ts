@@ -18,8 +18,13 @@ export default defineConfig({
       main: "./test/workerd/fixture.ts",
       miniflare: {
         compatibilityDate: "2026-07-01",
+        bindings: { AUTH_MODE: "workos" },
         durableObjects: {
-          TEST_LOG: { className: "TestLogRoom", useSQLite: true }
+          TEST_LOG: { className: "TestLogRoom", useSQLite: true },
+          TEST_CHAT: { className: "ChatRoom", useSQLite: true },
+          TEST_REGISTRY: { className: "RegistryRoom", useSQLite: true },
+          TEST_DEVICE: { className: "DeviceRoom", useSQLite: true },
+          VAULT_ROOMS: { className: "VaultRoom", useSQLite: true }
         }
       }
     })

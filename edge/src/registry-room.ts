@@ -20,7 +20,9 @@
  * auto-response pair; the daily alarm does tombstone GC + the R2 backup.
  */
 import { applyOp, validateOp, type Op, type Row } from "./registry-core";
-import { AUTH_USER_HEADER, type Env } from "./env";
+import { AUTH_ORG_HEADER, AUTH_USER_HEADER, ENCRYPTED_ROOM_HEADER, type Env } from "./env";
+import { profileRequiresEncryption } from "./vault-gate";
+import { looksLikeSealedField } from "./vault-records";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Tombstones older than this are purged; cursors from before the purge
@@ -34,6 +36,8 @@ const MAX_FRAME_BYTES = 1_000_000;
 
 interface SocketState {
   userId: string;
+  orgId?: string;
+  encrypted?: boolean;
   device: string;
   /** Set once a valid hello established the session. */
   ready?: boolean;
@@ -154,12 +158,14 @@ export class RegistryRoom implements DurableObject {
     const url = new URL(request.url);
     const userId = request.headers.get(AUTH_USER_HEADER);
     if (!userId) return json({ error: "unauthenticated" }, 401);
+    if (request.headers.get(ENCRYPTED_ROOM_HEADER) === "1") this.setMeta("encrypted", "1");
+    const encrypted = this.getMeta("encrypted") === "1";
 
     if (url.pathname === "/ws") {
       const device = url.searchParams.get("device") ?? "";
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
-      const state: SocketState = { userId, device };
+      const state: SocketState = { userId, device, encrypted, orgId: request.headers.get(AUTH_ORG_HEADER) ?? undefined };
       pair[1].serializeAttachment(state);
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
@@ -232,7 +238,7 @@ export class RegistryRoom implements DurableObject {
       } catch {
         return json({ error: "bad_push", message: "malformed body" }, 400);
       }
-      const outcome = this.applyPushBatch(device, frame);
+      const outcome = this.applyPushBatch(device, frame, encrypted);
       if (!outcome.ok) return json({ error: outcome.code, message: outcome.message }, 400);
       return json({ batch: outcome.batch, seq: outcome.seq, applied: outcome.applied });
     }
@@ -281,6 +287,11 @@ export class RegistryRoom implements DurableObject {
         this.handleHello(ws, state, frame);
         return;
       case "push":
+        if (!state.encrypted && await profileRequiresEncryption(this.env, state.orgId, state.userId)) {
+          send(ws, { t: "error", code: "encrypted_profile", message: "plaintext writes refused" });
+          ws.close(4403, "encrypted profile");
+          return;
+        }
         this.handlePush(ws, state, frame);
         return;
       case "presence":
@@ -333,7 +344,7 @@ export class RegistryRoom implements DurableObject {
       send(ws, { t: "error", code: "bad_push", message: "hello first / malformed push" });
       return;
     }
-    const outcome = this.applyPushBatch(state.device, frame);
+    const outcome = this.applyPushBatch(state.device, frame, state.encrypted === true);
     if (!outcome.ok) {
       send(ws, { t: "error", code: outcome.code, message: outcome.message });
       return;
@@ -346,7 +357,8 @@ export class RegistryRoom implements DurableObject {
    * fallback. The caller delivers the ack/error on its own transport. */
   private applyPushBatch(
     device: string,
-    frame: Record<string, unknown>
+    frame: Record<string, unknown>,
+    encrypted: boolean
   ):
     | { ok: false; code: string; message: string }
     | { ok: true; batch: string; seq: number; applied: number } {
@@ -368,6 +380,10 @@ export class RegistryRoom implements DurableObject {
         // to partially apply. Rejections are attributed per device on /stats.
         this.recordPush(device, false);
         return { ok: false, code: "invalid_op", message: `${op.kind}/${op.id}: ${invalid}` };
+      }
+      if (encrypted && Object.values(op.set ?? {}).some((value) => !looksLikeSealedField(value, 16 * 1024))) {
+        this.recordPush(device, false);
+        return { ok: false, code: "plaintext_rejected", message: "encrypted field records required" };
       }
     }
 

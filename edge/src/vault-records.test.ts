@@ -9,6 +9,9 @@ import {
   MAX_ENVELOPE_BYTES,
   parseEnvelopeHeader,
   parseSignedRecord,
+  looksLikeSealedContent,
+  looksLikeSealedField,
+  encodeBase64,
   pairingCode,
   RecordKind,
   RecipientKind,
@@ -118,6 +121,29 @@ describe("vault records (shared fixture)", () => {
     expect(chat.binding.kind).toBe(RecordKind.content);
     expect(hex(chat.binding.authorId)).toBe(fixture.deviceA.id);
     expect(() => parseSignedRecord(decodeBase64(fixture.chatRecord)!.subarray(1), 2048)).toThrow();
+    // Framing check: content records pass; policy records, plaintext, and
+    // truncated bytes do not.
+    expect(looksLikeSealedContent(decodeBase64(fixture.chatRecord)!, 2048)).toBe(true);
+    expect(looksLikeSealedContent(records[0]!, 65536)).toBe(false);
+    expect(looksLikeSealedContent(new TextEncoder().encode("{\"title\":\"plain\"}"), 2048)).toBe(false);
+    expect(looksLikeSealedContent(decodeBase64(fixture.chatRecord)!.subarray(0, 40), 2048)).toBe(false);
+  });
+
+  it("checks encrypted payload framing and purpose without claiming signature verification", () => {
+    const bytes = decodeBase64(fixture.chatRecord)!;
+    expect(looksLikeSealedContent(bytes, 2048, 1n)).toBe(true);
+    expect(looksLikeSealedContent(bytes, 2048, 4n)).toBe(false);
+    expect(looksLikeSealedField({ e1: fixture.chatRecord }, 2048)).toBe(false);
+    expect(looksLikeSealedField("plain", 2048)).toBe(false);
+    const payload = parseSignedRecord(bytes, 2048).payload;
+    const offset = bytes.findIndex((_, index) => payload.every((byte, j) => bytes[index + j] === byte));
+    expect(offset).toBeGreaterThan(0);
+    const field = bytes.slice();
+    field[offset + 6] = 4;
+    expect(looksLikeSealedField({ e1: encodeBase64(field) }, 2048)).toBe(true);
+    expect(looksLikeSealedField({ e1: encodeBase64(field), plain: "extra" }, 2048)).toBe(false);
+    field[offset + 4] = 99;
+    expect(looksLikeSealedContent(field, 2048)).toBe(false);
   });
 
   it("verifies enrollment proofs and derives the same pairing code", async () => {

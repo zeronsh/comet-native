@@ -39,7 +39,9 @@
  */
 import { authenticate } from "./auth";
 import { handleAuthRoute } from "./auth-routes";
-import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
+import { AUTH_ORG_HEADER, AUTH_USER_HEADER, ENCRYPTED_ROOM_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
+import { looksLikeSealedContent } from "./vault-records";
+import { profileRequiresEncryption } from "./vault-gate";
 import { SessionRoom } from "./session-room";
 import { DeviceRoom } from "./device-room";
 import { RegistryRoom } from "./registry-room";
@@ -78,7 +80,8 @@ const forward = (
   userId: string,
   path: string,
   search?: string,
-  roomKind?: "workspace"
+  roomKind?: "workspace",
+  encrypted = false
 ): Promise<Response> => {
   const stub = ns.get(ns.idFromName(name));
   const url = new URL(request.url);
@@ -89,12 +92,52 @@ const forward = (
   // workspace rooms): clear any inbound value so only the explicit set below —
   // reached solely on workspace forwards, after the org-membership check —
   // can assert it. Do not drop this line; passthrough would let a caller
-  // choose their own room kind.
+  // choose their own room kind. Same for the encrypted-room stamp.
   headers.delete(ROOM_KIND_HEADER);
+  headers.delete(ENCRYPTED_ROOM_HEADER);
   headers.set(AUTH_USER_HEADER, userId);
   if (roomKind) headers.set(ROOM_KIND_HEADER, roomKind);
+  if (encrypted) headers.set(ENCRYPTED_ROOM_HEADER, "1");
   return stub.fetch(new Request(url.toString(), { ...requestInit(request), headers }));
 };
+
+/** Encrypted chat rooms carry the `-e1` generation suffix (engine
+ * `encrypted_room_id`); the hashed long-id form starts with `e1-`. */
+const isEncryptedChatRoom = (chatId: string): boolean =>
+  chatId.endsWith("-e1") || chatId.startsWith("e1-");
+
+/** Per-isolate memo of "this profile has an encrypted vault" — the legacy
+ * write fence (RFC 0001 §12.2). A vault exists ⇒ the profile's plaintext
+ * rooms are retained read-only and refuse new writes; the encrypted
+ * generations are unaffected. Absence of an org claim (dev bearers without
+ * `@org`) cannot activate a fence. */
+const VAULT_ACTIVE_TTL_MS = 30_000;
+const vaultActiveMemo = new Map<string, { active: boolean; at: number }>();
+const vaultActive = async (env: Env, orgId: string | undefined, userId: string): Promise<boolean> => {
+  if (!orgId) return profileRequiresEncryption(env, orgId, userId);
+  const key = `${orgId}/${userId}`;
+  const memo = vaultActiveMemo.get(key);
+  const now = Date.now();
+  if (memo?.active && now - memo.at < VAULT_ACTIVE_TTL_MS) return true;
+  // Unknown ⇒ refuse writes; absence is never cached across activation.
+  const active = await profileRequiresEncryption(env, orgId, userId);
+  if (active) {
+    if (vaultActiveMemo.size >= 1024) vaultActiveMemo.clear();
+    vaultActiveMemo.set(key, { active, at: now });
+  } else {
+    vaultActiveMemo.delete(key);
+  }
+  return active;
+};
+
+const encryptedProfileRefusal = (): Response =>
+  json(
+    {
+      error: "encrypted_profile",
+      message: "this account uses end-to-end encryption; plaintext writes are refused (upgrade this client)"
+    },
+    409
+  );
 
 const requestInit = (request: Request): RequestInit => ({
   method: request.method,
@@ -160,9 +203,14 @@ export default {
 
     const auth = await authenticate(env, request);
     if (!auth) return json({ error: "unauthenticated" }, 401);
+    const scopedHeaders = new Headers(request.headers);
+    scopedHeaders.delete(AUTH_ORG_HEADER);
+    if (auth.orgId) scopedHeaders.set(AUTH_ORG_HEADER, auth.orgId);
+    request = new Request(request, { headers: scopedHeaders });
 
     // ── session rooms ───────────────────────────────────────────────────────
     if (parts[0] === "session" && parts[1] && ID_RE.test(parts[1]) && parts[2] === "ws") {
+      if (await vaultActive(env, auth.orgId, auth.userId)) return encryptedProfileRefusal();
       if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
         return json({ error: "expected websocket" }, 426);
       }
@@ -187,12 +235,16 @@ export default {
       return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/stats", "");
     }
     if (parts[0] === "diff" && parts[1] && ID_RE.test(parts[1])) {
+      if (request.method === "POST" && (await vaultActive(env, auth.orgId, auth.userId))) {
+        return encryptedProfileRefusal();
+      }
       return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/diff", "");
     }
     if (parts[0] === "snapshot" && parts[1] && ID_RE.test(parts[1]) && request.method === "GET") {
       return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/snapshot", "");
     }
     if (parts[0] === "append" && parts[1] && ID_RE.test(parts[1]) && request.method === "POST") {
+      if (await vaultActive(env, auth.orgId, auth.userId)) return encryptedProfileRefusal();
       return forward(env.SESSION_ROOMS, `s2/${parts[1]}`, request, auth.userId, "/append", "");
     }
 
@@ -203,6 +255,20 @@ export default {
     //    /stats, /reset. ──────────────────────────────────────────────────────
     if (parts[0] === "chat2" && parts[1] && ID_RE.test(parts[1]) && parts[2]) {
       const room = `chat2/${parts[1]}`;
+      const encrypted = isEncryptedChatRoom(parts[1]);
+      // Legacy-write fence: once the profile has a vault, its plaintext
+      // chat rooms accept no new sockets or writes (reads stay for the
+      // retained copy / migration). Encrypted rooms are unaffected.
+      const legacyWrite =
+        !encrypted &&
+        (parts[2] === "ws" ||
+          (parts[2] === "rows" && request.method === "POST") ||
+          (parts[2] === "checkpoint" && request.method === "POST") ||
+          ((parts[2] === "tail" || parts[2] === "diff") && request.method === "PUT") ||
+          parts[2] === "reset");
+      if (legacyWrite && (await vaultActive(env, auth.orgId, auth.userId))) {
+        return encryptedProfileRefusal();
+      }
       if (parts[2] === "ws" && parts.length === 3) {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
           return json({ error: "expected websocket" }, 426);
@@ -213,7 +279,9 @@ export default {
           request,
           auth.userId,
           "/ws",
-          `?chatId=${parts[1]}${deviceParam(url)}`
+          `?chatId=${parts[1]}${deviceParam(url)}`,
+          undefined,
+          encrypted
         );
       }
       const routes: Record<string, string[]> = {
@@ -230,7 +298,16 @@ export default {
       if (parts.length === 3 && routes[parts[2]]?.includes(request.method)) {
         // Query carries through (`seqCovered` on POST /checkpoint), as do
         // headers (`x-chat2-frontier`, `range`).
-        return forward(env.CHAT_ROOMS, room, request, auth.userId, `/${parts[2]}`, url.search);
+        return forward(
+          env.CHAT_ROOMS,
+          room,
+          request,
+          auth.userId,
+          `/${parts[2]}`,
+          url.search,
+          undefined,
+          encrypted
+        );
       }
       return json({ error: "not found" }, 404);
     }
@@ -251,6 +328,9 @@ export default {
       // (hibernated, ~zero cost). URL path stays `/workspace/:orgId/*`; the
       // name is worker-internal — clients echo their own roomId strings.
       const room = `ws4/${orgId}/${auth.userId}`;
+      if ((parts[2] === "ws" || request.method === "POST") && await vaultActive(env, orgId, auth.userId)) {
+        return encryptedProfileRefusal();
+      }
       if (parts[2] === "ws") {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
           return json({ error: "expected websocket" }, 426);
@@ -311,6 +391,13 @@ export default {
       const encrypted = parts[2] === "e1";
       const room = encrypted ? `reg1e1/${orgId}/${auth.userId}` : `reg1/${orgId}/${auth.userId}`;
       const leaf = encrypted ? parts[3] : parts[2];
+      // Legacy-write fence (see chat2): the plaintext registry accepts no
+      // sockets or pushes once the profile has a vault; `rows` reads stay.
+      const legacyWrite =
+        !encrypted && (leaf === "ws" || leaf === "push" || leaf === "reset");
+      if (legacyWrite && (await vaultActive(env, auth.orgId, auth.userId))) {
+        return encryptedProfileRefusal();
+      }
       if (leaf === "ws") {
         if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
           return json({ error: "expected websocket" }, 426);
@@ -321,7 +408,9 @@ export default {
           request,
           auth.userId,
           "/ws",
-          `?${deviceParam(url).replace(/^&/, "")}`
+          `?${deviceParam(url).replace(/^&/, "")}`,
+          undefined,
+          encrypted
         );
       }
       if (leaf === "stats" && request.method === "GET") {
@@ -337,7 +426,16 @@ export default {
       // Push over plain HTTPS — the WS push's fallback twin (LWW clocks
       // make replays no-ops, so at-least-once delivery is safe).
       if (leaf === "push" && request.method === "POST") {
-        return forward(env.REGISTRY_ROOMS, room, request, auth.userId, "/push", url.search);
+        return forward(
+          env.REGISTRY_ROOMS,
+          room,
+          request,
+          auth.userId,
+          "/push",
+          url.search,
+          undefined,
+          encrypted
+        );
       }
       // Operator wipe. Unlike the CRDT rooms this needs no recipe: clients
       // detect the seq regression on their next hello and re-seed the table
@@ -416,6 +514,13 @@ export default {
         // Outputs are 4KiB-capped at the harness boundary; diffs can run
         // larger but a sidecar entry is one tool result, never a dump.
         if (body.byteLength > MAX_TOOL_BLOB_BYTES) return json({ error: "too_large" }, 413);
+        // Encrypted profile: only ciphertext-shaped blobs are stored.
+        if (
+          (await vaultActive(env, auth.orgId, auth.userId)) &&
+          !looksLikeSealedContent(new Uint8Array(body), MAX_TOOL_BLOB_BYTES, 7n)
+        ) {
+          return encryptedProfileRefusal();
+        }
         await env.BLOBS.put(key, body, {
           httpMetadata: {
             contentType: request.headers.get("content-type") ?? "text/plain; charset=utf-8"

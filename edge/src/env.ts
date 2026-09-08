@@ -30,9 +30,16 @@ export interface Env {
  * the caller's JWT. DOs trust it blindly — they are only reachable through
  * the Worker (design §2: "DO never sees an unauthenticated frame"). */
 export const AUTH_USER_HEADER = "x-zeron-auth-user";
+export const AUTH_ORG_HEADER = "x-zeron-auth-org";
 
 /** Header the Worker stamps on requests forwarded into workspace-doc rooms
  * (`ws/{orgId}`). Membership (JWT org claim == orgId) is enforced at the
  * Worker; the SessionRoom DO sees this and skips its per-chat
  * claim-on-first-join ownership discipline for the room. */
 export const ROOM_KIND_HEADER = "x-zeron-room-kind";
+
+/** Header the Worker stamps on requests forwarded into an ENCRYPTED room
+ * generation (`chat2/{id}-e1`, `reg1e1/…`). The DO then enforces protocol
+ * framing: every stored content byte must parse as a signed content record
+ * (RFC 0001 §12.2). Never derived from client input. */
+export const ENCRYPTED_ROOM_HEADER = "x-zeron-room-encrypted";

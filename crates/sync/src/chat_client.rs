@@ -1707,7 +1707,11 @@ impl Actor {
                     // it replays on every nudge/reconnect forever — the
                     // wedge class this design exists to kill. The ops stay
                     // in the local doc and travel with the next checkpoint.
-                    "too_large" | "empty" | "bad_push" if !batch_id.is_empty() => {
+                    // `plaintext_rejected`: the relay enforces ciphertext
+                    // framing on encrypted rooms; a batch that failed it
+                    // must never be replayed (RFC 0001 §12.2).
+                    "too_large" | "empty" | "bad_push" | "plaintext_rejected"
+                        if !batch_id.is_empty() => {
                         let mut shared = lock(&self.shared);
                         let before = shared.pending.len();
                         shared.pending.retain(|p| p.batch_id != batch_id);

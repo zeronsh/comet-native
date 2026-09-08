@@ -180,6 +180,11 @@ export class VaultRoom implements DurableObject {
     };
   }
 
+  private headMatches(hash: Uint8Array): boolean {
+    const current = this.headRow();
+    return current !== undefined && bytesEqual(hash, new Uint8Array(current.hash));
+  }
+
   private descriptor(): Response {
     const head = this.head();
     if (!head) return json({ error: "not_found" }, 404);
@@ -235,6 +240,10 @@ export class VaultRoom implements DurableObject {
         },
         status
       );
+    }
+    const current = this.headRow();
+    if (head ? !current || !bytesEqual(head.hash, new Uint8Array(current.hash)) : current !== undefined) {
+      return json({ error: "stale_parent" }, 409);
     }
     // Genesis may only ever create; a second genesis on an existing vault
     // cannot reset trust (applyMembership already refuses op=genesis).
@@ -326,6 +335,7 @@ export class VaultRoom implements DurableObject {
     const verified = await this.verifiedEnvelope(body, POLICY_OBJECT_ID);
     if (verified instanceof Response) return verified;
     const { record, head } = verified;
+    if (!this.headMatches(head.hash)) return json({ error: "stale_parent" }, 409);
     let header;
     try {
       header = parseEnvelopeHeader(record.payload);
@@ -383,7 +393,8 @@ export class VaultRoom implements DurableObject {
     if (bytesEqual(object, POLICY_OBJECT_ID)) return json({ error: "wrong_object" }, 400);
     const verified = await this.verifiedEnvelope(body, object);
     if (verified instanceof Response) return verified;
-    const { record } = verified;
+    const { record, head } = verified;
+    if (!this.headMatches(head.hash)) return json({ error: "stale_parent" }, 409);
     let header;
     try {
       header = parseEnvelopeHeader(record.payload);

@@ -50,7 +50,8 @@ import {
 } from "./session-doc";
 import { createBlobStore, getJsonBlob, putJsonBlob, type BlobStore } from "./blobs";
 import { appendUpdateRow, ensureUpdateLog, readUpdateRows } from "./update-log";
-import { AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
+import { AUTH_ORG_HEADER, AUTH_USER_HEADER, ROOM_KIND_HEADER, type Env } from "./env";
+import { profileRequiresEncryption } from "./vault-gate";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const RETAIN_MS = RETAIN_DAYS * DAY_MS;
@@ -124,6 +125,7 @@ const isWasmUseAfterFree = (e: unknown): boolean =>
 
 interface SocketState {
   userId: string;
+  orgId?: string;
   /** Joined sub-rooms by crdt magic ("%LOR", "%EPH"). */
   rooms: string[];
   /** True for sockets on a workspace-doc room — org membership was enforced
@@ -232,6 +234,7 @@ export class SessionRoom implements DurableObject {
       this.ctx.acceptWebSocket(pair[1]);
       const state: SocketState = {
         userId,
+        orgId: request.headers.get(AUTH_ORG_HEADER) ?? undefined,
         rooms: [],
         ...(workspace ? { workspace } : {}),
         ...(deviceId ? { deviceId } : {})
@@ -415,6 +418,10 @@ export class SessionRoom implements DurableObject {
       return;
     }
     const state = ws.deserializeAttachment() as SocketState;
+    if (await profileRequiresEncryption(this.env, state.orgId, state.userId)) {
+      ws.close(4403, "encrypted profile");
+      return;
+    }
     try {
       switch (decoded.type) {
         case MessageType.JoinRequest:

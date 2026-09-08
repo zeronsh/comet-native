@@ -212,10 +212,11 @@ async fn setup_restarts_with_identical_membership_and_requires_kit_confirmation(
     assert!(!vault.is_ready());
     assert!(vault.seal_material([9; 16]).await.is_err());
     assert_eq!(vault.setup().await.unwrap().kit, kit.kit);
-    let state = server.state.lock().unwrap();
-    assert_eq!(state.attempts[0], state.attempts[1]);
-    assert!(state.journal_observed.iter().all(|seen| *seen));
-    drop(state);
+    {
+        let state = server.state.lock().unwrap();
+        assert_eq!(state.attempts[0], state.attempts[1]);
+        assert!(state.journal_observed.iter().all(|seen| *seen));
+    }
     vault.confirm_recovery_kit().await.unwrap();
     assert!(vault.is_ready());
     let saved = store(dir.path()).load().unwrap();

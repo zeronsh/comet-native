@@ -107,14 +107,14 @@ impl CheckpointFetcher for FixedFetcher {
 // ── server-side script helpers ──────────────────────────────────────────────
 
 async fn expect_kind(end: &mut ServerEnd, kind: u8) -> wire::WireFrame {
-    loop {
-        let bytes = end.rx.recv().await.expect("client hung up");
-        let frame = decode(&bytes).expect("client sent undecodable frame");
-        if frame.kind == kind {
-            return frame;
-        }
-        panic!("expected frame {kind:#x}, got {:#x}", frame.kind);
-    }
+    let bytes = end.rx.recv().await.expect("client hung up");
+    let frame = decode(&bytes).expect("client sent undecodable frame");
+    assert!(
+        frame.kind == kind,
+        "expected frame {kind:#x}, got {:#x}",
+        frame.kind
+    );
+    frame
 }
 
 async fn send(end: &ServerEnd, kind: u8, header: serde_json::Value, payload: &[u8]) {

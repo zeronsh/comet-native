@@ -31,7 +31,9 @@ import {
   setMeta
 } from "./chat-log";
 import { decodeFrame, encodeFrame, FRAME } from "./chat-frames";
-import { AUTH_USER_HEADER, type Env } from "./env";
+import { AUTH_ORG_HEADER, AUTH_USER_HEADER, ENCRYPTED_ROOM_HEADER, type Env } from "./env";
+import { profileRequiresEncryption } from "./vault-gate";
+import { looksLikeSealedContent } from "./vault-records";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** Inbound frame budget: one pushed row (+ header slack). */
@@ -51,9 +53,12 @@ const QUOTA_MAX_BYTES = 8 * 1024 * 1024;
 
 interface SocketState {
   userId: string;
+  orgId?: string;
   device: string;
   /** Set once a valid hello established the session. */
   ready?: boolean;
+  /** Encrypted room generation: pushed rows must be signed content records. */
+  encrypted?: boolean;
 }
 
 interface PushOutcome {
@@ -96,6 +101,12 @@ export class ChatRoom implements DurableObject {
 
     const sql = this.ctx.storage.sql;
     const owner = getMeta(sql, "owner");
+    // Worker-stamped (never client-derived): this room is an encrypted
+    // generation, so every content body must be ciphertext-shaped — a
+    // client that regressed to plaintext is refused, not stored (RFC §12.2).
+    const encrypted = request.headers.get(ENCRYPTED_ROOM_HEADER) === "1";
+    if (encrypted && getMeta(sql, "encrypted") !== "1") setMeta(sql, "encrypted", "1");
+    const sealedOnly = encrypted || getMeta(sql, "encrypted") === "1";
 
     if (url.pathname === "/ws") {
       // Claim-on-first-join ownership, then owner-only forever (the s2
@@ -106,7 +117,7 @@ export class ChatRoom implements DurableObject {
       const device = url.searchParams.get("device") ?? "";
       const pair = new WebSocketPair();
       this.ctx.acceptWebSocket(pair[1]);
-      const state: SocketState = { userId, device };
+      const state: SocketState = { userId, device, encrypted: sealedOnly, orgId: request.headers.get(AUTH_ORG_HEADER) ?? undefined };
       pair[1].serializeAttachment(state);
       return new Response(null, { status: 101, webSocket: pair[0] });
     }
@@ -130,6 +141,13 @@ export class ChatRoom implements DurableObject {
       }
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.byteLength > MAX_CHECKPOINT_BYTES) return json({ error: "too_large" }, 413);
+      if (
+        sealedOnly &&
+        (!looksLikeSealedContent(body, MAX_CHECKPOINT_BYTES, 2n) ||
+          !looksLikeSealedContent(frontier, 65536, 3n))
+      ) {
+        return json({ error: "plaintext_rejected" }, 400);
+      }
       const outcome = commitCheckpoint(sql, this.blobs, seqCovered, frontier, body, Date.now());
       if (!outcome.ok) return json({ error: outcome.error }, 409);
       this.markBackupDirty();
@@ -255,6 +273,10 @@ export class ChatRoom implements DurableObject {
         return json({ error: "too_large" }, 413);
       }
       const payload = new Uint8Array(await request.arrayBuffer());
+      if (sealedOnly && !looksLikeSealedContent(payload, MAX_ROW_BYTES, 1n)) {
+        this.recordPush(device, false);
+        return json({ error: "plaintext_rejected" }, 400);
+      }
       if (!this.admitQuota(device, payload.byteLength)) {
         this.recordPush(device, false);
         return json({ error: "quota" }, 429);
@@ -282,6 +304,9 @@ export class ChatRoom implements DurableObject {
       const name = url.pathname === "/tail" ? "sidecar-tail" : "sidecar-diff";
       const body = new Uint8Array(await request.arrayBuffer());
       if (body.byteLength > MAX_SIDECAR_BYTES) return json({ error: "too_large" }, 413);
+      if (sealedOnly && !looksLikeSealedContent(body, MAX_SIDECAR_BYTES, url.pathname === "/tail" ? 5n : 6n)) {
+        return json({ error: "plaintext_rejected" }, 400);
+      }
       this.blobs.put(name, body);
       setMeta(sql, `${name}-type`, request.headers.get("content-type") ?? "application/json");
       return json({ ok: true, bytes: body.byteLength });
@@ -360,6 +385,11 @@ export class ChatRoom implements DurableObject {
         this.handleRowsReq(ws, state, frame.header);
         return;
       case FRAME.push:
+        if (!state.encrypted && await profileRequiresEncryption(this.env, state.orgId, state.userId)) {
+          send(ws, FRAME.error, { code: "encrypted_profile", message: "plaintext writes refused", batchId: frame.header.batchId });
+          ws.close(4403, "encrypted profile");
+          return;
+        }
         this.handlePush(ws, state, frame.header, frame.payload);
         return;
       case FRAME.presence:
@@ -435,6 +465,12 @@ export class ChatRoom implements DurableObject {
     if (!state.ready || batchId === "" || batchId.length > 128) {
       this.recordPush(state.device, false);
       send(ws, FRAME.error, { code: "bad_push", message: "hello first / malformed push", batchId });
+      return;
+    }
+    if (state.encrypted && !looksLikeSealedContent(payload, MAX_ROW_BYTES, 1n)) {
+      // Permanent for this batch: the client must not replay plaintext.
+      this.recordPush(state.device, false);
+      send(ws, FRAME.error, { code: "plaintext_rejected", message: "encrypted room: signed content records only", batchId });
       return;
     }
     if (!this.admitQuota(state.device, payload.byteLength)) {
