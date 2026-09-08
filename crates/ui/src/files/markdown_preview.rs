@@ -97,6 +97,8 @@ pub(super) struct MarkdownPreview {
     media_location: Option<(Option<String>, String)>,
     scope: String,
     tree: BlockTree,
+    parsed_source: Arc<str>,
+    pub editor: Option<gpui::WeakEntity<super::editor::FileEditorState>>,
     list: ListState,
     cache: Rc<RefCell<RenderCache>>,
     highlights: HashMap<usize, Arc<zeron_syntax::HighlightedDocument>>,
@@ -145,6 +147,8 @@ impl MarkdownPreview {
         })
         .detach();
         Self {
+            parsed_source: Arc::from(""),
+            editor: None,
             image_generation: 0,
             media_dirty: true,
             image_allowed: Rc::default(),
@@ -201,6 +205,7 @@ impl MarkdownPreview {
         let epoch = self.epoch;
         self.loading = self.tree.is_empty();
         self.truncated = truncated || clipped;
+        let parsed_source: Arc<str> = Arc::from(source.as_str());
         self.parse_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
                 .timer(Duration::from_millis(120))
@@ -256,6 +261,7 @@ impl MarkdownPreview {
                     });
                 }
                 view.tree = tree;
+                view.parsed_source = parsed_source;
                 view.highlights = highlights;
                 view.anchors = anchors;
                 view.cache.borrow_mut().clear();
@@ -494,6 +500,8 @@ impl MarkdownPreview {
         self.diagram_allowed = Rc::default();
         self.version = None;
         self.tree = BlockTree::default();
+        self.parsed_source = Arc::from("");
+        self.editor = None;
         self.highlights.clear();
         self.anchors.clear();
         self.cache.borrow_mut().clear();
@@ -688,6 +696,30 @@ impl MarkdownPreview {
             .filter_map(|ix| {
                 let top = self.tree.blocks.get(ix)?;
                 let mut opts = RenderOptions::settled(format!("{}{ix}", self.scope).into());
+                let editor = self.editor.as_ref().and_then(|editor| editor.upgrade());
+                let source = self.parsed_source.clone();
+                opts.tasks = Some(render::TaskUi {
+                    toggle: editor
+                        .filter(|editor| {
+                            !self.truncated
+                                && editor.read(cx).context_menu_capabilities().is_editable()
+                        })
+                        .map(|editor| {
+                            let editor = editor.downgrade();
+                            Rc::new(
+                                move |task: &parser::TaskMarker,
+                                      window: &mut Window,
+                                      cx: &mut gpui::App| {
+                                    if let Some(editor) = editor.upgrade() {
+                                        super::editor::toggle_markdown_task(
+                                            &editor, &source, task, window, cx,
+                                        );
+                                    }
+                                },
+                            )
+                                as Rc<dyn Fn(&parser::TaskMarker, &mut Window, &mut gpui::App)>
+                        }),
+                });
                 self.visible_rows.insert(opts.row_key.clone());
                 opts.cache = Some(self.cache.clone());
                 let images = self.image_snapshot.clone();
@@ -973,6 +1005,141 @@ mod tests {
 mod layout_tests {
     use super::*;
     use gpui::{AppContext, Bounds, Point};
+
+    struct TaskDocument {
+        preview: gpui::Entity<MarkdownPreview>,
+        editor: gpui::Entity<super::super::editor::FileEditorState>,
+    }
+
+    impl Render for TaskDocument {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .flex()
+                .flex_col()
+                .child(div().h(px(250.0)).child(self.preview.clone()))
+                .child(super::super::editor::editor_element(&self.editor))
+        }
+    }
+
+    #[test]
+    fn task_click_edits_buffer_and_supports_undo_redo_and_stale_guards() {
+        gpui_platform::headless().run(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            let source = "- [ ] tarea 🦀\n- [X] tarea 🦀\n";
+            let window = cx
+                .open_window(gpui::WindowOptions::default(), |window, cx| {
+                    let editor = cx.new(|cx| {
+                        gpui_base::input::EditorState::new(window, cx).default_value(source)
+                    });
+                    let preview = cx.new(|cx| {
+                        let mut view =
+                            MarkdownPreview::new("README.md".into(), Rc::new(|_, _| {}), cx);
+                        view.tree = parser::parse_full(source);
+                        view.parsed_source = Arc::from(source);
+                        view.editor = Some(editor.downgrade());
+                        view.list.reset(view.tree.len());
+                        view.diagram_style = crate::theme::style_generation();
+                        view
+                    });
+                    cx.new(|_| TaskDocument { preview, editor })
+                })
+                .unwrap();
+            let root = window.entity(cx).unwrap();
+            let preview = root.read(cx).preview.clone();
+            let editor = root.read(cx).editor.clone();
+            let changes = Rc::new(std::cell::Cell::new(0));
+            let observed = changes.clone();
+            let _subscription = cx.subscribe(&editor, move |_, event, _| {
+                if matches!(event, gpui_base::input::InputEvent::Change) {
+                    observed.set(observed.get() + 1);
+                }
+            });
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+                let bounds = preview.read(cx).list.bounds_for_item(0).unwrap();
+                let gutter =
+                    ((bounds.size.width - px(MAX_PREVIEW_CONTENT_WIDTH)) / 2.0).max(px(24.0));
+                let position =
+                    gpui::point(bounds.left() + gutter + px(8.0), bounds.top() + px(11.0));
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        position,
+                        click_count: 1,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        button: gpui::MouseButton::Left,
+                        position,
+                        click_count: 1,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+            })
+            .unwrap();
+            assert_eq!(
+                editor.read(cx).value().as_ref(),
+                "- [x] tarea 🦀\n- [X] tarea 🦀\n"
+            );
+            assert_eq!(
+                changes.get(),
+                1,
+                "click must emit the normal document change event"
+            );
+            cx.update_window(window.into(), |_, window, cx| {
+                use gpui::Focusable;
+                window.focus(&editor.focus_handle(cx), cx);
+                window.refresh();
+                let _ = window.draw(cx);
+                window.dispatch_action(Box::new(gpui_base::input::Undo), cx);
+            })
+            .unwrap();
+            assert_eq!(editor.read(cx).value().as_ref(), source);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_action(Box::new(gpui_base::input::Redo), cx);
+            })
+            .unwrap();
+            assert_eq!(
+                editor.read(cx).value().as_ref(),
+                "- [x] tarea 🦀\n- [X] tarea 🦀\n"
+            );
+            cx.update_window(window.into(), |_, window, cx| {
+                let current = editor.read(cx).value().to_string();
+                let start = current.find("[X]").unwrap();
+                let task = parser::TaskMarker {
+                    checked: true,
+                    range: start..start + 3,
+                };
+                super::super::editor::toggle_markdown_task(&editor, source, &task, window, cx);
+                assert_eq!(
+                    editor.read(cx).value().as_ref(),
+                    current,
+                    "stale source must be ignored"
+                );
+                editor.update(cx, |editor, cx| editor.set_readonly(true, cx));
+                super::super::editor::toggle_markdown_task(&editor, &current, &task, window, cx);
+                assert_eq!(editor.read(cx).value().as_ref(), current);
+                editor.update(cx, |editor, cx| editor.set_readonly(false, cx));
+                super::super::editor::toggle_markdown_task(&editor, &current, &task, window, cx);
+                assert_eq!(
+                    editor.read(cx).value().as_ref(),
+                    "- [x] tarea 🦀\n- [ ] tarea 🦀\n"
+                );
+            })
+            .unwrap();
+            cx.spawn(async move |cx| {
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
+    }
 
     struct Pair(gpui::Entity<MarkdownPreview>, gpui::Entity<MarkdownPreview>);
     impl Render for Pair {

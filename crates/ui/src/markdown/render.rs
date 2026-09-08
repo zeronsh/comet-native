@@ -66,6 +66,7 @@ pub fn table_hairline() -> Hsla {
 
 /// Options for one rendered tree (a transcript row or a whole live message).
 pub struct RenderOptions {
+    pub tasks: Option<TaskUi>,
     pub media: Option<MediaUi>,
     /// Stable row key — prefixes element ids (scroll state, animations).
     pub row_key: SharedString,
@@ -90,6 +91,11 @@ pub struct RenderOptions {
     /// scroll state, keyed by the same element discriminator passed to
     /// [`render_block`]. `None` keeps non-chat Markdown surfaces unchanged.
     pub code: Option<HashMap<usize, CodeUi>>,
+}
+
+#[derive(Clone)]
+pub struct TaskUi {
+    pub toggle: Option<Rc<dyn Fn(&super::parser::TaskMarker, &mut Window, &mut gpui::App)>>,
 }
 
 #[derive(Clone)]
@@ -183,6 +189,7 @@ impl RenderOptions {
         Self {
             row_key,
             media: None,
+            tasks: None,
             veil: None,
             cache: None,
             now: Instant::now(),
@@ -402,31 +409,100 @@ pub fn render_block(
                 // Accent markers (the inline-code hue): ordered numbers as
                 // tinted text, unordered as a REAL 5px disc — the glyph "•"
                 // reads too small at 14px.
-                let marker: gpui::AnyElement = match ordered_start {
-                    Some(start) => div()
+                let task = item
+                    .first()
+                    .and_then(|block| match block {
+                        Block::Paragraph { runs } => runs.first()?.style.task.as_ref(),
+                        _ => None,
+                    })
+                    .filter(|_| opts.tasks.is_some());
+                let marker: gpui::AnyElement = if let Some(task) = task {
+                    let toggle = opts.tasks.as_ref().and_then(|ui| ui.toggle.clone());
+                    let marker = task.clone();
+                    let label: String = match &item[0] {
+                        Block::Paragraph { runs } => {
+                            runs.iter().skip(1).map(|r| r.text.as_str()).collect()
+                        }
+                        _ => String::new(),
+                    };
+                    div()
                         .flex_none()
                         .min_w(px(18.0))
-                        .text_size(crate::typography::ui_rems(MD_TEXT_SIZE))
-                        .line_height(crate::typography::ui_rems(MD_LINE_HEIGHT))
-                        .text_color(theme.accent)
-                        .child(SharedString::from(format!("{}.", start + item_ix as u64)))
-                        .into_any_element(),
-                    None => div()
-                        .flex_none()
-                        .min_w(px(18.0))
-                        // Center the disc on the first text line's cap band.
                         .h(px(MD_LINE_HEIGHT))
                         .flex()
                         .items_center()
                         .child(
-                            div()
-                                .ml(px(1.0))
-                                .w(px(5.0))
-                                .h(px(5.0))
-                                .rounded_full()
-                                .bg(theme.accent),
+                            gpui_base::Checkbox::new(SharedString::from(format!(
+                                "{}-task-{}",
+                                opts.row_key, task.range.start
+                            )))
+                            .checked(task.checked)
+                            .disabled(toggle.is_none())
+                            .when(toggle.is_some(), |checkbox| checkbox.cursor_pointer())
+                            .focus_visible(|style| style.border_color(theme.text))
+                            .styles(|styles| styles.disabled(|style| style.opacity(0.5)))
+                            .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| {
+                                cx.stop_propagation()
+                            })
+                            .accessibility_label(label)
+                            .size(px(16.0))
+                            .border_1()
+                            .rounded(px(3.0))
+                            .border_color(if task.checked {
+                                theme.accent
+                            } else {
+                                theme.border
+                            })
+                            .bg(if task.checked {
+                                theme.accent
+                            } else {
+                                gpui::transparent_black()
+                            })
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .when(task.checked, |checkbox| {
+                                checkbox.child(
+                                    crate::icons::icon(crate::icons::CHECK)
+                                        .size(px(12.0))
+                                        .text_color(theme.bg),
+                                )
+                            })
+                            .on_change(move |_, _, window, cx| {
+                                cx.stop_propagation();
+                                if let Some(toggle) = &toggle {
+                                    toggle(&marker, window, cx);
+                                }
+                            }),
                         )
-                        .into_any_element(),
+                        .into_any_element()
+                } else {
+                    match ordered_start {
+                        Some(start) => div()
+                            .flex_none()
+                            .min_w(px(18.0))
+                            .text_size(crate::typography::ui_rems(MD_TEXT_SIZE))
+                            .line_height(crate::typography::ui_rems(MD_LINE_HEIGHT))
+                            .text_color(theme.accent)
+                            .child(SharedString::from(format!("{}.", start + item_ix as u64)))
+                            .into_any_element(),
+                        None => div()
+                            .flex_none()
+                            .min_w(px(18.0))
+                            // Center the disc on the first text line's cap band.
+                            .h(px(MD_LINE_HEIGHT))
+                            .flex()
+                            .items_center()
+                            .child(
+                                div()
+                                    .ml(px(1.0))
+                                    .w(px(5.0))
+                                    .h(px(5.0))
+                                    .rounded_full()
+                                    .bg(theme.accent),
+                            )
+                            .into_any_element(),
+                    }
                 };
                 div().flex().flex_row().gap(px(8.0)).child(marker).child(
                     div()
@@ -436,6 +512,18 @@ pub fn render_block(
                         .flex_col()
                         .gap(px(4.0))
                         .children(item.iter().enumerate().map(|(ci, child)| {
+                            let task_body;
+                            let child = if ci == 0 && task.is_some() {
+                                let Block::Paragraph { runs } = child else {
+                                    unreachable!()
+                                };
+                                task_body = Block::Paragraph {
+                                    runs: runs.iter().skip(1).cloned().collect(),
+                                };
+                                &task_body
+                            } else {
+                                child
+                            };
                             render_block(
                                 child,
                                 top_ix,

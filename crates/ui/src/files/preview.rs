@@ -2310,6 +2310,7 @@ impl FilesSurface {
         );
         view.update(cx, |view, cx| {
             view.media_client = media_client;
+            view.editor = editor.map(|editor| editor.downgrade());
             view.activate(path, &location, cx);
         });
         if view.read(cx).version.as_ref() != Some(&version) {

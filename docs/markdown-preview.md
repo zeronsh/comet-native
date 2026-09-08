@@ -4,6 +4,8 @@ Files offers a native preview for `.md` and `.markdown` documents. It renders th
 
 The document is presented in a centered responsive column capped at 900px for readable line lengths. Code, tables and media share that column; images and Mermaid diagrams are centered at their natural size when narrower. On small panels the column fills the available width with Zeron's standard gutters.
 
+Task lists use the existing GPUI base checkbox with Zeron theme colors and icons. Toggling a task changes only its marker in the current editor buffer, preserving formatting and the normal change event, autosave and editor undo/redo history. Source byte ranges distinguish duplicate and nested tasks. An outdated preview cannot edit a newer buffer, and checkboxes are disabled without an editable document. Chat retains its existing task rendering.
+
 Workspace-relative images are loaded from the device owning the checkout. HTTP(S) images remain links. HTML and MDX are not executed. Images and diagrams open in the existing centered lightbox; wheel zoom and pan are not included. Mermaid in chat is not enabled by this change.
 
 Mermaid diagrams use the same fence frame, header metrics, border, background and code actions as ordinary fenced code blocks. Switching between diagram and source replaces the body inside that single frame.
@@ -36,7 +38,7 @@ The implementation was checked on Linux with the following commands:
 
 | Command | Result |
 | --- | --- |
-| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 755 passed |
+| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 757 passed |
 | `cargo test --release --locked -p zeron-engine --lib` | 161 passed |
 | `cargo test --release --locked -p zeron-proto -p zeron-rpc` | 47 passed, 1 previously ignored |
 | `cargo test --release --locked -p zeron-engine --test workspace_files` | 3 passed |

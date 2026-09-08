@@ -125,6 +125,35 @@ pub(super) fn replace_file_contents(
     });
 }
 
+/// Edit only the marker, using the normal atomic edit and Change event path.
+/// A stale preview must never apply offsets to a different buffer revision.
+pub(super) fn toggle_markdown_task(
+    editor: &Entity<FileEditorState>,
+    source: &str,
+    task: &crate::markdown::parser::TaskMarker,
+    window: &mut Window,
+    cx: &mut gpui::App,
+) {
+    editor.update(cx, |state, cx| {
+        if !state.context_menu_capabilities().is_editable() || state.value().as_ref() != source {
+            return;
+        }
+        let marker = source.get(task.range.clone());
+        if !matches!(
+            (marker, task.checked),
+            (Some("[ ]"), false) | (Some("[x]" | "[X]"), true)
+        ) {
+            return;
+        }
+        let selection = state.selected_range();
+        let scroll = state.scroll_offset();
+        state.set_selected_range(task.range.start + 1..task.range.start + 2, cx);
+        state.replace(if task.checked { " " } else { "x" }, window, cx);
+        state.set_selected_range(selection, cx);
+        state.set_scroll_offset(scroll, cx);
+    });
+}
+
 pub(super) fn subscribe_to_changes(
     editor: &Entity<FileEditorState>,
     path: String,
