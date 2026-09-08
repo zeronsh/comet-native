@@ -518,6 +518,7 @@ impl FilesSurface {
             if this.sync_target(cx) {
                 this.ensure_loaded(cx);
             }
+            this.sync_active_markdown_comments(cx);
         });
         let mut surface = Self {
             state,

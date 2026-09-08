@@ -820,8 +820,18 @@ impl FilesSurface {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let placeholder = if self
+            .preview
+            .documents
+            .get(&path)
+            .is_some_and(|d| d.show_markdown)
+        {
+            "Request a change…"
+        } else {
+            "Add a comment…"
+        };
         let input = cx.new(|cx| {
-            ComposerInput::new("Add a comment…", cx)
+            ComposerInput::new(placeholder, cx)
                 .with_text_metrics(12.0, crate::composer::INPUT_LINE_HEIGHT)
         });
         let events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
@@ -842,13 +852,13 @@ impl FilesSurface {
         cx.notify();
     }
 
-    fn cancel_editor_comment(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn cancel_editor_comment(&mut self, cx: &mut Context<Self>) {
         self.preview.comment_draft = None;
         self.trim_document_cache(cx);
         cx.notify();
     }
 
-    fn commit_editor_comment(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn commit_editor_comment(&mut self, cx: &mut Context<Self>) {
         let Some(draft) = self.preview.comment_draft.take() else {
             return;
         };
@@ -884,7 +894,7 @@ impl FilesSurface {
         cx.notify();
     }
 
-    fn remove_editor_comment(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(super) fn remove_editor_comment(&mut self, id: &str, cx: &mut Context<Self>) {
         let key = self.chat_id.clone();
         let removed_path = self
             .state
@@ -917,6 +927,30 @@ impl FilesSurface {
         self.finish_review_comment_flush_if_idle(cx);
         self.trim_document_cache(cx);
         cx.notify();
+    }
+
+    pub(super) fn open_markdown_comment(
+        &mut self,
+        path: String,
+        line: u32,
+        source: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self
+            .preview
+            .documents
+            .get(&path)
+            .and_then(|d| d.editor.as_ref())
+        else {
+            return;
+        };
+        if !editor.read(cx).context_menu_capabilities().is_editable()
+            || editor.read(cx).value().as_ref() != source
+        {
+            return;
+        }
+        self.open_editor_comment_draft(path, line, window, cx);
     }
 
     fn toggle_editor_comment(&mut self, id: String, cx: &mut Context<Self>) {
@@ -2329,7 +2363,35 @@ impl FilesSurface {
                 view.set_source(source, truncated, cx);
             });
         }
+        self.sync_markdown_comments(path, cx);
         Some(view)
+    }
+
+    pub(super) fn sync_active_markdown_comments(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.preview.active.clone() {
+            self.sync_markdown_comments(&path, cx);
+        }
+    }
+
+    fn sync_markdown_comments(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(view) = self
+            .preview
+            .documents
+            .get(path)
+            .filter(|document| document.show_markdown)
+            .and_then(|document| document.markdown.clone())
+        else {
+            return;
+        };
+        let comments = self.staged_file_comments(path, cx);
+        let draft = self
+            .preview
+            .comment_draft
+            .as_ref()
+            .filter(|draft| draft.path == path && draft.key == self.chat_id)
+            .map(|draft| (draft.line, draft.input.clone()));
+        let owner = cx.weak_entity();
+        view.update(cx, |view, cx| view.set_comments(owner, comments, draft, cx));
     }
 
     fn render_document_body(
@@ -2341,6 +2403,9 @@ impl FilesSurface {
     ) -> AnyElement {
         self.apply_pending_external_reload(path, window, cx);
         let editor = self.ensure_editor(path, theme, window, cx);
+        if let Some(editor) = &editor {
+            self.sync_editor_comment_anchors(path, editor, cx);
+        }
         if let Some(view) = self.prepare_markdown_preview(path, editor.as_ref(), cx) {
             return view.into_any_element();
         }
@@ -2358,7 +2423,6 @@ impl FilesSurface {
             editor.update(cx, |state, _| {
                 state.set_editor_style(super::editor_adapter::editor_style(theme));
             });
-            self.sync_editor_comment_anchors(path, &editor, cx);
             let overlays = self.render_editor_comment_overlays(path, &editor, theme, cx);
             return div()
                 .id("files-editor-body")
@@ -3461,6 +3525,251 @@ impl FilesSurface {
 mod markdown_buffer_tests {
     use super::*;
     use gpui::{AppContext, TestAppContext};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn markdown_inline_comments_use_file_review_workflow() {
+        struct Harness {
+            owner: Entity<FilesSurface>,
+            view: Entity<super::super::markdown_preview::MarkdownPreview>,
+            _observer: Subscription,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.owner.update(cx, |owner, cx| {
+                    let editor = owner.preview.documents["README.md"].editor.clone();
+                    owner.prepare_markdown_preview("README.md", editor.as_ref(), cx);
+                });
+                div().size_full().child(self.view.clone())
+            }
+        }
+        fn click(window: &mut Window, position: gpui::Point<gpui::Pixels>, cx: &mut App) {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            window.refresh();
+            let _ = window.draw(cx);
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    position,
+                    button: gpui::MouseButton::Left,
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position,
+                    button: gpui::MouseButton::Left,
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        }
+        gpui_platform::headless().run(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            let source =
+                "# Título 🦀\n\nUn párrafo para revisar.\n\n- Primera tarea\n- Segunda tarea\n";
+            let window = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                            gpui::Point::default(),
+                            gpui::size(px(1100.0), px(600.0)),
+                        ))),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let state = cx.new(|_| crate::state::AppState::new());
+                        let owner = cx.new(|cx| {
+                            let mut owner = FilesSurface::new(
+                                state,
+                                "chat".into(),
+                                false,
+                                1000,
+                                13.0,
+                                false,
+                                false,
+                                cx,
+                            );
+                            let mut document = FileDocument::loading(DocumentKey {
+                                chat_id: "chat".into(),
+                                checkout_id: Some("checkout".into()),
+                                path: "README.md".into(),
+                            });
+                            document.set_loaded(zeron_proto::WorkspaceFileText {
+                                checkout_id: "checkout".into(),
+                                path: "README.md".into(),
+                                text: Some(source.into()),
+                                content_hash: Some("hash".into()),
+                                size: source.len() as u64,
+                                modified_at: None,
+                                encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
+                                line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                                read_only_reason: None,
+                                truncated: false,
+                            });
+                            let theme = Theme::of(cx).clone();
+                            document.editor = Some(super::super::editor::new_file_editor(
+                                source,
+                                "README.md",
+                                false,
+                                &theme,
+                                window,
+                                cx,
+                            ));
+                            document.show_markdown = true;
+                            owner.preview.active = Some("README.md".into());
+                            owner.preview.documents.insert("README.md".into(), document);
+                            owner
+                        });
+                        let view = owner.update(cx, |owner, cx| {
+                            let editor = owner.preview.documents["README.md"].editor.clone();
+                            owner
+                                .prepare_markdown_preview("README.md", editor.as_ref(), cx)
+                                .unwrap()
+                        });
+                        cx.new(|cx| Harness {
+                            _observer: cx.observe(&owner, |_, _, cx| cx.notify()),
+                            owner,
+                            view,
+                        })
+                    },
+                )
+                .unwrap();
+            let root = window.entity(cx).unwrap();
+            let owner = root.read(cx).owner.clone();
+            let view = root.read(cx).view.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                cx.update(|cx| {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        let bounds = view.read(cx).test_block_bounds(1);
+                        let gutter = ((bounds.size.width - px(900.0)) / 2.0).max(px(24.0));
+                        click(
+                            window,
+                            gpui::point(bounds.left() + gutter - px(12.0), bounds.top() + px(11.0)),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    let input = owner
+                        .read(cx)
+                        .preview
+                        .comment_draft
+                        .as_ref()
+                        .expect("plus opens draft")
+                        .input
+                        .clone();
+                    assert_eq!(
+                        owner.read(cx).preview.comment_draft.as_ref().unwrap().line,
+                        3
+                    );
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+                        input.update(cx, |input, cx| input.set_text("Clarify this paragraph", cx));
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        let bounds = view.read(cx).test_block_bounds(1);
+                        assert!(bounds.size.height > px(comments::DRAFT_CARD_HEIGHT));
+                        let gutter = ((bounds.size.width - px(900.0)) / 2.0).max(px(24.0));
+                        click(
+                            window,
+                            gpui::point(
+                                bounds.right() - gutter - px(45.0),
+                                bounds.bottom() - px(36.0),
+                            ),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    assert!(
+                        owner.read(cx).preview.comment_draft.is_none(),
+                        "Comment commits the draft"
+                    );
+                    let staged = owner.read(cx).staged_file_comments("README.md", cx);
+                    assert_eq!(staged.len(), 1);
+                    assert_eq!(staged[0].line, 3);
+                    assert_eq!(staged[0].body, "Clarify this paragraph");
+                    assert!(staged[0].is_file());
+                    let editor = owner.read(cx).preview.documents["README.md"]
+                        .editor
+                        .clone()
+                        .unwrap();
+                    assert_eq!(editor.read(cx).value().as_ref(), source);
+                    assert!(!owner.read(cx).preview.documents["README.md"].is_dirty());
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        let bounds = view.read(cx).test_block_bounds(1);
+                        let gutter = ((bounds.size.width - px(900.0)) / 2.0).max(px(24.0));
+                        // The stored card uses the same remove action as a diff card.
+                        click(
+                            window,
+                            gpui::point(
+                                bounds.right() - gutter - px(24.0),
+                                bounds.bottom()
+                                    - px(12.0)
+                                    - px(comments::card_height("Clarify this paragraph"))
+                                    + px(21.0),
+                            ),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    assert!(
+                        owner
+                            .read(cx)
+                            .staged_file_comments("README.md", cx)
+                            .is_empty()
+                    );
+                    cx.update_window(window.into(), |_, window, cx| {
+                        owner.update(cx, |owner, cx| {
+                            owner.open_markdown_comment(
+                                "README.md".into(),
+                                3,
+                                "outdated buffer",
+                                window,
+                                cx,
+                            );
+                            assert!(owner.preview.comment_draft.is_none());
+                            owner.open_markdown_comment("README.md".into(), 3, source, window, cx);
+                        });
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        window.dispatch_event(
+                            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                                is_held: false,
+                                prefer_character_input: false,
+                            }),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    assert!(
+                        owner.read(cx).preview.comment_draft.is_none(),
+                        "Escape cancels without staging a comment"
+                    );
+                    cx.quit();
+                });
+            })
+            .detach();
+        });
+    }
 
     #[gpui::test]
     fn preview_reads_unsaved_buffer_without_starting_a_save(cx: &mut TestAppContext) {
