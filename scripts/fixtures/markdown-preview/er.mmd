@@ -1,0 +1,11 @@
+erDiagram
+    WORKSPACE ||--o{ DOCUMENT : contains
+    DOCUMENT ||--o{ IMAGE : references
+    DOCUMENT {
+        string path PK
+        int revision
+    }
+    IMAGE {
+        string source PK
+        int width
+    }

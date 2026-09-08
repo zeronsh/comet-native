@@ -1,0 +1,12 @@
+sequenceDiagram
+    actor Usuario
+    participant UI as Zeron UI
+    participant Engine as Motor remoto
+    Usuario->>UI: Abrir README
+    UI->>Engine: Leer archivo
+    Engine-->>UI: Markdown e imágenes
+    alt Mermaid válido
+        UI-->>Usuario: Diagrama
+    else Sintaxis inválida
+        UI-->>Usuario: Código y diagnóstico
+    end

@@ -21,3 +21,5 @@ pub mod selection;
 pub mod veil;
 
 pub use parser::{Block, BlockTree, IncrementalParser, InlineRun, InlineStyle, parse_full};
+
+pub mod mermaid;

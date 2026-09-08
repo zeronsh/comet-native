@@ -1,0 +1,151 @@
+//! Isolated native Mermaid adapter. Call only on a background executor.
+use crate::theme::Theme;
+use std::sync::Mutex;
+
+pub const ENGINE_VERSION: &str = "mermaid-rs-renderer/0.3.1";
+pub const MAX_SOURCE_BYTES: usize = 16 * 1024;
+// This backend has no cooperative cancellation. Bound inputs and serialize its
+// CPU work across previews; UI owners discard results from superseded revisions.
+static RENDER_LOCK: Mutex<()> = Mutex::new(());
+
+#[derive(Clone)]
+pub struct Palette {
+    dark: bool,
+    font: String,
+    background: String,
+    raised: String,
+    text: String,
+    muted: String,
+    border: String,
+    accent: String,
+}
+
+fn color(color: gpui::Hsla) -> String {
+    let c = color.to_rgb();
+    format!(
+        "#{:02x}{:02x}{:02x}",
+        (c.r * 255.0).round() as u8,
+        (c.g * 255.0).round() as u8,
+        (c.b * 255.0).round() as u8
+    )
+}
+
+impl Palette {
+    pub fn from_theme(theme: &Theme) -> Self {
+        Self {
+            dark: theme.appearance.is_dark(),
+            font: theme.font_sans.to_string(),
+            background: color(theme.surface),
+            raised: color(theme.surface_raised),
+            text: color(theme.text),
+            muted: color(theme.text_muted),
+            border: color(theme.border_strong),
+            accent: color(theme.accent),
+        }
+    }
+}
+
+pub fn render(source: &str, palette: &Palette) -> Result<String, String> {
+    if source.len() > MAX_SOURCE_BYTES
+        || source.lines().count() > 256
+        || source
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '>' | '{' | '}'))
+            .count()
+            > 2048
+    {
+        return Err("Diagram exceeds preview complexity limit".into());
+    }
+    let _guard = RENDER_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    std::panic::catch_unwind(|| {
+        let mut options = mermaid_rs_renderer::RenderOptions::default();
+        options.theme = if palette.dark {
+            mermaid_rs_renderer::Theme::dark()
+        } else {
+            mermaid_rs_renderer::Theme::modern()
+        };
+        let theme = &mut options.theme;
+        theme.font_family = palette.font.clone();
+        theme.font_size = 14.0;
+        theme.background = palette.background.clone();
+        theme.primary_color = palette.raised.clone();
+        theme.primary_text_color = palette.text.clone();
+        theme.primary_border_color = palette.border.clone();
+        theme.text_color = palette.text.clone();
+        theme.line_color = palette.muted.clone();
+        theme.secondary_color = palette.raised.clone();
+        theme.tertiary_color = palette.raised.clone();
+        theme.edge_label_background = palette.background.clone();
+        theme.cluster_background = palette.background.clone();
+        theme.cluster_border = palette.border.clone();
+        theme.sequence_actor_fill = palette.raised.clone();
+        theme.sequence_actor_border = palette.border.clone();
+        theme.sequence_actor_line = palette.muted.clone();
+        theme.sequence_note_fill = palette.raised.clone();
+        theme.sequence_note_border = palette.border.clone();
+        theme.sequence_activation_fill = palette.accent.clone();
+        theme.sequence_activation_border = palette.border.clone();
+        let svg =
+            mermaid_rs_renderer::render_with_options(source, options).map_err(|e| e.to_string())?;
+        if svg.len() > 2 * 1024 * 1024 {
+            return Err("Diagram output exceeds preview size limit".into());
+        }
+        Ok(svg)
+    })
+    .unwrap_or_else(|_| Err("Diagram could not be rendered".into()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const CORPUS: &[(&str, &str)] = &[
+        (
+            "flowchart",
+            include_str!("../../../../scripts/fixtures/markdown-preview/flowchart.mmd"),
+        ),
+        (
+            "sequence",
+            include_str!("../../../../scripts/fixtures/markdown-preview/sequence.mmd"),
+        ),
+        (
+            "class",
+            include_str!("../../../../scripts/fixtures/markdown-preview/class.mmd"),
+        ),
+        (
+            "state",
+            include_str!("../../../../scripts/fixtures/markdown-preview/state.mmd"),
+        ),
+        (
+            "er",
+            include_str!("../../../../scripts/fixtures/markdown-preview/er.mmd"),
+        ),
+        (
+            "gantt",
+            include_str!("../../../../scripts/fixtures/markdown-preview/gantt.mmd"),
+        ),
+    ];
+    #[test]
+    fn corpus_renders_through_gpui_in_both_themes() {
+        let renderer = gpui::SvgRenderer::new(std::sync::Arc::new(crate::icons::Assets));
+        for (mode, theme) in [("light", Theme::light()), ("dark", Theme::dark())] {
+            let palette = Palette::from_theme(&theme);
+            for (name, source) in CORPUS {
+                let svg = render(source, &palette).unwrap_or_else(|e| panic!("{mode}/{name}: {e}"));
+                assert!(!svg.contains("<foreignObject"));
+                let raster = renderer.render_single_frame(svg.as_bytes(), 1.0).unwrap();
+                assert!(raster.size(0).width.0 > 0);
+                assert_eq!(svg, render(source, &palette).unwrap());
+                if let Ok(dir) = std::env::var("ZERON_MERMAID_ARTIFACTS") {
+                    std::fs::create_dir_all(&dir).unwrap();
+                    std::fs::write(format!("{dir}/{name}-{mode}.svg"), svg).unwrap();
+                }
+            }
+        }
+    }
+    #[test]
+    fn malformed_and_oversized_diagrams_are_recoverable() {
+        let palette = Palette::from_theme(&Theme::dark());
+        assert!(render("this is not a diagram", &palette).is_err());
+        assert!(render(&"x".repeat(MAX_SOURCE_BYTES + 1), &palette).is_err());
+        assert!(render("flowchart TD\nA[Hola<br/>mundo] --> B[Fin]", &palette).is_ok());
+    }
+}

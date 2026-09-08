@@ -36,6 +36,7 @@ alacritty_terminal.workspace = true
 base64 = "0.22"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp", "tiff"] }
 usvg = "0.46"
+mermaid-rs-renderer = { version = "=0.3.1", default-features = false }
 unicode-segmentation.workspace = true
 unicode-width.workspace = true
 fontdb.workspace = true
