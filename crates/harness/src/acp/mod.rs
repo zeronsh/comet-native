@@ -2272,14 +2272,24 @@ async fn run_session(session: Session) {
     // Done ever comes, and the session strands Working until the engine's
     // quiesce watchdog parks it.
     //
-    // `ZERON_ACP_QUIET_SETTLE_MS` overrides; 0 disables.
-    let quiet_settle: Option<Duration> = match std::env::var("ZERON_ACP_QUIET_SETTLE_MS")
-        .ok()
-        .and_then(|v| v.parse::<u64>().ok())
-    {
-        Some(0) => None,
-        Some(ms) => Some(Duration::from_millis(ms)),
-        None => Some(Duration::from_secs(30)),
+    // Pi is EXEMPT, even from the env knob. Mid-turn compaction and long
+    // reasoning emit no ACP session/update, so a long silent stretch in
+    // exactly the "looks finished" state (content streamed, every tool
+    // resolved) is indistinguishable from a dropped reply — 30s of quiet
+    // forged a clean Completed on a live `session/prompt` (2026-08-15).
+    // Genuinely dropped Pi replies already settle via the engine quiesce
+    // watchdog. `ZERON_ACP_QUIET_SETTLE_MS` overrides; 0 disables.
+    let quiet_settle: Option<Duration> = if harness == HarnessId::Pi {
+        None
+    } else {
+        match std::env::var("ZERON_ACP_QUIET_SETTLE_MS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+        {
+            Some(0) => None,
+            Some(ms) => Some(Duration::from_millis(ms)),
+            None => Some(Duration::from_secs(30)),
+        }
     };
     let mut last_update_at = tokio::time::Instant::now();
     let mut turn_content_seen = false;
@@ -2289,7 +2299,7 @@ async fn run_session(session: Session) {
     // terminal one (verified against 0.66.0 — premature Done exactly one
     // grace after injection). Steered turns settle off their real response
     // (healthy in every trace); the engine's quiesce watchdog backstops
-    // them (the quiet settle used to, before the Claude exemption above).
+    // them (the quiet settle used to, before the Pi exemption above).
     let mut steered_this_turn = false;
     let mut open_tools: std::collections::HashSet<String> = std::collections::HashSet::new();
     let open_questions = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
