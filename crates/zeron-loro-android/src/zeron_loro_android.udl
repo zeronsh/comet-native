@@ -1,0 +1,26 @@
+namespace zeron_loro_android {
+    ZeronLoroDoc create_doc();
+    ZeronLoroDoc doc_from_bytes(bytes data);
+    bytes doc_export_snapshot(ZeronLoroDoc doc);
+    bytes doc_export_updates(ZeronLoroDoc doc, optional bytes from_version);
+    void doc_import_bytes(ZeronLoroDoc doc, bytes data);
+    string doc_get_deep_value(ZeronLoroDoc doc);
+    string doc_get_frontiers(ZeronLoroDoc doc);
+    boolean doc_contains_frontier(ZeronLoroDoc doc, bytes frontier);
+    void doc_close(ZeronLoroDoc doc);
+};
+
+interface ZeronLoroDoc {
+};
+
+[Error]
+enum LoroAndroidError {
+    "Loro",
+    "Malformed",
+    "Closed",
+};
+
+dictionary LoroAndroidResult {
+    boolean ok;
+    string? error;
+};

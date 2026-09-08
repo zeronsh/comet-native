@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+# Stub Gradle wrapper for CI — full wrapper JAR not needed for stub checks.
+# Real build requires full gradle-wrapper.jar; CI uses system Gradle via setup-android.
+# This stub forwards to `gradle` if available, else prints clear error.
+set -e
+if command -v gradle >/dev/null 2>&1; then
+  exec gradle "$@"
+fi
+echo "gradlew stub: gradle not found and wrapper JAR not committed" >&2
+echo "Install Gradle 8+ or run: gradle wrapper" >&2
+exit 127

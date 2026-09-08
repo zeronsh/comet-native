@@ -1,0 +1,7 @@
+<resources>
+    <!-- Mirrors ZeronColors in ui/theme/Theme.kt — the always-dark monochrome
+         palette shared with iOS (Theme.swift) and desktop (crates/ui/theme.rs).
+         Only the values the platform needs outside Compose live here. -->
+    <color name="zeron_bg">#FF060606</color>
+    <color name="zeron_surface">#FF0D0D0D</color>
+</resources>

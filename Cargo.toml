@@ -11,6 +11,7 @@ members = [
     "crates/update",
     "crates/ui",
     "crates/syntax",
+    "crates/zeron-loro-android",
     "apps/zeron",
 ]
 

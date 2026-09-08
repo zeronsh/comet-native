@@ -1,0 +1,23 @@
+<resources>
+    <!--
+      The launcher theme. `Theme.SplashScreen` (androidx.core:core-splashscreen)
+      gives API 26-30 the same splash the platform draws natively from API 31,
+      then hands over to Theme.Zeron on the first frame — so a cold start shows
+      the mark on brand black instead of a black flash.
+    -->
+    <style name="Theme.Zeron.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/zeron_bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.Zeron</item>
+    </style>
+
+    <!--
+      No status/navigation bar colours here on purpose: the app targets SDK 36,
+      where `android:statusBarColor` and `android:navigationBarColor` are
+      deprecated no-ops. Edge-to-edge and the bar icon contrast are set in
+      MainActivity via enableEdgeToEdge(), and Compose pads for the insets.
+    -->
+    <style name="Theme.Zeron" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@color/zeron_bg</item>
+    </style>
+</resources>

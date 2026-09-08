@@ -1,0 +1,125 @@
+<resources>
+    <string name="app_name">Zeron</string>
+
+    <!-- Sign in -->
+    <string name="signin_tagline">Your coding agents, from anywhere</string>
+    <string name="signin_action">Log in to Zeron</string>
+    <string name="signin_failed">Sign-in failed. Please try again.</string>
+
+    <!-- Workspace picker -->
+    <string name="org_picker_title">Choose a workspace</string>
+    <string name="org_picker_subtitle">Your account belongs to more than one workspace.</string>
+    <string name="org_picker_select">Select workspace %1$s</string>
+
+    <!-- Workspace -->
+    <string name="workspace_title">Sessions</string>
+    <string name="workspace_section_active">Active</string>
+    <string name="workspace_section_archived">Archived</string>
+    <string name="workspace_empty_title">No sessions yet</string>
+    <string name="workspace_empty_body">Start a session on a desktop device and it appears here.</string>
+    <string name="workspace_offline_title">Not connected</string>
+    <string name="workspace_offline_body">Waiting for the workspace connection.</string>
+    <string name="workspace_error_title">Can\'t load sessions</string>
+    <string name="workspace_retry">Try again</string>
+    <string name="workspace_more_actions">More actions</string>
+    <string name="workspace_sign_out">Sign out</string>
+    <string name="workspace_archive">Archive</string>
+    <string name="workspace_unarchive">Unarchive</string>
+    <string name="workspace_archived_label">Archived</string>
+    <string name="workspace_open_session">Open session %1$s</string>
+    <string name="workspace_send_queued">Queued</string>
+    <string name="workspace_send_failed">Failed</string>
+
+    <!-- Session -->
+    <string name="session_back">Back</string>
+    <string name="session_empty">No messages yet</string>
+    <string name="session_you">You</string>
+    <string name="session_agent">Agent</string>
+    <string name="session_thinking">Thinking</string>
+    <string name="session_details_show">Show details</string>
+    <string name="session_details_hide">Hide details</string>
+    <string name="session_working">Working…</string>
+    <string name="session_scroll_top">Scroll to top</string>
+    <string name="session_scroll_bottom">Scroll to bottom</string>
+    <string name="session_question">Question</string>
+
+    <!-- Copy -->
+    <string name="copy_message">Copy message</string>
+    <string name="copy_copied">Copied</string>
+
+    <!-- Session status -->
+    <string name="status_connecting">Connecting…</string>
+    <string name="status_connected">Connected</string>
+    <string name="status_signed_out">Signed out</string>
+    <string name="status_history_trimmed">Older messages unavailable</string>
+    <string name="status_failed">Can\'t connect</string>
+    <string name="status_sending">Sending…</string>
+    <string name="status_queued">Queued — will send automatically</string>
+    <string name="status_not_delivered">Not delivered — tap to retry</string>
+    <string name="status_uploading">Uploading… %1$d%%</string>
+
+    <!-- Composer -->
+    <string name="composer_placeholder">Message</string>
+    <string name="composer_input">Message input</string>
+    <string name="composer_send">Send</string>
+    <string name="composer_stop">Stop</string>
+    <string name="composer_attach">Attach image</string>
+    <string name="composer_remove_attachment">Remove attachment</string>
+    <string name="attach_failed">That image couldn\'t be attached (unsupported or over 24 MB).</string>
+    <string name="attachment_error">Image unavailable</string>
+    <string name="composer_offline_notice">Offline — messages will send when you\'re back online.</string>
+    <string name="composer_degraded_notice">Messages will send once the connection recovers.</string>
+
+    <!-- Model picker -->
+    <string name="model_picker_label">Model</string>
+    <string name="model_picker_title">Choose model</string>
+    <string name="model_picker_search">Search model…</string>
+    <string name="model_picker_no_results">No model matches “%1$s”.</string>
+    <string name="trait_picker_title">Effort</string>
+
+    <!-- New session -->
+    <string name="workspace_new_session">New session</string>
+    <string name="new_session_title">New session</string>
+    <string name="new_session_back">Back</string>
+    <string name="new_session_space_header">Where it runs</string>
+    <string name="new_session_runs_on">Runs on your desktop device</string>
+    <string name="new_session_no_spaces">No spaces yet — create one on the desktop app first.</string>
+    <string name="new_session_ref">Ref</string>
+    <string name="new_session_checkout">Checkout</string>
+    <string name="new_session_select_ref">Select ref</string>
+    <string name="new_session_from_ref">From %1$s</string>
+    <string name="new_session_current_checkout">Current checkout</string>
+    <string name="new_session_current_worktree">Current worktree</string>
+    <string name="new_session_new_worktree">New worktree</string>
+    <string name="new_session_run_in_space">Run in the space\'s folder as-is</string>
+    <string name="new_session_reuse_worktree">Reuse the picked ref\'s existing worktree</string>
+    <string name="new_session_fresh_worktree">A fresh isolated worktree created off the picked base ref</string>
+    <string name="new_session_ref_current">Current checkout</string>
+    <string name="new_session_ref_worktree">Checked out in a worktree</string>
+    <string name="new_session_new_space">New space…</string>
+
+    <!-- New space -->
+    <string name="new_space_title">New space</string>
+    <string name="new_space_back">Back</string>
+    <string name="new_space_up">Up</string>
+    <string name="new_space_use_folder">Use this folder</string>
+    <string name="new_space_use_name">Use “%1$s”</string>
+    <string name="new_space_creating">Creating…</string>
+    <string name="new_space_no_folders">No folders here</string>
+    <string name="new_space_truncated">Listing truncated — this folder has more entries.</string>
+    <string name="new_space_git">git</string>
+    <string name="new_space_no_devices_title">No devices yet</string>
+    <string name="new_space_no_devices_body">Run Zeron on a computer first — its folders will show up here.</string>
+
+    <!-- Input request -->
+    <string name="input_request_submit">Submit</string>
+    <string name="input_request_back">Back</string>
+    <string name="input_request_next">Next</string>
+    <string name="input_request_typed">Or type your own answer</string>
+    <string name="input_request_multi_hint">Select one or more options.</string>
+
+    <!-- Shared -->
+    <string name="loading">Connecting…</string>
+    <string name="error_title">Something went wrong</string>
+    <string name="error_back_to_sign_in">Back to sign in</string>
+</resources>
