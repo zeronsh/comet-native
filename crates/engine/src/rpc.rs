@@ -691,6 +691,9 @@ impl EngineRpc {
         method: &str,
         params: serde_json::Value,
     ) -> Result<RpcReply, RpcError> {
+        if self.vault.as_ref().is_some_and(|vault| vault.is_enrolled()) {
+            return Err(RpcError::Failed("encrypted device channel required".into()));
+        }
         let Some(links) = &self.links else {
             return Err(RpcError::Failed(format!(
                 "cannot reach device {target}: remote routing unavailable (offline)"
@@ -1136,6 +1139,77 @@ impl RpcService for AuthRpc {
                 RpcReply::value(&serde_json::json!({ "ok": true }))
             }
             _ => Err(RpcError::UnknownMethod(method.to_string())),
+        }
+    }
+}
+
+pub(crate) struct RelayRpc {
+    service: std::sync::Arc<dyn RpcService>,
+    vault: crate::vault::VaultService,
+}
+
+impl RelayRpc {
+    pub(crate) fn new(
+        service: std::sync::Arc<dyn RpcService>,
+        vault: crate::vault::VaultService,
+    ) -> Self {
+        Self { service, vault }
+    }
+}
+
+#[async_trait]
+impl RpcService for RelayRpc {
+    async fn handle(&self, method: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+        if method.starts_with("Vault") {
+            return Err(RpcError::Failed(
+                "vault operations require a local connection".into(),
+            ));
+        }
+        let mut status = self.vault.watch_status();
+        let request = self.service.handle(method, params);
+        tokio::pin!(request);
+        let reply = loop {
+            if self.vault.is_enrolled() {
+                return Err(RpcError::Failed("encrypted device channel required".into()));
+            }
+            tokio::select! {
+                biased;
+                changed = status.changed() => {
+                    if changed.is_err() {
+                        return Err(RpcError::Closed);
+                    }
+                }
+                reply = &mut request => break reply?,
+            }
+        };
+        if self.vault.is_enrolled() {
+            return Err(RpcError::Failed("encrypted device channel required".into()));
+        }
+        match reply {
+            RpcReply::Value(value) => Ok(RpcReply::Value(value)),
+            RpcReply::Stream(stream) => {
+                let vault = self.vault.clone();
+                let stream = futures::stream::unfold(
+                    (stream, vault, status),
+                    |(mut stream, vault, mut status)| async move {
+                        loop {
+                            if vault.is_enrolled() {
+                                return None;
+                            }
+                            tokio::select! {
+                                biased;
+                                changed = status.changed() => {
+                                    if changed.is_err() {
+                                        return None;
+                                    }
+                                }
+                                item = stream.next() => return item.map(|item| (item, (stream, vault, status))),
+                            }
+                        }
+                    },
+                );
+                Ok(RpcReply::Stream(stream.boxed()))
+            }
         }
     }
 }
@@ -2107,6 +2181,38 @@ impl RpcService for EngineRpc {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct RelayProbe;
+
+    #[async_trait]
+    impl RpcService for RelayProbe {
+        async fn handle(&self, _: &str, params: serde_json::Value) -> Result<RpcReply, RpcError> {
+            Ok(RpcReply::Value(params))
+        }
+    }
+
+    #[tokio::test]
+    async fn relay_rejects_vault_operations_and_encrypted_profile_content() {
+        use crate::vault::{MemoryProtection, VaultService, VaultStore};
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path(), "org/user", Box::new(MemoryProtection::new()));
+        let vault = VaultService::open(store, None, "org", "user");
+        let relay = RelayRpc::new(std::sync::Arc::new(RelayProbe), vault);
+        for method in [
+            methods::VAULT_SETUP,
+            methods::VAULT_RECOVER,
+            methods::VAULT_APPROVE,
+            "VaultFutureMethod",
+        ] {
+            assert!(relay.handle(method, serde_json::json!({})).await.is_err());
+        }
+        assert!(relay.handle("Echo", serde_json::json!({})).await.is_ok());
+        std::fs::write(dir.path().join("vault.json"), b"unreadable").unwrap();
+        let store = VaultStore::new(dir.path(), "org/user", Box::new(MemoryProtection::new()));
+        let vault = VaultService::open(store, None, "org", "user");
+        let relay = RelayRpc::new(std::sync::Arc::new(RelayProbe), vault);
+        assert!(relay.handle("Echo", serde_json::json!({})).await.is_err());
+    }
 
     /// The UI's Switch/Forget calls send `{id, accountId, harness}` (+ optional
     /// `targetDeviceId`); the extra fields must be tolerated, `accountId` wins.

@@ -1690,4 +1690,24 @@ ES-16  Release controls, support, and staged activation
    - Independent security review; performance baselines; iOS device tests.
 
 
+17.7. Fail-closed local vault and relay boundaries
+
+   Existing vault files (including unreadable/corrupt files) keep the local
+   encryption requirement even when no keyring can be loaded. Discovering a
+   remote vault also requires encryption before this device is approved.
+   Storage failures lock key use; verification failures block cached sealing
+   and opening material. Tests reproduce the former plaintext classification.
+
+   The device relay now wraps the local RPC service: all Vault* operations
+   are local-only, and encrypted profiles refuse application RPC over the
+   unencrypted relay. Outstanding streams close when encryption is required;
+   engine forwarding/dial entry points also refuse that transport. This is
+   an intentional capability restriction until the authenticated encrypted
+   channel exists, not an implementation of that channel.
+
+   Verification: cargo test -p zeron-engine --lib --locked --offline
+   (134 tests). Bootstrap journaling, live profile cutover, complete route
+   fencing, native iOS lifecycle, and the remaining security gates are open.
+
+
                           -- End of Project Plan --

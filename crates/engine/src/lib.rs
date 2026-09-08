@@ -418,6 +418,11 @@ impl EngineCore {
         &self,
         device_id: &str,
     ) -> Result<Arc<zeron_rpc::RpcClient>, EngineError> {
+        if self.vault.is_enrolled() {
+            return Err(EngineError::Other(
+                "encrypted device channel required".into(),
+            ));
+        }
         let links = self
             .links()
             .ok_or_else(|| EngineError::Other("peer links unavailable (offline)".into()))?;
@@ -445,7 +450,11 @@ impl EngineCore {
                 }
             }
         });
-        zeron_rpc::HostRelay::spawn(config, self.rpc_service(), on_nudge)
+        zeron_rpc::HostRelay::spawn(
+            config,
+            Arc::new(rpc::RelayRpc::new(self.rpc_service(), self.vault.clone())),
+            on_nudge,
+        )
     }
 
     pub fn rpc_service(&self) -> Arc<EngineRpc> {

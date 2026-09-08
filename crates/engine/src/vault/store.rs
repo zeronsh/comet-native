@@ -209,7 +209,7 @@ impl VaultStore {
     }
 
     pub fn exists(&self) -> bool {
-        self.path.exists()
+        self.path.try_exists().unwrap_or(true)
     }
 
     fn protection_key(&self) -> Result<SecretBytes, VaultStoreError> {

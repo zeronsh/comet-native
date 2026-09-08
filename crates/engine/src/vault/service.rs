@@ -165,6 +165,7 @@ impl Trust {
 }
 
 struct Guarded {
+    encryption_required: bool,
     state: LocalVaultState,
     trust: Option<Trust>,
     locked: Option<String>,
@@ -226,6 +227,7 @@ impl VaultService {
             Err(err) => (LocalVaultState::default(), Some(err.to_string())),
         };
         let mut guarded = Guarded {
+            encryption_required: store.exists(),
             state,
             trust: None,
             locked,
@@ -279,7 +281,10 @@ impl VaultService {
     /// True when the profile is enrolled in a vault at all: a member whose
     /// keys are stale, locked, or revoked must still never write plaintext.
     pub fn is_enrolled(&self) -> bool {
-        lock(&self.inner.guarded).state.vault.is_some()
+        let guarded = lock(&self.inner.guarded);
+        guarded.encryption_required
+            || guarded.state.vault.is_some()
+            || guarded.remote_vault == Some(true)
     }
 
     pub fn device_id(&self) -> Option<[u8; 16]> {
@@ -390,7 +395,12 @@ impl VaultService {
     }
 
     fn commit(&self, guarded: &mut Guarded) -> Result<(), EngineError> {
-        self.inner.store.save(&guarded.state)?;
+        if let Err(error) = self.inner.store.save(&guarded.state) {
+            guarded.encryption_required = true;
+            guarded.locked = Some(error.to_string());
+            self.inner.status.send_replace(self.compute_status(guarded));
+            return Err(error.into());
+        }
         Ok(())
     }
 
@@ -1284,6 +1294,11 @@ impl VaultService {
         let client = self.client()?.clone();
         let (epoch, cached) = {
             let guarded = lock(&self.inner.guarded);
+            if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+                return Err(EngineError::Other(
+                    "vault verification or storage is unavailable".into(),
+                ));
+            }
             let trust = guarded
                 .trust
                 .as_ref()
@@ -1318,8 +1333,12 @@ impl VaultService {
             .as_ref()
             .ok_or_else(|| EngineError::Other("vault not ready".into()))?;
         let head = trust.head();
-        if head.epoch() != epoch {
-            return Err(EngineError::Other("epoch changed; retry".into()));
+        if head.epoch() != epoch
+            || head.active_device(&trust.device_id).is_none()
+            || guarded.locked.is_some()
+            || guarded.verification_failure.is_some()
+        {
+            return Err(EngineError::Other("vault state changed; retry".into()));
         }
         Ok(ChatKeyMaterial {
             binding: head.content_binding(object_id, trust.device_id),
@@ -1424,9 +1443,13 @@ impl VaultService {
     /// The binding a record sealed RIGHT NOW for `object_id` would carry.
     pub fn current_content_binding(&self, object_id: [u8; 16]) -> Option<RecordBinding> {
         let guarded = lock(&self.inner.guarded);
+        if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+            return None;
+        }
         let trust = guarded.trust.as_ref()?;
         let head = trust.head();
         head.active_device(&trust.device_id)?;
+        trust.keyring.epoch_key(head.epoch())?;
         Some(head.content_binding(object_id, trust.device_id))
     }
 
@@ -1478,6 +1501,9 @@ impl VaultService {
             return Err(OpenFailure::NotAuthorized);
         }
         let guarded = lock(&self.inner.guarded);
+        if guarded.locked.is_some() || guarded.verification_failure.is_some() {
+            return Err(OpenFailure::Unavailable);
+        }
         let trust = guarded.trust.as_ref().ok_or(OpenFailure::Unavailable)?;
         let revision = trust
             .revision(&untrusted.membership_hash)
@@ -1872,4 +1898,83 @@ fn recovery_file(state: &MembershipState) -> serde_json::Value {
         "recoveryAuthorityId": Hex::of(&state.recovery_authority_id()).0,
         "createdAt": chrono::Utc::now().to_rfc3339(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::store::MemoryProtection;
+    use super::*;
+    use crate::doc_host::EdgeConfig;
+
+    fn client() -> VaultClient {
+        VaultClient::new(
+            reqwest::Client::new(),
+            EdgeConfig::with_static_token("http://127.0.0.1:1", "test"),
+            "org",
+        )
+    }
+
+    #[test]
+    fn locked_and_corrupt_stores_never_allow_plaintext() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path(), "org/user", Box::new(MemoryProtection::new()));
+        store.save(&LocalVaultState::default()).unwrap();
+        let original = std::fs::read(dir.path().join("vault.json")).unwrap();
+        let reopened = VaultStore::new(dir.path(), "org/user", Box::new(MemoryProtection::new()));
+        let vault = VaultService::open(reopened, Some(client()), "org", "user");
+        assert!(matches!(vault.status().phase, VaultPhase::Locked { .. }));
+        assert!(vault.is_enrolled());
+        assert_eq!(
+            std::fs::read(dir.path().join("vault.json")).unwrap(),
+            original
+        );
+        std::fs::write(dir.path().join("vault.json"), b"invalid").unwrap();
+        let reopened = VaultStore::new(dir.path(), "org/user", Box::new(MemoryProtection::new()));
+        assert!(VaultService::open(reopened, Some(client()), "org", "user").is_enrolled());
+    }
+
+    #[tokio::test]
+    async fn relay_stream_closes_when_encryption_becomes_required() {
+        use futures::StreamExt;
+        use zeron_rpc::{RpcReply, RpcService};
+        struct Streaming;
+        #[async_trait::async_trait]
+        impl RpcService for Streaming {
+            async fn handle(
+                &self,
+                _: &str,
+                _: serde_json::Value,
+            ) -> Result<RpcReply, zeron_rpc::RpcError> {
+                Ok(RpcReply::Stream(futures::stream::pending().boxed()))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path(), "org/user", Box::new(MemoryProtection::new()));
+        let vault = VaultService::open(store, Some(client()), "org", "user");
+        let relay = crate::rpc::RelayRpc::new(Arc::new(Streaming), vault.clone());
+        let RpcReply::Stream(mut stream) =
+            relay.handle("Watch", serde_json::json!({})).await.unwrap()
+        else {
+            panic!("expected stream");
+        };
+        lock(&vault.inner.guarded).encryption_required = true;
+        vault.publish_status();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn remote_vault_requires_encryption_before_device_approval() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VaultStore::new(dir.path(), "org/user", Box::new(MemoryProtection::new()));
+        let vault = VaultService::open(store, Some(client()), "org", "user");
+        assert!(!vault.is_enrolled());
+        lock(&vault.inner.guarded).remote_vault = Some(true);
+        assert!(vault.is_enrolled());
+        assert!(!vault.is_ready());
+    }
 }
