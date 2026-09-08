@@ -775,6 +775,17 @@ pub fn lightbox(
     focus: &gpui::FocusHandle,
     on_close: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
 ) -> AnyElement {
+    lightbox_with_size(viewport, preview, focus, None, on_close)
+}
+
+/// Allow bounded raster variants to retain the source's logical display size.
+pub(crate) fn lightbox_with_size(
+    viewport: Size<gpui::Pixels>,
+    preview: &PreviewImage,
+    focus: &gpui::FocusHandle,
+    display_size: Option<Size<gpui::Pixels>>,
+    on_close: impl Fn(&mut gpui::Window, &mut gpui::App) + 'static,
+) -> AnyElement {
     let max_h = px(f32::from(viewport.height) * 0.85);
     let max_w = px(f32::from(viewport.width) * 0.9);
     let on_close = std::rc::Rc::new(on_close);
@@ -805,6 +816,9 @@ pub fn lightbox(
                     .on_click(move |_, window, cx| on_close(window, cx))
                     .child(
                         img(preview.image.clone())
+                            .when_some(display_size, |image, size| {
+                                image.w(size.width).h(size.height)
+                            })
                             .object_fit(ObjectFit::Contain)
                             .max_h(max_h)
                             .max_w(max_w)

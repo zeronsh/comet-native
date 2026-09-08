@@ -157,7 +157,12 @@ mod tests {
                         crate::icons::Assets,
                     )))
                     .unwrap();
-                assert_eq!(raster.size(0), prepared_raster.size(0));
+                let size = prepared_raster.size(0);
+                assert!(size.width.0 > 0 && size.height.0 > 0);
+                assert!(size.width.0 <= 4096 && size.height.0 <= 4096);
+                assert!(size.width.0 as usize * size.height.0 as usize <= 1024 * 1024);
+                let ratio = size.width.0 as f32 / size.height.0 as f32;
+                assert!((ratio / (prepared.width / prepared.height) - 1.0).abs() < 0.02);
                 assert_eq!(svg, render(source, &palette).unwrap());
                 if let Ok(dir) = std::env::var("ZERON_MERMAID_ARTIFACTS") {
                     std::fs::create_dir_all(&dir).unwrap();

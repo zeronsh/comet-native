@@ -150,11 +150,80 @@ pub(super) struct MarkdownPreview {
     diagram_style: u32,
     source_visible: HashSet<String>,
     preview_image: Option<crate::attachments::PreviewImage>,
+    zoom_source: Option<super::markdown_media::MediaImage>,
+    zoom_render: Option<super::markdown_media::MediaImage>,
     preview_focus: FocusHandle,
     open_file: Rc<dyn Fn(String, &mut gpui::App)>,
 }
 
 impl MarkdownPreview {
+    fn close_media_preview(&mut self, cx: &mut gpui::App) {
+        if let Some(preview) = self.preview_image.take() {
+            if self
+                .zoom_source
+                .as_ref()
+                .is_some_and(|source| !Arc::ptr_eq(&source.image, &preview.image))
+            {
+                cx.defer(move |cx| gpui::ImageSource::Image(preview.image).evict(None, cx));
+            }
+        }
+        self.zoom_source = None;
+        self.zoom_render = None;
+    }
+
+    fn resize_media(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let viewport = window.viewport_size();
+        let panel_width = self.list.viewport_bounds().size.width;
+        let target = (
+            (f32::from(if panel_width > px(0.0) {
+                panel_width
+            } else {
+                viewport.width
+            }) - 48.0)
+                .clamp(1.0, MAX_PREVIEW_CONTENT_WIDTH),
+            480.0,
+        );
+        let mut retired = Vec::new();
+        for media in self
+            .images
+            .values_mut()
+            .chain(self.diagrams.values_mut())
+            .filter_map(|m| m.as_mut().ok())
+        {
+            let next = media.preview_for_view(target, window.scale_factor());
+            if !Arc::ptr_eq(&media.image, &next.image) {
+                retired.push(std::mem::replace(media, next));
+                self.media_dirty = true;
+            }
+        }
+        release_media(retired, cx);
+        if let (Some(source), Some(preview)) = (&self.zoom_source, &mut self.preview_image) {
+            let used: usize = self
+                .images
+                .values()
+                .chain(self.diagrams.values())
+                .filter_map(|m| m.as_ref().ok())
+                .map(|m| m.bytes)
+                .sum();
+            let next = source.enlarged(
+                (
+                    f32::from(viewport.width) * 0.9,
+                    f32::from(viewport.height) * 0.85,
+                ),
+                window.scale_factor(),
+                MAX_MEDIA_BYTES.saturating_sub(used),
+                self.zoom_render.as_ref(),
+            );
+            // Keep a stable image identity while the viewport is unchanged.
+            if !Arc::ptr_eq(&preview.image, &next.image) {
+                let old = std::mem::replace(&mut preview.image, next.image.clone());
+                if !Arc::ptr_eq(&old, &source.image) {
+                    cx.defer(move |cx| gpui::ImageSource::Image(old).evict(None, cx));
+                }
+            }
+            self.zoom_render = Some(next);
+        }
+    }
     pub(super) fn set_comments(
         &mut self,
         owner: gpui::WeakEntity<super::FilesSurface>,
@@ -237,6 +306,7 @@ impl MarkdownPreview {
         cx: &mut Context<Self>,
     ) -> Self {
         cx.on_release(|view, cx| {
+            view.close_media_preview(cx);
             render::clear_selection_surface(&view.scope);
             let media = view
                 .images
@@ -269,6 +339,8 @@ impl MarkdownPreview {
             diagram_style: 0,
             source_visible: HashSet::new(),
             preview_image: None,
+            zoom_source: None,
+            zoom_render: None,
             preview_focus: cx.focus_handle(),
             media_client: None,
             images: HashMap::new(),
@@ -304,7 +376,7 @@ impl MarkdownPreview {
         self.epoch = self.epoch.wrapping_add(1);
         self.image_task = None;
         self.diagram_task = None;
-        self.preview_image = None;
+        self.close_media_preview(cx);
         self.source_visible.clear();
         let epoch = self.epoch;
         self.loading = self.tree.is_empty();
@@ -498,7 +570,7 @@ impl MarkdownPreview {
         );
         let style = crate::theme::style_generation();
         if self.diagram_style != style {
-            self.preview_image = None;
+            self.close_media_preview(cx);
             release_media(
                 self.diagrams.drain().filter_map(|(_, result)| result.ok()),
                 cx,
@@ -574,7 +646,7 @@ impl MarkdownPreview {
             self.version = None;
             self.image_generation = self.image_generation.wrapping_add(1);
             self.image_task = None;
-            self.preview_image = None;
+            self.close_media_preview(cx);
             release_media(
                 self.images.drain().filter_map(|(_, result)| result.ok()),
                 cx,
@@ -599,7 +671,7 @@ impl MarkdownPreview {
         self.image_task = None;
         self.diagram_task = None;
         self.selection_task = None;
-        self.preview_image = None;
+        self.close_media_preview(cx);
         self.image_snapshot = Rc::default();
         self.diagram_snapshot = Rc::default();
         self.image_allowed = Rc::default();
@@ -651,7 +723,7 @@ impl MarkdownPreview {
         if !affected {
             return;
         }
-        self.preview_image = None;
+        self.close_media_preview(cx);
         release_media(
             removed
                 .into_iter()
@@ -733,6 +805,7 @@ impl MarkdownPreview {
             name: name.into(),
             image: loaded.image.clone(),
         };
+        let source = loaded.clone();
         div()
             .id(id)
             .w_full()
@@ -746,6 +819,8 @@ impl MarkdownPreview {
             .on_click(move |_, window, cx| {
                 cx.stop_propagation();
                 let _ = weak.update(cx, |view, cx| {
+                    view.close_media_preview(cx);
+                    view.zoom_source = Some(source.clone());
                     view.preview_image = Some(preview.clone());
                     window.focus(&view.preview_focus, cx);
                     cx.notify();
@@ -1039,6 +1114,7 @@ impl Render for MarkdownPreview {
             self.needs_focus = false;
             window.focus(&self.focus, cx);
         }
+        self.resize_media(window, cx);
         self.cache
             .borrow_mut()
             .retain_rows(&std::mem::take(&mut self.visible_rows));
@@ -1112,13 +1188,21 @@ impl Render for MarkdownPreview {
             );
         if let Some(preview) = &self.preview_image {
             let weak = cx.weak_entity();
-            root = root.child(crate::attachments::lightbox(
+            let display_size = self.zoom_source.as_ref().map(|source| {
+                let viewport = window.viewport_size();
+                let scale = (f32::from(viewport.width) * 0.9 / source.width)
+                    .min(f32::from(viewport.height) * 0.85 / source.height)
+                    .min(1.0);
+                gpui::size(px(source.width * scale), px(source.height * scale))
+            });
+            root = root.child(crate::attachments::lightbox_with_size(
                 window.viewport_size(),
                 preview,
                 &self.preview_focus,
+                display_size,
                 move |window, cx| {
                     let _ = weak.update(cx, |view, cx| {
-                        view.preview_image = None;
+                        view.close_media_preview(cx);
                         window.focus(&view.focus, cx);
                         cx.notify();
                     });
@@ -1402,6 +1486,8 @@ mod layout_tests {
                 window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: gpui::Keystroke::parse("escape").unwrap(), is_held: false, prefer_character_input: false }), cx);
             }).unwrap();
             assert!(view.read(cx).preview_image.is_none());
+            assert!(view.read(cx).zoom_source.is_none());
+            assert!(view.read(cx).zoom_render.is_none());
             cx.update_window(window.into(), |_, window, cx| { assert!(view.read(cx).focus.is_focused(window)); }).unwrap();
             cx.spawn(async move |cx| { cx.update(|cx| cx.quit()); }).detach();
         });

@@ -28,7 +28,7 @@ Preview parsing is debounced by 120ms and limited to the first 2 MiB of Markdown
 
 Source revisions reject obsolete async results. Image watcher events invalidate both completed and pending loads; changing theme regenerates diagrams. Switching back to Code releases the preview's derived state while preserving the editor and preview scroll position. Closing a preview schedules image asset and atlas eviction. Image/diagram completion remeasures rows with an absolute scroll anchor.
 
-Image reads are limited to 8 MiB, with 384 KiB binary chunks and content-hash validation between chunks. Raster images are decoded with 4096px dimension and 64 MiB allocation limits, then flattened to a static PNG, including the first frame of animations. Workspace SVG previews are limited to 2048px per side; they are parsed and reserialized with embedded/external image resolution disabled. Unsupported SVG content may therefore be omitted.
+Image reads are limited to 8 MiB, with 384 KiB binary chunks and content-hash validation between chunks. Raster images are decoded with 4096px dimension and 64 MiB allocation limits, then flattened to a static PNG, including the first frame of animations. SVG sources are parsed and reserialized with embedded/external image resolution disabled; the prepared vector source is retained (up to 8 MiB) regardless of its natural dimensions. A bounded outer SVG viewport preserves the complete original coordinate system. Preview rasters adapt to the panel and display density (up to 4×), capped at 1,048,576 pixels and 4096 pixels per side. The lightbox uses its own viewport and up to 2,097,152 pixels within the remaining document memory budget, reusing the preview when there is no room for another raster. CPU pixels, GPU textures and retained SVG bytes are budgeted. Enlarged variants are evicted on close, replacement, source changes and preview disposal. Unsupported SVG content may be omitted.
 
 Mermaid source is limited to 16 KiB, 256 lines and 2048 lexical segments; generated SVG is limited to 2 MiB. The native engine has no cooperative cancellation or hard execution deadline. Its CPU work is serialized across previews and runs off the UI thread; obsolete results must be rejected by their owning view. These limits bound admitted work but do not constitute a strict wall-clock guarantee.
 
@@ -40,7 +40,7 @@ The implementation was checked on Linux with the following commands:
 
 | Command | Result |
 | --- | --- |
-| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 759 passed |
+| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 761 passed |
 | `cargo test --release --locked -p zeron-engine --lib` | 161 passed |
 | `cargo test --release --locked -p zeron-proto -p zeron-rpc` | 47 passed, 1 previously ignored |
 | `cargo test --release --locked -p zeron-engine --test workspace_files` | 3 passed |
