@@ -70,17 +70,6 @@ jobs:
         run: cargo check --release --locked -p zeron
       - name: Build native browser fixture
         run: cargo build --release --locked -p zeron-ui --example browser-fixture --features browser-fixture
-      - name: Size the screenshot desktop when a larger mode is available
-        run: |
-          swift - <<'SWIFT'
-          import CoreGraphics
-          let display = CGMainDisplayID()
-          if let modes = CGDisplayCopyAllDisplayModes(display, nil) as? [CGDisplayMode],
-             let mode = modes.filter({ $0.width >= 1440 && $0.height >= 1000 })
-                .sorted(by: { $0.width * $0.height < $1.width * $1.height }).first {
-              print("Screenshot display:", mode.width, mode.height, CGDisplaySetDisplayMode(display, mode, nil))
-          }
-          SWIFT
       - name: Native browser regression and screenshots
         timeout-minutes: 3
         run: |

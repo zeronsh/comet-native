@@ -211,10 +211,16 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(target_os = "macos")]
                 {
                     anyhow::ensure!(first.read_with(cx, |b, _| b.fixture_native_visible()), "page not restored after overlays/takeover");
-                    window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("http://127.0.0.1:1/unavailable", w, cx)))?;
+                    // Use an ordinary closed localhost port. Port 1 is on
+                    // WebKit's restricted-port list and does not exercise a
+                    // failed connection to a development server.
+                    let closed = std::net::TcpListener::bind("127.0.0.1:0")?;
+                    let unavailable = format!("http://{}/unavailable", closed.local_addr()?);
+                    drop(closed);
+                    window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate(&unavailable, w, cx)))?;
                     let deadline = std::time::Instant::now() + Duration::from_secs(15);
                     while !first.read_with(cx, |b, _| b.page.error.is_some()) {
-                        anyhow::ensure!(std::time::Instant::now() < deadline, "load failure was not reported"); pause(cx, 50).await;
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "load failure was not reported: {:?}", first.read_with(cx, |b, _| b.page.clone())); pause(cx, 50).await;
                     }
                     pause(cx, 300).await; capture(&output, "browser-error-light")?;
                 }

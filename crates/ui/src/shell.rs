@@ -9765,6 +9765,12 @@ impl Shell {
         if !self.right_pane_open(cx) {
             self.toggle_right_pane(cx);
         }
+        // Hosted Macs can expose only a 1024px desktop. Use the app's
+        // normal collapsed-sidebar layout to keep both conversation and
+        // preview readable in that real window.
+        if f32::from(window.viewport_size().width) < 1200.0 {
+            self.settings.sidebar_collapsed = true;
+        }
         self.add_browser_surface(url, window, cx);
         (self.browser_seq, self.browsers[&self.browser_seq].clone())
     }
