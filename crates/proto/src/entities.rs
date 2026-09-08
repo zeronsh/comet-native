@@ -449,6 +449,33 @@ pub struct ReadWorkspaceFileRequest {
     pub path: String,
 }
 
+/// Workspace images travel in bounded relay frames, independently of text reads.
+pub const MAX_WORKSPACE_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+pub const WORKSPACE_IMAGE_CHUNK_BYTES: usize = 384 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadWorkspaceImageRequest {
+    #[serde(flatten)]
+    pub target: WorkspaceTarget,
+    pub path: String,
+    pub expected_checkout_id: String,
+    pub offset: usize,
+    pub expected_content_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceImageChunk {
+    pub checkout_id: String,
+    pub content_hash: String,
+    pub mime_type: String,
+    pub data: String,
+    pub next_offset: usize,
+    pub size: usize,
+    pub done: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileText {
