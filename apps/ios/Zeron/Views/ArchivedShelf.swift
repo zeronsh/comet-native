@@ -90,17 +90,17 @@ struct ArchivedSection: View {
                     HarnessBadge(harness: harness, size: 14, dimmed: true)
                 }
                 Text(chat.displayTitle)
-                    .font(Theme.sans(13))
+                    .font(Theme.sans(15))
                     .foregroundStyle(Theme.text.opacity(0.55))
                     .lineLimit(1)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Text(relativeTime(chat.lastMessageAt ?? chat.createdAt))
-                    .font(Theme.sans(11))
+                    .font(Theme.sans(13))
                     .foregroundStyle(Theme.textMuted.opacity(0.55))
                     .fixedSize()
             }
             .padding(.horizontal, 10)
-            .frame(height: 36)
+            .frame(minHeight: 44)
             .contentShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(PressWashButtonStyle())
@@ -128,12 +128,12 @@ struct ArchivedSection: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(Theme.textMuted.opacity(0.55))
                 Text("Show \(min(remaining, Self.pageSize)) more")
-                    .font(Theme.sans(13))
+                    .font(Theme.sans(15))
                     .foregroundStyle(Theme.textMuted.opacity(0.55))
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, 10)
-            .frame(height: 36)
+            .frame(minHeight: 44)
             .contentShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(PressWashButtonStyle())

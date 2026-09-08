@@ -59,6 +59,8 @@ icon_assets![
     (LIST, "list"),
     (FOLDER_WITH_FILES, "folder-with-files"),
     (FOLDER, "folder"),
+    // Hand-drawn floppy disk in the Solar Linear style. Workspace editor save.
+    (FLOPPY_DISK, "floppy-disk"),
     // Hand-drawn git-branch glyph in the Solar Linear style (like the
     // terminal/plus/return ports) — the set has no branch icon.
     (GIT_BRANCH, "git-branch"),
@@ -87,6 +89,10 @@ icon_assets![
     // terminal/plus/close ports) — the set has no return glyph.
     (RETURN, "return"),
     (ALT_ARROW_DOWN, "alt-arrow-down"),
+    // alt-arrow-down mirrored (drawn as its twin: same stroke, caps, joints) —
+    // the embedded Solar Linear set ships no up chevron. The collapse half of
+    // the long-user-message expander.
+    (ALT_ARROW_UP, "alt-arrow-up"),
     // Hand-drawn expand/maximize arrows in the Solar Linear style (like the
     // terminal/plus/return ports) — the set has no expand glyph.
     (EXPAND_ARROWS, "expand-arrows"),
@@ -98,6 +104,8 @@ icon_assets![
     // The changes pane's unified/split toggle: a rounded frame halved by a
     // centre rule (Solar Linear weight).
     (SPLIT_COLUMNS, "split-columns"),
+    // Long-line wrapping toggle shared by changes and agent Markdown fences.
+    (WRAP_TEXT, "wrap-text"),
     (ALT_ARROW_LEFT, "alt-arrow-left"),
     (ALT_ARROW_RIGHT, "alt-arrow-right"),
     (SMARTPHONE, "smartphone"),
@@ -106,6 +114,8 @@ icon_assets![
     (RESTART, "restart"),
     (ADD_CIRCLE, "add-circle"),
     (TUNING, "tuning"),
+    (EYE, "eye"),
+    (EYE_CLOSED, "eye-closed"),
     (PAPERCLIP, "paperclip"),
     (PEN, "pen"),
     (ARCHIVE_MINIMALISTIC, "archive-minimalistic"),
@@ -116,6 +126,12 @@ icon_assets![
     (COMMAND, "command"),
     (DOCUMENT, "document"),
     (DOCUMENT_ADD, "document-add"),
+    // File-kind glyphs, drawn in the same linear family for transcript badges.
+    (FILE_CODE, "file-code"),
+    (FILE_STYLE, "file-style"),
+    (FILE_DATA, "file-data"),
+    (FILE_MARKDOWN, "file-markdown"),
+    (FILE_IMAGE, "file-image"),
     (GLOBAL, "global"),
     (CHECKLIST, "checklist"),
     (WIDGET, "widget"),
@@ -170,6 +186,7 @@ icon_assets![
     (CLAUDE_MARK, "claude-mark"),
     (OPENAI_MARK, "openai-mark"),
     (CURSOR_MARK, "cursor-mark"),
+    (DEVIN_MARK, "devin-mark"),
     (GROK_MARK, "grok-mark"),
     (HERMES_MARK, "hermes-mark"),
     (PI_MARK, "pi-mark"),
@@ -189,9 +206,64 @@ pub fn icon(path: &'static str) -> Svg {
     svg().path(path).flex_none()
 }
 
+/// File badges use the basename so dotted directories cannot affect the icon.
+/// Accept either path separator: transcripts can come from a different OS.
+pub fn for_file(path: &str) -> &'static str {
+    let name = path
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(path)
+        .to_ascii_lowercase();
+    match name.as_str() {
+        "dockerfile" | "makefile" | "justfile" | ".bashrc" | ".zshrc" => return TERMINAL,
+        ".gitignore" | ".gitattributes" | ".editorconfig" | ".env" => return SETTINGS_MINIMALISTIC,
+        "readme" | "license" | "changelog" => return FILE_MARKDOWN,
+        _ if name.starts_with(".env.") => return SETTINGS_MINIMALISTIC,
+        _ => {}
+    }
+    match name.rsplit_once('.').map(|(_, extension)| extension) {
+        Some("css" | "scss" | "sass" | "less") => FILE_STYLE,
+        Some("json" | "jsonc" | "jsonl" | "csv" | "tsv" | "sql") => FILE_DATA,
+        Some("toml" | "yaml" | "yml" | "ini" | "conf" | "config" | "properties") => {
+            SETTINGS_MINIMALISTIC
+        }
+        Some("md" | "mdx" | "markdown" | "rst") => FILE_MARKDOWN,
+        Some("svg" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "ico" | "avif" | "bmp" | "tiff") => {
+            FILE_IMAGE
+        }
+        Some("sh" | "bash" | "zsh" | "fish" | "ps1" | "bat" | "cmd") => TERMINAL,
+        Some("zip" | "gz" | "tar" | "tgz" | "7z" | "rar" | "bz2" | "xz") => ARCHIVE_MINIMALISTIC,
+        Some(
+            "rs" | "js" | "jsx" | "mjs" | "cjs" | "ts" | "tsx" | "mts" | "cts" | "py" | "pyi"
+            | "go" | "rb" | "java" | "kt" | "kts" | "swift" | "c" | "h" | "cc" | "cpp" | "hpp"
+            | "cs" | "fs" | "php" | "lua" | "ex" | "exs" | "erl" | "hs" | "scala" | "dart" | "vue"
+            | "svelte" | "html" | "htm" | "xml" | "graphql" | "gql" | "proto" | "zig",
+        ) => FILE_CODE,
+        _ => DOCUMENT,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_icons_handle_paths_case_and_special_names() {
+        for (path, expected) in [
+            ("src/styles/globals.css", FILE_STYLE),
+            ("C:\\project\\README.MD", FILE_MARKDOWN),
+            ("src/component.test.tsx", FILE_CODE),
+            ("config/.env.local", SETTINGS_MINIMALISTIC),
+            ("Dockerfile", TERMINAL),
+            ("assets/LOGO.SVG", FILE_IMAGE),
+            ("package.json", FILE_DATA),
+            ("folder.css/unknown", DOCUMENT),
+            ("file.unrecognized", DOCUMENT),
+            ("", DOCUMENT),
+        ] {
+            assert_eq!(for_file(path), expected, "{path}");
+        }
+    }
 
     #[test]
     fn every_registered_icon_loads_and_parses() {

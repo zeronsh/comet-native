@@ -106,12 +106,21 @@ pub enum ChatEvent {
 
 // ── engine-facing traits ────────────────────────────────────────────────────
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RowImportOutcome {
+    Applied,
+    /// The update is buffered in memory until missing causal history arrives.
+    /// It is not represented in an exported snapshot yet.
+    PendingDependencies,
+}
+
 /// Where remote bytes land. The engine implements this over its doc handle;
 /// every method persists doc content AND the room cursor in one transaction
 /// (`DocsStore::save_snapshot_with_cursor`) so they can never diverge.
 pub trait ChatDocSink: Send + Sync + 'static {
-    /// Import one remote update row; `cursor` is the row's seq.
-    fn apply_row(&self, bytes: &[u8], cursor: u64);
+    /// Import one remote update row with a proposed contiguous cursor. A
+    /// pending import must not persist that cursor; the client repairs it.
+    fn apply_row(&self, bytes: &[u8], cursor: u64) -> RowImportOutcome;
     /// Replace/merge from a checkpoint blob; `cursor` is its checkpointSeq.
     fn apply_checkpoint(&self, bytes: &[u8], cursor: u64) -> Result<(), String>;
     /// Client-side precision (replaces the server VV diff): is the server
@@ -299,6 +308,39 @@ struct Shared {
     /// wedge); instead this flag asks the session loop for a rowsReq
     /// backfill from the honest cursor.
     gap_repair: bool,
+    /// Contiguous room rows can still lack CRDT dependencies. Re-fetch the
+    /// checkpoint even if its advertised frontier appears locally contained.
+    needs_checkpoint: bool,
+    /// Prevent an overlapping HTTP/socket catch-up from clearing a newer gap.
+    causal_gap_generation: u64,
+}
+
+fn apply_remote_row(shared: &Mutex<Shared>, sink: &dyn ChatDocSink, bytes: &[u8], seq: u64) {
+    let cursor = {
+        let mut shared = lock(shared);
+        if seq > shared.cursor.saturating_add(1) {
+            shared.gap_repair = true;
+            shared.cursor
+        } else {
+            shared.cursor.max(seq)
+        }
+    };
+    // Import may fire document subscriptions, so never hold the client lock
+    // across the sink call.
+    let outcome = sink.apply_row(bytes, cursor);
+    let mut shared = lock(shared);
+    match outcome {
+        RowImportOutcome::Applied => shared.cursor = shared.cursor.max(cursor),
+        RowImportOutcome::PendingDependencies => {
+            shared.needs_checkpoint = true;
+            shared.causal_gap_generation = shared.causal_gap_generation.wrapping_add(1);
+            tracing::warn!(
+                seq,
+                cursor = shared.cursor,
+                "chat2: missing causal history; holding cursor and refreshing checkpoint"
+            );
+        }
+    }
 }
 
 /// `zeron sync` surface (plan: cursor / headSeq / floorLag / pendingPushes).
@@ -904,8 +946,12 @@ impl Actor {
         // ── catch-up: checkpoint precision + row backfill ───────────────────
         // Same presence rule as `plan_catch_up`: SIZE, not seq — a seeded
         // room's checkpoint covers seq 0 (see the decision-table test).
-        let contained =
-            state.checkpoint_size == 0 || self.sink.contains_frontier(&state_frame.payload);
+        let (repair_causal_history, repair_generation) = {
+            let shared = lock(&self.shared);
+            (shared.needs_checkpoint, shared.causal_gap_generation)
+        };
+        let contained = state.checkpoint_size == 0
+            || (!repair_causal_history && self.sink.contains_frontier(&state_frame.payload));
         let plan = plan_catch_up(cursor, &state, contained);
         let after = match plan {
             CatchUpPlan::RowsOnly { after } => after,
@@ -931,7 +977,7 @@ impl Actor {
                 after,
                 // First backfill of this process redownloads own rows (see
                 // `Actor::resumed`); reconnects skip them.
-                exclude_own: self.resumed,
+                exclude_own: self.resumed && !repair_causal_history,
             },
             &[],
         );
@@ -998,6 +1044,14 @@ impl Actor {
             drop(shared);
             let _ = self.events.send(ChatEvent::Applied);
         }
+        // A new full catch-up may resolve a prior causal gap. Imports below
+        // re-arm repair if any history is still missing.
+        {
+            let mut shared = lock(&self.shared);
+            if shared.causal_gap_generation == repair_generation {
+                shared.needs_checkpoint = false;
+            }
+        }
         // Frames buffered during the fetch replay first, then the live socket
         // finishes the backfill — one pass, same ROWS_DONE terminator either
         // way.
@@ -1049,7 +1103,9 @@ impl Actor {
         if let Some(ready) = ready.take() {
             let _ = ready.send(Ok(()));
         }
-        let _ = self.events.send(ChatEvent::CaughtUp { head_seq });
+        if !lock(&self.shared).needs_checkpoint {
+            let _ = self.events.send(ChatEvent::CaughtUp { head_seq });
+        }
 
         // ── steady state ────────────────────────────────────────────────────
         let mut last_frame = tokio::time::Instant::now();
@@ -1262,11 +1318,14 @@ impl Actor {
                     serde_json::from_value::<wire::StateHeader>(state_frame.header.clone())
                 {
                     lock(&shared).server = Some(state);
-                    let contained =
-                        state.checkpoint_size == 0 || sink.contains_frontier(&state_frame.payload);
-                    if let CatchUpPlan::CheckpointThenRows { after } =
-                        plan_catch_up(cursor, &state, contained)
-                    {
+                    let (repair_causal_history, repair_generation) = {
+                        let shared = lock(&shared);
+                        (shared.needs_checkpoint, shared.causal_gap_generation)
+                    };
+                    let contained = state.checkpoint_size == 0
+                        || (!repair_causal_history && sink.contains_frontier(&state_frame.payload));
+                    let plan = plan_catch_up(cursor, &state, contained);
+                    if let CatchUpPlan::CheckpointThenRows { .. } = plan {
                         let fetched =
                             tokio::time::timeout(CHECKPOINT_FETCH_DEADLINE, fetcher.fetch()).await;
                         match fetched {
@@ -1275,9 +1334,6 @@ impl Actor {
                                     busy.store(false, Relaxed);
                                     return;
                                 }
-                                let mut sh = lock(&shared);
-                                sh.cursor = sh.cursor.max(after);
-                                drop(sh);
                                 let _ = events.send(ChatEvent::Applied);
                             }
                             _ => {
@@ -1285,6 +1341,22 @@ impl Actor {
                                 return;
                             }
                         }
+                    }
+                    let after = match plan {
+                        CatchUpPlan::RowsOnly { after }
+                        | CatchUpPlan::CheckpointThenRows { after } => after,
+                    };
+                    // A contained checkpoint covers the trimmed rows too;
+                    // otherwise the first post-checkpoint row looks like a
+                    // permanent sequence gap in the HTTPS fallback.
+                    let mut sh = lock(&shared);
+                    sh.cursor = if sh.cursor > state.head_seq {
+                        after
+                    } else {
+                        sh.cursor.max(after)
+                    };
+                    if sh.causal_gap_generation == repair_generation {
+                        sh.needs_checkpoint = false;
                     }
                 }
             }
@@ -1300,17 +1372,7 @@ impl Actor {
                         // contiguous — but hold the rule anyway: a jump
                         // (trimmed log, server surprise) must not stamp the
                         // cursor over rows the doc never saw.
-                        let effective = {
-                            let mut sh = lock(&shared);
-                            if row.seq <= sh.cursor + 1 {
-                                sh.cursor = sh.cursor.max(row.seq);
-                            } else {
-                                tracing::warn!(seq = row.seq, cursor = sh.cursor,
-                                    "chat2: pull row gap; holding cursor");
-                            }
-                            sh.cursor
-                        };
-                        sink.apply_row(&frame.payload, effective);
+                        apply_remote_row(&shared, sink.as_ref(), &frame.payload, row.seq);
                         applied = true;
                     }
                     frame_type::ROWS_DONE => {}
@@ -1332,6 +1394,12 @@ impl Actor {
         const MAX_GAP_REPAIRS_PER_SESSION: u32 = 3;
         let (repair, after) = {
             let mut shared = lock(&self.shared);
+            if shared.needs_checkpoint {
+                // A row backfill cannot restore dependencies already trimmed
+                // into the checkpoint. Redial through the bounded backoff and
+                // bypass frontier precision on the next catch-up.
+                return false;
+            }
             (std::mem::take(&mut shared.gap_repair), shared.cursor)
         };
         if !repair {
@@ -1342,7 +1410,11 @@ impl Actor {
             tracing::warn!("chat2: gap repairs exhausted; redialing for a full catch-up");
             return false;
         }
-        tracing::info!(after, attempt = *repairs, "chat2: backfilling over a row gap");
+        tracing::info!(
+            after,
+            attempt = *repairs,
+            "chat2: backfilling over a row gap"
+        );
         let req = wire::encode(
             frame_type::ROWS_REQ,
             &wire::RowsReqHeader {
@@ -1393,21 +1465,7 @@ impl Actor {
                 // gap means rows we never received (live broadcast mid-join)
                 // — apply the bytes (loro parks dependents harmlessly), keep
                 // the honest cursor, and ask for a backfill repair.
-                let effective = {
-                    let mut shared = lock(&self.shared);
-                    if row.seq > shared.cursor + 1 {
-                        shared.gap_repair = true;
-                        tracing::warn!(
-                            seq = row.seq,
-                            cursor = shared.cursor,
-                            "chat2: row gap detected; holding cursor and requesting backfill"
-                        );
-                    } else {
-                        shared.cursor = shared.cursor.max(row.seq);
-                    }
-                    shared.cursor
-                };
-                self.sink.apply_row(&frame.payload, effective);
+                apply_remote_row(&self.shared, self.sink.as_ref(), &frame.payload, row.seq);
                 let _ = self.events.send(ChatEvent::Applied);
             }
             frame_type::ACK => {

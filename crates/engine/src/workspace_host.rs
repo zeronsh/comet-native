@@ -1103,16 +1103,25 @@ impl WorkspaceHostInner {
     }
 
     fn publish(&self) {
+        self.publish_lists(false);
+    }
+
+    fn publish_lists(&self, clock_tick: bool) {
         match lock(&self.reg).read_all() {
             Ok(mut state) => {
                 self.overlay_presence(&mut state.devices);
-                // send_replace, NOT send: `watch::Sender::send` drops the value when
-                // no receiver exists yet, so a stream subscribed later would start
-                // from a stale snapshot (found the hard way by the e2e smoke).
-                self.chats_tx.send_replace(state.chats);
-                self.devices_tx.send_replace(state.devices);
-                self.sessions_tx.send_replace(state.sessions);
-                self.spaces_tx.send_replace(state.spaces);
+                // Retain the latest value even with no subscribers, but don't
+                // wake every list for unrelated registry/presence changes.
+                publish_if_changed(&self.chats_tx, state.chats);
+                // The periodic presence tick also drives time-based expiry.
+                // Unrelated registry writes need no synthetic device event.
+                if clock_tick {
+                    self.devices_tx.send_replace(state.devices);
+                } else {
+                    publish_if_changed(&self.devices_tx, state.devices);
+                }
+                publish_if_changed(&self.sessions_tx, state.sessions);
+                publish_if_changed(&self.spaces_tx, state.spaces);
             }
             Err(err) => {
                 tracing::warn!(error = %err, "registry read failed");
@@ -1407,10 +1416,21 @@ async fn workspace_task(weak: Weak<WorkspaceHostInner>, mut changed_rx: watch::R
                 // Re-publish on the same cadence: remote heartbeats decay when a
                 // device goes silent, and watchers (the UI online dot, "host
                 // offline" hints) need a tick to observe that staleness.
-                inner.publish();
+                inner.publish_lists(true);
             }
         }
     }
+}
+
+fn publish_if_changed<T: PartialEq>(sender: &watch::Sender<T>, value: T) {
+    sender.send_if_modified(|current| {
+        if *current == value {
+            false
+        } else {
+            *current = value;
+            true
+        }
+    });
 }
 
 fn device_name_on_boot(existing_name: Option<&str>, detected_name: &str) -> String {
@@ -1546,6 +1566,62 @@ impl zeron_sync::RegistryTransport for WsDerivedRegistryTransport {
 #[cfg(test)]
 mod tests {
     use super::{device_name_on_boot, linked_worktree_root};
+
+    #[tokio::test]
+    async fn presence_publish_keeps_unchanged_lists_quiet_and_late_subscribers_current() {
+        use super::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(DocsStore::open(dir.path()).unwrap()),
+            WorkspaceHostConfig {
+                device_id: "test-device".into(),
+                device_name: "Test device".into(),
+                platform: "macos".into(),
+                org_id: "test-org".into(),
+                user_id: "test-user".into(),
+                edge: None,
+            },
+        )
+        .unwrap();
+        let chats = host.watch_chats();
+        let sessions = host.watch_session_rows();
+        let mut spaces = host.watch_spaces();
+        let devices = host.watch_devices();
+
+        host.inner.publish();
+        assert!(!chats.has_changed().unwrap());
+        assert!(!sessions.has_changed().unwrap());
+        assert!(!spaces.has_changed().unwrap());
+        assert!(!devices.has_changed().unwrap());
+        host.inner.publish_lists(true);
+        assert!(
+            devices.has_changed().unwrap(),
+            "presence expiry still ticks"
+        );
+        assert!(!chats.has_changed().unwrap());
+        assert!(!sessions.has_changed().unwrap());
+        assert!(!spaces.has_changed().unwrap());
+
+        host.create_space("space", "test-device", "/project", None, false)
+            .unwrap();
+        host.inner.publish();
+        assert!(
+            spaces.has_changed().unwrap(),
+            "real changes must wake readers"
+        );
+        assert_eq!(spaces.borrow_and_update()[0].id, "space");
+        assert!(!chats.has_changed().unwrap());
+        assert!(!sessions.has_changed().unwrap());
+        drop(spaces);
+
+        host.rename_space("space", Some("Renamed")).unwrap();
+        host.inner.publish();
+        assert_eq!(
+            host.watch_spaces().borrow()[0].name.as_deref(),
+            Some("Renamed")
+        );
+    }
 
     #[test]
     fn boot_repairs_the_legacy_unknown_device_sentinel() {

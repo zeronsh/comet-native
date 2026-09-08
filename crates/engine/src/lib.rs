@@ -35,6 +35,7 @@ pub mod spaces;
 pub mod terminals;
 pub mod titles;
 pub mod uploads;
+pub mod workspace_files;
 pub mod workspace_host;
 
 pub use agent_accounts::{AgentAccounts, AgentAccountsConfig};
@@ -63,6 +64,7 @@ pub use spaces::SpacesSync;
 pub use terminals::Terminals;
 pub use titles::TitleGenerator;
 pub use uploads::{AttachmentChunk, Uploads};
+pub use workspace_files::WorkspaceFiles;
 pub use workspace_host::{
     DEFAULT_ORG_ID, DEFAULT_USER_ID, WORKSPACE_DOC_ID, WorkspaceHost, WorkspaceHostConfig,
 };
@@ -122,6 +124,7 @@ pub struct EngineCore {
     pub workspace: WorkspaceHost,
     pub registry: Arc<HarnessRegistry>,
     pub repos: Repos,
+    pub workspace_files: WorkspaceFiles,
     pub terminals: Terminals,
     pub project_actions: ProjectActionsStore,
     pub change_requests: CheckoutChangeRequests,
@@ -243,6 +246,8 @@ impl EngineCore {
         let repos = Repos::new(data_dir, &device_id);
         doc_host.set_repos(repos.clone());
         let change_requests = CheckoutChangeRequests::start(repos.clone(), &device_id);
+        let workspace_files =
+            WorkspaceFiles::new(repos.clone(), workspace.clone(), device_id.clone());
         let terminals = Terminals::new();
         let project_actions = ProjectActionsStore::open(profile.store_root())?;
         doc_host.set_project_action_runtime(project_actions.clone(), terminals.clone());
@@ -293,6 +298,7 @@ impl EngineCore {
             workspace,
             registry,
             repos,
+            workspace_files,
             terminals,
             project_actions,
             change_requests,
@@ -424,6 +430,7 @@ impl EngineCore {
             self.workspace.clone(),
             self.registry.clone(),
             self.repos.clone(),
+            self.workspace_files.clone(),
             self.terminals.clone(),
             self.project_actions.clone(),
             self.change_requests.clone(),
@@ -485,6 +492,7 @@ impl EngineCore {
             updater.shutdown().await;
         }
         self.diff_sync.shutdown().await;
+        self.workspace_files.shutdown().await;
         self.spaces_sync.shutdown().await;
         self.doc_host.shutdown_workers().await;
         self.doc_host.flush_all();

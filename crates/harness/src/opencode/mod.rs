@@ -273,7 +273,7 @@ impl OpencodeHarness {
         }
         let mut server = self.server(None).await?;
         let result = async {
-            let providers = server.get_json("/provider", None).await?;
+            let providers: ProviderCatalog = server.get("/provider", None).await?;
             let models = models_from_providers(&providers);
             if models.is_empty() {
                 return Err(HarnessError::Protocol(
@@ -517,6 +517,29 @@ impl Server {
     /// GET with the session's directory scope (the server's per-request
     /// instance selector; both carriers set, matching the official SDK).
     async fn get_json(&self, path: &str, directory: Option<&str>) -> Result<Value, HarnessError> {
+        self.get_response(path, directory)
+            .await?
+            .json()
+            .await
+            .map_err(|e| HarnessError::Protocol(format!("opencode GET {path}: {e}")))
+    }
+
+    async fn get<T: serde::de::DeserializeOwned + Send + 'static>(
+        &self,
+        path: &str,
+        directory: Option<&str>,
+    ) -> Result<T, HarnessError> {
+        let response = self.get_response(path, directory).await?;
+        decode_json_response(response)
+            .await
+            .map_err(|e| HarnessError::Protocol(format!("opencode GET {path}: {e}")))
+    }
+
+    async fn get_response(
+        &self,
+        path: &str,
+        directory: Option<&str>,
+    ) -> Result<reqwest::Response, HarnessError> {
         let mut req = self
             .request(reqwest::Method::GET, path)
             .timeout(CALL_TIMEOUT);
@@ -537,9 +560,7 @@ impl Server {
                 truncate_body(&body)
             )));
         }
-        resp.json::<Value>()
-            .await
-            .map_err(|e| HarnessError::Protocol(format!("opencode GET {path}: {e}")))
+        Ok(resp)
     }
 
     async fn post_json(
@@ -622,6 +643,58 @@ fn truncate_body(body: &str) -> String {
 /// `GET /provider` → picker models: `{providerID}/{modelID}` ids, effort
 /// ladder from the model's reasoning variants.
 ///
+/// Only retain what the picker and run setup consume. `/provider` includes
+/// the entire models.dev catalog, with large nested capabilities/config maps.
+/// Building and cloning a Value for it measured a 112 MB engine heap peak.
+/// Serde skips unknown fields and variant bodies without allocating trees.
+#[derive(Debug, Default, serde::Deserialize)]
+struct ProviderCatalog {
+    all: Option<Vec<Provider>>,
+    connected: Option<Vec<String>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct Provider {
+    id: Option<String>,
+    name: Option<String>,
+    models: Option<std::collections::BTreeMap<String, ProviderModel>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ProviderModel {
+    #[serde(default)]
+    limit: ProviderLimit,
+    name: Option<String>,
+    variants: Option<std::collections::BTreeMap<String, serde::de::IgnoredAny>>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+struct ProviderLimit {
+    context: Option<u64>,
+}
+
+/// Decode large catalogs without collecting a second, full HTTP body first.
+/// The blocking parser reads through a 64KiB buffer; network reads stay on
+/// Tokio. Dropping the caller also interrupts an outstanding body read.
+async fn decode_json_response<T: serde::de::DeserializeOwned + Send + 'static>(
+    response: reqwest::Response,
+) -> Result<T, String> {
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let _cancel_on_drop = cancel.clone().drop_guard();
+    let stream = response
+        .bytes_stream()
+        .map(|chunk| chunk.map_err(std::io::Error::other))
+        .take_until(cancel.cancelled_owned());
+    let reader = tokio_util::io::StreamReader::new(Box::pin(stream));
+    let reader = tokio_util::io::SyncIoBridge::new(reader);
+    tokio::task::spawn_blocking(move || {
+        serde_json::from_reader(std::io::BufReader::with_capacity(64 * 1024, reader))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Filtered to CONNECTED providers: `all` is the entire models.dev catalog
 /// (measured live: 194 providers / 7,203 models, nearly all needing an API
 /// key the user hasn't set) — offering it verbatim made the picker slow to
@@ -629,43 +702,32 @@ fn truncate_body(body: &str) -> String {
 /// "Model not found" (field report, v0.2.21). `connected` names exactly
 /// the usable set (credentialed + config-declared + the anonymous Zen
 /// tier). An absent/empty `connected` (older server) falls back to `all`.
-fn models_from_providers(providers: &Value) -> Vec<Model> {
+fn models_from_providers(providers: &ProviderCatalog) -> Vec<Model> {
     let connected: std::collections::HashSet<&str> = providers
-        .get("connected")
-        .and_then(Value::as_array)
-        .map(|list| list.iter().filter_map(Value::as_str).collect())
-        .unwrap_or_default();
-    let list = providers
-        .get("all")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
+        .connected
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .collect();
     let mut out = Vec::new();
-    for provider in &list {
-        let Some(provider_id) = provider.get("id").and_then(Value::as_str) else {
+    for provider in providers.all.iter().flatten() {
+        let Some(provider_id) = provider.id.as_deref() else {
             continue;
         };
         if !connected.is_empty() && !connected.contains(provider_id) {
             continue;
         }
-        let provider_name = provider
-            .get("name")
-            .and_then(Value::as_str)
-            .unwrap_or(provider_id);
-        let Some(models) = provider.get("models").and_then(Value::as_object) else {
+        let provider_name = provider.name.as_deref().unwrap_or(provider_id);
+        let Some(models) = &provider.models else {
             continue;
         };
         let mut provider_models: Vec<Model> = models
             .iter()
             .map(|(model_id, model)| {
-                let label = model
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or(model_id)
-                    .to_owned();
+                let label = model.name.as_deref().unwrap_or(model_id).to_owned();
                 let mut levels: Vec<ReasoningLevel> = model
-                    .get("variants")
-                    .and_then(Value::as_object)
+                    .variants
+                    .as_ref()
                     .map(|variants| {
                         variants
                             .keys()
@@ -873,10 +935,10 @@ async fn run_session(session: Session) {
         // Provider catalog: resolves the model's advertised reasoning
         // variants so the requested effort only rides models that have it.
         let providers = server
-            .get_json("/provider", dir)
+            .get::<ProviderCatalog>("/provider", dir)
             .await
-            .unwrap_or(Value::Null);
-        Ok::<(String, Value), HarnessError>((session_id, providers))
+            .unwrap_or_default();
+        Ok::<(String, ProviderCatalog), HarnessError>((session_id, providers))
     };
     let (session_id, providers) = tokio::select! {
         res = setup => match res {
@@ -912,6 +974,24 @@ async fn run_session(session: Session) {
     let variant = model.as_ref().and_then(|(provider, model_id)| {
         pick_variant(&providers, provider, model_id, request.reasoning)
     });
+    let context_windows: HashMap<String, u64> = providers
+        .all
+        .iter()
+        .flatten()
+        .flat_map(|provider| {
+            provider
+                .models
+                .iter()
+                .flat_map(|models| models.iter())
+                .filter_map(|(id, model)| {
+                    Some((
+                        format!("{}/{}", provider.id.as_deref()?, id),
+                        model.limit.context.filter(|n| *n > 0)?,
+                    ))
+                })
+        })
+        .collect();
+    drop(providers);
 
     let mut assistant_message_id = new_message_id();
     if !send(
@@ -1279,6 +1359,7 @@ async fn run_session(session: Session) {
                             unbound_children: &mut unbound_children,
                             turn: &mut turn,
                             pending_usage: &mut pending_usage,
+                            context_windows: &context_windows,
                         }).await;
                         match outcome {
                             BusOutcome::Continue => {}
@@ -1308,9 +1389,40 @@ async fn create_session(server: &Server, dir: Option<&str>) -> Result<String, Ha
         .ok_or_else(|| HarnessError::Protocol("opencode session create returned no id".into()))
 }
 
+fn context_usage_event(info: &Value, context_windows: &HashMap<String, u64>) -> Option<AgentEvent> {
+    let tokens = info.get("tokens")?;
+    let counts: Vec<u64> = [
+        tokens.get("input"),
+        tokens.get("output"),
+        tokens.pointer("/cache/read"),
+        tokens.pointer("/cache/write"),
+    ]
+    .into_iter()
+    .flatten()
+    .filter_map(Value::as_u64)
+    .collect();
+    let tokens = tokens
+        .get("total")
+        .and_then(Value::as_u64)
+        .filter(|n| *n > 0)
+        .or_else(|| {
+            (!counts.is_empty()).then(|| counts.into_iter().fold(0u64, u64::saturating_add))
+        });
+    // New assistant placeholders carry zero counters before the request runs.
+    if tokens == Some(0) && info.pointer("/time/completed").is_none() {
+        return None;
+    }
+    let window = info
+        .get("providerID")
+        .and_then(Value::as_str)
+        .zip(info.get("modelID").and_then(Value::as_str))
+        .and_then(|(provider, model)| context_windows.get(&format!("{provider}/{model}")).copied());
+    (tokens.is_some() || window.is_some()).then_some(AgentEvent::ContextUsage { tokens, window })
+}
+
 /// The requested effort as a variant id the model actually advertises.
 fn pick_variant(
-    providers: &Value,
+    providers: &ProviderCatalog,
     provider_id: &str,
     model_id: &str,
     reasoning: Option<ReasoningLevel>,
@@ -1320,14 +1432,15 @@ fn pick_variant(
         return None;
     }
     let variants = providers
-        .get("all")?
-        .as_array()?
+        .all
+        .as_ref()?
         .iter()
-        .find(|p| p.get("id").and_then(Value::as_str) == Some(provider_id))?
-        .get("models")?
+        .find(|p| p.id.as_deref() == Some(provider_id))?
+        .models
+        .as_ref()?
         .get(model_id)?
-        .get("variants")?
-        .as_object()?;
+        .variants
+        .as_ref()?;
     candidates
         .into_iter()
         .find(|c| variants.contains_key(*c))
@@ -1471,6 +1584,7 @@ struct BusCtx<'a> {
     unbound_children: &'a mut HashMap<String, String>,
     turn: &'a mut TurnState,
     pending_usage: &'a mut Option<AgentEvent>,
+    context_windows: &'a HashMap<String, u64>,
 }
 
 /// Wrap an event as subagent-attributed traffic.
@@ -1521,6 +1635,7 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         unbound_children,
         turn,
         pending_usage,
+        context_windows,
     } = ctx;
     // Envelope styles: /global/event wraps ({payload: {...}}); a bare
     // /event feed (tests) delivers the payload directly.
@@ -1671,6 +1786,11 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
                 if role == "assistant"
                     && let Some(tokens) = info.get("tokens")
                 {
+                    if let Some(usage) = context_usage_event(info, context_windows)
+                        && !send(event_tx, usage).await
+                    {
+                        return BusOutcome::ConsumerGone;
+                    }
                     let input = tokens.get("input").and_then(Value::as_u64).unwrap_or(0);
                     let output = tokens.get("output").and_then(Value::as_u64).unwrap_or(0);
                     if input > 0 || output > 0 {
@@ -2501,3 +2621,36 @@ async fn stream_bus(tx: &mpsc::Sender<BusMsg>, resp: reqwest::Response) {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+    #[test]
+    fn context_includes_cache_and_uses_reported_model_limit() {
+        let windows = HashMap::from([("provider/model".into(), 200000)]);
+        let info = json!({"providerID":"provider","modelID":"model", "tokens": {
+            "input": 200, "output": 100, "reasoning": 50, "cache": {"read":40000,"write":1800}
+        }});
+        assert_eq!(
+            context_usage_event(&info, &windows),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(42100),
+                window: Some(200000)
+            })
+        );
+        assert_eq!(
+            context_usage_event(&json!({"tokens":{"input":0,"output":0}}), &windows),
+            None
+        );
+        assert_eq!(
+            context_usage_event(
+                &json!({"time":{"completed":1},"tokens":{"input":0,"output":0}}),
+                &windows
+            ),
+            Some(AgentEvent::ContextUsage {
+                tokens: Some(0),
+                window: None
+            })
+        );
+    }
+}

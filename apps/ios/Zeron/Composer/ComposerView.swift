@@ -39,7 +39,10 @@ struct ComposerShell<Chips: View>: View {
     var autoFocus = false
     @ViewBuilder var chips: Chips
 
-    @FocusState private var focused: Bool
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
+    private var compact: Bool { verticalSizeClass == .compact }
+    @State private var focused = false
+    @State private var editor = ComposerEditorController()
 
     private var expanded: Bool {
         alwaysExpanded || keepExpanded || focused || !attachments.isEmpty
@@ -57,7 +60,7 @@ struct ComposerShell<Chips: View>: View {
     // the compact↔expanded flip — an if/else here would tear down and rebuild
     // the TextField, dropping keyboard focus mid-type.
     private var shellLayout: AnyLayout {
-        expanded
+        expanded && !compact
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0))
             : AnyLayout(HStackLayout(alignment: .center, spacing: 12))
     }
@@ -67,7 +70,7 @@ struct ComposerShell<Chips: View>: View {
             // Focus-widen: margins pull in slightly while typing (chat-session.tsx).
             .padding(.horizontal, focused ? 10 : 16)
             .motionAnimation(Motion.resize, value: focused)
-            .motionAnimation(Motion.collapse, value: expanded)
+            .motionAnimation(Motion.resize, value: expanded)
             .onAppear {
                 guard autoFocus else { return }
                 Task { @MainActor in
@@ -91,7 +94,8 @@ struct ComposerShell<Chips: View>: View {
                 .padding(.leading, expanded ? 4 : 13)
                 .padding(.trailing, expanded ? 4 : 0)
                 .padding(.vertical, expanded ? 4 : 5)
-                .frame(minHeight: expanded ? 64 : nil, alignment: .topLeading)
+                .frame(minWidth: compact ? 140 : nil,
+                       minHeight: expanded && !compact ? 64 : nil, alignment: .topLeading)
             if expanded {
                 HStack(spacing: 8) {
                     if onAttach != nil {
@@ -107,7 +111,7 @@ struct ComposerShell<Chips: View>: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     actionButton
                 }
-                .padding(.top, 8)
+                .padding(.top, compact ? 0 : 8)
             } else {
                 actionButton
             }
@@ -130,12 +134,17 @@ struct ComposerShell<Chips: View>: View {
     }
 
     private var input: some View {
-        TextField(placeholder, text: $draft, axis: .vertical)
-            .font(Theme.sans(16))
-            .foregroundStyle(Theme.text)
-            .tint(Theme.text)
-            .lineLimit(1...7)
-            .focused($focused)
+        ComposerEditor(text: $draft, focused: $focused, placeholder: placeholder,
+                       maxLines: compact ? 2 : 7, controller: editor)
+            .overlay(alignment: .topLeading) {
+                if draft.isEmpty {
+                    Text(placeholder)
+                        .font(Theme.sans(17))
+                        .foregroundStyle(Theme.text.opacity(0.3))
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
+                }
+            }
     }
 
     private var attachButton: some View {
@@ -145,13 +154,14 @@ struct ComposerShell<Chips: View>: View {
             Image(systemName: "plus")
                 .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(Theme.textMuted)
-                .frame(width: 40, height: 40)
+                .frame(width: 44, height: 44)
                 .background(whiteAlpha(0.06), in: Circle())
                 .overlay(Circle().strokeBorder(whiteAlpha(0.08), lineWidth: 1))
                 .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .disabled(busy)
+        .accessibilityLabel("Attach photos")
     }
 
     /// Attachments count as content: an image-only send is a send, never a stop.
@@ -166,7 +176,9 @@ struct ComposerShell<Chips: View>: View {
                 onStop()
             } else {
                 UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                editor.commit()
                 onSend()
+                editor.apply(text: draft)
             }
         } label: {
             Group {
@@ -184,12 +196,14 @@ struct ComposerShell<Chips: View>: View {
                         .foregroundStyle(buttonActive ? Theme.bg : Theme.textFaint)
                 }
             }
-            .frame(width: 40, height: 40)
+            .frame(width: 44, height: 44)
             .background(buttonActive ? AnyShapeStyle(Theme.text) : AnyShapeStyle(whiteAlpha(0.10)),
                         in: Circle())
             .contentShape(Circle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel(showStop && !hasContent ? "Stop response" : (showStop ? "Steer response" : "Send message"))
+        .accessibilityIdentifier("composer-send")
         .disabled(!buttonActive)
         .motionAnimation(Motion.fadeQuick, value: showStop)
     }
@@ -218,6 +232,7 @@ struct ComposerView: View {
     @State private var uploadError: String?
     @State private var showModelPicker = false
     @State private var showTraitPicker = false
+    @State private var showOptionPicker: ModelOptionInfo?
     /// Live catalog for the chat's harness from its space's device.
     @State private var catalogs: [String: [ModelInfo]] = [:]
 
@@ -228,13 +243,22 @@ struct ComposerView: View {
     }
 
     private var currentModel: ModelInfo {
-        models.first { $0.id == chat.config?.model } ?? HarnessCatalog.defaultModel(for: harness)
+        models.first { $0.id == chat.config?.model }
+            ?? models.first
+            ?? HarnessCatalog.defaultModel(for: harness)
     }
 
     private var currentReasoning: String? {
         guard !currentModel.reasoningLevels.isEmpty else { return nil }
         if let r = chat.config?.reasoning, currentModel.reasoningLevels.contains(r) { return r }
         return HarnessCatalog.defaultReasoning(for: currentModel)
+    }
+
+    private func currentChoice(for option: ModelOptionInfo) -> ModelOptionChoiceInfo {
+        HarnessCatalog.selectedChoice(
+            for: option,
+            selectedId: chat.config?.modelOptions[option.id]?.stringValue
+        )
     }
 
     var body: some View {
@@ -276,7 +300,7 @@ struct ComposerView: View {
                 sendEnabled: true,
                 showStop: runLive,
                 busy: uploading,
-                keepExpanded: showModelPicker || showTraitPicker,
+                keepExpanded: showModelPicker || showTraitPicker || showOptionPicker != nil,
                 onSend: send,
                 onStop: { store.sendInterrupt() },
                 attachments: attachments,
@@ -297,6 +321,11 @@ struct ComposerView: View {
                 if let currentReasoning {
                     ComposerChip(label: HarnessCatalog.reasoningLabel(currentReasoning)) {
                         showTraitPicker = true
+                    }
+                }
+                ForEach(currentModel.options) { option in
+                    ComposerChip(label: currentChoice(for: option).label) {
+                        showOptionPicker = option
                     }
                 }
             }
@@ -331,6 +360,12 @@ struct ComposerView: View {
                 levels: currentModel.reasoningLevels
             )
         }
+        .sheet(item: $showOptionPicker) { option in
+            ModelOptionPickerSheet(option: option, choiceId: Binding(
+                get: { currentChoice(for: option).id },
+                set: { writeOption(option: option, choiceId: $0) }
+            ))
+        }
         .task(id: "\(chat.id)/\(harness)") {
             guard let space = model.space(for: chat) else { return }
             catalogs[harness] = await model.listModels(space: space, harness: harness)
@@ -344,12 +379,37 @@ struct ComposerView: View {
     }
 
     /// Merge a model/effort change into the chat's config row (LWW; the host
-    /// picks it up on the next run dispatch). Copies preserve modelOptions.
+    /// picks it up on the next run dispatch). Compatible model options survive
+    /// edits; changing model prunes traits the destination does not advertise.
     private func writeConfig(model newModel: String?, reasoning newReasoning: String?) {
         var config = chat.config ?? ChatConfig(harness: harness, model: nil,
                                                reasoning: nil, sandbox: "workspace-write")
+        let changedModel = newModel != nil && newModel != config.model
         config.model = newModel
         config.reasoning = newReasoning
+        if changedModel, let newModel,
+           let target = models.first(where: { $0.id == newModel }) {
+            var compatible: [String: JSONValue] = [:]
+            for option in target.options {
+                guard let selected = config.modelOptions[option.id]?.stringValue,
+                      selected != option.defaultChoice,
+                      option.choices.contains(where: { $0.id == selected }) else { continue }
+                compatible[option.id] = .string(selected)
+            }
+            config.modelOptions = compatible
+        }
+        model.setChatConfig(chatId: chat.id, config: config)
+    }
+
+    private func writeOption(option: ModelOptionInfo, choiceId: String) {
+        var config = chat.config ?? ChatConfig(harness: harness, model: currentModel.id,
+                                               reasoning: currentReasoning,
+                                               sandbox: "workspace-write")
+        if choiceId == option.defaultChoice {
+            config.modelOptions.removeValue(forKey: option.id)
+        } else {
+            config.modelOptions[option.id] = .string(choiceId)
+        }
         model.setChatConfig(chatId: chat.id, config: config)
     }
 
@@ -378,13 +438,14 @@ struct ComposerView: View {
     }
 
     private func send() {
-        let prompt = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let submittedText = text
+        let prompt = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = attachments
         guard !prompt.isEmpty || !staged.isEmpty else { return }
 
         if staged.isEmpty {
             deliver(content: prompt, paths: [])
-            clearDraft()
+            clearDraft(matching: submittedText)
             return
         }
         if model.hostSupportsQueuedAttachments(chat) {
@@ -407,7 +468,7 @@ struct ComposerView: View {
             store.sendWithTransfers(prompt: prompt, chat: chat, live: runLive,
                                     transfers: transfers)
             attachments = []
-            clearDraft()
+            clearDraft(matching: submittedText)
             return
         }
         // Legacy host-staged flow (host < 0.2.12): upload first, send after —
@@ -438,7 +499,7 @@ struct ComposerView: View {
                 }
                 deliver(content: withAttachments(text: prompt, paths: paths), paths: paths)
                 attachments = []
-                clearDraft()
+                clearDraft(matching: submittedText)
             } catch {
                 uploadError = "Attachment upload failed — \(error.localizedDescription)"
             }
@@ -453,16 +514,10 @@ struct ComposerView: View {
         }
     }
 
-    private func clearDraft() {
+    private func clearDraft(matching submittedText: String) {
+        // A legacy attachment upload can finish after the user edits the draft.
+        guard text == submittedText else { return }
         text = ""
-        // The clear above is unconditional, so a prompt left sitting in the
-        // composer after a successful send is not this path failing to run —
-        // it is the text view writing the pre-send string back. A focused
-        // multiline TextField commits pending autocorrect/marked text through
-        // the binding AFTER a programmatic change, which restores the prompt.
-        // Re-clear once that has drained; a keystroke can't land inside the
-        // same main-actor turn, so this can never eat real input.
-        Task { @MainActor in text = "" }
     }
 }
 

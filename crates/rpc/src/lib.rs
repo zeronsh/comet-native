@@ -112,6 +112,10 @@ pub mod methods {
     pub const LIST_BRANCHES: &str = "ListBranches";
     pub const LIST_REFS: &str = "ListRefs";
     pub const LIST_GIT_HISTORY: &str = "ListGitHistory";
+    /// Fuzzy commit-subject / SHA search over the complete public history.
+    pub const SEARCH_GIT_HISTORY: &str = "SearchGitHistory";
+    /// Resolve hosted profile images for a page of Git commit authors.
+    pub const RESOLVE_GIT_AVATARS: &str = "ResolveGitAvatars";
     /// Update remote-tracking refs without changing HEAD, the index, or files.
     pub const FETCH_ALL: &str = "FetchAll";
     pub const SWITCH_REF: &str = "SwitchRef";
@@ -120,6 +124,13 @@ pub mod methods {
     pub const LIST_DRIVES: &str = "ListDrives";
     /// Fuzzy relative-path search rooted in a known chat or space checkout.
     pub const SEARCH_FILES: &str = "SearchFiles";
+    // Device-local workspace filesystem operations. All are relay-forwardable;
+    // WatchWorkspaceFiles is the only streaming method in this group.
+    pub const LIST_WORKSPACE_DIRECTORY: &str = "ListWorkspaceDirectory";
+    pub const SEARCH_WORKSPACE_FILES: &str = "SearchWorkspaceFiles";
+    pub const READ_WORKSPACE_FILE: &str = "ReadWorkspaceFile";
+    pub const WRITE_WORKSPACE_FILE: &str = "WriteWorkspaceFile";
+    pub const WATCH_WORKSPACE_FILES: &str = "WatchWorkspaceFiles";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
     // Project Actions are private state on the device that owns the project.

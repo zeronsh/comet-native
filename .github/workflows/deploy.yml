@@ -93,6 +93,10 @@ jobs:
         if: steps.changed.outputs.changed == 'true'
         with:
           node-version: 22
+      - name: test
+        if: steps.changed.outputs.changed == 'true'
+        working-directory: apps/landing
+        run: node --test telemetry.test.mjs
       - name: deploy
         if: steps.changed.outputs.changed == 'true' && env.CLOUDFLARE_API_TOKEN != ''
         working-directory: apps/landing

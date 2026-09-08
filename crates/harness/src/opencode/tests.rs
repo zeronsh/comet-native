@@ -1,9 +1,107 @@
 use super::*;
+
+#[tokio::test]
+async fn catalog_decodes_fragmented_http_without_retaining_unused_fields() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let body = json!({
+        "all": [{"id":"test", "models":{"model":{"name":"模型", "variants":{"high":{"unused":"x".repeat(128 * 1024)}}}}}],
+        "connected":["test"]
+    }).to_string();
+    let expected: ProviderCatalog = serde_json::from_str(&body).unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.read(&mut [0; 4096]).await.unwrap();
+        socket
+            .write_all(
+                format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n", body.len()).as_bytes(),
+            )
+            .await
+            .unwrap();
+        for chunk in body.as_bytes().chunks(257) {
+            socket.write_all(chunk).await.unwrap();
+            tokio::task::yield_now().await;
+        }
+    });
+    let response = reqwest::get(format!("http://{address}")).await.unwrap();
+    let catalog: ProviderCatalog = decode_json_response(response).await.unwrap();
+    assert_eq!(
+        models_from_providers(&catalog),
+        models_from_providers(&expected)
+    );
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn cancelled_catalog_decode_releases_a_stalled_http_body() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (closed_tx, closed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        socket.read(&mut [0; 4096]).await.unwrap();
+        socket
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n{")
+            .await
+            .unwrap();
+        let result = socket.read(&mut [0; 1]).await;
+        let _ = closed_tx.send(result);
+    });
+    let response = reqwest::get(format!("http://{address}")).await.unwrap();
+    let decode = tokio::spawn(decode_json_response::<ProviderCatalog>(response));
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    decode.abort();
+    assert!(decode.await.unwrap_err().is_cancelled());
+    let result = tokio::time::timeout(Duration::from_secs(2), closed_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        matches!(result, Ok(0) | Err(_)),
+        "cancel must close the body reader"
+    );
+    server.await.unwrap();
+}
 use serde_json::json;
 
 #[test]
+fn provider_discovery_ignores_metadata_and_accepts_null_optional_fields() {
+    let catalog: ProviderCatalog = serde_json::from_str(
+        r#"{
+        "all": [{
+            "id": "local", "name": null,
+            "models": {
+                "small": {"name": null, "variants": null},
+                "thinking": {
+                    "variants": {"high": {"nested": [{"unused": "configuration"}]}},
+                    "capabilities": {"large": [1, 2, 3]},
+                    "cost": {"input": 1}, "limit": {"context": 200000}
+                }
+            },
+            "options": {"unused": [true, false, null]}
+        }, {"id": "empty", "models": null}],
+        "connected": null,
+        "default": {"unused": "model"}
+    }"#,
+    )
+    .unwrap();
+    let models = models_from_providers(&catalog);
+    assert_eq!(models.len(), 2);
+    assert_eq!(models[0].id, "local/small");
+    assert_eq!(models[0].description.as_deref(), Some("local"));
+    assert!(models[0].reasoning_levels.is_empty());
+    assert_eq!(models[1].reasoning_levels, vec![ReasoningLevel::High]);
+    assert_eq!(
+        pick_variant(&catalog, "local", "thinking", Some(ReasoningLevel::High)).as_deref(),
+        Some("high")
+    );
+}
+
+#[test]
 fn models_map_provider_catalog_with_variant_ladders() {
-    let providers = json!({
+    let providers: ProviderCatalog = serde_json::from_value(json!({
         "all": [
             {
                 "id": "anthropic",
@@ -24,7 +122,8 @@ fn models_map_provider_catalog_with_variant_ladders() {
         ],
         "default": {},
         "connected": ["anthropic"],
-    });
+    }))
+    .unwrap();
     let models = models_from_providers(&providers);
     // `connected` filters: the full catalog is 194 providers / 7k models of
     // which the user can run almost none (v0.2.21 field report).
@@ -57,26 +156,28 @@ fn models_map_provider_catalog_with_variant_ladders() {
 
 #[test]
 fn missing_connected_list_falls_back_to_the_full_catalog() {
-    let providers = json!({
+    let providers: ProviderCatalog = serde_json::from_value(json!({
         "all": [
             {"id": "a", "models": {"m1": {}}},
             {"id": "b", "models": {"m2": {}}},
         ],
-    });
+    }))
+    .unwrap();
     assert_eq!(models_from_providers(&providers).len(), 2);
-    let providers = json!({
+    let providers: ProviderCatalog = serde_json::from_value(json!({
         "all": [
             {"id": "a", "models": {"m1": {}}},
             {"id": "b", "models": {"m2": {}}},
         ],
         "connected": [],
-    });
+    }))
+    .unwrap();
     assert_eq!(models_from_providers(&providers).len(), 2);
 }
 
 #[test]
 fn variants_only_ride_models_that_advertise_them() {
-    let providers = json!({
+    let providers: ProviderCatalog = serde_json::from_value(json!({
         "all": [{
             "id": "anthropic",
             "models": {
@@ -84,7 +185,8 @@ fn variants_only_ride_models_that_advertise_them() {
                 "haiku": {},
             }
         }]
-    });
+    }))
+    .unwrap();
     assert_eq!(
         pick_variant(&providers, "anthropic", "opus", Some(ReasoningLevel::High)).as_deref(),
         Some("high")

@@ -1,0 +1,72 @@
+name: UI tests
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - '.github/workflows/ui-tests.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - 'crates/**'
+      - '.github/workflows/ui-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ui-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ui-tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: GPUI system dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev \
+            libx11-dev libxcb1-dev libx11-xcb-dev \
+            libfontconfig1-dev libfreetype-dev libasound2-dev \
+            libvulkan-dev pkg-config cmake
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: UI and headless layout regressions
+        run: cargo test --release --locked -p zeron-ui --lib -- --test-threads=1
+
+  macos-frame-recovery:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Check out pinned GPUI for native frame-source tests
+        shell: bash
+        run: |
+          rev=$(python3 -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["dependencies"]["gpui"]["rev"])')
+          git init frame-source-tests
+          git -C frame-source-tests remote add origin https://github.com/zeronsh/zui
+          git -C frame-source-tests fetch --depth=1 origin "$rev"
+          git -C frame-source-tests checkout --detach FETCH_HEAD
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            frame-source-tests
+      - name: Check macOS application
+        run: cargo check --release --locked -p zeron
+      - name: Native frame-source recovery regression
+        working-directory: frame-source-tests
+        run: cargo test --release --locked -p gpui_macos --test frame_source_recovery

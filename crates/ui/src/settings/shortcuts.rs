@@ -233,11 +233,12 @@ pub fn conflict_owner(keymap: &KeymapConfig, id: ShortcutId, combo: &str) -> Opt
 /// extends the match and appears on the page by construction
 /// (`every_shortcut_lands_in_a_rendered_group` holds the other half: its group
 /// name must be listed here).
-const GROUP_ORDER: [&str; 3] = ["Panels", "Sessions", "Jump to session"];
+const GROUP_ORDER: [&str; 4] = ["Files", "Panels", "Sessions", "Jump to session"];
 
 /// The section a shortcut's row renders under.
 fn group(id: ShortcutId) -> &'static str {
     match id {
+        ShortcutId::SaveFile => "Files",
         ShortcutId::ToggleSidebar | ShortcutId::ToggleChanges | ShortcutId::ToggleTerminal => {
             "Panels"
         }
@@ -253,8 +254,9 @@ fn group(id: ShortcutId) -> &'static str {
 /// `SHORTCUT_DEFINITIONS` descriptions, verbatim).
 fn description(id: ShortcutId) -> &'static str {
     match id {
+        ShortcutId::SaveFile => "Save the active workspace file.",
         ShortcutId::ToggleSidebar => "Show or hide sessions and settings navigation.",
-        ShortcutId::ToggleChanges => "Show or hide changes for the current session.",
+        ShortcutId::ToggleChanges => "Show or hide the right sidebar for the current session.",
         ShortcutId::ToggleTerminal => "Show or hide the terminal for the current session.",
         ShortcutId::NewSession => "Open a blank session canvas to start a new session.",
         ShortcutId::NextSession => "Select the next session in the sidebar, wrapping at the end.",
@@ -458,7 +460,7 @@ mod tests {
         // zeron parity: a combo bound elsewhere is refused at record time (the
         // helper names the owner) — conflicts never persist into the keymap.
         let keymap = KeymapConfig::default();
-        let RecordOutcome::Set(combo) = record_key("b", false, false, false, true) else {
+        let RecordOutcome::Set(combo) = record_key("r", false, false, false, true) else {
             panic!("expected Set");
         };
         assert_eq!(

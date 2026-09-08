@@ -22,6 +22,8 @@
 //!   `CreateRepo {name}`, `ListBranches {repoPath}` (default branch first),
 //!   `ListFolders {path?}`, `CreateWorktree {repoPath, branch}`, `DeleteWorktree
 //!   {repoPath, worktreePath}`; `WatchCheckoutDiffs` → stream of `CheckoutDiff[]`
+//! - Workspace files: lazy directory listing, recursive path search, bounded text
+//!   reads, hash-guarded writes, and a checkout-scoped filesystem change stream.
 //! - Terminals (§3.4): `OpenTerminal {chatId, cols, rows}` → `TerminalSession`,
 //!   `SubscribeTerminal {terminalId, afterSeq?}` → stream of `TerminalEvent`
 //!   (replay then live tail), `WriteTerminal {terminalId, data}`, `ResizeTerminal`,
@@ -45,10 +47,11 @@
 //! forward can never loop. Streaming methods are proxied by re-subscribing remotely and
 //! piping items. To make another method device-addressable, nothing per-method is needed
 //! beyond listing it in [`forwardable`] (and [`is_stream_method`] if it streams);
-//! handlers stay transport-agnostic. Currently routed: `ListHarnesses`, `ListModels`,
-//! `QueueCommand`, and `WatchDocMessages`.
+//! handlers stay transport-agnostic. This includes the workspace file surface,
+//! whose checkout always lives on the routed target device.
 
 use async_trait::async_trait;
+use base64::Engine as _;
 use futures::StreamExt;
 use futures::stream::BoxStream;
 use serde::Deserialize;
@@ -443,6 +446,7 @@ pub struct EngineRpc {
     workspace: WorkspaceHost,
     registry: std::sync::Arc<HarnessRegistry>,
     repos: Repos,
+    workspace_files: crate::WorkspaceFiles,
     terminals: Terminals,
     project_actions: ProjectActionsStore,
     change_requests: CheckoutChangeRequests,
@@ -464,6 +468,7 @@ impl EngineRpc {
         workspace: WorkspaceHost,
         registry: std::sync::Arc<HarnessRegistry>,
         repos: Repos,
+        workspace_files: crate::WorkspaceFiles,
         terminals: Terminals,
         project_actions: ProjectActionsStore,
         change_requests: CheckoutChangeRequests,
@@ -482,6 +487,7 @@ impl EngineRpc {
             workspace,
             registry,
             repos,
+            workspace_files,
             terminals,
             project_actions,
             change_requests,
@@ -556,79 +562,16 @@ impl EngineRpc {
     /// name an existing linked worktree for a new chat, but it is verified
     /// against the space repository before any filesystem walk begins.
     async fn file_search_root(&self, p: &FileSearchParams) -> Result<std::path::PathBuf, RpcError> {
-        let local_device = self.doc_host.device_id();
-        match (&p.chat_id, &p.space_id) {
-            (Some(_), Some(_)) | (None, None) => Err(RpcError::BadParams(
-                "SearchFiles needs exactly one of chatId or spaceId".into(),
-            )),
-            (Some(chat_id), None) => {
-                if p.path.is_some() {
-                    return Err(RpcError::BadParams(
-                        "SearchFiles path applies only to a space".into(),
-                    ));
-                }
-                let chat = self
-                    .workspace
-                    .chat(chat_id)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?
-                    .ok_or_else(|| RpcError::Failed("chat not found".into()))?;
-                if chat.device_id != local_device {
-                    return Err(RpcError::Failed("chat belongs to another device".into()));
-                }
-                let cwd = chat
-                    .cwd
-                    .map(std::path::PathBuf::from)
-                    .ok_or_else(|| RpcError::Failed("chat has no workspace folder".into()))?;
-                let space_id = chat
-                    .space_id
-                    .ok_or_else(|| RpcError::Failed("chat has no workspace space".into()))?;
-                let space = self
-                    .workspace
-                    .space(&space_id)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?
-                    .ok_or_else(|| RpcError::Failed("chat workspace space not found".into()))?;
-                if space.device_id != local_device {
-                    return Err(RpcError::Failed(
-                        "chat space belongs to another device".into(),
-                    ));
-                }
-                if let Some(cwd) = self
-                    .repos
-                    .workspace_checkout(std::path::Path::new(&space.path), &cwd)
-                    .await
-                {
-                    Ok(cwd)
-                } else {
-                    Err(RpcError::Failed(
-                        "chat folder is not a workspace checkout".into(),
-                    ))
-                }
-            }
-            (None, Some(space_id)) => {
-                let space = self
-                    .workspace
-                    .space(space_id)
-                    .map_err(|e| RpcError::Failed(e.to_string()))?
-                    .ok_or_else(|| RpcError::Failed("space not found".into()))?;
-                if space.device_id != local_device {
-                    return Err(RpcError::Failed("space belongs to another device".into()));
-                }
-                let space_path = std::path::PathBuf::from(&space.path);
-                let requested = p
-                    .path
-                    .as_deref()
-                    .map_or_else(|| space_path.clone(), std::path::PathBuf::from);
-                if let Some(requested) =
-                    self.repos.workspace_checkout(&space_path, &requested).await
-                {
-                    Ok(requested)
-                } else {
-                    Err(RpcError::BadParams(
-                        "SearchFiles path is not a workspace checkout".into(),
-                    ))
-                }
-            }
-        }
+        let target = zeron_proto::WorkspaceTarget {
+            chat_id: p.chat_id.clone(),
+            space_id: p.space_id.clone(),
+            checkout_path: p.path.clone(),
+        };
+        self.workspace_files
+            .resolve_target(&target)
+            .await
+            .map(|workspace| workspace.root)
+            .map_err(Into::into)
     }
 
     /// Accept only a checkout already named by a local chat or contained in a
@@ -971,11 +914,18 @@ fn forwardable(method: &str) -> bool {
             | methods::LIST_BRANCHES
             | methods::LIST_REFS
             | methods::LIST_GIT_HISTORY
+            | methods::SEARCH_GIT_HISTORY
+            | methods::RESOLVE_GIT_AVATARS
             | methods::FETCH_ALL
             | methods::SWITCH_REF
             | methods::LIST_FOLDERS
             | methods::LIST_DRIVES
             | methods::SEARCH_FILES
+            | methods::LIST_WORKSPACE_DIRECTORY
+            | methods::SEARCH_WORKSPACE_FILES
+            | methods::READ_WORKSPACE_FILE
+            | methods::WRITE_WORKSPACE_FILE
+            | methods::WATCH_WORKSPACE_FILES
             | methods::CREATE_WORKTREE
             | methods::DELETE_WORKTREE
             // Project Actions live in the owning engine's private profile store.
@@ -1022,6 +972,7 @@ fn is_stream_method(method: &str) -> bool {
             | methods::SUBSCRIBE_TERMINAL
             | methods::WATCH_CHECKOUT_DIFFS
             | methods::WATCH_CHECKOUT_CHANGE_REQUEST
+            | methods::WATCH_WORKSPACE_FILES
             | methods::UPDATE_STATUS
     )
 }
@@ -1048,17 +999,25 @@ where
 /// full `reset` first, then only changed entries per commit — the whole-Vec
 /// serialization here was the per-tick cost that scaled with transcript size.
 fn doc_messages_stream(
-    rx: watch::Receiver<Vec<zeron_doc::SessionMessageEntry>>,
+    rx: watch::Receiver<std::sync::Arc<Vec<zeron_doc::SessionMessageEntry>>>,
+    doc: std::sync::Arc<zeron_doc::SessionDoc>,
 ) -> BoxStream<'static, serde_json::Value> {
     use zeron_doc::transcript_delta::{TranscriptFrame, diff_transcript};
     futures::stream::unfold(
-        (rx, None::<Vec<zeron_doc::SessionMessageEntry>>),
-        |(mut rx, mut prev)| async move {
+        (
+            rx,
+            None::<std::sync::Arc<Vec<zeron_doc::SessionMessageEntry>>>,
+            doc,
+            None,
+        ),
+        |(mut rx, mut prev, doc, mut previous_usage)| async move {
             loop {
                 if prev.is_some() {
                     rx.changed().await.ok()?;
                 }
-                let current: Vec<_> = rx.borrow_and_update().clone();
+                // Watchers retain the immutable published snapshot. Each
+                // connection used to deep-copy the entire transcript here.
+                let current = rx.borrow_and_update().clone();
                 let frame = match prev.as_deref() {
                     None => TranscriptFrame::reset(&current),
                     Some(prev) => diff_transcript(prev, &current),
@@ -1066,11 +1025,17 @@ fn doc_messages_stream(
                 prev = Some(current);
                 // No-op commits (a second watcher attaching, command-only
                 // changes) produce empty deltas — skip the frame entirely.
-                if frame.is_empty_delta() {
+                let usage = doc.context_usage();
+                if frame.is_empty_delta() && usage == previous_usage {
                     continue;
                 }
-                let value = serde_json::to_value(&frame).ok()?;
-                return Some((value, (rx, prev)));
+                previous_usage = usage;
+                let value = serde_json::to_value(zeron_doc::TranscriptUpdate {
+                    frame,
+                    context_usage: usage,
+                })
+                .ok()?;
+                return Some((value, (rx, prev, doc, previous_usage)));
             }
         },
     )
@@ -1283,6 +1248,7 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 Ok(RpcReply::Stream(doc_messages_stream(
                     handle.watch_messages(),
+                    handle.doc_arc(),
                 )))
             }
             methods::PROBE_SYNC => {
@@ -1740,6 +1706,70 @@ impl RpcService for EngineRpc {
                     .map_err(|e| RpcError::Failed(e.to_string()))?;
                 RpcReply::value(&history)
             }
+            methods::SEARCH_GIT_HISTORY => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    cwd: String,
+                    query: String,
+                    #[serde(default)]
+                    cursor: usize,
+                    #[serde(default = "default_git_history_search_limit")]
+                    limit: usize,
+                }
+                fn default_git_history_search_limit() -> usize {
+                    crate::repos::GIT_HISTORY_DEFAULT_LIMIT
+                }
+                let p: P = parse_params(params)?;
+                let history = self
+                    .repos
+                    .search_history(std::path::Path::new(&p.cwd), &p.query, p.cursor, p.limit)
+                    .await
+                    .map_err(|e| RpcError::Failed(e.to_string()))?;
+                RpcReply::value(&history)
+            }
+            methods::RESOLVE_GIT_AVATARS => {
+                #[derive(Deserialize)]
+                #[serde(rename_all = "camelCase")]
+                struct P {
+                    cwd: String,
+                    authors: Vec<GitAvatarAuthor>,
+                    #[serde(default)]
+                    cursor: usize,
+                    #[serde(default = "default_git_avatar_limit")]
+                    limit: usize,
+                }
+                #[derive(Deserialize)]
+                struct GitAvatarAuthor {
+                    sha: String,
+                    email: String,
+                }
+                fn default_git_avatar_limit() -> usize {
+                    crate::repos::GIT_HISTORY_DEFAULT_LIMIT
+                }
+                let p: P = parse_params(params)?;
+                let authors: Vec<_> = p
+                    .authors
+                    .into_iter()
+                    .take(crate::repos::GIT_HISTORY_MAX_LIMIT)
+                    .filter(|author| author.sha.len() <= 64 && author.email.len() <= 512)
+                    .map(|author| (author.sha, author.email))
+                    .collect();
+                let avatar_paths = self
+                    .repos
+                    .history_avatar_urls(std::path::Path::new(&p.cwd), &authors, p.cursor, p.limit)
+                    .await;
+                let mut avatars = std::collections::HashMap::new();
+                for (email, path) in avatar_paths {
+                    if let Ok(bytes) = tokio::fs::read(path).await {
+                        avatars.insert(
+                            email,
+                            base64::engine::general_purpose::STANDARD.encode(bytes),
+                        );
+                    }
+                }
+                RpcReply::value(&avatars)
+            }
             methods::FETCH_ALL => {
                 let p: RepoPathParams = parse_params(params)?;
                 self.repos
@@ -1801,6 +1831,64 @@ impl RpcService for EngineRpc {
                 .await
                 .map_err(|_| RpcError::Failed("file search timed out".into()))??;
                 RpcReply::value(&matches)
+            }
+            methods::LIST_WORKSPACE_DIRECTORY => {
+                let request: zeron_proto::ListWorkspaceDirectoryRequest = parse_params(params)?;
+                let page = tokio::time::timeout(
+                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                    self.workspace_files.list_directory(request),
+                )
+                .await
+                .map_err(|_| RpcError::Failed("workspace directory listing timed out".into()))?
+                .map_err(RpcError::from)?;
+                RpcReply::value(&page)
+            }
+            methods::SEARCH_WORKSPACE_FILES => {
+                let request: zeron_proto::SearchWorkspaceFilesRequest = parse_params(params)?;
+                let matches = tokio::time::timeout(
+                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                    self.workspace_files.search(request),
+                )
+                .await
+                .map_err(|_| RpcError::Failed("workspace file search timed out".into()))?
+                .map_err(RpcError::from)?;
+                RpcReply::value(&matches)
+            }
+            methods::READ_WORKSPACE_FILE => {
+                let request: zeron_proto::ReadWorkspaceFileRequest = parse_params(params)?;
+                let file = tokio::time::timeout(
+                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                    self.workspace_files.read_file(request),
+                )
+                .await
+                .map_err(|_| RpcError::Failed("workspace file read timed out".into()))?
+                .map_err(RpcError::from)?;
+                RpcReply::value(&file)
+            }
+            methods::WRITE_WORKSPACE_FILE => {
+                let request: zeron_proto::WriteWorkspaceFileRequest = parse_params(params)?;
+                let outcome = tokio::time::timeout(
+                    crate::workspace_files::WORKSPACE_FILE_RPC_TIMEOUT,
+                    self.workspace_files.write_file(request),
+                )
+                .await
+                .map_err(|_| RpcError::Failed("workspace file write timed out".into()))?
+                .map_err(RpcError::from)?;
+                RpcReply::value(&outcome)
+            }
+            methods::WATCH_WORKSPACE_FILES => {
+                let request: zeron_proto::WatchWorkspaceFilesRequest = parse_params(params)?;
+                let subscription = self
+                    .workspace_files
+                    .watch_files(request)
+                    .await
+                    .map_err(RpcError::from)?;
+                let stream = futures::stream::unfold(subscription, |mut subscription| async move {
+                    let changes = subscription.recv().await?;
+                    let value = serde_json::to_value(changes).ok()?;
+                    Some((value, subscription))
+                });
+                Ok(RpcReply::Stream(stream.boxed()))
             }
             methods::CREATE_WORKTREE => {
                 let p: CreateWorktreeParams = parse_params(params)?;
@@ -2147,9 +2235,21 @@ mod tests {
         assert!(!forwardable(methods::ENGINE_READY));
         assert!(forwardable(methods::QUEUE_COMMAND));
         assert!(forwardable(methods::SEARCH_FILES));
+        assert!(forwardable(methods::SEARCH_GIT_HISTORY));
         assert!(forwardable(methods::FETCH_ALL));
+        assert!(forwardable(methods::RESOLVE_GIT_AVATARS));
         assert!(forwardable(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
         assert!(is_stream_method(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
+        assert!(forwardable(methods::LIST_WORKSPACE_DIRECTORY));
+        assert!(forwardable(methods::SEARCH_WORKSPACE_FILES));
+        assert!(forwardable(methods::READ_WORKSPACE_FILE));
+        assert!(forwardable(methods::WRITE_WORKSPACE_FILE));
+        assert!(forwardable(methods::WATCH_WORKSPACE_FILES));
+        assert!(!is_stream_method(methods::LIST_WORKSPACE_DIRECTORY));
+        assert!(!is_stream_method(methods::SEARCH_WORKSPACE_FILES));
+        assert!(!is_stream_method(methods::READ_WORKSPACE_FILE));
+        assert!(!is_stream_method(methods::WRITE_WORKSPACE_FILE));
+        assert!(is_stream_method(methods::WATCH_WORKSPACE_FILES));
     }
 
     /// Every forwardable unary method gets a bounded reply deadline —
@@ -2192,5 +2292,56 @@ mod tests {
             }),
             None
         );
+    }
+}
+
+#[cfg(test)]
+mod context_usage_tests {
+    use super::*;
+    use futures::StreamExt;
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn context_only_commits_reach_remote_watch_and_reconnect() {
+        let host = zeron_doc::SessionDoc::init("context-chat").unwrap();
+        host.update_context_usage(Some(42000), Some(200000))
+            .unwrap();
+        // The viewing engine reads a replicated document, with no harness process.
+        let remote = Arc::new(zeron_doc::SessionDoc::from_doc(loro::LoroDoc::new()));
+        remote
+            .doc()
+            .import(&host.export_snapshot().unwrap())
+            .unwrap();
+        let (tx, rx) = watch::channel(Arc::new(Vec::new()));
+        let mut stream = doc_messages_stream(rx, remote.clone());
+        let first = stream.next().await.unwrap();
+        assert_eq!(first["contextUsage"]["tokens"], 42000);
+        assert!(first.get("reset").is_some());
+        let version = host.doc().oplog_vv();
+        host.update_context_usage(Some(0), None).unwrap();
+        remote
+            .doc()
+            .import(
+                &host
+                    .doc()
+                    .export(loro::ExportMode::updates(&version))
+                    .unwrap(),
+            )
+            .unwrap();
+        tx.send_replace(Arc::new(Vec::new()));
+        let update = tokio::time::timeout(std::time::Duration::from_secs(1), stream.next())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(update["contextUsage"]["tokens"], 0);
+        assert_eq!(update["contextUsage"]["window"], 200000);
+        let mut reconnect = doc_messages_stream(tx.subscribe(), remote.clone());
+        assert_eq!(
+            reconnect.next().await.unwrap()["contextUsage"],
+            update["contextUsage"]
+        );
+        remote.clear_context_usage().unwrap();
+        tx.send_replace(Arc::new(Vec::new()));
+        assert!(stream.next().await.unwrap()["contextUsage"].is_null());
     }
 }

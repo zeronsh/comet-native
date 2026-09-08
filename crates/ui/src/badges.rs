@@ -185,7 +185,7 @@ impl Render for BadgeCard {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::comments::{CommentSide, DiffComment, with_comments};
+    use crate::comments::{CommentSide, ReviewComment, with_comments};
 
     #[test]
     fn a_plain_message_carries_no_badges() {
@@ -197,8 +197,8 @@ mod tests {
     #[test]
     fn a_sent_comment_block_becomes_one_pill() {
         let staged = vec![
-            DiffComment::new("a.rs", CommentSide::New, 3, "fix"),
-            DiffComment::new("b.rs", CommentSide::Old, 9, "why"),
+            ReviewComment::new("a.rs", CommentSide::New, 3, "fix"),
+            ReviewComment::new("b.rs", CommentSide::Old, 9, "why"),
         ];
         let (text, badges) = split(&with_comments("do", &staged));
         assert_eq!(text, "do");
@@ -209,8 +209,8 @@ mod tests {
     #[test]
     fn the_card_carries_one_row_per_comment() {
         let staged = vec![
-            DiffComment::new("src/main.rs", CommentSide::New, 42, "early-return here"),
-            DiffComment::new("src/lib.rs", CommentSide::Old, 7, "why was this dropped?"),
+            ReviewComment::new("src/main.rs", CommentSide::New, 42, "early-return here"),
+            ReviewComment::new("src/lib.rs", CommentSide::Old, 7, "why was this dropped?"),
         ];
         let (_, badges) = split(&with_comments("look", &staged));
         let details = &badges[0].details;
@@ -224,7 +224,7 @@ mod tests {
 
     #[test]
     fn a_multiline_body_rejoins_its_continuation_lines() {
-        let staged = vec![DiffComment::new(
+        let staged = vec![ReviewComment::new(
             "a.rs",
             CommentSide::New,
             3,
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn a_path_with_a_colon_still_splits_on_the_side_marker() {
-        let staged = vec![DiffComment::new("odd:name.rs", CommentSide::New, 5, "hm")];
+        let staged = vec![ReviewComment::new("odd:name.rs", CommentSide::New, 5, "hm")];
         let (_, badges) = split(&with_comments("x", &staged));
         assert_eq!(badges[0].details[0].location.as_ref(), "odd:name.rs:5");
         assert_eq!(badges[0].details[0].body.as_ref(), "hm");
@@ -244,7 +244,7 @@ mod tests {
 
     #[test]
     fn a_comment_only_send_keeps_its_stand_in_body() {
-        let staged = vec![DiffComment::new("a.rs", CommentSide::New, 3, "fix")];
+        let staged = vec![ReviewComment::new("a.rs", CommentSide::New, 3, "fix")];
         let (text, badges) = split(&with_comments("", &staged));
         assert_eq!(text, crate::comments::COMMENT_ONLY_TEXT);
         assert_eq!(badges[0].label.as_ref(), "1 comment");
