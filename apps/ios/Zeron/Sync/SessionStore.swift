@@ -66,6 +66,15 @@ final class SessionStore {
     private var chatRoom: ChatRoomClient?
     private var subscriptions: [Subscription] = []
     private let config: AppConfig
+    let encrypted: Bool
+    private(set) var syncError: String?
+    @ObservationIgnored private var vaultState: VaultChatState
+    @ObservationIgnored private let pendingUpdates = VaultUpdateBuffer()
+    @ObservationIgnored private var sealing = false
+    @ObservationIgnored private var sealer: Task<Void, Never>?
+    private var vaultDisk: VaultChatDisk {
+        VaultChatDisk(directory: config.vaultPersistence.directory, profile: config.vaultPersistence.account, chatId: chatId)
+    }
     /// Registry roomGen for this chat (M2): connect only at >= 2. One-way —
     /// the registry never walks a chat back to s2.
     @ObservationIgnored private var roomGen = 1
@@ -85,6 +94,8 @@ final class SessionStore {
         self.chatId = chatId
         self.config = config
         self.offline = offline
+        encrypted = config.syncAccess == .encrypted
+        vaultState = VaultChatState(profile: config.vaultPersistence.account, chatId: chatId)
         AttachmentImageCache.shared.configure(config: config)
     }
 
@@ -136,7 +147,19 @@ final class SessionStore {
         // Local-first: the last-synced chat2 snapshot renders instantly (even
         // when the host device is offline); the join backfills incrementally
         // from its cursor.
-        if let saved = DocDisk.loadChat2(into: doc, id: chatId) {
+        if encrypted {
+            do {
+                if let saved = try vaultDisk.load() {
+                    vaultState = saved
+                    if !saved.snapshot.isEmpty { _ = try doc.importWith(bytes: saved.snapshot, origin: "disk") }
+                    cursor = saved.cursor
+                    project()
+                }
+            } catch {
+                syncError = "Encrypted chat storage could not be opened. Existing data was retained."
+                return
+            }
+        } else if let saved = DocDisk.loadChat2(into: doc, id: chatId) {
             cursor = saved
             project()
         } else if DocDisk.legacySnapshotExists(id: chatId) {
@@ -147,17 +170,22 @@ final class SessionStore {
         }
         saver = DocSaver { [weak self] in
             guard let self else { return }
-            DocDisk.saveChat2(doc: self.doc, id: self.chatId, cursor: self.cursor)
+            do { try self.persist(cursor: self.cursor) }
+            catch { self.syncError = "Chat could not be saved; sync is paused." }
         }
         // Subscription BEFORE any connect: every local commit lands in the
         // client when it exists; commits made earlier are covered by the
         // first-contact full-log push below (cursor 0 whenever no client has
         // ever acked — see connectIfReady).
-        let localSub = doc.subscribeLocalUpdate { [weak self] update in
+        let localSub = doc.subscribeLocalUpdate { [weak self, pendingUpdates, encrypted] update in
             let bytes = Data(update)
+            if encrypted { pendingUpdates.append(bytes) }
             Task { @MainActor [weak self] in
-                guard let self else { return }
-                if let room = self.chatRoom {
+                guard let self, self.started else { return }
+                if self.encrypted {
+                    do { try self.persist(cursor: self.cursor); self.startSealer() }
+                    catch { self.syncError = "Chat could not be saved; nothing was sent." }
+                } else if let room = self.chatRoom {
                     Task { await room.enqueue(update: bytes) }
                 }
                 self.saver?.poke()
@@ -192,11 +220,129 @@ final class SessionStore {
         connectIfReady()
     }
 
+    private func persist(cursor nextCursor: UInt64) throws {
+        if encrypted {
+            vaultState.unsealed.append(contentsOf: pendingUpdates.take())
+            var candidate = vaultState
+            candidate.snapshot = try doc.export(mode: .snapshot)
+            candidate.cursor = nextCursor
+            try vaultDisk.save(candidate)
+            vaultState = candidate
+        } else {
+            try DocDisk.persistChat2(doc: doc, id: chatId, cursor: nextCursor)
+        }
+        cursor = nextCursor
+    }
+
+    private func applyRemote(_ bytes: Data, seq: UInt64, purpose: VaultContentPurpose) async -> ChatApplyOutcome {
+        guard started, config.permitsSync(encrypted: encrypted) else { return .unavailable }
+        let plaintext: Data
+        if encrypted {
+            do {
+                plaintext = try await config.vault.open(bytes, object: MobileVault.objectId(kind: "chat", id: chatId),
+                                                       purpose: purpose, maximum: VaultContentCrypto.maxPlaintextBytes,
+                                                       client: config.vaultClient)
+            } catch is VaultRecordError { return .authenticationFailed }
+            catch is VaultContentError { return .authenticationFailed }
+            catch is VaultPolicyError { return .authenticationFailed }
+            catch { return .unavailable }
+        } else { plaintext = bytes }
+        guard started, config.permitsSync(encrypted: encrypted) else { return .unavailable }
+        do {
+            let status = try doc.importWith(bytes: plaintext, origin: "remote")
+            if status.pending != nil { return .pendingDependencies }
+            try persist(cursor: max(cursor, seq))
+            project()
+            syncError = nil
+            return .applied
+        } catch {
+            syncError = "Chat could not be imported or saved; its cursor was held."
+            return .storageFailed
+        }
+    }
+
+    private func encryptedFrontier(_ bytes: Data) async -> Bool {
+        guard let plaintext = try? await config.vault.open(bytes, object: MobileVault.objectId(kind: "chat", id: chatId),
+                                                          purpose: .frontier, maximum: 64 * 1024, client: config.vaultClient),
+              let vv = try? VersionVector.decode(bytes: plaintext), !vv.toHashmap().isEmpty else { return false }
+        return doc.oplogVv().includesVv(other: vv)
+    }
+
+    private func acknowledge(_ id: String) {
+        vaultState.unsealed.append(contentsOf: pendingUpdates.take())
+        let previous = vaultState
+        vaultState.outbox.removeAll { $0.id == id }
+        do { try persist(cursor: cursor) }
+        catch { vaultState = previous; syncError = "Acknowledgement could not be saved; the batch will be retried." }
+    }
+
+    private func startSealer() {
+        guard encrypted, !sealing, started, config.permitsSync(encrypted: true) else { return }
+        sealing = true
+        sealer = Task { [weak self] in
+            guard let self else { return }
+            defer { self.sealing = false }
+            let object = MobileVault.objectId(kind: "chat", id: self.chatId)
+            do {
+                try self.persist(cursor: self.cursor)
+                for batch in self.vaultState.outbox {
+                    try Task.checkCancellation()
+                    let (bytes, id) = try await self.config.vault.prepareBatch(batch.bytes, object: object,
+                        maximum: ChatRoomClient.maxPushBytes - 512, client: self.config.vaultClient)
+                    guard self.config.permitsSync(encrypted: true) else { return }
+                    guard let index = self.vaultState.outbox.firstIndex(where: { $0.id == batch.id }) else { continue }
+                    if id != batch.id {
+                        self.vaultState.unsealed.append(contentsOf: self.pendingUpdates.take())
+                        let previous = self.vaultState
+                        self.vaultState.outbox[index] = VaultChatBatch(id: id, bytes: bytes)
+                        do { try self.persist(cursor: self.cursor) }
+                        catch { self.vaultState = previous; throw error }
+                    }
+                    await self.chatRoom?.enqueueSealed(id: id, bytes: bytes)
+                }
+                while let update = self.vaultState.unsealed.first {
+                    try Task.checkCancellation()
+                    let (bytes, id) = try await self.config.vault.seal(update, object: object, purpose: .chatUpdate,
+                        maximum: ChatRoomClient.maxPushBytes - 512, client: self.config.vaultClient)
+                    guard self.config.permitsSync(encrypted: true) else { return }
+                    self.vaultState.unsealed.append(contentsOf: self.pendingUpdates.take())
+                    let previous = self.vaultState
+                    self.vaultState.unsealed.removeFirst()
+                    self.vaultState.outbox.append(VaultChatBatch(id: id, bytes: bytes))
+                    do { try self.persist(cursor: self.cursor) }
+                    catch { self.vaultState = previous; throw error }
+                    await self.chatRoom?.enqueueSealed(id: id, bytes: bytes)
+                }
+                self.syncError = nil
+            } catch {
+                self.syncError = "Encrypted sends remain queued on this device. Retry when the vault is ready."
+            }
+        }
+    }
+
+    func pauseNetwork() async {
+        sealer?.cancel()
+        let task = sealer
+        sealer = nil
+        let room = chatRoom
+        chatRoom = nil
+        await room?.stop()
+        await task?.value
+        connected = false
+    }
+
+    func resumeNetwork(force: Bool = false) {
+        connectIfReady()
+        if let room = chatRoom { Task { await room.resume(force: force) } }
+        startSealer()
+    }
+
     private func connectIfReady() {
-        guard started, !offline, !holdDial, chatRoom == nil, roomGen >= 2 else { return }
+        guard started, !offline, !holdDial, chatRoom == nil, roomGen >= 2, config.permitsSync(encrypted: encrypted) else { return }
         let delegate = ChatRoomClient.Delegate(
             cursor: { [weak self] in self?.cursor ?? 0 },
             containsFrontier: { [weak self] frontier in
+                if let self, self.encrypted { return await self.encryptedFrontier(frontier) }
                 // Deliberately NO empty-frontier shortcut (mirror of
                 // EngineChatSink::contains_frontier): an empty payload on a
                 // present checkpoint is unreadable provenance, not proof of
@@ -216,31 +362,21 @@ final class SessionStore {
                 return self.doc.oplogVv().includesVv(other: vv)
             },
             applyCheckpoint: { [weak self] bytes, seq in
-                guard let self,
-                      (try? self.doc.importWith(bytes: bytes, origin: "remote")) != nil else {
-                    return false
-                }
-                self.cursor = max(self.cursor, seq)
-                self.project()
-                self.saver?.poke()
-                return true
+                guard let self else { return .storageFailed }
+                return await self.applyRemote(bytes, seq: seq, purpose: .checkpoint)
             },
             applyRow: { [weak self] bytes, seq in
-                guard let self else { return }
+                guard let self else { return .storageFailed }
                 // Malformed remote bytes cost the row, never the doc. The
                 // cursor still advances: replaying a poison row forever is
                 // the wedge class chat2 replaces.
-                if (try? self.doc.importWith(bytes: bytes, origin: "remote")) == nil {
-                    roomLog.warning("chat2 \(self.chatId, privacy: .public): row import failed; skipping row \(seq)")
-                }
-                self.cursor = max(self.cursor, seq)
-                self.project()
-                self.saver?.poke()
+                return await self.applyRemote(bytes, seq: seq, purpose: .chatUpdate)
             },
+            acknowledged: { [weak self] id in if let self, self.encrypted { self.acknowledge(id) } },
             advanceCursor: { [weak self] seq in
                 guard let self else { return }
-                self.cursor = max(self.cursor, seq)
-                self.saver?.poke()
+                do { try self.persist(cursor: max(self.cursor, seq)) }
+                catch { self.syncError = "Cursor could not be saved." }
             },
             clampCursor: { [weak self] seq in
                 guard let self, self.cursor > seq else { return }
@@ -253,29 +389,30 @@ final class SessionStore {
                 // (KB-bounded by trim policy; re-imports are no-ops), which
                 // converts any lying cursor into a true one.
                 roomLog.info("chat2 \(self.chatId, privacy: .public): cursor amnesty \(self.cursor) → \(seq)")
-                self.cursor = seq
-                self.saver?.poke()
+                do { try self.persist(cursor: seq) }
+                catch { self.syncError = "Cursor could not be saved." }
             },
             setCursor: { [weak self] seq in
                 guard let self, self.cursor != seq else { return }
-                self.cursor = seq
-                self.saver?.poke()
+                do { try self.persist(cursor: seq) }
+                catch { self.syncError = "Cursor could not be saved." }
             },
             event: { [weak self] event in self?.handle(event) }
         )
         let client = ChatRoomClient(
             chatId: chatId, device: config.deviceId,
-            urlProvider: { [config, chatId] in await config.chat2SocketURL(chatId: chatId) },
-            checkpointRequest: { [config, chatId] in
-                await config.chat2CheckpointRequest(chatId: chatId)
+            urlProvider: { [config, chatId, encrypted] in await config.chat2SocketURL(chatId: chatId, encrypted: encrypted) },
+            checkpointRequest: { [config, chatId, encrypted] in
+                await config.chat2CheckpointRequest(chatId: chatId, encrypted: encrypted)
             },
-            rowsRequest: { [config, chatId] after in
-                await config.chat2RowsRequest(chatId: chatId, after: after)
+            rowsRequest: { [config, chatId, encrypted] after in
+                await config.chat2RowsRequest(chatId: chatId, after: after, encrypted: encrypted)
             },
-            pushRequest: { [config, chatId] batchId in
-                await config.chat2PushRequest(chatId: chatId, batchId: batchId)
+            pushRequest: { [config, chatId, encrypted] batchId in
+                await config.chat2PushRequest(chatId: chatId, batchId: batchId, encrypted: encrypted)
             },
-            delegate: delegate)
+            delegate: delegate,
+            sendAllowed: { [config, encrypted] in config.permitsSync(encrypted: encrypted) })
         chatRoom = client
         // First contact with the room (cursor 0): everything committed
         // BEFORE the local-update subscription saw a client — an adopt's
@@ -285,11 +422,12 @@ final class SessionStore {
         // on unpushed deps sit in peers' pending-dep buffers forever). Push
         // the doc's full update log as the join's first batch; once acked
         // the cursor moves and this never re-arms.
-        if cursor == 0,
+        if !encrypted, cursor == 0,
            let all = try? doc.export(mode: .updates(from: VersionVector())), !all.isEmpty {
             Task { await client.enqueue(update: all) }
         }
         Task { await client.start() }
+        startSealer()
     }
 
     /// Mine the retired s2 snapshot for OUR OWN still-pending commands and
@@ -345,6 +483,8 @@ final class SessionStore {
     }
 
     func stop() {
+        started = false
+        sealer?.cancel()
         subscriptions.removeAll()
         saver?.flush()
         if let chatRoom {
@@ -356,6 +496,9 @@ final class SessionStore {
 
     private func handle(_ event: ChatRoomEvent) {
         switch event {
+        case .paused:
+            connected = false
+            syncError = "Sync paused: the next record could not be verified or opened."
         case .connected:
             connected = true
             project()
@@ -619,7 +762,11 @@ final class SessionStore {
             try map.insert(key: "expiresAt", v: nowMs() + commandDefaultTtlMs)
             try map.insert(key: "status", v: "pending")
             doc.commit()
-        } catch {}
+            try persist(cursor: cursor)
+        } catch {
+            syncError = "Command could not be saved; nothing was sent."
+            return
+        }
         nudgeHost()
     }
 

@@ -1796,4 +1796,44 @@ ES-16  Release controls, support, and staged activation
    and independent security review. No production deployment was performed.
 
 
+
+17.11. iOS vault lifecycle and encrypted transports (2026-09-08)
+
+   The native app now decides its transport mode from the vault BEFORE any
+   store dials (AppModel.refreshVault → AppConfig.syncAccess): an explicit
+   absent-vault answer permits the legacy plaintext rooms, an approved
+   membership with the current epoch key permits the encrypted generations
+   (chat2/{id}-e1, registry e1), and every other state — pending, locked,
+   key update required, verification failed, revoked, unknown — blocks all
+   sync. Sign-out invalidates the config so no late refresh or push can use
+   the old identity. Foregrounding re-checks a pending approval.
+
+   MobileVault (apps/ios/Zeron/Sync/VaultSession.swift) keeps the pinned
+   genesis fingerprint, verified history, keyring, object keys, enrollment,
+   and journaled recovery transitions in a Keychain-protected state file
+   (VaultPersistence: device-only, non-syncing key; AES-GCM; excluded from
+   backup; fsync'd atomic writes). Enrollment requires the vault fingerprint
+   from an approved device; the phone shows the genesis-bound comparison
+   code. Recovery uses the kit plus the fingerprint from the recovery file.
+
+   SessionStore seals local updates into a durable per-chat outbox
+   (VaultChatDisk) before any transport sees them, re-seals stale batches
+   under the current head, retires them on ack, and opens rows/checkpoints/
+   frontiers through the vault with explicit outcomes (ChatApplyOutcome):
+   unverifiable data pauses the room and holds the cursor. WorkspaceStore
+   seals every registry value through VaultRegistryCodec, keeps sealed
+   batches durable until acked, and merges opened rows against the verified
+   baseline so rejected fields cannot erase verified ones.
+
+   The Encryption screen (Views/EncryptionView.swift, Home → account menu)
+   shows the state, fingerprint, epoch, and comparison code, and offers
+   "Approve from another device" and "Use recovery key".
+
+   Verification: xcodebuild build for the iOS simulator succeeds with the
+   whole app; the ZeronTests target runs on an iPhone 17 Pro simulator
+   (see the PR test plan for the count). Not yet covered: live two-device
+   pairing on hardware, background/lock lifecycle, and the iOS readers for
+   sealed tails/blobs (the app reads transcripts from the sealed rows).
+
+
                           -- End of Project Plan --

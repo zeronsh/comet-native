@@ -49,9 +49,27 @@ final class WorkspaceStore {
     /// restarts on every rejoin.
     @ObservationIgnored private var registryJoinedAt: Int64?
     private let config: AppConfig
+    let encrypted: Bool
+    private(set) var syncError: String?
+    @ObservationIgnored private var stopped = false
+    @ObservationIgnored private var sealedBatches: [String: RegistryPendingBatch] = [:]
+    @ObservationIgnored private let http = URLSession(configuration: .default)
+    private struct StoredRegistry: Codable {
+        var version = 1
+        var doc: Data
+        var batches: [String: RegistryPendingBatch]
+    }
+    private var registryURL: URL {
+        encrypted ? config.vaultPersistence.directory.appendingPathComponent("registry.snapshot")
+            : DocDisk.registryURL(orgId: config.orgId, userId: config.userId)
+    }
+    private var codec: VaultRegistryCodec {
+        VaultRegistryCodec(vault: config.vault, client: config.vaultClient, userId: config.userId)
+    }
 
     init(config: AppConfig) {
         self.config = config
+        encrypted = config.syncAccess == .encrypted
         self.doc = RegistryDoc(deviceId: config.deviceId)
     }
 
@@ -61,24 +79,35 @@ final class WorkspaceStore {
         // sidebar renders immediately and the hello backfills from our
         // cursor. First run after the update: no blob → cursor null → the
         // server's full state (the engines already seeded everything).
-        let blobURL = DocDisk.registryURL(orgId: config.orgId, userId: config.userId)
-        if let data = try? Data(contentsOf: blobURL),
-           let loaded = try? RegistryDoc.from(data: data, deviceId: config.deviceId) {
+        let blobURL = registryURL
+        if encrypted {
+            do {
+                if FileManager.default.fileExists(atPath: blobURL.path) {
+                    let size = try blobURL.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? Int.max
+                    guard size <= VaultChatDisk.maxBytes else { throw VaultStorageError.tooLarge }
+                    let saved = try JSONDecoder().decode(StoredRegistry.self, from: Data(contentsOf: blobURL))
+                    guard saved.version == 1 else { throw VaultStorageError.invalidState }
+                    doc = try RegistryDoc.from(data: saved.doc, deviceId: config.deviceId)
+                    sealedBatches = saved.batches
+                }
+            } catch { syncError = "Encrypted registry storage could not be opened."; return }
+        } else if let data = try? Data(contentsOf: blobURL),
+                  let loaded = try? RegistryDoc.from(data: data, deviceId: config.deviceId) {
             doc = loaded
         }
         project()
         saver = RegistrySaver(url: blobURL) { [weak self] in
-            try? self?.doc.toData()
+            try? self?.snapshotBytes()
         }
 
         let delegate = RegistryClient.Delegate(
             helloCursor: { [weak self] in self?.doc.helloCursor ?? nil },
-            takePushable: { [weak self] in self?.doc.takePushable() ?? [] },
-            event: { [weak self] event in self?.handle(event) }
+            takePushable: { [weak self] in await self?.takePushable() ?? [] },
+            event: { [weak self] event in await self?.handle(event) }
         )
         let client = RegistryClient(device: config.deviceId,
-                                    urlProvider: { [config] in await config.registrySocketURL() },
-                                    delegate: delegate)
+                                    urlProvider: { [config, encrypted] in await config.registrySocketURL(encrypted: encrypted) },
+                                    delegate: delegate, sendAllowed: { [config, encrypted] in config.permitsSync(encrypted: encrypted) })
         self.client = client
         Task { await client.start() }
         // Pull-first bootstrap + poll-while-down: one HTTPS GET syncs the
@@ -104,8 +133,100 @@ final class WorkspaceStore {
 
     /// The WS hello's delta answer over plain HTTPS, applied through the
     /// exact state path the socket uses.
+    private func snapshotBytes() throws -> Data {
+        let data = try doc.toData()
+        return encrypted ? try JSONEncoder().encode(StoredRegistry(doc: data, batches: sealedBatches)) : data
+    }
+
+    private func persistRegistry() throws {
+        let bytes = try snapshotBytes()
+        guard bytes.count <= VaultChatDisk.maxBytes else { throw VaultStorageError.tooLarge }
+        try FileManager.default.createDirectory(at: registryURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try VaultPersistence.writeDurably(bytes, to: registryURL)
+    }
+
+    @ObservationIgnored private var sealingBatches = false
+    private func takePushable() async -> [RegistryPendingBatch] {
+        guard !stopped, !sealingBatches, config.permitsSync(encrypted: encrypted) else { return [] }
+        let batches = doc.takePushable()
+        guard encrypted else { return batches }
+        sealingBatches = true
+        defer { sealingBatches = false }
+        var result: [RegistryPendingBatch] = []
+        do {
+            for batch in batches {
+                let status = await config.vault.status()
+                func current(_ candidate: RegistryPendingBatch) -> Bool {
+                    candidate.ops.allSatisfy { op in
+                        (op.set ?? [:]).values.allSatisfy { value in
+                            guard let text = value.objectValue?["e1"]?.stringValue,
+                                  let bytes = Data(base64Encoded: text),
+                                  let record = try? VaultUnverifiedRecord.parse(bytes, maxPayloadBytes: 8 * 1024 + 144) else { return false }
+                            return record.untrustedBinding.membershipHash.vaultHex == status.membershipHash
+                        }
+                    }
+                }
+                if sealedBatches[batch.batch].map(current) != true {
+                    sealedBatches[batch.batch] = try await codec.seal(batch)
+                }
+                guard !stopped, !Task.isCancelled, config.permitsSync(encrypted: true),
+                      let sealed = sealedBatches[batch.batch], current(sealed) else { throw MobileVaultError.unavailable }
+                result.append(sealed)
+            }
+            try persistRegistry()
+            return result
+        } catch {
+            doc.markDisconnected()
+            syncError = "Registry changes remain queued until they can be encrypted and saved."
+            return []
+        }
+    }
+
+    private func handle(_ event: RegistryEvent) async {
+        guard !stopped else { return }
+        guard encrypted else { handleVerified(event); return }
+        var previous: Data?
+        var oldBatches = sealedBatches
+        func checkpoint() throws {
+            previous = try doc.toData()
+            oldBatches = sealedBatches
+        }
+        do {
+            switch event {
+            case .state(let seq, _, let floor, let rows, let beats):
+                let opened = try await codec.open(rows)
+                guard !stopped, config.permitsSync(encrypted: true) else { return }
+                try checkpoint()
+                handleVerified(.state(seq: seq, full: false, gcFloor: floor,
+                                      rows: VaultRegistryCodec.merge(opened, into: doc.authoritative), presence: beats))
+            case .rows(let seq, let rows):
+                let opened = try await codec.open(rows)
+                guard !stopped, config.permitsSync(encrypted: true) else { return }
+                try checkpoint()
+                handleVerified(.rows(seq: seq, rows: VaultRegistryCodec.merge(opened, into: doc.authoritative)))
+            case .ack(let batch, _, _):
+                try checkpoint()
+                handleVerified(event)
+                sealedBatches.removeValue(forKey: batch)
+            default:
+                try checkpoint()
+                handleVerified(event)
+            }
+            try persistRegistry()
+            syncError = nil
+        } catch {
+            if let previous, let restored = try? RegistryDoc.from(data: previous, deviceId: config.deviceId) {
+                doc = restored
+                sealedBatches = oldBatches
+            }
+            syncError = "Registry sync paused: data could not be verified or saved."
+            connected = false
+            project()
+        }
+    }
+
     private func pullDelta() async {
-        guard let request = await config.registryRowsRequest(since: doc.helloCursor) else {
+        guard let request = await config.registryRowsRequest(since: doc.helloCursor, encrypted: encrypted) else {
             roomLog.warning("registry: http pull skipped — no URL (token unavailable)")
             return
         }
@@ -129,7 +250,7 @@ final class WorkspaceStore {
             roomLog.warning("registry: http pull body unparseable")
             return
         }
-        handle(.state(seq: body.seq, full: body.full, gcFloor: body.gcFloor ?? 0,
+        await handle(.state(seq: body.seq, full: body.full, gcFloor: body.gcFloor ?? 0,
                       rows: body.rows, presence: body.presence ?? [:]))
     }
 
@@ -145,10 +266,10 @@ final class WorkspaceStore {
             var seq: UInt64
             var applied: UInt64?
         }
-        let batches = doc.takePushable()
+        let batches = await takePushable()
         guard !batches.isEmpty else { return }
         for pending in batches {
-            guard var request = await config.registryPushRequest(),
+            guard var request = await config.registryPushRequest(encrypted: encrypted),
                   let body = try? JSONEncoder().encode(PushBody(batch: pending.batch,
                                                                 ops: pending.ops)) else { break }
             request.httpBody = body
@@ -163,7 +284,7 @@ final class WorkspaceStore {
                 doc.markDisconnected()
                 break
             }
-            handle(.ack(batch: ack.batch, seq: ack.seq, applied: ack.applied ?? 0))
+            await handle(.ack(batch: ack.batch, seq: ack.seq, applied: ack.applied ?? 0))
         }
     }
 
@@ -200,7 +321,7 @@ final class WorkspaceStore {
 
     // MARK: Server events (delivered in frame order — rows before ack)
 
-    private func handle(_ event: RegistryEvent) {
+    private func handleVerified(_ event: RegistryEvent) {
         switch event {
         case .state(let seq, let full, let gcFloor, let rows, let beats):
             // On a state frame with full=true and seq < our cursor (server

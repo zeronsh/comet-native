@@ -189,6 +189,48 @@ enum VaultEnvelope {
         }
     }
 
+    static func sign(binding: VaultRecordBinding, revision: Data, payload: Data,
+                     signingKey: Curve25519.Signing.PrivateKey, limit: Int) throws -> Data {
+        let input = try VaultRecordCodec.signingBytes(binding: binding, revisionId: revision, payload: payload, maxPayloadBytes: limit)
+        return try VaultRecordCodec.encodeSigned(binding: binding, revisionId: revision, payload: payload,
+                                                signature: signingKey.signature(for: input), maxPayloadBytes: limit)
+    }
+
+    static func sealKeyring(binding: VaultRecordBinding, kind: VaultRecipientKind, recipientId: Data,
+                            recipientKey: Curve25519.KeyAgreement.PublicKey, keyring: VaultKeyring,
+                            signingKey: Curve25519.Signing.PrivateKey) throws -> Data {
+        guard binding.kind == .keyEnvelope, kind != .epoch, recipientId.count == 16 else { throw VaultEnvelopeError.wrongKind }
+        let revision = try VaultContentCrypto.randomBytes(16)
+        let context = try VaultRecordCodec.contextBytes(binding: binding, revisionId: revision)
+        let info = keyringInfoDomain + context + header(count: 3, kind: kind, recipientId: recipientId)
+        var sender = try HPKE.Sender(recipientKey: recipientKey, ciphersuite: hpkeSuite, info: info)
+        let ciphertext = try sender.seal(keyring.encode(), authenticating: Data())
+        var payload = header(count: 5, kind: kind, recipientId: recipientId)
+        VaultRecordCodec.bytesField(into: &payload, key: 3, value: sender.encapsulatedKey)
+        VaultRecordCodec.bytesField(into: &payload, key: 4, value: ciphertext)
+        return try sign(binding: binding, revision: revision, payload: payload, signingKey: signingKey, limit: maxPayloadBytes)
+    }
+
+    static func wrapObjectKey(binding: VaultRecordBinding, epochKey: Data, key: VaultContentKey,
+                              signingKey: Curve25519.Signing.PrivateKey) throws -> Data {
+        guard binding.kind == .keyEnvelope, epochKey.count == 32,
+              key.scope == VaultKeyScope(binding) else { throw VaultEnvelopeError.wrongScope }
+        let revision = try VaultContentCrypto.randomBytes(16)
+        let salt = try VaultContentCrypto.randomBytes(32)
+        let context = try VaultRecordCodec.contextBytes(binding: binding, revisionId: revision)
+        var prefix = header(count: 4, kind: .epoch, recipientId: epochRecipientId(binding.epoch))
+        VaultRecordCodec.bytesField(into: &prefix, key: 3, value: salt)
+        let derived = try VaultCrypto.hkdfSHA256(inputKeyMaterial: SymmetricKey(data: epochKey), salt: salt,
+                                               info: objectKeyDomain + context + prefix, outputByteCount: 32)
+        let box = try AES.GCM.seal(key.identifier + key.exposeSecret(), using: derived,
+                                   nonce: AES.GCM.Nonce(data: Data(repeating: 0, count: 12)),
+                                   authenticating: objectAadDomain + context + prefix)
+        var payload = prefix
+        payload[payload.startIndex] = 0xa5
+        VaultRecordCodec.bytesField(into: &payload, key: 4, value: box.ciphertext + box.tag)
+        return try sign(binding: binding, revision: revision, payload: payload, signingKey: signingKey, limit: maxPayloadBytes)
+    }
+
     fileprivate static func checked<Value>(_ operation: () throws -> Value) throws -> Value {
         do { return try operation() }
         catch let error as VaultEnvelopeError { throw error }

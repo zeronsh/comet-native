@@ -45,6 +45,9 @@ fn print_status(status: &Value) {
         other => other.to_string(),
     };
     println!("Encryption: {line}");
+    if let Some(fingerprint) = status.get("genesisHash").and_then(Value::as_str) {
+        println!("Vault fingerprint: {fingerprint}");
+    }
     if let Some(epoch) = status.get("epoch").and_then(Value::as_u64) {
         println!("Key epoch:  {epoch}");
     }

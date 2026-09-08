@@ -473,6 +473,17 @@ impl EncryptionPage {
             }
             _ => {}
         }
+        if let Some(fingerprint) = status.get("genesisHash").and_then(Value::as_str) {
+            let fingerprint = fingerprint.to_string();
+            actions.push(self.action_button(
+                theme,
+                "vault-copy-fingerprint",
+                "Copy vault fingerprint",
+                false,
+                cx,
+                move |_, cx| cx.write_to_clipboard(ClipboardItem::new_string(fingerprint.clone())),
+            ));
+        }
         actions.push(self.action_button(
             theme,
             "vault-refresh",

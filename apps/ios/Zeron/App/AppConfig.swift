@@ -17,7 +17,31 @@ final class AppConfig: @unchecked Sendable {
     let deviceId: String
     let deviceName: String
 
+    let vault: MobileVault
+    let vaultPersistence: VaultPersistence
+    enum SyncAccess: Sendable, Equatable { case blocked, legacy, encrypted }
+    private var access: SyncAccess = .blocked
+    private var invalidated = false
     private let lock = NSLock()
+
+    var syncAccess: SyncAccess { lock.withLock { access } }
+    func setSyncAccess(_ value: SyncAccess) { lock.withLock { access = invalidated ? .blocked : value } }
+    func permitsSync(encrypted: Bool) -> Bool {
+        lock.withLock { !invalidated && access == (encrypted ? .encrypted : .legacy) }
+    }
+    var vaultClient: MobileVaultClient {
+        MobileVaultClient(origin: edgeURL, orgId: orgId, token: { [weak self] in await self?.currentToken() })
+    }
+    func invalidate() {
+        lock.withLock {
+            invalidated = true
+            access = .blocked
+            tokens = nil
+            devBearer = nil
+            refreshTask?.cancel()
+            refreshTask = nil
+        }
+    }
     private var tokens: AuthTokens?
     private var devBearer: String?
     /// In-flight refresh shared by every caller (single-flight). WorkOS
@@ -40,11 +64,13 @@ final class AppConfig: @unchecked Sendable {
         self.deviceName = deviceName
         self.tokens = tokens
         self.devBearer = devBearer
+        vaultPersistence = VaultPersistence(origin: edgeURL, orgId: orgId, userId: userId)
+        vault = MobileVault(persistence: vaultPersistence, orgId: orgId, userId: userId)
     }
 
     func updateTokens(_ new: AuthTokens) {
         lock.withLock {
-            tokens = new
+            if !invalidated { tokens = new }
         }
     }
 
@@ -77,9 +103,14 @@ final class AppConfig: @unchecked Sendable {
                 let refreshed = try? await client.refresh(refreshToken: current.refreshToken,
                                                           organizationId: orgId)
                 if let refreshed {
-                    self.updateTokens(refreshed)
-                    Keychain.save(refreshed.accessToken, key: "accessToken")
-                    Keychain.save(refreshed.refreshToken, key: "refreshToken")
+                    let accepted = self.lock.withLock {
+                        guard !self.invalidated else { return false }
+                        self.tokens = refreshed
+                        Keychain.save(refreshed.accessToken, key: "accessToken")
+                        Keychain.save(refreshed.refreshToken, key: "refreshToken")
+                        return true
+                    }
+                    guard accepted else { return nil }
                 } else {
                     roomLog.error("auth: token refresh failed; using expired access token (server will reject and rooms will redial)")
                 }
@@ -88,12 +119,17 @@ final class AppConfig: @unchecked Sendable {
                 }
                 // Failure falls back to the expired token: let the server
                 // reject; the rooms' backoff redials retry through here.
-                return refreshed?.accessToken ?? current.accessToken
+                return self.lock.withLock { self.invalidated ? nil : (refreshed?.accessToken ?? current.accessToken) }
             }
             refreshTask = task
             return task
         }
         return await task.value
+    }
+
+    private func syncToken(encrypted: Bool) async -> String? {
+        guard permitsSync(encrypted: encrypted), let token = await currentToken(), permitsSync(encrypted: encrypted) else { return nil }
+        return token
     }
 
     private var wsBase: URL {
@@ -104,9 +140,9 @@ final class AppConfig: @unchecked Sendable {
 
     /// The workspace registry room (docs/registry-sync.md) — the row-table
     /// replacement for the old ws Loro workspace doc.
-    func registrySocketURL() async -> URL? {
-        guard let token = await currentToken() else { return nil }
-        var url = wsBase.appending(path: "registry/\(orgId)/ws")
+    func registrySocketURL(encrypted: Bool = false) async -> URL? {
+        guard let token = await syncToken(encrypted: encrypted) else { return nil }
+        var url = wsBase.appending(path: "registry/\(orgId)\(encrypted ? "/e1" : "")/ws")
         url.append(queryItems: [URLQueryItem(name: "token", value: token),
                                 URLQueryItem(name: "device", value: deviceId)])
         return url
@@ -115,9 +151,9 @@ final class AppConfig: @unchecked Sendable {
     /// The chat2 log-relay room (docs/chat2-sync.md B) — replaces the s2
     /// session rooms, which mobile no longer dials at all. `device` rides the
     /// URL so the DO can attribute sockets and honor excludeOwn backfills.
-    func chat2SocketURL(chatId: String) async -> URL? {
-        guard let token = await currentToken() else { return nil }
-        var url = wsBase.appending(path: "chat2/\(chatId)/ws")
+    func chat2SocketURL(chatId: String, encrypted: Bool = false) async -> URL? {
+        guard let token = await syncToken(encrypted: encrypted) else { return nil }
+        var url = wsBase.appending(path: "chat2/\(encrypted ? MobileVault.encryptedRoomId(chatId) : chatId)/ws")
         url.append(queryItems: [URLQueryItem(name: "token", value: token),
                                 URLQueryItem(name: "device", value: deviceId)])
         return url
@@ -125,9 +161,9 @@ final class AppConfig: @unchecked Sendable {
 
     /// GET /chat2/{chatId}/checkpoint — the Range-resumable doc snapshot
     /// (auth via bearer header; the caller adds Range on resume).
-    func chat2CheckpointRequest(chatId: String) async -> URLRequest? {
-        guard let token = await currentToken() else { return nil }
-        var request = URLRequest(url: edgeURL.appending(path: "chat2/\(chatId)/checkpoint"))
+    func chat2CheckpointRequest(chatId: String, encrypted: Bool = false) async -> URLRequest? {
+        guard let token = await syncToken(encrypted: encrypted) else { return nil }
+        var request = URLRequest(url: edgeURL.appending(path: "chat2/\(encrypted ? MobileVault.encryptedRoomId(chatId) : chatId)/checkpoint"))
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         return request
     }
@@ -135,9 +171,9 @@ final class AppConfig: @unchecked Sendable {
     /// GET /chat2/{chatId}/rows?after= — pull over plain HTTPS: one request
     /// collapses the socket's connect→hello→state→rowsReq→backfill, and it
     /// works on networks that strip WS upgrades (airplane wifi).
-    func chat2RowsRequest(chatId: String, after: UInt64) async -> URLRequest? {
-        guard let token = await currentToken() else { return nil }
-        var url = edgeURL.appending(path: "chat2/\(chatId)/rows")
+    func chat2RowsRequest(chatId: String, after: UInt64, encrypted: Bool = false) async -> URLRequest? {
+        guard let token = await syncToken(encrypted: encrypted) else { return nil }
+        var url = edgeURL.appending(path: "chat2/\(encrypted ? MobileVault.encryptedRoomId(chatId) : chatId)/rows")
         url.append(queryItems: [URLQueryItem(name: "after", value: String(after)),
                                 URLQueryItem(name: "device", value: deviceId)])
         var request = URLRequest(url: url)
@@ -147,9 +183,9 @@ final class AppConfig: @unchecked Sendable {
 
     /// POST /chat2/{chatId}/rows?batchId= — push over plain HTTPS (batchId
     /// dedupe makes replays no-ops); body is the raw update batch.
-    func chat2PushRequest(chatId: String, batchId: String) async -> URLRequest? {
-        guard let token = await currentToken() else { return nil }
-        var url = edgeURL.appending(path: "chat2/\(chatId)/rows")
+    func chat2PushRequest(chatId: String, batchId: String, encrypted: Bool = false) async -> URLRequest? {
+        guard let token = await syncToken(encrypted: encrypted) else { return nil }
+        var url = edgeURL.appending(path: "chat2/\(encrypted ? MobileVault.encryptedRoomId(chatId) : chatId)/rows")
         url.append(queryItems: [URLQueryItem(name: "batchId", value: batchId),
                                 URLQueryItem(name: "device", value: deviceId)])
         var request = URLRequest(url: url)
@@ -160,9 +196,9 @@ final class AppConfig: @unchecked Sendable {
 
     /// GET /registry/{orgId}/rows?since= — the WS hello's delta answer over
     /// plain HTTPS. `beat=1` doubles as a presence beat.
-    func registryRowsRequest(since: UInt64?) async -> URLRequest? {
-        guard let token = await currentToken() else { return nil }
-        var url = edgeURL.appending(path: "registry/\(orgId)/rows")
+    func registryRowsRequest(since: UInt64?, encrypted: Bool = false) async -> URLRequest? {
+        guard let token = await syncToken(encrypted: encrypted) else { return nil }
+        var url = edgeURL.appending(path: "registry/\(orgId)\(encrypted ? "/e1" : "")/rows")
         var items = [URLQueryItem(name: "device", value: deviceId),
                      URLQueryItem(name: "beat", value: "1")]
         if let since { items.append(URLQueryItem(name: "since", value: String(since))) }
@@ -176,9 +212,9 @@ final class AppConfig: @unchecked Sendable {
 
     /// POST /registry/{orgId}/push — one op batch over plain HTTPS (LWW
     /// clocks make replays apply zero ops).
-    func registryPushRequest() async -> URLRequest? {
-        guard let token = await currentToken() else { return nil }
-        var url = edgeURL.appending(path: "registry/\(orgId)/push")
+    func registryPushRequest(encrypted: Bool = false) async -> URLRequest? {
+        guard let token = await syncToken(encrypted: encrypted) else { return nil }
+        var url = edgeURL.appending(path: "registry/\(orgId)\(encrypted ? "/e1" : "")/push")
         url.append(queryItems: [URLQueryItem(name: "device", value: deviceId)])
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

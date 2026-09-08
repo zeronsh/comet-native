@@ -22,7 +22,10 @@ import os
 /// down). Visible in Console.app / `log stream` under this subsystem.
 let roomLog = Logger(subsystem: "sh.zeron.ios", category: "sync")
 
+enum ChatApplyOutcome: Sendable { case applied, unavailable, authenticationFailed, storageFailed, pendingDependencies }
+
 enum ChatRoomEvent: Sendable {
+    case paused
     /// Joined (or re-joined) and the initial catch-up (checkpoint if needed +
     /// row backfill) has been delivered through the apply closures.
     case connected
@@ -59,9 +62,10 @@ actor ChatRoomClient {
     /// failure (the session redials rather than run blind).
     struct Delegate: Sendable {
         var cursor: @MainActor @Sendable () -> UInt64
-        var containsFrontier: @MainActor @Sendable (Data) -> Bool
-        var applyCheckpoint: @MainActor @Sendable (Data, UInt64) -> Bool
-        var applyRow: @MainActor @Sendable (Data, UInt64) -> Void
+        var containsFrontier: @MainActor @Sendable (Data) async -> Bool
+        var applyCheckpoint: @MainActor @Sendable (Data, UInt64) async -> ChatApplyOutcome
+        var applyRow: @MainActor @Sendable (Data, UInt64) async -> ChatApplyOutcome
+        var acknowledged: @MainActor @Sendable (String) -> Void = { _ in }
         var advanceCursor: @MainActor @Sendable (UInt64) -> Void
         /// Cursor amnesty: lower the cursor to the checkpoint seq (no-op if
         /// already at or below). See the once-per-session clamp in
@@ -92,6 +96,10 @@ actor ChatRoomClient {
     /// POST /chat2/{id}/rows?batchId= — the HTTPS push twin.
     private let pushRequest: @Sendable (String) async -> URLRequest?
     private let delegate: Delegate
+    private let sendAllowed: @Sendable () -> Bool
+    private let session = URLSession(configuration: .default)
+    private var paused: ChatApplyOutcome?
+    private var needsCheckpoint = false
 
     private var socket: URLSessionWebSocketTask?
     private var pullTask: Task<Void, Never>?
@@ -155,7 +163,8 @@ actor ChatRoomClient {
          checkpointRequest: @escaping @Sendable () async -> URLRequest?,
          rowsRequest: @escaping @Sendable (UInt64) async -> URLRequest?,
          pushRequest: @escaping @Sendable (String) async -> URLRequest?,
-         delegate: Delegate) {
+         delegate: Delegate,
+         sendAllowed: @escaping @Sendable () -> Bool = { true }) {
         self.chatId = chatId
         self.device = device
         self.urlProvider = urlProvider
@@ -163,6 +172,7 @@ actor ChatRoomClient {
         self.rowsRequest = rowsRequest
         self.pushRequest = pushRequest
         self.delegate = delegate
+        self.sendAllowed = sendAllowed
     }
 
     // MARK: Lifecycle
@@ -189,7 +199,7 @@ actor ChatRoomClient {
     /// makes replays no-ops), then pull rows (GET) and apply them through the
     /// exact frame path the socket uses. The airplane-wifi transport.
     func pullSync() async {
-        guard !closed else { return }
+        guard !closed, sendAllowed() else { return }
         // Push first, so a message typed on dead wifi leaves the device on
         // this cycle rather than the next.
         for push in pending {
@@ -198,7 +208,7 @@ actor ChatRoomClient {
                 break
             }
             request.httpBody = push.bytes
-            guard let (data, response) = try? await URLSession.shared.data(for: request),
+            guard let (data, response) = try? await session.data(for: request),
                   let http = response as? HTTPURLResponse else {
                 roomLog.warning("chat2 \(self.chatId, privacy: .public): http push transport error; will retry")
                 break
@@ -207,11 +217,12 @@ actor ChatRoomClient {
                let ack = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let seq = (ack["seq"] as? NSNumber)?.uint64Value {
                 pending.removeAll { $0.batchId == push.batchId }
+                await delegate.acknowledged(push.batchId)
                 // Contiguity rule (see the socket ACK path): a jump would
                 // stamp the cursor over interleaved rows we never pulled —
                 // hold, and this cycle's pull below walks the gap.
                 let cursor = await delegate.cursor()
-                if seq <= cursor + 1 {
+                if paused == nil && (seq <= cursor || seq - cursor == 1) {
                     await delegate.advanceCursor(seq)
                 } else {
                     roomLog.warning("chat2 \(self.chatId, privacy: .public): http ack gap (seq=\(seq), cursor=\(cursor)); holding cursor")
@@ -237,7 +248,7 @@ actor ChatRoomClient {
             roomLog.warning("chat2 \(self.chatId, privacy: .public): http pull skipped — no URL (token unavailable)")
             return
         }
-        let fetched = try? await URLSession.shared.data(for: request)
+        let fetched = try? await session.data(for: request)
         guard let (body, response) = fetched, let http = response as? HTTPURLResponse else {
             roomLog.warning("chat2 \(self.chatId, privacy: .public): http pull transport error; will retry")
             return
@@ -271,7 +282,7 @@ actor ChatRoomClient {
         }
         let planAfter = await delegate.cursor()
         var contained = state.checkpointSize == 0
-        if !contained {
+        if !contained && !needsCheckpoint {
             contained = await delegate.containsFrontier(stateFrame.payload)
         }
         if case .checkpointThenRows = chatPlanCatchUp(cursor: planAfter, state: state,
@@ -304,6 +315,7 @@ actor ChatRoomClient {
     }
 
     func stop() {
+        session.invalidateAndCancel()
         closed = true
         generation += 1
         cancelTasks()
@@ -323,6 +335,31 @@ actor ChatRoomClient {
     /// local doc; on a viewer device there is no checkpoint fallback, so
     /// this is loud (post-strip updates are KB-scale — an over-cap update is
     /// an upstream bug).
+    func enqueueSealed(id: String, bytes: Data) {
+        guard !closed, bytes.count <= Self.maxPushBytes, !pending.contains(where: { $0.batchId == id }) else { return }
+        pending.append(PendingPush(batchId: id, bytes: bytes))
+        if stateReceived { Task { await self.pushPending() } }
+    }
+
+    func resume(force: Bool = false) {
+        guard !closed, paused != nil else { return }
+        if paused == .authenticationFailed && !force { return }
+        paused = nil
+        connect()
+    }
+
+    private func failedApply(_ outcome: ChatApplyOutcome) async {
+        switch outcome {
+        case .applied: return
+        case .storageFailed, .pendingDependencies:
+            needsCheckpoint = outcome == .pendingDependencies
+            await onSocketError(gen: generation)
+        case .unavailable, .authenticationFailed:
+            paused = outcome
+            await delegate.event(.paused)
+        }
+    }
+
     func enqueue(update: Data) {
         guard update.count <= ChatRoomClient.maxPushBytes else {
             roomLog.error("chat2 \(self.chatId, privacy: .public): update \(update.count)B exceeds the row cap; not queued")
@@ -400,7 +437,7 @@ actor ChatRoomClient {
 
     private func openSocket(url: URL, gen: Int) async {
         guard gen == generation, !closed else { return }
-        let task = URLSession.shared.webSocketTask(with: url)
+        let task = session.webSocketTask(with: url)
         socket = task
         task.resume()
         lastInbound = .now()
@@ -571,16 +608,18 @@ actor ChatRoomClient {
 
         case ChatFrameType.ack:
             guard let batchId = frame.header["batchId"] as? String,
-                  let seq = (frame.header["seq"] as? NSNumber)?.uint64Value else { return }
+                  let seq = (frame.header["seq"] as? NSNumber)?.uint64Value,
+                  pending.contains(where: { $0.batchId == batchId }) else { return }
             pending.removeAll { $0.batchId == batchId }
+            await delegate.acknowledged(batchId)
             // Contiguity rule, ack flavor: our own batch landing at `seq`
             // proves rows up to seq exist SERVER-side, not that we have the
             // interleaved ones from other devices.
             let cursor = await delegate.cursor()
-            if seq > cursor + 1 {
+            if seq > cursor && seq - cursor > 1 {
                 gapRepair = true
                 roomLog.warning("chat2 \(self.chatId, privacy: .public): ack gap (seq=\(seq), cursor=\(cursor)); holding cursor and requesting backfill")
-            } else {
+            } else if paused == nil {
                 await delegate.advanceCursor(seq)
             }
             // A grant after a quota rejection: drain whatever the error
@@ -624,7 +663,7 @@ actor ChatRoomClient {
         // Same presence rule as chatPlanCatchUp: SIZE, not seq — a seeded
         // room's checkpoint covers seq 0.
         var contained = state.checkpointSize == 0
-        if !contained {
+        if !contained && !needsCheckpoint {
             contained = await delegate.containsFrontier(frame.payload)
         }
         // Cursor amnesty, once per client: a cursor above the checkpoint seq
@@ -670,7 +709,7 @@ actor ChatRoomClient {
         // amnesty already applied) or UP (a contained checkpoint covers the
         // skipped span). Without the raise, the backfill's first row
         // (`after + 1`) reads as a contiguity gap against a stale cursor.
-        await delegate.setCursor(after)
+        if case .rowsOnly = plan { await delegate.setCursor(after) }
         await send(ChatWire.encode(ChatFrameType.rowsReq,
                                    header: ["after": after, "excludeOwn": resumed]))
         // Pending pushes go before catch-up completes: batchId dedupe makes
@@ -703,14 +742,17 @@ actor ChatRoomClient {
             }
             return
         }
-        guard await delegate.applyCheckpoint(bytes, seq), !closed else {
+        let outcome = await delegate.applyCheckpoint(bytes, seq)
+        guard outcome == .applied, !closed else {
             if !closed {
                 roomLog.error("chat2 \(self.chatId, privacy: .public): checkpoint import failed; redialing")
                 checkpointBuffer = nil
-                await onSocketError(gen: generation)
+                needsCheckpoint = true
+                await failedApply(outcome)
             }
             return
         }
+        needsCheckpoint = false
         while let frame = checkpointBuffer?.first {
             checkpointBuffer?.removeFirst()
             await applyRowFrame(frame)
@@ -724,6 +766,7 @@ actor ChatRoomClient {
     /// Factored out so frames buffered during a parallel checkpoint fetch
     /// replay through exactly the live path.
     private func applyRowFrame(_ frame: ChatWireFrame) async {
+        guard !closed, paused == nil else { return }
         if frame.kind == ChatFrameType.row {
             guard let seq = (frame.header["seq"] as? NSNumber)?.uint64Value else { return }
             // Own-device rows can still arrive (first-backfill redownload, a
@@ -738,12 +781,12 @@ actor ChatRoomClient {
             // repair. Skipping the hole was the random new-session
             // forever-hang: an empty doc under an advanced cursor.
             let cursor = await delegate.cursor()
-            if seq > cursor + 1 {
+            if seq > cursor && seq - cursor > 1 {
                 gapRepair = true
                 roomLog.warning("chat2 \(self.chatId, privacy: .public): row gap (seq=\(seq), cursor=\(cursor)); holding cursor and requesting backfill")
-                await delegate.applyRow(frame.payload, cursor)
+                await failedApply(delegate.applyRow(frame.payload, cursor))
             } else {
-                await delegate.applyRow(frame.payload, seq)
+                await failedApply(delegate.applyRow(frame.payload, seq))
             }
             return
         }
@@ -768,6 +811,8 @@ actor ChatRoomClient {
     /// catch-up is the stronger repair. The HTTP pull path needs no send —
     /// its next cycle re-requests from the held cursor.
     private func maybeRepairGap(gen: Int) async {
+        guard paused == nil else { return }
+        if needsCheckpoint { await onSocketError(gen: gen); return }
         guard gapRepair, gen == generation, socket != nil, stateReceived else { return }
         gapRepair = false
         gapRepairs += 1
@@ -820,8 +865,10 @@ actor ChatRoomClient {
     // MARK: Outbound
 
     private func pushPending() async {
-        guard stateReceived else { return }
-        for ix in pending.indices where !pending[ix].inFlight {
+        guard stateReceived, !closed, sendAllowed() else { return }
+        let ids = pending.filter { !$0.inFlight }.map(\.batchId)
+        for id in ids {
+            guard let ix = pending.firstIndex(where: { $0.batchId == id }), !pending[ix].inFlight else { continue }
             pending[ix].inFlight = true
             let push = pending[ix]
             await send(ChatWire.encode(ChatFrameType.push,
@@ -840,7 +887,7 @@ actor ChatRoomClient {
     }
 
     private func send(_ frame: Data) async {
-        guard let socket else { return }
+        guard !closed, sendAllowed(), let socket else { return }
         try? await socket.send(.data(frame))
     }
 
@@ -868,7 +915,7 @@ actor ChatRoomClient {
             if !got.isEmpty {
                 request.setValue("bytes=\(got.count)-", forHTTPHeaderField: "Range")
             }
-            guard let (stream, response) = try? await URLSession.shared.bytes(for: request),
+            guard let (stream, response) = try? await session.bytes(for: request),
                   let http = response as? HTTPURLResponse else { continue }
             let seq = http.value(forHTTPHeaderField: "x-chat2-checkpoint-seq")
             if let seq {
@@ -890,6 +937,7 @@ actor ChatRoomClient {
             }
             do {
                 for try await byte in stream {
+                    guard got.count < 64 * 1024 * 1024 else { return nil }
                     got.append(byte)
                     // Download progress is liveness (see pingTick) — stamp
                     // it every 8KB, not every byte.

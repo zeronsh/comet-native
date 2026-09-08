@@ -88,6 +88,7 @@ pub struct VaultStatus {
     #[serde(flatten)]
     pub phase: VaultPhase,
     pub vault_id: Option<String>,
+    pub genesis_hash: Option<String>,
     pub device_id: Option<String>,
     pub epoch: Option<u64>,
     pub devices: Vec<VaultDevice>,
@@ -256,6 +257,7 @@ impl VaultService {
                 reason: "starting".into(),
             },
             vault_id: None,
+            genesis_hash: None,
             device_id: None,
             epoch: None,
             devices: Vec::new(),
@@ -324,6 +326,7 @@ impl VaultService {
         let base = |phase: VaultPhase| VaultStatus {
             phase,
             vault_id: guarded.state.vault.as_ref().map(|v| v.vault_id.0.clone()),
+            genesis_hash: guarded.trust.as_ref().map(|t| Hex::of(t.head().genesis_hash()).0),
             device_id: device_id.clone(),
             epoch: None,
             devices: Vec::new(),
@@ -398,6 +401,7 @@ impl VaultService {
         VaultStatus {
             phase,
             vault_id: Some(Hex::of(head.vault_id()).0),
+            genesis_hash: Some(Hex::of(head.genesis_hash()).0),
             device_id,
             epoch: Some(head.epoch()),
             devices,

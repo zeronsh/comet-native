@@ -78,12 +78,16 @@ enum DocDisk {
 
     /// Atomically persist the chat2 doc snapshot + its room cursor.
     static func saveChat2(doc: LoroDoc, id: String, cursor: UInt64) {
-        guard let snapshot = try? doc.export(mode: .snapshot) else { return }
+        try? persistChat2(doc: doc, id: id, cursor: cursor)
+    }
+
+    static func persistChat2(doc: LoroDoc, id: String, cursor: UInt64) throws {
+        let snapshot = try doc.export(mode: .snapshot)
         var data = chat2Magic
         var le = cursor.littleEndian
         withUnsafeBytes(of: &le) { data.append(contentsOf: $0) }
         data.append(snapshot)
-        try? data.write(to: chat2URL(for: id), options: .atomic)
+        try VaultPersistence.writeDurably(data, to: chat2URL(for: id))
     }
 
     /// LRU-prune session snapshots (the workspace registry blob is always

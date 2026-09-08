@@ -53,13 +53,15 @@ actor RegistryClient {
     /// MainActor-isolated bridge to the store's RegistryDoc.
     struct Delegate: Sendable {
         var helloCursor: @MainActor @Sendable () -> UInt64?
-        var takePushable: @MainActor @Sendable () -> [RegistryPendingBatch]
-        var event: @MainActor @Sendable (RegistryEvent) -> Void
+        var takePushable: @MainActor @Sendable () async -> [RegistryPendingBatch]
+        var event: @MainActor @Sendable (RegistryEvent) async -> Void
     }
 
     private let device: String
     private let urlProvider: @Sendable () async -> URL?
     private let delegate: Delegate
+    private let session = URLSession(configuration: .default)
+    private let sendAllowed: @Sendable () -> Bool
 
     private var socket: URLSessionWebSocketTask?
     private var receiveTask: Task<Void, Never>?
@@ -81,10 +83,11 @@ actor RegistryClient {
 
     init(device: String,
          urlProvider: @escaping @Sendable () async -> URL?,
-         delegate: Delegate) {
+         delegate: Delegate, sendAllowed: @escaping @Sendable () -> Bool = { true }) {
         self.device = device
         self.urlProvider = urlProvider
         self.delegate = delegate
+        self.sendAllowed = sendAllowed
     }
 
     // MARK: Lifecycle
@@ -95,6 +98,7 @@ actor RegistryClient {
     }
 
     func stop() {
+        session.invalidateAndCancel()
         closed = true
         generation += 1
         cancelTasks()
@@ -168,7 +172,7 @@ actor RegistryClient {
 
     private func openSocket(url: URL, gen: Int) async {
         guard gen == generation, !closed else { return }
-        let task = URLSession.shared.webSocketTask(with: url)
+        let task = session.webSocketTask(with: url)
         socket = task
         task.resume()
         lastInbound = .now()
@@ -371,7 +375,7 @@ actor RegistryClient {
     }
 
     private func send(_ frame: some Encodable) async {
-        guard let socket, let data = try? JSONEncoder().encode(frame),
+        guard !closed, sendAllowed(), let socket, let data = try? JSONEncoder().encode(frame),
               let text = String(data: data, encoding: .utf8) else { return }
         try? await socket.send(.string(text))
     }

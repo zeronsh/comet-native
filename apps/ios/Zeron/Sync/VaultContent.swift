@@ -194,7 +194,7 @@ enum VaultContentCrypto {
         return header
     }
 
-    fileprivate static func randomBytes(_ count: Int) throws -> Data {
+    static func randomBytes(_ count: Int) throws -> Data {
         var bytes = Data(count: count)
         let status = bytes.withUnsafeMutableBytes { buffer -> OSStatus in
             guard let address = buffer.baseAddress else { return errSecParam }

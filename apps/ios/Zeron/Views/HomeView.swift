@@ -15,6 +15,7 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @State private var path: [Route] = []
     @State private var showNewSpace = false
+    @State private var showEncryption = false
     // "" = All. Sticky across launches; falls back to All if the space is gone.
     @AppStorage("homeSpaceFilter") private var spaceFilter: String = ""
 
@@ -100,11 +101,17 @@ struct HomeView: View {
                         if model.demo != nil {
                             Text("Demo mode")
                         }
+                        if model.demo == nil {
+                            Button("Encryption…") { showEncryption = true }
+                        }
                         Button("Sign out", role: .destructive) { model.signOut() }
                     } label: {
                         Image(systemName: "person.circle")
                     }
                 }
+            }
+            .sheet(isPresented: $showEncryption) {
+                EncryptionView()
             }
             .sheet(isPresented: $showNewSpace) {
                 NewSpaceSheet { spaceId in
