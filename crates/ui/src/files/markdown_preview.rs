@@ -10,7 +10,13 @@ use gpui::{
     AnyElement, Context, FocusHandle, ListAlignment, ListOffset, ListSizingBehavior, ListState,
     Render, Task, Window, div, list, prelude::*, px,
 };
-use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 pub(super) fn is_markdown(path: &str) -> bool {
     path.rsplit_once('.')
@@ -80,6 +86,12 @@ pub(super) struct MarkdownPreview {
     pub media_client: Option<(super::client::WorkspaceFilesClient, String)>,
     images: HashMap<String, Result<super::markdown_media::MediaImage, String>>,
     image_task: Option<Task<()>>,
+    diagrams: HashMap<String, Result<super::markdown_media::MediaImage, String>>,
+    diagram_task: Option<Task<()>>,
+    diagram_style: u32,
+    source_visible: HashSet<String>,
+    preview_image: Option<crate::attachments::PreviewImage>,
+    preview_focus: FocusHandle,
     open_file: Rc<dyn Fn(String, &mut gpui::App)>,
 }
 
@@ -90,6 +102,12 @@ impl MarkdownPreview {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            diagrams: HashMap::new(),
+            diagram_task: None,
+            diagram_style: 0,
+            source_visible: HashSet::new(),
+            preview_image: None,
+            preview_focus: cx.focus_handle(),
             media_client: None,
             images: HashMap::new(),
             image_task: None,
@@ -175,6 +193,7 @@ impl MarkdownPreview {
                 view.cache.borrow_mut().clear();
                 view.loading = false;
                 view.load_images(cx);
+                view.load_diagrams(cx);
                 cx.notify();
             });
         }));
@@ -249,6 +268,85 @@ impl MarkdownPreview {
         }));
     }
 
+    fn load_diagrams(&mut self, cx: &mut Context<Self>) {
+        let sources = super::markdown_media::diagram_sources(&self.tree);
+        self.diagrams.retain(|code, _| sources.contains(code));
+        let style = crate::theme::style_generation();
+        if self.diagram_style != style {
+            self.diagrams.clear();
+            self.diagram_style = style;
+        }
+        let palette = crate::markdown::mermaid::Palette::from_theme(Theme::of(cx));
+        let jobs: Vec<_> = sources
+            .into_iter()
+            .filter(|code| !self.diagrams.contains_key(code))
+            .take(24)
+            .collect();
+        let epoch = self.epoch;
+        self.diagram_task = Some(cx.spawn(async move |this, cx| {
+            for code in jobs {
+                let source = code.clone();
+                let palette = palette.clone();
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        let svg = crate::markdown::mermaid::render(&source, &palette)?;
+                        super::markdown_media::decode_image("image/svg+xml", svg.into_bytes())
+                    })
+                    .await;
+                if this
+                    .update(cx, |view, cx| {
+                        if view.epoch != epoch || view.diagram_style != style {
+                            return;
+                        }
+                        view.diagrams.insert(code, result);
+                        view.list.remeasure();
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }));
+    }
+
+    fn media_element(
+        loaded: &super::markdown_media::MediaImage,
+        id: gpui::SharedString,
+        name: String,
+        weak: gpui::WeakEntity<Self>,
+    ) -> AnyElement {
+        use gpui::StyledImage as _;
+        let preview = crate::attachments::PreviewImage {
+            name: name.into(),
+            image: loaded.image.clone(),
+        };
+        div()
+            .id(id)
+            .w_full()
+            .max_w(px(loaded.width))
+            .max_h(px(480.0))
+            .aspect_ratio(loaded.width / loaded.height)
+            .cursor_pointer()
+            .role(gpui::Role::Button)
+            .aria_label("Enlarge image")
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                let _ = weak.update(cx, |view, cx| {
+                    view.preview_image = Some(preview.clone());
+                    window.focus(&view.preview_focus, cx);
+                    cx.notify();
+                });
+            })
+            .child(
+                gpui::img(loaded.image.clone())
+                    .size_full()
+                    .object_fit(gpui::ObjectFit::Contain),
+            )
+            .into_any_element()
+    }
+
     fn render_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         self.render_rows(ix..ix + 1, window, cx)
             .pop()
@@ -293,49 +391,173 @@ impl MarkdownPreview {
                 let mut opts = RenderOptions::settled(format!("{}{ix}", self.scope).into());
                 opts.cache = Some(self.cache.clone());
                 let images = self.images.clone();
+                let image_owner = cx.weak_entity();
+                let image_link = link.clone();
+                let diagram_owner = cx.weak_entity();
+                let diagrams = self.diagrams.clone();
+                let source_visible = self.source_visible.clone();
                 opts.media = Some(render::MediaUi {
-                    image: Rc::new(move |image, id, theme| {
-                        use gpui::StyledImage as _;
-                        match images.get(&image.source) {
-                            Some(Ok(loaded)) => div()
-                                .id(id)
-                                .w_full()
-                                .max_w(px(loaded.width))
-                                .child(
-                                    gpui::img(loaded.image.clone())
-                                        .w_full()
-                                        .max_h(px(480.0))
-                                        .object_fit(gpui::ObjectFit::Contain),
-                                )
-                                .into_any_element(),
-                            state => {
-                                let text = if image.source.starts_with("https://")
-                                    || image.source.starts_with("http://")
-                                {
-                                    format!("{} — {}", image.alt, image.source)
-                                } else {
-                                    format!(
-                                        "{} — {}",
-                                        image.alt,
-                                        state
-                                            .and_then(|s| s.as_ref().err())
-                                            .map(String::as_str)
-                                            .unwrap_or("Loading image…")
-                                    )
-                                };
-                                let target = image.source.clone();
-                                let external =
-                                    target.starts_with("https://") || target.starts_with("http://");
+                    diagram: Some(Rc::new(move |code, id, theme| {
+                        let state = diagrams.get(code);
+                        let source_shown = source_visible.contains(id.as_ref())
+                            || state.is_some_and(Result::is_err);
+                        let owner = diagram_owner.clone();
+                        let toggle_id = id.to_string();
+                        let source = code.to_string();
+                        let mut header = super::toolbar(theme)
+                            .child(
                                 div()
-                                    .id(id)
+                                    .flex_1()
+                                    .text_size(px(11.0))
                                     .text_color(theme.text_muted)
-                                    .child(text)
-                                    .when(external, |el| {
-                                        el.cursor_pointer()
-                                            .on_click(move |_, _, cx| cx.open_url(&target))
+                                    .child("Mermaid"),
+                            )
+                            .child(
+                                super::toolbar_button(
+                                    "mermaid-source",
+                                    if source_shown {
+                                        "Show diagram"
+                                    } else {
+                                        "Show source"
+                                    },
+                                )
+                                .on_click(move |_, _, cx| {
+                                    let _ = owner.update(cx, |view, cx| {
+                                        if !view.source_visible.remove(&toggle_id) {
+                                            view.source_visible.insert(toggle_id.clone());
+                                        }
+                                        view.list.remeasure();
+                                        cx.notify();
+                                    });
+                                })
+                                .child(
+                                    crate::icons::icon(if source_shown {
+                                        crate::icons::EYE
+                                    } else {
+                                        crate::icons::FILE_CODE
                                     })
-                                    .into_any_element()
+                                    .size(px(crate::surface_chrome::ICON_SIZE))
+                                    .text_color(theme.text_muted),
+                                ),
+                            );
+                        header = header.child(
+                            super::toolbar_button("mermaid-copy", "Copy Mermaid source")
+                                .on_click(move |_, _, cx| {
+                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
+                                        source.clone(),
+                                    ))
+                                })
+                                .child(
+                                    crate::icons::icon(crate::icons::COPY)
+                                        .size(px(crate::surface_chrome::ICON_SIZE))
+                                        .text_color(theme.text_muted),
+                                ),
+                        );
+                        let mut card = div()
+                            .id(id.clone())
+                            .w_full()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
+                            .border_1()
+                            .border_color(theme.border)
+                            .child(header);
+                        match state {
+                            Some(Ok(loaded)) if !source_shown => {
+                                card = card.child(Self::media_element(
+                                    loaded,
+                                    format!("{id}-image").into(),
+                                    "Mermaid diagram".into(),
+                                    diagram_owner.clone(),
+                                ));
                             }
+                            Some(Err(error)) => {
+                                card = card.child(
+                                    div()
+                                        .p(px(12.0))
+                                        .text_size(px(12.0))
+                                        .text_color(theme.warning_muted)
+                                        .child(error.clone()),
+                                );
+                            }
+                            None => {
+                                card = card.child(
+                                    div()
+                                        .p(px(12.0))
+                                        .text_color(theme.text_muted)
+                                        .child("Rendering diagram…"),
+                                );
+                            }
+                            _ => {}
+                        }
+                        render::DiagramUi {
+                            element: card.into_any_element(),
+                            show_source: source_shown,
+                        }
+                    })),
+                    image: Rc::new(move |image, id, theme| match images.get(&image.source) {
+                        Some(Ok(loaded)) => {
+                            let mut el =
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(4.0))
+                                    .child(Self::media_element(
+                                        loaded,
+                                        id,
+                                        if image.alt.is_empty() {
+                                            image.source.clone()
+                                        } else {
+                                            image.alt.clone()
+                                        },
+                                        image_owner.clone(),
+                                    ));
+                            if let Some(target) = image.link.clone() {
+                                let link = image_link.clone();
+                                el = el.child(
+                                    super::toolbar_button("markdown-image-link", "Open image link")
+                                        .on_click(move |_, window, cx| {
+                                            if !(link.handler)(&target, window, cx) {
+                                                cx.open_url(&target);
+                                            }
+                                        })
+                                        .child(
+                                            crate::icons::icon(crate::icons::ARROW_UP_RIGHT)
+                                                .size(px(crate::surface_chrome::ICON_SIZE))
+                                                .text_color(theme.text_muted),
+                                        ),
+                                );
+                            }
+                            el.into_any_element()
+                        }
+                        state => {
+                            let text = if image.source.starts_with("https://")
+                                || image.source.starts_with("http://")
+                            {
+                                format!("{} — {}", image.alt, image.source)
+                            } else {
+                                format!(
+                                    "{} — {}",
+                                    image.alt,
+                                    state
+                                        .and_then(|s| s.as_ref().err())
+                                        .map(String::as_str)
+                                        .unwrap_or("Loading image…")
+                                )
+                            };
+                            let target = image.source.clone();
+                            let external =
+                                target.starts_with("https://") || target.starts_with("http://");
+                            div()
+                                .id(id)
+                                .text_color(theme.text_muted)
+                                .child(text)
+                                .when(external, |el| {
+                                    el.cursor_pointer()
+                                        .on_click(move |_, _, cx| cx.open_url(&target))
+                                })
+                                .into_any_element()
                         }
                     }),
                 });
@@ -367,9 +589,12 @@ impl MarkdownPreview {
 }
 
 impl Render for MarkdownPreview {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
-        div()
+        if self.diagram_style != crate::theme::style_generation() {
+            self.load_diagrams(cx);
+        }
+        let mut root = div()
             .id("markdown-file-preview")
             .size_full()
             .min_w_0()
@@ -416,7 +641,23 @@ impl Render for MarkdownPreview {
                     .flex_1()
                     .min_h_0()
                     .with_sizing_behavior(ListSizingBehavior::Auto),
-            )
+            );
+        if let Some(preview) = &self.preview_image {
+            let weak = cx.weak_entity();
+            root = root.child(crate::attachments::lightbox(
+                window.viewport_size(),
+                preview,
+                &self.preview_focus,
+                move |window, cx| {
+                    let _ = weak.update(cx, |view, cx| {
+                        view.preview_image = None;
+                        window.focus(&view.focus, cx);
+                        cx.notify();
+                    });
+                },
+            ));
+        }
+        root
     }
 }
 
@@ -442,5 +683,46 @@ mod tests {
             relative_target("docs/readme.md", "#hello"),
             Some(("docs/readme.md".into(), Some("hello".into())))
         );
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod layout_tests {
+    use super::*;
+    use gpui::{AppContext, Bounds, Point};
+
+    #[test]
+    fn rendered_image_opens_centered_lightbox_and_escape_restores_focus() {
+        gpui_platform::headless().run(|cx| {
+            cx.set_global(Theme::dark());
+            let window = cx.open_window(gpui::WindowOptions { window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(Point::default(), gpui::size(px(800.0), px(600.0))))), ..Default::default() }, |_, cx| {
+                cx.new(|cx| {
+                    let mut view = MarkdownPreview::new("README.md".into(), Rc::new(|_, _| {}), cx);
+                    view.tree = parser::parse_full("![Example](example.svg)"); view.list.reset(1);
+                    view.diagram_style = crate::theme::style_generation();
+                    let media = super::super::markdown_media::decode_image("image/svg+xml", br##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="#468"/></svg>"##.to_vec()).unwrap();
+                    view.images.insert("example.svg".into(), Ok(media));
+                    view
+                })
+            }).unwrap();
+            let view = window.entity(cx).unwrap();
+            cx.update_window(window.into(), |_, window, cx| { window.refresh(); let _ = window.draw(cx); }).unwrap();
+            let bounds = view.read(cx).list.bounds_for_item(0).unwrap();
+            assert!(bounds.size.height > px(100.0));
+            let position = gpui::point(bounds.left() + px(80.0), bounds.top() + px(60.0));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent { button: gpui::MouseButton::Left, position, click_count: 1, ..Default::default() }), cx);
+                window.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent { button: gpui::MouseButton::Left, position, click_count: 1, ..Default::default() }), cx);
+            }).unwrap();
+            assert!(view.read(cx).preview_image.is_some());
+            cx.update_window(window.into(), |_, window, cx| {
+                assert!(view.read(cx).preview_focus.is_focused(window));
+                window.refresh(); let _ = window.draw(cx);
+                window.dispatch_event(gpui::PlatformInput::KeyDown(gpui::KeyDownEvent { keystroke: gpui::Keystroke::parse("escape").unwrap(), is_held: false, prefer_character_input: false }), cx);
+            }).unwrap();
+            assert!(view.read(cx).preview_image.is_none());
+            cx.update_window(window.into(), |_, window, cx| { assert!(view.read(cx).focus.is_focused(window)); }).unwrap();
+            cx.spawn(async move |cx| { cx.update(|cx| cx.quit()); }).detach();
+        });
     }
 }

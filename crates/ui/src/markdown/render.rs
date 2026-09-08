@@ -94,7 +94,13 @@ pub struct RenderOptions {
 
 #[derive(Clone)]
 pub struct MediaUi {
+    pub diagram: Option<Rc<dyn Fn(&str, SharedString, &Theme) -> DiagramUi>>,
     pub image: Rc<dyn Fn(&super::parser::InlineImage, SharedString, &Theme) -> AnyElement>,
+}
+
+pub struct DiagramUi {
+    pub element: AnyElement,
+    pub show_source: bool,
 }
 
 /// Copy-button wiring for one row's code blocks: the handler writes the code
@@ -1285,6 +1291,31 @@ fn text_element(
 
 #[allow(clippy::too_many_arguments)]
 fn render_code_block(
+    language: Option<&str>,
+    code: &str,
+    top_ix: usize,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+    highlight: CodeHighlight,
+) -> AnyElement {
+    if language.is_some_and(|l| l.eq_ignore_ascii_case("mermaid")) {
+        if let Some(handler) = opts.media.as_ref().and_then(|media| media.diagram.as_ref()) {
+            let diagram = handler(code, format!("{}-mermaid-{ix}", opts.row_key).into(), theme);
+            let mut el = div().flex().flex_col().gap(px(4.0)).child(diagram.element);
+            if diagram.show_source {
+                el = el.child(render_code_block_source(
+                    language, code, top_ix, ix, opts, theme, highlight,
+                ));
+            }
+            return el.into_any_element();
+        }
+    }
+    render_code_block_source(language, code, top_ix, ix, opts, theme, highlight)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_code_block_source(
     language: Option<&str>,
     code: &str,
     top_ix: usize,

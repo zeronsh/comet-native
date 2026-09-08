@@ -43,6 +43,30 @@ pub(super) fn image_sources(tree: &BlockTree) -> Vec<String> {
     out
 }
 
+pub(super) fn diagram_sources(tree: &BlockTree) -> Vec<String> {
+    fn visit(block: &Block, out: &mut Vec<String>) {
+        match block {
+            Block::CodeBlock { language, code }
+                if language
+                    .as_deref()
+                    .is_some_and(|l| l.eq_ignore_ascii_case("mermaid")) =>
+            {
+                if !out.contains(code) {
+                    out.push(code.clone());
+                }
+            }
+            Block::BlockQuote { children } => children.iter().for_each(|b| visit(b, out)),
+            Block::List { items, .. } => items.iter().flatten().for_each(|b| visit(b, out)),
+            _ => {}
+        }
+    }
+    let mut out = Vec::new();
+    for top in &tree.blocks {
+        visit(&top.block, &mut out);
+    }
+    out
+}
+
 pub(super) fn svg_options() -> usvg::Options<'static> {
     static FONTS: OnceLock<Arc<usvg::fontdb::Database>> = OnceLock::new();
     let fonts = FONTS
