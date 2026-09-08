@@ -1703,20 +1703,6 @@ impl FilesSurface {
         }
     }
 
-    fn retry_active_save(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.preview.active.clone() else {
-            return;
-        };
-        if self
-            .preview
-            .documents
-            .get(&path)
-            .is_some_and(|document| matches!(document.phase, DocumentPhase::SaveFailed(_)))
-        {
-            self.save_document(path, cx);
-        }
-    }
-
     pub(super) fn render_preview(
         &mut self,
         window: &mut Window,
@@ -1906,7 +1892,6 @@ impl FilesSurface {
     ) -> AnyElement {
         let parts = path.split('/').collect::<Vec<_>>();
         let reveal_path = path.to_string();
-        let save_path = path.to_string();
         let tooltip_path: SharedString = path.to_string().into();
         let can_save = !self.target_change_pending
             && self
@@ -1919,10 +1904,12 @@ impl FilesSurface {
                 .documents
                 .get(path)
                 .and_then(|document| match &document.phase {
-                    DocumentPhase::Saving => None,
-                    DocumentPhase::SaveFailed(error) => {
-                        Some(("Save failed", theme.danger_muted, true, Some(error.clone())))
-                    }
+                    DocumentPhase::SaveFailed(error) => Some((
+                        "Save failed",
+                        theme.danger_muted,
+                        can_save,
+                        Some(error.clone()),
+                    )),
                     DocumentPhase::Conflict { .. } => Some((
                         "Save conflict",
                         theme.warning_muted,
@@ -1937,6 +1924,14 @@ impl FilesSurface {
                         false,
                         Some(SharedString::from(
                             "The file was removed on disk. Your editor buffer was preserved.",
+                        )),
+                    )),
+                    DocumentPhase::ExternallyModified { .. } => Some((
+                        "Changed on disk",
+                        theme.warning_muted,
+                        false,
+                        Some(SharedString::from(
+                            "The file changed on disk. Review it before saving.",
                         )),
                     )),
                     _ => None,
@@ -1986,6 +1981,11 @@ impl FilesSurface {
                 element.child(
                     div()
                         .id("files-save-status")
+                        .h(px(crate::surface_chrome::CONTROL_SIZE))
+                        .px(px(6.0))
+                        .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
+                        .flex()
+                        .items_center()
                         .flex_none()
                         .font_family(theme.font_sans.clone())
                         .text_size(px(11.0))
@@ -1994,8 +1994,14 @@ impl FilesSurface {
                             element
                                 .cursor_pointer()
                                 .role(gpui::Role::Button)
-                                .aria_label("Retry save")
-                                .on_click(cx.listener(|this, _, _, cx| this.retry_active_save(cx)))
+                                .aria_label("Save file")
+                                .hover(|style| style.bg(crate::theme::wash(0.14)))
+                                .on_mouse_down(gpui::MouseButton::Left, |_, window, _| {
+                                    window.prevent_default()
+                                })
+                                .on_click(
+                                    cx.listener(|this, _, _, cx| this.save_active_document(cx)),
+                                )
                         })
                         .when_some(detail, |element, detail| {
                             element
@@ -2010,20 +2016,6 @@ impl FilesSurface {
                         .child(label),
                 )
             })
-            .child(
-                toolbar_button("files-save-active", "Save file")
-                    .when(can_save, |element| {
-                        element.on_click(cx.listener(move |this, _, _, cx| {
-                            this.save_document(save_path.clone(), cx)
-                        }))
-                    })
-                    .when(!can_save, |element| element.cursor_default().opacity(0.38))
-                    .child(
-                        icon(icons::FLOPPY_DISK)
-                            .size(px(crate::surface_chrome::ICON_SIZE))
-                            .text_color(theme.text_muted),
-                    ),
-            )
             .child(
                 toolbar_button("files-reveal-active", "Reveal file in tree")
                     .on_click(cx.listener(move |this, _, _, cx| {
