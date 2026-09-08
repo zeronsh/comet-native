@@ -401,6 +401,12 @@ pub struct SyntaxPalette {
     pub tag: Hsla,
     pub attribute: Hsla,
     pub label: Hsla,
+    pub markup_heading: Hsla,
+    pub markup_raw: Hsla,
+    pub markup_link: Hsla,
+    pub markup_reference: Hsla,
+    pub markup_emphasis: Hsla,
+    pub markup_strong: Hsla,
     pub invalid: Hsla,
 }
 
@@ -430,6 +436,12 @@ impl SyntaxPalette {
             HighlightKind::Tag => self.tag,
             HighlightKind::Attribute => self.attribute,
             HighlightKind::Label => self.label,
+            HighlightKind::MarkupHeading => self.markup_heading,
+            HighlightKind::MarkupRaw => self.markup_raw,
+            HighlightKind::MarkupLink => self.markup_link,
+            HighlightKind::MarkupReference => self.markup_reference,
+            HighlightKind::MarkupEmphasis => self.markup_emphasis,
+            HighlightKind::MarkupStrong => self.markup_strong,
             HighlightKind::Invalid => self.invalid,
         }
     }
@@ -467,6 +479,12 @@ impl SyntaxPalette {
             tag: color("tag", fallback.tag),
             attribute: color("attribute", fallback.attribute),
             label: color("label", fallback.label),
+            markup_heading: color("markupHeading", fallback.markup_heading),
+            markup_raw: color("markupRaw", fallback.markup_raw),
+            markup_link: color("markupLink", fallback.markup_link),
+            markup_reference: color("markupReference", fallback.markup_reference),
+            markup_emphasis: color("markupEmphasis", fallback.markup_emphasis),
+            markup_strong: color("markupStrong", fallback.markup_strong),
             invalid: color("invalid", fallback.invalid),
         }
     }
@@ -502,6 +520,12 @@ impl SyntaxPalette {
             tag: pink,
             attribute: amber,
             label: amber,
+            markup_heading: indigo,
+            markup_raw: emerald,
+            markup_link: pink,
+            markup_reference: amber,
+            markup_emphasis: pink,
+            markup_strong: indigo,
             invalid: red,
         }
     }
@@ -537,6 +561,12 @@ impl SyntaxPalette {
             tag: pink,
             attribute: amber,
             label: amber,
+            markup_heading: indigo,
+            markup_raw: emerald,
+            markup_link: pink,
+            markup_reference: amber,
+            markup_emphasis: pink,
+            markup_strong: indigo,
             invalid: red,
         }
     }
@@ -1272,6 +1302,7 @@ impl Theme {
         set_current_appearance(appearance);
         let next = Self::for_preferences(appearance, accent)
             .with_font_sans(crate::typography::effective_family_name(cx));
+        sync_gpui_base_scrollbar(&next, cx);
         cx.set_global(next);
         // An accent-only swap leaves CURRENT_APPEARANCE unchanged, but cached
         // resolved colors still need to be discarded for the next frame.
@@ -1336,6 +1367,7 @@ impl Theme {
                 || theme.appearance != next.appearance
         });
         set_current_appearance(appearance);
+        sync_gpui_base_scrollbar(&next, cx);
         cx.set_global(next);
         if changed || force_generation {
             bump_style_generation();
@@ -1361,6 +1393,22 @@ impl Theme {
     pub fn wash(&self, alpha: f32) -> Hsla {
         wash_for(self.appearance, alpha)
     }
+}
+
+fn scrollbar_thumb_colors(theme: &Theme) -> (Hsla, Hsla, Hsla) {
+    (
+        theme.text.opacity(0.30),
+        theme.text.opacity(0.42),
+        theme.text.opacity(0.55),
+    )
+}
+
+fn sync_gpui_base_scrollbar(theme: &Theme, cx: &mut App) {
+    let (normal, hover, active) = scrollbar_thumb_colors(theme);
+    gpui_base::Theme::global_mut(cx).scrollbar.styles = gpui_base::ScrollbarStyles::default()
+        .thumb(|style| style.bg(normal))
+        .thumb_hover(|style| style.bg(hover))
+        .thumb_active(|style| style.bg(active));
 }
 
 impl Default for Theme {
@@ -1738,6 +1786,17 @@ mod tests {
         // oklch(0.145 0 0) is Tailwind neutral-950, zeron's app background.
         let rgb = srgb_u8(oklch_to_srgb(0.145, 0.0, 0.0));
         assert_eq!(rgb, [10, 10, 10]);
+    }
+
+    #[test]
+    fn scrollbar_thumbs_follow_the_active_appearance() {
+        let dark = scrollbar_thumb_colors(&Theme::dark());
+        let light = scrollbar_thumb_colors(&Theme::light());
+
+        assert!(dark.0.l > Theme::dark().bg.l);
+        assert!(light.0.l < Theme::light().bg.l);
+        assert_eq!([dark.0.a, dark.1.a, dark.2.a], [0.30, 0.42, 0.55]);
+        assert_eq!([light.0.a, light.1.a, light.2.a], [0.30, 0.42, 0.55]);
     }
 
     #[test]
@@ -2178,6 +2237,12 @@ mod tests {
             HighlightKind::Tag,
             HighlightKind::Attribute,
             HighlightKind::Label,
+            HighlightKind::MarkupHeading,
+            HighlightKind::MarkupRaw,
+            HighlightKind::MarkupLink,
+            HighlightKind::MarkupReference,
+            HighlightKind::MarkupEmphasis,
+            HighlightKind::MarkupStrong,
             HighlightKind::Embedded,
             HighlightKind::Invalid,
         ];

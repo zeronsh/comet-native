@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.46"
+version = "0.2.48"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -70,6 +70,7 @@ gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "de9f26e0dfc115e
     "runtime_shaders",
 ] }
 gpui_tokio = { git = "https://github.com/zeronsh/zui", rev = "de9f26e0dfc115ea97a7f08077163fa757241837" }
+gpui-base = { git = "https://github.com/jsgrrchg/gpui-component", rev = "c5dca15e20b9d697c41ef173239d432e5de30ced" }
 
 # diffs
 similar = "2"

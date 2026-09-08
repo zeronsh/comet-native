@@ -496,7 +496,9 @@ pub struct Pickers {
 
 impl Pickers {
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
-        let search = cx.new(|cx| ComposerInput::new("Search…", cx));
+        let search = cx.new(|cx| {
+            ComposerInput::new("Search…", cx).with_accessibility_role(gpui::Role::SearchInput)
+        });
         let search_events = cx.subscribe(&search, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Edited => {
                 // Typing in a filter resets the highlight to the top of the

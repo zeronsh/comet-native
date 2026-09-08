@@ -40,8 +40,11 @@ const HISTORY_NODE_RADIUS: f32 = 3.0;
 const HISTORY_HEAD_RING_PADDING: f32 = 2.0;
 const HISTORY_STROKE_WIDTH: f32 = 1.5;
 const HISTORY_GRAPH_SATURATION: f32 = 0.72;
-const HISTORY_GRAPH_SIDE_PADDING: f32 = 5.0;
-const HISTORY_GRAPH_TRAILING_PADDING: f32 = 20.0;
+// Align the first lane center with the header text gutter. The HEAD ring
+// must also have breathing room against the pane border.
+const HISTORY_GRAPH_SIDE_PADDING: f32 =
+    crate::surface_chrome::EDGE_INSET * 2.0 - HISTORY_NODE_RADIUS;
+const HISTORY_GRAPH_TRAILING_PADDING: f32 = 12.0;
 const HISTORY_GRAPH_MIN_COMPACT_WIDTH: f32 = 48.0;
 const HISTORY_GRAPH_MAX_WIDTH_RATIO: f32 = 0.34;
 const HISTORY_GRAPH_RESIZE_STEP: f32 = 2.0;
@@ -1550,14 +1553,14 @@ impl Render for GitHistoryFetchButton {
         let history = self.history.clone();
         div()
             .id("history-fetch-all")
-            .h(px(24.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .px(px(8.0))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
             .gap(px(6.0))
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .bg(if fetching {
                 crate::theme::wash(0.05)
             } else {
@@ -1591,7 +1594,7 @@ impl Render for GitHistoryFetchButton {
                 .into_any_element()
             } else {
                 crate::icons::icon(crate::icons::CLOUD)
-                    .size(px(12.0))
+                    .size(px(crate::surface_chrome::ICON_SIZE))
                     .text_color(theme.text_muted.opacity(0.75))
                     .into_any_element()
             })
@@ -1622,12 +1625,12 @@ impl Render for GitHistoryViewButton {
 
         div()
             .id("history-view-trigger")
-            .size(px(24.0))
+            .size(px(crate::surface_chrome::CONTROL_SIZE))
             .flex_none()
             .flex()
             .items_center()
             .justify_center()
-            .rounded(px(6.0))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
             .cursor_pointer()
             .bg(if showing_tips {
                 theme.accent.opacity(0.12)
@@ -1656,7 +1659,7 @@ impl Render for GitHistoryViewButton {
             })
             .child(
                 crate::icons::icon(crate::icons::FOLD_VERTICAL)
-                    .size(px(12.0))
+                    .size(px(crate::surface_chrome::ICON_SIZE))
                     .text_color(if showing_tips {
                         theme.accent
                     } else {
@@ -1680,12 +1683,12 @@ impl Render for GitHistorySearchControl {
             let control = cx.entity().downgrade();
             return div()
                 .id("history-search-trigger")
-                .size(px(24.0))
+                .size(px(crate::surface_chrome::CONTROL_SIZE))
                 .flex_none()
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded(px(6.0))
+                .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
                 .cursor_pointer()
                 .bg(crate::motion::hover_blend(
                     "history-search-trigger",
@@ -1704,7 +1707,7 @@ impl Render for GitHistorySearchControl {
                 })
                 .child(
                     crate::icons::icon(crate::icons::MAGNIFER)
-                        .size(px(12.0))
+                        .size(px(crate::surface_chrome::ICON_SIZE))
                         .text_color(theme.text_muted),
                 )
                 .tooltip(|_, cx| {
@@ -1744,19 +1747,18 @@ impl Render for GitHistorySearchControl {
         };
         div()
             .id("history-search-expanded")
-            .h(px(22.0))
+            .h(px(crate::surface_chrome::CONTROL_SIZE))
             .w(px(HISTORY_SEARCH_WIDTH))
-            .flex_none()
+            .min_w(px(80.0))
+            .flex_shrink(1.0)
             .overflow_hidden()
             .flex()
             .items_center()
-            .gap(px(4.0))
-            .pl(px(6.0))
+            .gap(px(6.0))
+            .pl(px(crate::surface_chrome::EDGE_INSET))
             .pr(px(2.0))
-            .rounded(px(5.0))
-            .border_1()
-            .border_color(theme.border.opacity(0.8))
-            .bg(theme.surface_raised.opacity(0.86))
+            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
+            .bg(crate::theme::ink(0.035))
             .child(
                 div()
                     .size(px(14.0))
@@ -1774,11 +1776,6 @@ impl Render for GitHistorySearchControl {
                     .flex()
                     .items_center()
                     .overflow_hidden()
-                    .relative()
-                    // The shaped text's ascent sits above its line box;
-                    // nudge the compact input down to the icon's visual
-                    // center rather than relying on flex-box geometry alone.
-                    .top(px(3.0))
                     .child(self.input.clone()),
             )
             .child(
@@ -3816,10 +3813,18 @@ impl GitHistory {
                             )
                         })
                         .when(!has_avatar, |avatar| {
-                            avatar
-                                .text_size(px(9.0))
-                                .text_color(theme.text_faint)
-                                .child(initial)
+                            avatar.child(
+                                div()
+                                    .w_full()
+                                    .text_center()
+                                    .font_family(theme.font_sans.clone())
+                                    .text_size(px(9.0))
+                                    .line_height(px(18.0))
+                                    .relative()
+                                    .top(px(0.5))
+                                    .text_color(theme.text_faint)
+                                    .child(initial),
+                            )
                         })
                         .tooltip(move |_, cx| {
                             cx.new(|_| HistoryAuthorTooltip {
