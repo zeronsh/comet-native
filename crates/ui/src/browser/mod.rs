@@ -59,7 +59,16 @@ pub enum BrowserEvent {
     Close,
 }
 
+/// A window/profile's ephemeral website data, allocated on first navigation.
+#[derive(Clone, Default)]
+pub struct BrowserContext {
+    #[cfg(target_os = "macos")]
+    data: macos::BrowserData,
+}
+
 pub struct BrowserSurface {
+    #[cfg(target_os = "macos")]
+    context: BrowserContext,
     address: Entity<ComposerInput>,
     focus: FocusHandle,
     pub page: PageState,
@@ -67,12 +76,13 @@ pub struct BrowserSurface {
     address_edited: bool,
     validation: Option<String>,
     remote: bool,
+    pub(crate) chrome_hovered: bool,
     presentation: Presentation,
     _input_sub: Subscription,
     #[cfg(target_os = "macos")]
     native: Option<macos::NativePage>,
     #[cfg(target_os = "macos")]
-    native_tx: tokio::sync::mpsc::UnboundedSender<macos::NativeEvent>,
+    native_tx: tokio::sync::mpsc::Sender<macos::NativeEvent>,
     #[cfg(target_os = "macos")]
     _native_task: gpui::Task<()>,
     #[cfg(target_os = "macos")]
@@ -89,7 +99,12 @@ impl Focusable for BrowserSurface {
 }
 
 impl BrowserSurface {
-    pub fn new(remote: bool, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        context: BrowserContext,
+        remote: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let address = cx.new(|cx| {
             ComposerInput::with_context("Website or localhost:3000", "PaletteSearch", cx)
                 .with_text_metrics(12.0, 18.0)
@@ -97,13 +112,14 @@ impl BrowserSurface {
         });
         let input_sub = cx.subscribe(&address, |this, _, event, cx| {
             if matches!(event, ComposerInputEvent::Edited) {
-                this.address_edited = true;
+                this.address_edited =
+                    this.address.read(cx).text() != this.page.url.as_deref().unwrap_or_default();
                 this.validation = None;
                 cx.notify();
             }
         });
         #[cfg(target_os = "macos")]
-        let (native_tx, mut events) = tokio::sync::mpsc::unbounded_channel();
+        let (native_tx, mut events) = tokio::sync::mpsc::channel(64);
         #[cfg(target_os = "macos")]
         let native_task = cx.spawn_in(window, async move |this, cx| {
             while let Some(event) = events.recv().await {
@@ -118,8 +134,10 @@ impl BrowserSurface {
             }
         });
         #[cfg(not(target_os = "macos"))]
-        let _ = window;
+        let _ = (window, context);
         Self {
+            #[cfg(target_os = "macos")]
+            context,
             address,
             focus: cx.focus_handle(),
             page: PageState::default(),
@@ -127,6 +145,7 @@ impl BrowserSurface {
             address_edited: false,
             validation: None,
             remote,
+            chrome_hovered: false,
             presentation: Presentation::Hidden,
             _input_sub: input_sub,
             #[cfg(target_os = "macos")]
@@ -176,6 +195,12 @@ impl BrowserSurface {
         if self.presentation == presentation {
             return;
         }
+        #[cfg(target_os = "macos")]
+        if presentation != Presentation::Covered {
+            if let Some(image) = self.native.as_ref().and_then(|native| native.snapshot()) {
+                cx.defer(move |cx| gpui::ImageSource::Image(image).evict(None, cx));
+            }
+        }
         self.presentation = presentation;
         #[cfg(target_os = "macos")]
         if let Some(native) = &mut self.native {
@@ -200,7 +225,7 @@ impl BrowserSurface {
         self.page.url = Some(url.clone());
         self.page.title.clear();
         self.page.error = None;
-        self.favicon = None;
+        self.clear_favicon(cx);
         #[cfg(target_os = "macos")]
         {
             self.favicon_generation += 1;
@@ -208,7 +233,7 @@ impl BrowserSurface {
             let result = if let Some(native) = &self.native {
                 native.load(&url)
             } else {
-                macos::NativePage::new(window, self.native_tx.clone())
+                macos::NativePage::new(window, &self.context.data, self.native_tx.clone())
                     .map(|mut native| {
                         native.present(self.presentation);
                         self.native = Some(native);
@@ -273,7 +298,15 @@ impl BrowserSurface {
     }
 
     /// Explicitly close even if an async callback temporarily retains an entity.
-    pub fn close(&mut self) {
+    fn clear_favicon(&mut self, cx: &mut Context<Self>) {
+        if let Some(image) = self.favicon.take() {
+            cx.defer(move |cx| gpui::ImageSource::Image(image).evict(None, cx));
+        }
+    }
+
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        self.set_presentation(Presentation::Hidden, cx);
+        self.clear_favicon(cx);
         #[cfg(target_os = "macos")]
         {
             if let Some(native) = &mut self.native {
@@ -309,7 +342,9 @@ impl BrowserSurface {
                     page.loading = false;
                 }
                 if page.url != self.page.url || (!self.page.loading && page.loading) {
-                    self.favicon = None;
+                    if let Some(image) = self.favicon.take() {
+                        cx.defer(move |cx| gpui::ImageSource::Image(image).evict(None, cx));
+                    }
                     self.favicon_generation += 1;
                     self.favicon_task = None;
                 }

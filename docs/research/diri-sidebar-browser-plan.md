@@ -1,6 +1,6 @@
 # Native browser tabs for Zeron: Waku-style v1
 
-Research date: 2026-09-08. Status: implementation plan; no browser code changed.
+Research date: 2026-09-08. Status: implementation in progress; native validation and screenshots are exercised by the `browser-fixture` example.
 
 Zeron baseline: `8de07ee6d783a37c2cac39a259ba896d704c40e8` (latest fetched `origin/main`). This worktree was clean and fast-forwarded from `6b2ea31f`; the separate local `main` worktree was not modified.
 

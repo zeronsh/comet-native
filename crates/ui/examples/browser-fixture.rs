@@ -4,7 +4,7 @@ use gpui::{AppContext, AsyncApp, Bounds, WindowBounds, WindowOptions, px, size};
 use std::{
     io::{Read, Write},
     path::PathBuf,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use zeron_ui::*;
 
@@ -17,15 +17,39 @@ async fn pause(cx: &mut AsyncApp, ms: u64) {
 fn capture(directory: &std::path::Path, name: &str) -> anyhow::Result<()> {
     let path = directory.join(format!("{name}.png"));
     #[cfg(target_os = "macos")]
-    let status = std::process::Command::new("/usr/sbin/screencapture")
-        .arg("-x")
-        .arg(&path)
-        .status()?;
+    let status = {
+        let app = objc2_app_kit::NSApplication::sharedApplication(
+            objc2::MainThreadMarker::new().unwrap(),
+        );
+        let window = app
+            .keyWindow()
+            .or_else(|| app.mainWindow())
+            .ok_or_else(|| anyhow::anyhow!("fixture window is not available"))?;
+        std::process::Command::new("/usr/sbin/screencapture")
+            .args(["-x", "-o", "-l", &window.windowNumber().to_string()])
+            .arg(&path)
+            .status()?
+    };
     #[cfg(not(target_os = "macos"))]
-    let status = std::process::Command::new("import")
-        .args(["-window", "root"])
-        .arg(&path)
-        .status()?;
+    let status = {
+        let windows = std::process::Command::new("xdotool")
+            .args([
+                "search",
+                "--onlyvisible",
+                "--pid",
+                &std::process::id().to_string(),
+            ])
+            .output()?;
+        let id = String::from_utf8(windows.stdout)?
+            .lines()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("fixture window not visible"))?
+            .to_owned();
+        std::process::Command::new("import")
+            .args(["-window", &id])
+            .arg(&path)
+            .status()?
+    };
     anyhow::ensure!(status.success(), "screenshot capture failed");
     Ok(())
 }
@@ -41,7 +65,7 @@ fn main() -> anyhow::Result<()> {
     let temp = tempfile::tempdir()?;
     let data = temp.path().to_path_buf();
     let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
-    let origin = format!("http://{}", listener.local_addr()?);
+    let _origin = format!("http://{}", listener.local_addr()?);
     std::thread::spawn(move || {
         for mut stream in listener.incoming().flatten() {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
@@ -80,6 +104,8 @@ fn main() -> anyhow::Result<()> {
         typography::init(settings.ui_font_family.clone(), settings.ui_font_size, fonts, cx);
         theme_library::init(data.clone(), cx);
         appearance::init(appearance::AppearanceMode::Dark, settings.theme_selection, settings.accent, settings.surface, cx);
+        history::init(settings.git_history_columns, settings.git_history_column_widths,
+            settings.git_history_column_order, settings.git_history_author_display, cx);
         composer::init(cx); terminal::panel::init(cx); app_menus::init(cx);
         let state = cx.new(|_| {
             let mut s = state::AppState::new();
@@ -95,6 +121,8 @@ fn main() -> anyhow::Result<()> {
         let boot = EngineBootConfig { data_dir: data, ipc_port: 0, edge_url: String::new(), edge_token: None, org_id: None, workos_client_id: None, default_harness: HarnessId::ClaudeCode };
         let window = cx.open_window(WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds::new(gpui::point(px(20.),px(30.)), size(px(1320.),px(880.))))),
+            titlebar: Some(gpui::TitlebarOptions { title: None, appears_transparent: true, traffic_light_position: Some(gpui::point(px(14.),px(14.))) }),
+            app_owns_titlebar_drag: true,
             ..Default::default()
         }, |_, cx| cx.new(|cx| shell::Shell::new(state.clone(), boot, cx))).unwrap();
         state.update(cx, |_, cx| cx.notify());
@@ -102,37 +130,41 @@ fn main() -> anyhow::Result<()> {
         cx.spawn(async move |cx| {
             let run: anyhow::Result<()> = async {
                 pause(cx, 1200).await;
+                state.update(cx, |s, cx| {
+                    let entries = serde_json::from_value(serde_json::json!([
+                        {"id":"fixture-user","role":"user","parts":[{"id":"text","kind":"text","text":"Build a calm, thoughtful workspace for Fieldnotes. Let’s preview the landing page beside this conversation."}],"createdAt":1788900000000_i64,"deviceId":"local"},
+                        {"id":"fixture-assistant","role":"assistant","parts":[{"id":"text","kind":"text","text":"The first layout is ready to review.\n\nIt uses warm neutrals, generous spacing, and a simple hierarchy. The workspace cards stay readable as the preview gets narrower.\n\nOpen **Browser** from the sidebar’s **+** menu to keep the page beside your work."}],"createdAt":1788900001000_i64,"deviceId":"local","status":"complete"}
+                    ])).unwrap();
+                    s.receive_transcript_frame(zeron_doc::TranscriptFrame::Reset { reset: entries }, cx).unwrap();
+                });
                 let (first_id, first) = window.update(cx, |shell, w, cx| shell.fixture_open_browser(None, w, cx))?;
                 pause(cx, 500).await;
                 capture(&output, "browser-empty-dark")?;
-                // A malformed address is rejected without creating a native page.
-                window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("javascript:alert(1)", w, cx)))?;
-                anyhow::ensure!(first.read_with(cx, |b, _| b.page.url.is_none()), "unsupported address navigated");
                 #[cfg(target_os = "macos")]
                 {
-                    window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate(&origin, w, cx)))?;
-                    let deadline = Instant::now() + Duration::from_secs(25);
+                    window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate(&_origin, w, cx)))?;
+                    let deadline = std::time::Instant::now() + Duration::from_secs(25);
                     while !first.read_with(cx, |b, _| b.page.title == "Fieldnotes" && !b.page.loading && b.fixture_native_visible()) {
-                        anyhow::ensure!(Instant::now() < deadline, "first page did not load: {:?}", first.read_with(cx, |b, _| b.page.clone()));
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "first page did not load: {:?}", first.read_with(cx, |b, _| b.page.clone()));
                         pause(cx, 50).await;
                     }
                     pause(cx, 500).await;
                     capture(&output, "browser-preview-dark")?;
                     // Real DOM click, native navigation and history.
                     first.read_with(cx, |b, _| b.fixture_eval("document.getElementById('details').click()"));
-                    let deadline = Instant::now() + Duration::from_secs(15);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
                     while !first.read_with(cx, |b, _| b.page.title == "Details" && b.page.can_back) {
-                        anyhow::ensure!(Instant::now() < deadline, "DOM link navigation failed"); pause(cx, 50).await;
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "DOM link navigation failed"); pause(cx, 50).await;
                     }
                     first.update(cx, |b, _| b.fixture_history(false));
-                    let deadline = Instant::now() + Duration::from_secs(15);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
                     while !first.read_with(cx, |b, _| b.page.title == "Fieldnotes" && b.page.can_forward) {
-                        anyhow::ensure!(Instant::now() < deadline, "back/forward history failed"); pause(cx, 50).await;
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "back/forward history failed"); pause(cx, 50).await;
                     }
                     first.read_with(cx, |b, _| b.fixture_eval("history.pushState({}, '', '/same-document'); document.title = 'Updated title'"));
-                    let deadline = Instant::now() + Duration::from_secs(10);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(10);
                     while !first.read_with(cx, |b, _| b.page.title == "Updated title" && b.page.url.as_deref().is_some_and(|u| u.ends_with("/same-document"))) {
-                        anyhow::ensure!(Instant::now() < deadline, "same-document state did not update"); pause(cx, 50).await;
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "same-document state did not update"); pause(cx, 50).await;
                     }
                 }
                 let (second_id, second) = window.update(cx, |shell, w, cx| shell.fixture_open_browser(None, w, cx))?;
@@ -162,12 +194,16 @@ fn main() -> anyhow::Result<()> {
                 {
                     anyhow::ensure!(first.read_with(cx, |b, _| b.fixture_native_visible()), "page not restored after overlays/takeover");
                     window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("http://127.0.0.1:1/unavailable", w, cx)))?;
-                    let deadline = Instant::now() + Duration::from_secs(15);
+                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
                     while !first.read_with(cx, |b, _| b.page.error.is_some()) {
-                        anyhow::ensure!(Instant::now() < deadline, "load failure was not reported"); pause(cx, 50).await;
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "load failure was not reported"); pause(cx, 50).await;
                     }
                     pause(cx, 300).await; capture(&output, "browser-error-light")?;
                 }
+                // Reject arbitrary schemes while preserving the existing page.
+                let before = first.read_with(cx, |b, _| b.page.url.clone());
+                window.update(cx, |_, w, cx| first.update(cx, |b, cx| b.navigate("javascript:alert(1)", w, cx)))?;
+                anyhow::ensure!(first.read_with(cx, |b, _| b.page.url == before), "unsupported address navigated");
                 window.update(cx, |shell, w, cx| shell.fixture_close_browser(first_id, w, cx))?;
                 pause(cx, 200).await;
                 anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "closed tab retained its native view");
@@ -175,6 +211,11 @@ fn main() -> anyhow::Result<()> {
                 Ok(())
             }.await;
             if let Err(error) = run { eprintln!("Browser fixture failed: {error:#}"); *result.lock().unwrap() = Some(error.to_string()); }
+            let _ = window.update(cx, |shell, window, cx| shell.fixture_blur_browser(window, cx));
+            pause(cx, 200).await;
+            drop(state);
+            let _ = window.update(cx, |_, window, _| window.remove_window());
+            pause(cx, 100).await;
             cx.update(|cx| cx.quit());
         }).detach();
     });

@@ -62,6 +62,7 @@ jobs:
           git -C frame-source-tests checkout --detach FETCH_HEAD
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-on-failure: true
           workspaces: |
             .
             frame-source-tests

@@ -1146,6 +1146,9 @@ pub struct Shell {
     browsers: std::collections::HashMap<u64, Entity<crate::browser::BrowserSurface>>,
     browser_subs: std::collections::HashMap<u64, Subscription>,
     browser_seq: u64,
+    browser_context: crate::browser::BrowserContext,
+    browser_profile: Option<String>,
+    browser_tabs_hovered: bool,
     /// Ordered surface tabs per panel key (drag-reorderable; stale entries —
     /// closed terminals/diffs — are skipped at read time).
     right_tabs: std::collections::HashMap<String, Vec<RightSurface>>,
@@ -1478,6 +1481,9 @@ impl Shell {
             browsers: std::collections::HashMap::new(),
             browser_subs: std::collections::HashMap::new(),
             browser_seq: 0,
+            browser_context: crate::browser::BrowserContext::default(),
+            browser_profile: None,
+            browser_tabs_hovered: false,
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
@@ -2254,7 +2260,9 @@ impl Shell {
         };
         self.browser_seq += 1;
         let id = self.browser_seq;
-        let browser = cx.new(|cx| crate::browser::BrowserSurface::new(remote, window, cx));
+        let browser = cx.new(|cx| {
+            crate::browser::BrowserSurface::new(self.browser_context.clone(), remote, window, cx)
+        });
         let owner = key.clone();
         let sub = cx.subscribe_in(&browser, window, move |this, _, event, window, cx| {
             match event {
@@ -2675,7 +2683,7 @@ impl Shell {
             RightSurface::Files | RightSurface::File(_) => {}
             RightSurface::Browser(id) => {
                 if let Some(browser) = self.browsers.remove(&id) {
-                    browser.update(cx, |browser, _| browser.close());
+                    browser.update(cx, |browser, cx| browser.close(cx));
                 }
                 self.browser_subs.remove(&id);
                 window.focus(&self.composer.focus_handle(cx), cx);
@@ -3406,6 +3414,16 @@ impl Shell {
 
     fn delete_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
         self.delete_confirm = None;
+        if let Some(tabs) = self.right_tabs.get(&chat_id) {
+            for surface in tabs {
+                if let RightSurface::Browser(id) = surface {
+                    if let Some(browser) = self.browsers.remove(id) {
+                        browser.update(cx, |browser, cx| browser.close(cx));
+                    }
+                    self.browser_subs.remove(id);
+                }
+            }
+        }
         if self.state.read(cx).selected_chat.as_deref() == Some(chat_id.as_str()) {
             self.state.update(cx, |s, cx| s.select_chat(None, cx));
         }
@@ -7140,6 +7158,10 @@ impl Shell {
             .min_w_0()
             .overflow_x_scroll()
             .track_scroll(&self.right_tab_scroll)
+            .on_hover(cx.listener(|this, hovered, _, cx| {
+                this.browser_tabs_hovered = *hovered;
+                cx.notify();
+            }))
             .on_drag_move::<RightTabDrag>(cx.listener(
                 move |this, event: &gpui::DragMoveEvent<RightTabDrag>, _, cx| {
                     let payload = event.drag(cx);
@@ -8315,6 +8337,25 @@ impl Render for Shell {
             .clone()
             .unwrap_or_else(|| self.state.read(cx).gate());
 
+        let browser_profile = {
+            let state = self.state.read(cx);
+            crate::links::workspace_locator(
+                state.workspace_scope,
+                state.auth.as_ref(),
+                state.local_device_id.as_deref(),
+            )
+        };
+        if browser_profile.is_some() && browser_profile != self.browser_profile {
+            if self.browser_profile.is_some() {
+                for browser in self.browsers.values() {
+                    browser.update(cx, |browser, cx| browser.close(cx));
+                }
+                self.browsers.clear();
+                self.browser_subs.clear();
+                self.browser_context = crate::browser::BrowserContext::default();
+            }
+            self.browser_profile = browser_profile;
+        }
         let browser_active = matches!(gate, GatePhase::Ready)
             && !restart_required
             && matches!(self.route, Route::Chat)
@@ -8331,12 +8372,14 @@ impl Render for Shell {
             || self.sync_flow != SyncFlow::Idle
             || self.tween_active(self.right_tween)
             || self.tween_active(self.sidebar_tween)
-            || cx.has_active_drag();
+            || cx.has_active_drag()
+            || window.has_active_prompt()
+            || self.browser_tabs_hovered;
         let selected_surface = self.resolved_right_active(cx);
         for (id, browser) in &self.browsers {
             let presentation = crate::browser::model::presentation(
                 browser_active && selected_surface == RightSurface::Browser(*id),
-                browser_covered,
+                browser_covered || browser.read(cx).chrome_hovered,
             );
             browser.update(cx, |browser, cx| {
                 browser.set_shortcuts(&self.settings.keymap);
@@ -9659,6 +9702,11 @@ impl Shell {
     }
     pub fn fixture_expand_browser(&mut self, cx: &mut Context<Self>) {
         self.toggle_right_pane_expand(cx);
+    }
+    pub fn fixture_blur_browser(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.route = Route::Settings(SettingsSection::Devices);
+        window.blur();
+        cx.notify();
     }
     pub fn fixture_resize_browser(&mut self, width: f32, cx: &mut Context<Self>) {
         self.settings.right_pane_width = width;

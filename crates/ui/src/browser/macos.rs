@@ -23,9 +23,28 @@ use std::{
     rc::Rc,
     sync::Arc,
 };
-use wry::{WebView, WebViewExtMacOS};
+use wry::{WebView, WebViewBuilderExtMacos, WebViewExtMacOS};
 
-type Sender = tokio::sync::mpsc::UnboundedSender<NativeEvent>;
+#[derive(Clone, Default)]
+pub(super) struct BrowserData(Rc<RefCell<Option<Retained<objc2_web_kit::WKWebsiteDataStore>>>>);
+impl BrowserData {
+    fn configuration(
+        &self,
+        mtm: MainThreadMarker,
+    ) -> Retained<objc2_web_kit::WKWebViewConfiguration> {
+        let mut data = self.0.borrow_mut();
+        let store = data.get_or_insert_with(|| unsafe {
+            objc2_web_kit::WKWebsiteDataStore::nonPersistentDataStore(mtm)
+        });
+        let configuration = unsafe { objc2_web_kit::WKWebViewConfiguration::new(mtm) };
+        unsafe {
+            configuration.setWebsiteDataStore(store);
+        }
+        configuration
+    }
+}
+
+type Sender = tokio::sync::mpsc::Sender<NativeEvent>;
 const OBSERVED: [&str; 5] = ["URL", "title", "loading", "canGoBack", "canGoForward"];
 
 pub(super) enum NativeEvent {
@@ -41,6 +60,7 @@ struct ObserverState {
     tx: Sender,
     pending: Cell<bool>,
     error: RefCell<Option<String>>,
+    requested_url: RefCell<Option<String>>,
 }
 
 define_class!(
@@ -60,6 +80,9 @@ define_class!(
         #[unsafe(method(webView:decidePolicyForNavigationAction:decisionHandler:))]
         fn policy(&self, _view: &WKWebView, action: &WKNavigationAction, decision: &block2::Block<dyn Fn(WKNavigationActionPolicy)>) {
             let url = unsafe { action.request().URL() }.and_then(|u| u.absoluteString()).map(|u| u.to_string()).unwrap_or_default();
+            if allowed_navigation(&url) && unsafe { action.targetFrame() }.is_some_and(|frame| unsafe { frame.isMainFrame() }) {
+                *self.ivars().requested_url.borrow_mut() = Some(url.clone());
+            }
             decision.call((if allowed_navigation(&url) { WKNavigationActionPolicy::Allow } else { WKNavigationActionPolicy::Cancel },));
         }
         #[unsafe(method(webView:decidePolicyForNavigationResponse:decisionHandler:))]
@@ -72,9 +95,13 @@ define_class!(
         fn start(&self, _view: &WKWebView, _navigation: Option<&WKNavigation>) {
             self.ivars().error.borrow_mut().take(); self.changed();
         }
+        #[unsafe(method(webView:didCommitNavigation:))]
+        fn commit(&self, _view: &WKWebView, _navigation: Option<&WKNavigation>) {
+            self.ivars().requested_url.borrow_mut().take(); self.changed();
+        }
         #[unsafe(method(webView:didFinishNavigation:))]
         fn finish(&self, _view: &WKWebView, _navigation: Option<&WKNavigation>) {
-            self.changed(); let _ = self.ivars().tx.send(NativeEvent::Finished);
+            self.changed(); let _ = self.ivars().tx.try_send(NativeEvent::Finished);
         }
         #[unsafe(method(webView:didFailProvisionalNavigation:withError:))]
         fn provisional_error(&self, _view: &WKWebView, _navigation: Option<&WKNavigation>, error: &NSError) {
@@ -97,12 +124,15 @@ impl Observer {
             tx,
             pending: Cell::new(false),
             error: RefCell::new(None),
+            requested_url: RefCell::new(None),
         });
         unsafe { msg_send![super(object), init] }
     }
     fn changed(&self) {
         if !self.ivars().pending.replace(true) {
-            let _ = self.ivars().tx.send(NativeEvent::Changed);
+            if self.ivars().tx.try_send(NativeEvent::Changed).is_err() {
+                self.ivars().pending.set(false);
+            }
         }
     }
     fn fail(&self, message: &str) {
@@ -127,16 +157,17 @@ pub(super) struct Host {
 }
 
 impl NativePage {
-    pub fn new(window: &Window, tx: Sender) -> Result<Self, String> {
+    pub fn new(window: &Window, data: &BrowserData, tx: Sender) -> Result<Self, String> {
         let mtm = MainThreadMarker::new().ok_or("Browser must be created on the main thread")?;
         let new_tab = tx.clone();
         let web = wry::WebViewBuilder::new()
+            .with_webview_configuration(data.configuration(mtm))
             .with_visible(false)
             .with_focused(false)
             .with_incognito(true)
             .with_new_window_req_handler(move |url, _| {
                 if allowed_navigation(&url) {
-                    let _ = new_tab.send(NativeEvent::NewTab(url));
+                    let _ = new_tab.try_send(NativeEvent::NewTab(url));
                 }
                 wry::NewWindowResponse::Deny
             })
@@ -192,15 +223,18 @@ impl NativePage {
             };
             let browser_key = matches!(
                 combo.as_str(),
-                "cmd-l" | "cmd-t" | "cmd-w" | "cmd-[" | "cmd-]" | "cmd-shift-r"
+                "cmd-l" | "cmd-t" | "cmd-w" | "cmd-[" | "cmd-]" | "cmd-shift-r" | "cmd-k" | "cmd-,"
             );
             let app_key = monitor_shortcuts
                 .borrow()
                 .iter()
                 .any(|s| gpui::Keystroke::parse(s).is_ok_and(|s| s == keystroke));
             if browser_key || app_key {
-                let _ = monitor_tx.send(NativeEvent::Key(keystroke));
-                std::ptr::null_mut()
+                if monitor_tx.try_send(NativeEvent::Key(keystroke)).is_ok() {
+                    std::ptr::null_mut()
+                } else {
+                    event.as_ptr()
+                }
             } else {
                 event.as_ptr()
             }
@@ -239,6 +273,7 @@ impl NativePage {
     pub fn load(&self, url: &str) -> Result<(), String> {
         let host = self.0.borrow();
         host.observer.ivars().error.borrow_mut().take();
+        *host.observer.ivars().requested_url.borrow_mut() = Some(url.into());
         host.web.load_url(url).map_err(|e| e.to_string())
     }
     pub fn reload(&self) {
@@ -266,10 +301,17 @@ impl NativePage {
         unsafe {
             PageState {
                 url: host
-                    .view
-                    .URL()
-                    .and_then(|u| u.absoluteString())
-                    .map(|u| u.to_string()),
+                    .observer
+                    .ivars()
+                    .requested_url
+                    .borrow()
+                    .clone()
+                    .or_else(|| {
+                        host.view
+                            .URL()
+                            .and_then(|u| u.absoluteString())
+                            .map(|u| u.to_string())
+                    }),
                 title: host.view.title().map(|s| s.to_string()).unwrap_or_default(),
                 loading: host.view.isLoading(),
                 can_back: host.view.canGoBack(),
@@ -285,7 +327,7 @@ impl NativePage {
             "(() => { const link = document.querySelector('link[rel~=icon]'); return link ? link.href : new URL('/favicon.ico', location.href).href; })()",
             move |value| {
                 if let Ok(url) = serde_json::from_str::<String>(&value) {
-                    let _ = tx.send(NativeEvent::Favicon { page: page.clone(), url });
+                    let _ = tx.try_send(NativeEvent::Favicon { page: page.clone(), url });
                 }
             },
         );
@@ -390,7 +432,7 @@ impl Host {
                     gpui::ImageFormat::Png,
                     png.to_vec(),
                 )));
-                let _ = tx.send(NativeEvent::Snapshot);
+                let _ = tx.try_send(NativeEvent::Snapshot);
             }
         });
         unsafe {

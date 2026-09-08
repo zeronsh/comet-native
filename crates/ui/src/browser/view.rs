@@ -11,10 +11,15 @@ fn button(
     glyph: &'static str,
     enabled: bool,
     theme: &Theme,
+    cx: &mut Context<BrowserSurface>,
 ) -> gpui::Stateful<gpui::Div> {
     // Match Files/History chrome, including focus-preserving mouse-down and
     // tooltips. Disabled controls have neither a pointer cursor nor a handler.
     crate::files::toolbar_button(id, label)
+        .on_hover(cx.listener(|this, hovered, _, cx| {
+            this.chrome_hovered = *hovered;
+            cx.emit(BrowserEvent::Changed);
+        }))
         .when(!enabled, |el| el.cursor_default().opacity(0.35))
         .child(
             icons::icon(glyph)
@@ -184,6 +189,7 @@ impl Render for BrowserSurface {
             icons::ARROW_LEFT,
             self.page.can_back,
             &theme,
+            cx,
         )
         .when(self.page.can_back, |el| {
             el.on_click(cx.listener(|this, _, _, _| this.history(false)))
@@ -194,6 +200,7 @@ impl Render for BrowserSurface {
             icons::ARROW_RIGHT,
             self.page.can_forward,
             &theme,
+            cx,
         )
         .when(self.page.can_forward, |el| {
             el.on_click(cx.listener(|this, _, _, _| this.history(true)))
@@ -204,6 +211,7 @@ impl Render for BrowserSurface {
             icons::REFRESH,
             has_page,
             &theme,
+            cx,
         )
         .when(has_page, |el| {
             el.on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
@@ -281,6 +289,7 @@ impl Render for BrowserSurface {
             icons::ARROW_UP_RIGHT,
             has_page,
             &theme,
+            cx,
         )
         .when(has_page, |el| {
             el.on_click(cx.listener(|this, _, _, cx| this.open_external(cx)))
