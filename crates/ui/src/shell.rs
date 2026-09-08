@@ -333,6 +333,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
         // bar); pressing it again dismisses.
         KeyBinding::new(&platform_combo("mod-k"), AddSpacePalette, None),
     ]);
+    crate::browser::bind_keys(cx, keymap);
     // ⌘1..⌘9 open the sidebar's first nine rows. A slot left unbound (an empty
     // combo in a hand-edited file) binds nothing rather than falling back —
     // the user cleared it on purpose.
@@ -9624,5 +9625,43 @@ mod exit_regressions {
                 })
                 .unwrap();
         }
+    }
+}
+
+/// Native browser regression fixture hooks are excluded from shipped builds.
+#[cfg(feature = "browser-fixture")]
+impl Shell {
+    pub fn fixture_open_browser(
+        &mut self,
+        url: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> (u64, Entity<crate::browser::BrowserSurface>) {
+        if !self.right_pane_open(cx) {
+            self.toggle_right_pane(cx);
+        }
+        self.add_browser_surface(url, window, cx);
+        (self.browser_seq, self.browsers[&self.browser_seq].clone())
+    }
+    pub fn fixture_select_browser(&mut self, id: u64, cx: &mut Context<Self>) {
+        self.set_right_active(RightSurface::Browser(id), cx);
+    }
+    pub fn fixture_close_browser(&mut self, id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        self.close_right_surface(RightSurface::Browser(id), window, cx);
+    }
+    pub fn fixture_browser_menu(&mut self, open: bool, cx: &mut Context<Self>) {
+        if open {
+            self.right_plus.open(());
+            cx.notify();
+        } else {
+            self.close_right_plus(cx);
+        }
+    }
+    pub fn fixture_expand_browser(&mut self, cx: &mut Context<Self>) {
+        self.toggle_right_pane_expand(cx);
+    }
+    pub fn fixture_resize_browser(&mut self, width: f32, cx: &mut Context<Self>) {
+        self.settings.right_pane_width = width;
+        cx.notify();
     }
 }

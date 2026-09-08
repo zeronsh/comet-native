@@ -9,6 +9,48 @@ use gpui::{
     App, AppContext, Context, Entity, EventEmitter, FocusHandle, Focusable, Subscription, Window,
 };
 use model::{PageState, Presentation};
+gpui::actions!(
+    browser,
+    [Reload, FocusAddress, NewTab, CloseTab, Back, Forward]
+);
+
+pub(crate) fn bind_keys(cx: &mut App, keymap: &crate::settings::KeymapConfig) {
+    use crate::settings::{ShortcutId, platform_combo};
+    // Existing customized app chords win. In particular old settings may
+    // already assign mod-shift-r to the right pane.
+    let available = |combo: &str, own: Option<ShortcutId>| {
+        !combo.is_empty()
+            && !ShortcutId::ALL
+                .iter()
+                .any(|id| Some(*id) != own && keymap.get(*id) == combo)
+    };
+    macro_rules! bind {
+        ($combo:literal, $action:ident) => {
+            if available($combo, None) {
+                cx.bind_keys([gpui::KeyBinding::new(
+                    &platform_combo($combo),
+                    $action,
+                    Some("Browser"),
+                )]);
+            }
+        };
+    }
+    bind!("mod-l", FocusAddress);
+    bind!("mod-t", NewTab);
+    bind!("mod-w", CloseTab);
+    bind!("mod-[", Back);
+    bind!("mod-]", Forward);
+    let reload = keymap.get(ShortcutId::BrowserReload);
+    if available(reload, Some(ShortcutId::BrowserReload))
+        && gpui::Keystroke::parse(&platform_combo(reload)).is_ok()
+    {
+        cx.bind_keys([gpui::KeyBinding::new(
+            &platform_combo(reload),
+            Reload,
+            Some("Browser"),
+        )]);
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum BrowserEvent {
@@ -234,6 +276,9 @@ impl BrowserSurface {
     pub fn close(&mut self) {
         #[cfg(target_os = "macos")]
         {
+            if let Some(native) = &mut self.native {
+                native.present(Presentation::Hidden);
+            }
             self.native = None;
             self.favicon_task = None;
             self.favicon_generation += 1;
@@ -295,7 +340,9 @@ impl BrowserSurface {
             macos::NativeEvent::Key(key) => {
                 if self.presentation == Presentation::Live {
                     window.focus(&self.focus, cx);
-                    window.dispatch_keystroke(key, cx);
+                    window.defer(cx, move |window, cx| {
+                        window.dispatch_keystroke(key, cx);
+                    });
                 }
             }
             macos::NativeEvent::Snapshot => cx.notify(),
@@ -354,5 +401,44 @@ impl BrowserSurface {
                 }));
             }
         }
+    }
+}
+
+#[cfg(feature = "browser-fixture")]
+impl BrowserSurface {
+    pub fn fixture_history(&mut self, forward: bool) {
+        self.history(forward);
+    }
+    pub fn fixture_native_visible(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.native
+                .as_ref()
+                .is_some_and(|native| native.fixture_visible())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+    pub fn fixture_snapshot(&self) -> bool {
+        #[cfg(target_os = "macos")]
+        {
+            self.native
+                .as_ref()
+                .is_some_and(|native| native.snapshot().is_some())
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            false
+        }
+    }
+    pub fn fixture_eval(&self, script: &str) {
+        #[cfg(target_os = "macos")]
+        if let Some(native) = &self.native {
+            native.fixture_eval(script);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = script;
     }
 }

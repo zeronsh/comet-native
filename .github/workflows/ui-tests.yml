@@ -67,6 +67,15 @@ jobs:
             frame-source-tests
       - name: Check macOS application
         run: cargo check --release --locked -p zeron
+      - name: Native browser regression and screenshots
+        run: cargo run --release --locked -p zeron-ui --example browser-fixture --features browser-fixture -- "$RUNNER_TEMP/browser-captures"
+      - name: Upload browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-macos-captures
+          path: ${{ runner.temp }}/browser-captures
+          if-no-files-found: ignore
       - name: Native frame-source recovery regression
         working-directory: frame-source-tests
         run: cargo test --release --locked -p gpui_macos --test frame_source_recovery

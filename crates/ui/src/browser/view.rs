@@ -38,17 +38,7 @@ impl BrowserSurface {
         } else {
             mods.control
         };
-        if primary && !mods.alt && !(cfg!(target_os = "macos") && mods.control) {
-            match (key, mods.shift) {
-                ("l", false) => self.focus_address(window, cx),
-                ("t", false) => cx.emit(BrowserEvent::NewTab(None)),
-                ("w", false) => cx.emit(BrowserEvent::Close),
-                ("r", true) => self.reload(cx),
-                ("[", false) => self.history(false),
-                ("]", false) => self.history(true),
-                _ => return,
-            }
-        } else if address_focused && !primary && !mods.alt {
+        if address_focused && !primary && !mods.alt {
             match key {
                 "enter" if !mods.shift => self.submit(window, cx),
                 "escape" => {
@@ -74,7 +64,7 @@ impl BrowserSurface {
         } else if external && self.page.url.is_some() {
             "Opened in your browser"
         } else {
-            "A little room to explore"
+            "Preview your work"
         };
         let description = if let Some(error) = &self.page.error {
             error.clone()
@@ -347,6 +337,12 @@ impl Render for BrowserSurface {
                 .is_some_and(|u| super::model::loopback(&u));
         div().id("browser-surface").size_full().flex().flex_col().track_focus(&self.focus)
             .key_context("Browser").on_key_down(cx.listener(Self::key_down))
+            .on_action(cx.listener(|this, _: &super::Reload, _, cx| this.reload(cx)))
+            .on_action(cx.listener(|this, _: &super::FocusAddress, w, cx| this.focus_address(w, cx)))
+            .on_action(cx.listener(|_, _: &super::NewTab, _, cx| cx.emit(BrowserEvent::NewTab(None))))
+            .on_action(cx.listener(|_, _: &super::CloseTab, _, cx| cx.emit(BrowserEvent::Close)))
+            .on_action(cx.listener(|this, _: &super::Back, _, _| this.history(false)))
+            .on_action(cx.listener(|this, _: &super::Forward, _, _| this.history(true)))
             .child(toolbar)
             .when_some(self.validation.clone(), |el, message| el.child(div().px(px(12.0)).py(px(8.0)).text_size(crate::typography::ui_rems(11.0)).text_color(theme.danger).child(message)))
             .when(remote_loopback, |el| el.child(div().px(px(12.0)).py(px(8.0)).border_b_1().border_color(theme.border)

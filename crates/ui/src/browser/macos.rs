@@ -5,7 +5,7 @@ use super::model::{PageState, Presentation, allowed_navigation};
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventMask, NSEventModifierFlags, NSImage,
     NSView,
@@ -285,7 +285,7 @@ impl NativePage {
             "(() => { const link = document.querySelector('link[rel~=icon]'); return link ? link.href : new URL('/favicon.ico', location.href).href; })()",
             move |value| {
                 if let Ok(url) = serde_json::from_str::<String>(&value) {
-                    let _ = tx.send(NativeEvent::Favicon { page, url });
+                    let _ = tx.send(NativeEvent::Favicon { page: page.clone(), url });
                 }
             },
         );
@@ -419,5 +419,15 @@ impl Drop for Host {
             self.view.stopLoading();
         }
         self.view.removeFromSuperview();
+    }
+}
+
+#[cfg(feature = "browser-fixture")]
+impl NativePage {
+    pub fn fixture_visible(&self) -> bool {
+        !self.0.borrow().view.isHidden()
+    }
+    pub fn fixture_eval(&self, script: &str) {
+        self.0.borrow().web.evaluate_script(script).unwrap();
     }
 }
