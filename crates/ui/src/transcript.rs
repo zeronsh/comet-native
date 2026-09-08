@@ -136,10 +136,10 @@ pub const USER_COLLAPSE_CHARS: usize = 400;
 /// Vertical separation before the plain expand/collapse link.
 const USER_TOGGLE_GAP: f32 = 8.0;
 /// User-bubble attachment thumbnails (user-attachments.tsx): 112×80 thumbs in
-/// a FIXED-height strip (load-state flips never shift the virtualizer).
+/// a wrapping strip. Fixed thumbnail sizes keep load-state flips from
+/// shifting the virtualizer.
 pub const ATT_THUMB_W: f32 = 112.0;
 pub const ATT_THUMB_H: f32 = 80.0;
-pub const ATT_STRIP_H: f32 = ATT_THUMB_H + 10.0;
 
 // ---------------------------------------------------------------------------
 // Stick-to-bottom spring (mugen §1e — same constants as its DEFAULT_SPRING,
@@ -4428,15 +4428,17 @@ impl Transcript {
         let device_ids = self.attachment_device_ids(cx);
         let mut strip = div()
             .w_full()
-            .h(px(ATT_STRIP_H))
+            .min_w_0()
+            .flex_none()
             .flex()
             .flex_row()
+            .flex_wrap()
             .justify_end()
             .items_start()
             .gap(px(8.0))
-            .overflow_hidden()
             .px(px(4.0))
-            .pt(px(4.0));
+            .pt(px(4.0))
+            .pb(px(6.0));
         for (aix, att) in atts.iter().enumerate() {
             let state = self.attachment_state(&device_ids, &att.path, cx);
             // The in-flight send's progress belongs ON the thumbnail

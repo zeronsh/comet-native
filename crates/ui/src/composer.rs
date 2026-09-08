@@ -3925,6 +3925,8 @@ impl Composer {
             return None;
         }
         let mut strip = div()
+            .w_full()
+            .flex_none()
             .flex()
             .flex_row()
             .flex_wrap()
@@ -3941,6 +3943,7 @@ impl Composer {
             strip = strip.child(
                 div()
                     .group(group.clone())
+                    .flex_none()
                     .relative()
                     .child(
                         div()
@@ -6274,7 +6277,11 @@ impl Render for Composer {
         // Staged attachments add the wrap strip's height to the pill in BOTH
         // modes (attachment-ui.tsx AttachmentStrip sits above the input row).
         let staged_count = self.staged().len();
-        let strip_width_hint = if last_width > 0.0 { last_width } else { 720.0 };
+        // The input width excludes the inline controls in compact mode.
+        // Wrap against the pill's content width in both modes, accounting
+        // for the outer container padding and the pill's 1px borders.
+        let strip_width_hint =
+            self.last_available_width.unwrap_or(COMPOSER_MAX_WIDTH) - 2.0 * Theme::SPACE_LG - 2.0;
         let strip_h = attachment_strip_height(staged_count, strip_width_hint);
         let comment_strip_h = comment_strip_height(self.staged_comments(cx).len());
         let base_height = if expanded {
