@@ -167,6 +167,16 @@ fn input_overflow_edges(
     (scroll_top > 1.0, scroll_top < max_scroll - 1.0)
 }
 
+/// During the reveal, stop at a complete row boundary instead of slicing
+/// glyphs with a moving clip. Scrolling offsets the row grid inside the box.
+fn input_reveal_height(visible: f32, scroll: f32, line_height: f32, resizing: bool) -> f32 {
+    if !resizing {
+        return visible;
+    }
+    let row_end = ((scroll + visible + 0.001) / line_height).floor() * line_height;
+    (row_end - scroll).clamp(0.0, visible)
+}
+
 /// Apply GPUI's wheel delta to a top-origin input offset. Positive deltas mean
 /// scrolling toward the start, matching gpui's built-in list/div behavior.
 fn input_scroll_offset(
@@ -1343,6 +1353,8 @@ pub struct ComposerInput {
     viewport_height: Option<f32>,
     /// Final content budget, excluding temporary overflow during a resize.
     settled_viewport_height: Option<f32>,
+    resizing: bool,
+    overflow_top_padding: f32,
     needs_measure: bool,
     /// Normally keeps the caret visible through edits and rewraps. Manual
     /// wheel scrolling pauses it until the next caret move or edit.
@@ -1425,6 +1437,8 @@ impl ComposerInput {
             scroll_top: 0.0,
             viewport_height: None,
             settled_viewport_height: None,
+            resizing: false,
+            overflow_top_padding: 0.0,
             needs_measure: true,
             follow_cursor: true,
             last_lines: Vec::new(),
@@ -2657,6 +2671,32 @@ impl ComposerInput {
         self.content_height
     }
 
+    fn paint_bounds(&self, bounds: Bounds<Pixels>) -> Bounds<Pixels> {
+        let visible = f32::from(bounds.size.height);
+        let top_overflow = input_overflow_edges(
+            self.content_height,
+            self.settled_viewport_height.unwrap_or(visible),
+            visible,
+            self.scroll_top,
+        )
+        .0;
+        let top_padding = if top_overflow {
+            self.overflow_top_padding
+        } else {
+            0.0
+        };
+        let height = input_reveal_height(
+            visible,
+            self.scroll_top,
+            f32::from(self.line_height),
+            self.resizing,
+        );
+        Bounds::new(
+            point(bounds.left(), bounds.top() - px(top_padding)),
+            size(bounds.size.width, px(height + top_padding)),
+        )
+    }
+
     /// Keep the cursor visible when content exceeds the element height.
     fn clamp_scroll(&mut self, element_height: f32) -> bool {
         let previous = self.scroll_top;
@@ -2951,6 +2991,7 @@ impl gpui::Element for ComposerTextElement {
             }
         });
         let input = self.input.read(cx);
+        let paint_bounds = input.paint_bounds(bounds);
         let scroll = px(input.scroll_top);
         let origin = point(bounds.left(), bounds.top() - scroll);
         let selection_color = Theme::of(cx).selection;
@@ -2993,7 +3034,7 @@ impl gpui::Element for ComposerTextElement {
                     // below fallback flush so the pointer can enter the popup.
                     chip_bounds.bottom() - px(1.0)
                 };
-                let visible_bounds = chip_bounds.intersect(&bounds);
+                let visible_bounds = chip_bounds.intersect(&paint_bounds);
                 if visible_bounds.size.width == px(0.0) || visible_bounds.size.height == px(0.0) {
                     continue;
                 }
@@ -3140,61 +3181,67 @@ impl gpui::Element for ComposerTextElement {
             )
         });
 
-        window.with_content_mask(Some(gpui::ContentMask { bounds }), |window| {
-            for quad in prepaint.mention_quads.drain(..) {
-                window.paint_quad(quad);
-            }
-            for quad in prepaint.selection_quads.drain(..) {
-                window.paint_quad(quad);
-            }
-            let mut y = bounds.top() - px(scroll);
-            for line in &lines {
-                let height = line.size(line_height).height;
-                let _ = line.paint(
-                    point(bounds.left(), y),
-                    line_height,
-                    gpui::TextAlign::Left,
-                    Some(bounds),
-                    window,
-                    cx,
-                );
-                y += height;
-            }
-            if let Some((ghost_origin, ghost)) = prepaint.ghost.take() {
-                let style = window.text_style();
-                let font_size = style.font_size.to_pixels(window.rem_size());
-                let run = TextRun {
-                    len: ghost.len(),
-                    font: style.font(),
-                    color: Theme::of(cx).text_faint,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let line = window
-                    .text_system()
-                    .shape_line(ghost, font_size, &[run], None);
-                // (Clipping comes from the surrounding content mask.)
-                let _ = line.paint(
-                    ghost_origin,
-                    line_height,
-                    gpui::TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
-            }
-            // Caret only when this input is actually focused in an active
-            // window (Electron hides it on window deactivation too), and only
-            // in the "on" blink phase — solid while typing, ~500ms blink idle.
-            if self
-                .input
-                .update(cx, |input, cx| input.caret_shown(window, cx))
-                && let Some(cursor) = prepaint.cursor.take()
-            {
-                window.paint_quad(cursor);
-            }
-        });
+        let paint_bounds = self.input.read(cx).paint_bounds(bounds);
+        window.with_content_mask(
+            Some(gpui::ContentMask {
+                bounds: paint_bounds,
+            }),
+            |window| {
+                for quad in prepaint.mention_quads.drain(..) {
+                    window.paint_quad(quad);
+                }
+                for quad in prepaint.selection_quads.drain(..) {
+                    window.paint_quad(quad);
+                }
+                let mut y = bounds.top() - px(scroll);
+                for line in &lines {
+                    let height = line.size(line_height).height;
+                    let _ = line.paint(
+                        point(bounds.left(), y),
+                        line_height,
+                        gpui::TextAlign::Left,
+                        Some(bounds),
+                        window,
+                        cx,
+                    );
+                    y += height;
+                }
+                if let Some((ghost_origin, ghost)) = prepaint.ghost.take() {
+                    let style = window.text_style();
+                    let font_size = style.font_size.to_pixels(window.rem_size());
+                    let run = TextRun {
+                        len: ghost.len(),
+                        font: style.font(),
+                        color: Theme::of(cx).text_faint,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    };
+                    let line = window
+                        .text_system()
+                        .shape_line(ghost, font_size, &[run], None);
+                    // (Clipping comes from the surrounding content mask.)
+                    let _ = line.paint(
+                        ghost_origin,
+                        line_height,
+                        gpui::TextAlign::Left,
+                        None,
+                        window,
+                        cx,
+                    );
+                }
+                // Caret only when this input is actually focused in an active
+                // window (Electron hides it on window deactivation too), and only
+                // in the "on" blink phase — solid while typing, ~500ms blink idle.
+                if self
+                    .input
+                    .update(cx, |input, cx| input.caret_shown(window, cx))
+                    && let Some(cursor) = prepaint.cursor.take()
+                {
+                    window.paint_quad(cursor);
+                }
+            },
+        );
         self.input.update(cx, |input, _| {
             input.last_lines = lines;
         });
@@ -3276,10 +3323,10 @@ impl Render for ComposerInput {
                             .unwrap_or(TEXTAREA_MAX - TEXTAREA_PAD_V),
                     },
                 )
-                // Reuse the transcript's inset, but reserve only the font's
-                // ascent rather than a full text row. GPUI samples a glyph's
-                // baseline; this makes clipped ink invisible without dead space.
-                .inset_top(ascent)
+                // Fade through the existing top padding, like the transcript
+                // scrolling under its chrome. Account for GPUI's baseline
+                // sampling without consuming another inset inside the text box.
+                .inset_top(ascent - self.overflow_top_padding)
                 .fade_overflow_y_with(move |cx| {
                     let input = input.read(cx);
                     let visible_height = input
@@ -6213,9 +6260,15 @@ impl Render for Composer {
             } else {
                 INPUT_LINE_HEIGHT
             };
+            let resizing = self.height_morph.is_some();
+            let top_padding = if expanded { text_pt } else { 0.0 };
             if input.viewport_height != Some(height)
                 || input.settled_viewport_height != Some(settled_height)
+                || input.resizing != resizing
+                || input.overflow_top_padding != top_padding
             {
+                input.resizing = resizing;
+                input.overflow_top_padding = top_padding;
                 input.viewport_height = Some(height);
                 input.settled_viewport_height = Some(settled_height);
                 cx.notify();
@@ -6962,6 +7015,20 @@ mod tests {
             flip_morph_step(Some(m), false, 124.0, 300.0, false, false),
             None
         );
+    }
+
+    #[test]
+    fn resize_reveals_only_complete_rows() {
+        for visible in [0.0, 5.0, 22.0, 22.75, 30.0, 45.5, 70.0, 150.0] {
+            let height = input_reveal_height(visible, 0.0, INPUT_LINE_HEIGHT, true);
+            assert!(height <= visible);
+            assert_eq!(height % INPUT_LINE_HEIGHT, 0.0);
+        }
+        // The row grid moves with scrolling; the clip still ends between rows.
+        assert_eq!(input_reveal_height(39.0, 7.0, 20.0, true), 33.0);
+        // Normal overflow scrolling keeps its full viewport and existing fades.
+        assert_eq!(input_reveal_height(39.0, 7.0, 20.0, false), 39.0);
+        assert_eq!(input_reveal_height(100.0, 0.0, 20.0, true), 100.0);
     }
 
     #[test]
