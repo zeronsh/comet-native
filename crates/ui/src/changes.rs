@@ -269,15 +269,15 @@ struct DiffHorizontalGeometry {
 }
 
 impl DiffHorizontalGeometry {
-    fn from_files(files: &[FileDiff]) -> Self {
-        let max_code_columns = files
+    fn from_file(file: &FileDiff) -> Self {
+        let max_code_columns = file
+            .hunks
             .iter()
-            .flat_map(|file| &file.hunks)
             .flat_map(|hunk| &hunk.lines)
             .map(|line| visual_columns(&line.text))
             .max()
             .unwrap_or(0);
-        let max_gutter_width = files.iter().map(gutter_width).fold(GUTTER_WIDTH, f32::max);
+        let max_gutter_width = gutter_width(file);
         Self {
             max_code_columns,
             max_gutter_width,
@@ -1133,6 +1133,20 @@ fn full_highlights(
 // Entity
 // ---------------------------------------------------------------------------
 
+struct FileHorizontalState {
+    geometry: DiffHorizontalGeometry,
+    scroll: gpui::ScrollHandle,
+}
+
+impl FileHorizontalState {
+    fn new(file: &FileDiff) -> Self {
+        Self {
+            geometry: DiffHorizontalGeometry::from_file(file),
+            scroll: gpui::ScrollHandle::new(),
+        }
+    }
+}
+
 struct ParsedDiff {
     /// `checkout_id:checksum` — identity of the parsed content.
     key: String,
@@ -1140,7 +1154,8 @@ struct ParsedDiff {
     additions: u32,
     deletions: u32,
     file_count: usize,
-    horizontal_geometry: DiffHorizontalGeometry,
+    /// Indexed like `files`; survives row virtualization and folding.
+    horizontal: Vec<FileHorizontalState>,
     files: Arc<Vec<FileDiff>>,
 }
 
@@ -1204,6 +1219,20 @@ pub enum DiffRow {
 }
 
 impl DiffRow {
+    fn file(self) -> usize {
+        match self {
+            Self::FileHeader { file }
+            | Self::Notice { file, .. }
+            | Self::HunkHeader { file, .. }
+            | Self::Line { file, .. }
+            | Self::SplitLine { file, .. }
+            | Self::CommentCard { file, .. }
+            | Self::CommentDraft { file }
+            | Self::BodyPad { file }
+            | Self::FoldingBody { file } => file as usize,
+        }
+    }
+
     /// `FoldingBody` is height-animated, so it reports 0 and never lands in a
     /// height sum.
     fn height(self, comments: &[ReviewComment]) -> f32 {
@@ -1540,9 +1569,6 @@ pub struct Changes {
     /// once their tween window elapses.
     fold_settle: Option<Task<()>>,
     list: ListState,
-    /// Shared by every code viewport; row chrome stays outside these tracked
-    /// scrollers so virtualization never moves gutters or headers on x.
-    horizontal_scroll: gpui::ScrollHandle,
     /// What the pane diffs against (toolbar dropdown).
     scope: DiffScope,
     /// Unified or side-by-side (toolbar toggle, persisted per user).
@@ -1632,7 +1658,6 @@ impl Changes {
             // Rows are single lines now — a deep overdraw is cheap and keeps
             // fast wheel flicks from outrunning measurement.
             list: ListState::new(0, ListAlignment::Top, px(1024.0)),
-            horizontal_scroll: gpui::ScrollHandle::new(),
             scope: DiffScope::default(),
             base_ref: None,
             branches: Vec::new(),
@@ -2019,10 +2044,18 @@ impl Changes {
         }));
     }
 
+    fn reset_horizontal_scroll(&self) {
+        if let Some(parsed) = &self.parsed {
+            for file in &parsed.horizontal {
+                reset_horizontal_scroll(&file.scroll);
+            }
+        }
+    }
+
     fn set_scope(&mut self, scope: DiffScope, cx: &mut Context<Self>) {
         if self.scope != scope {
             self.scope = scope;
-            reset_horizontal_scroll(&self.horizontal_scroll);
+            self.reset_horizontal_scroll();
             if scope == DiffScope::History {
                 self.history_pane(cx)
                     .update(cx, |history, cx| history.ensure_loaded(cx));
@@ -2139,7 +2172,6 @@ impl Changes {
         self.ensure_scoped(cx);
         let Some(diff) = self.active_diff(cx) else {
             if self.parsed.take().is_some() {
-                reset_horizontal_scroll(&self.horizontal_scroll);
                 self.rows.clear();
                 self.row_ranges.clear();
                 self.list.reset(0);
@@ -2176,7 +2208,7 @@ impl Changes {
                 } else {
                     files.len()
                 };
-                let horizontal_geometry = DiffHorizontalGeometry::from_files(&files);
+                let horizontal = files.iter().map(FileHorizontalState::new).collect();
                 changes.folds.clear();
                 changes.highlights.clear();
                 let staged = changes.staged_comments(cx);
@@ -2199,14 +2231,13 @@ impl Changes {
                     .reset_with_uniform_height(rows.len(), px(DIFF_LINE_HEIGHT));
                 changes.rows = rows;
                 changes.row_ranges = ranges;
-                reset_horizontal_scroll(&changes.horizontal_scroll);
                 changes.parsed = Some(ParsedDiff {
                     key,
                     truncated,
                     additions,
                     deletions,
                     file_count,
-                    horizontal_geometry,
+                    horizontal,
                     files: Arc::new(files),
                 });
                 cx.notify();
@@ -2459,7 +2490,7 @@ impl Changes {
     /// indices do not survive the re-pairing).
     fn toggle_mode(&mut self, cx: &mut Context<Self>) {
         self.mode = self.mode.toggled();
-        reset_horizontal_scroll(&self.horizontal_scroll);
+        self.reset_horizontal_scroll();
         let split = self.mode.is_split();
         crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
             settings.diff_split = split;
@@ -2471,7 +2502,7 @@ impl Changes {
 
     fn toggle_wrap(&mut self, cx: &mut Context<Self>) {
         self.wrap_lines = !self.wrap_lines;
-        reset_horizontal_scroll(&self.horizontal_scroll);
+        self.reset_horizontal_scroll();
         let wrap = self.wrap_lines;
         crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
             settings.diff_wrap = wrap;
@@ -2978,13 +3009,14 @@ impl Changes {
             return gpui::Empty.into_any_element();
         };
         let theme = Theme::of(cx).clone();
+        let horizontal = &parsed.horizontal[row.file()];
         let code_width = if self.wrap_lines {
             DiffCodeWidth::Wrapped
         } else {
-            DiffCodeWidth::Scrollable(parsed.horizontal_geometry.resolve(&theme, window))
+            DiffCodeWidth::Scrollable(horizontal.geometry.resolve(&theme, window))
         };
         let code_scroll = DiffCodeScrollContext {
-            handle: self.horizontal_scroll.clone(),
+            handle: horizontal.scroll.clone(),
             prefix: SharedString::from(format!("changes-code-row-{ix}")),
         };
         match row {
@@ -3213,7 +3245,7 @@ impl Changes {
                     self.mode,
                     code_width,
                     Some(DiffCodeScrollContext {
-                        handle: self.horizontal_scroll.clone(),
+                        handle: code_scroll.handle.clone(),
                         prefix: SharedString::from(format!(
                             "changes-fold-code-{file}-{}",
                             fold.epoch
@@ -4060,7 +4092,7 @@ fn hunk_header_row(header: &str, theme: &Theme) -> AnyElement {
 
 /// The only part of a diff row allowed to exceed its viewport. The outer
 /// element keeps row chrome fixed; the inner element owns the intrinsic code
-/// width and is the only plane moved by the shared horizontal scroll handle.
+/// width and is the only plane moved by the file's horizontal scroll handle.
 fn code_text_viewport(
     text: String,
     runs: Vec<gpui::TextRun>,
@@ -5629,7 +5661,7 @@ rename to new_name.rs
         assert_eq!(visual_columns("e\u{301}"), 1);
 
         let files = parse_patch("diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+ab\t界\n");
-        let geometry = DiffHorizontalGeometry::from_files(&files);
+        let geometry = DiffHorizontalGeometry::from_file(&files[0]);
         assert_eq!(geometry.max_code_columns, 6);
         assert_eq!(geometry.max_gutter_width, GUTTER_WIDTH);
     }
@@ -5652,6 +5684,53 @@ rename to new_name.rs
             ACCENT_BAR_WIDTH + gutter + SPLIT_MARKER_WIDTH + metrics.split_content_width(gutter)
         };
         assert_eq!(split_total(narrow), split_total(wide));
+    }
+
+    #[test]
+    fn horizontal_scroll_and_width_are_independent_per_file() {
+        let files = parse_patch(
+            "diff --git a/a b/a\n@@ -1 +1 @@\n-old\n+short\n\
+             diff --git a/b b/b\n@@ -1 +1 @@\n-old\n+a much longer source line\n",
+        );
+        let states: Vec<_> = files.iter().map(FileHorizontalState::new).collect();
+        assert_eq!(states.len(), 2);
+        assert_eq!(states[0].geometry.max_code_columns, 5);
+        assert_eq!(states[1].geometry.max_code_columns, 25);
+
+        let row = DiffRow::Line {
+            file: 0,
+            hunk: 0,
+            line: 0,
+            flat: 0,
+        };
+        let folding = DiffRow::FoldingBody { file: 0 };
+        let split = DiffRow::SplitLine {
+            file: 1,
+            hunk: 0,
+            left: Some(0),
+            right: Some(1),
+        };
+        let first = DiffCodeScrollContext {
+            handle: states[row.file()].scroll.clone(),
+            prefix: "first".into(),
+        };
+        let second = DiffCodeScrollContext {
+            handle: states[split.file()].scroll.clone(),
+            prefix: "second".into(),
+        };
+        first
+            .slot("unified")
+            .handle
+            .set_offset(gpui::Point::new(px(-96.0), px(0.0)));
+        assert_eq!(states[folding.file()].scroll.offset().x, px(-96.0));
+        assert_eq!(second.slot("old").handle.offset(), gpui::Point::default());
+
+        second
+            .slot("old")
+            .handle
+            .set_offset(gpui::Point::new(px(-48.0), px(0.0)));
+        assert_eq!(second.slot("new").handle.offset().x, px(-48.0));
+        assert_eq!(first.slot("unified").handle.offset().x, px(-96.0));
     }
 
     #[test]
