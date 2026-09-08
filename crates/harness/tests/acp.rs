@@ -204,7 +204,11 @@ async fn happy_path_maps_chunks_tools_diffs_plans_and_commands() {
         },
     }));
 
-    // usage_update maps to nothing (context gauge, not per-turn tokens).
+    // Context occupancy has a dedicated event; billing usage stays separate.
+    assert!(events.contains(&AgentEvent::ContextUsage {
+        tokens: Some(1200),
+        window: Some(500000)
+    }));
     assert!(!events.iter().any(|e| matches!(e, AgentEvent::Usage { .. })));
 
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
@@ -554,32 +558,6 @@ async fn models_fall_back_to_the_static_catalog_when_the_probe_fails() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn opencode_model_timeout_is_not_hidden_by_the_static_catalog() {
-    use std::os::unix::fs::PermissionsExt;
-
-    let dir = tempfile::tempdir().unwrap();
-    let script = dir.path().join("slow-opencode.sh");
-    std::fs::write(&script, "#!/bin/sh\nexec sleep 1000\n").unwrap();
-    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-
-    let harness = AcpHarness::opencode()
-        .with_executable(&script)
-        .with_graces(Duration::from_millis(10), Duration::from_millis(10))
-        .with_model_discovery_timeout(Duration::from_millis(20));
-    let error = harness
-        .models()
-        .await
-        .expect_err("OpenCode must surface discovery failure so the picker can retry");
-    assert!(
-        error
-            .to_string()
-            .contains("OpenCode model discovery did not complete within"),
-        "{error}"
-    );
-}
-
-#[cfg(unix)]
-#[tokio::test]
 async fn hung_handshake_errors_instead_of_spinning_forever() {
     // An agent that consumes stdin and never answers initialize — the
     // "thinking for minutes, then nothing" startup class (issue #93). The
@@ -609,30 +587,19 @@ async fn hung_handshake_errors_instead_of_spinning_forever() {
 }
 #[test]
 fn hermes_and_pi_descriptor_surfaces_match_registry_expectations() {
+    let devin = AcpHarness::devin();
+    assert_eq!(devin.id(), HarnessId::Devin);
+    assert_eq!(devin.display_name(), "Devin");
+    assert!(devin.supports_steering());
+    assert_eq!(devin.steering_mode(), SteeringMode::TurnBoundary);
+    assert!(devin.reasoning_levels().is_empty());
+
     let hermes = AcpHarness::hermes();
     assert_eq!(hermes.id(), HarnessId::Hermes);
     assert_eq!(hermes.display_name(), "Hermes");
     assert!(hermes.supports_steering());
     assert_eq!(hermes.steering_mode(), SteeringMode::TurnBoundary);
     assert!(hermes.reasoning_levels().is_empty());
-
-    let opencode = AcpHarness::opencode();
-    assert_eq!(opencode.id(), HarnessId::Opencode);
-    assert_eq!(opencode.display_name(), "OpenCode");
-    assert!(opencode.supports_steering());
-    assert_eq!(opencode.steering_mode(), SteeringMode::TurnBoundary);
-    // Effort rides opencode's model variants (the session's `effort` config
-    // option, category thought_level); variant-less models skip the set.
-    assert_eq!(
-        opencode.reasoning_levels(),
-        &[
-            zeron_proto::ReasoningLevel::Low,
-            zeron_proto::ReasoningLevel::Medium,
-            zeron_proto::ReasoningLevel::High,
-            zeron_proto::ReasoningLevel::XHigh,
-            zeron_proto::ReasoningLevel::Max,
-        ]
-    );
 
     let pi = AcpHarness::pi();
     assert_eq!(pi.id(), HarnessId::Pi);
@@ -650,6 +617,21 @@ fn hermes_and_pi_descriptor_surfaces_match_registry_expectations() {
             zeron_proto::ReasoningLevel::Max,
         ]
     );
+}
+
+#[tokio::test]
+async fn devin_spec_drives_the_shared_acp_wire() {
+    let devin = AcpHarness::devin().with_executable(fixture_path());
+    let (controls, _steer, _token) = controls();
+    let events = run_to_end(&devin, request("scenario:happy"), controls).await;
+    assert!(events.iter().any(|event| matches!(
+        event,
+        AgentEvent::SessionStarted { harness, .. } if *harness == HarnessId::Devin
+    )));
+    assert!(events.contains(&AgentEvent::TextDelta {
+        text: "Hello".into()
+    }));
+    assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
 }
 
 #[tokio::test]
@@ -844,4 +826,206 @@ async fn grok_subagent_lifecycle_tails_the_disk_transcript_into_tagged_events() 
     // every wrapped event attributed to sp1 (the assert in the filter) — and
     // the parent's own turn settled cleanly with its single untagged Done.
     assert_eq!(dones(&events), vec![(DoneStatus::Completed, None)]);
+}
+
+#[cfg(unix)]
+fn devin_fixture() -> (tempfile::TempDir, AcpHarness) {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let script = dir.path().join("devin.py");
+    std::fs::write(
+        &script,
+        r#"#!/usr/bin/env python3
+import json, pathlib, sys, threading, time
+root = pathlib.Path(__file__).parent
+
+def emit(frame):
+    print(json.dumps(dict(jsonrpc='2.0', **frame)), flush=True)
+
+def config(model):
+    return [{'id':'model', 'category':'model', 'type':'select',
+             'currentValue':'gpt-old', 'options':[{'value':model, 'name':model}]}]
+
+if sys.argv[1:] == ['models', 'list', '--format', 'json']:
+    with (root / 'probes').open('a') as f: f.write('probe\n')
+    state = (root / 'state').read_text()
+    if state == 'hang': time.sleep(60)
+    if state == 'error':
+        print('account unavailable', file=sys.stderr)
+        sys.exit(1)
+    time.sleep(0.1)
+    print(json.dumps({'families':[{'variants':[{'model_uid':state, 'label':state}]}]}))
+    sys.exit(0)
+assert sys.argv[1:] == ['acp'], sys.argv
+selected = None
+
+def refresh():
+    # An unrelated session must not satisfy the requested-model wait.
+    emit({'method':'session/update', 'params':{'sessionId':'other', 'update':{
+        'sessionUpdate':'config_option_update', 'configOptions':config('gpt-new')}}})
+    time.sleep(0.1)
+    (root / 'refreshed').touch()
+    emit({'method':'session/update', 'params':{'sessionId':'s-1', 'update':{
+        'sessionUpdate':'config_option_update', 'configOptions':config('gpt-new')}}})
+
+for line in sys.stdin:
+    req = json.loads(line)
+    method = req.get('method')
+    result = {}
+    if method == 'initialize': result = {'protocolVersion':1, 'agentCapabilities':{}}
+    elif method == 'session/new':
+        result = {'sessionId':'s-1', 'configOptions':config('gpt-old')}
+    elif method == 'session/set_config_option':
+        selected = req['params']['value']
+        assert (root / 'refreshed').exists(), 'selected before own session refreshed'
+        if (root / 'state').read_text() == 'reject':
+            emit({'id':req['id'], 'error':{'code':-32602, 'message':'model unavailable'}})
+            continue
+        assert selected == 'gpt-new', selected
+    elif method == 'session/prompt':
+        (root / 'prompted').write_text(selected or 'default')
+        result = {'stopReason':'end_turn'}
+    early = (root / 'state').read_text() == 'early'
+    if method == 'session/new' and early: refresh()
+    emit({'id':req['id'], 'result':result})
+    if method == 'session/new' and not early: threading.Thread(target=refresh, daemon=True).start()
+    if method == 'session/prompt': break
+"#,
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    std::fs::write(dir.path().join("state"), "gpt-old").unwrap();
+    let harness = AcpHarness::devin().with_executable(script);
+    (dir, harness)
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn devin_models_refresh_between_calls_and_coalesce_overlapping_probes() {
+    let (dir, harness) = devin_fixture();
+    let (first, overlap) = tokio::join!(harness.models(), harness.models());
+    assert_eq!(first.unwrap()[0].id, "gpt-old");
+    assert_eq!(overlap.unwrap()[0].id, "gpt-old");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("probes"))
+            .unwrap()
+            .lines()
+            .count(),
+        1
+    );
+    std::fs::write(dir.path().join("state"), "gpt-new").unwrap();
+    assert_eq!(harness.models().await.unwrap()[0].id, "gpt-new");
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("probes"))
+            .unwrap()
+            .lines()
+            .count(),
+        2
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn devin_discovery_errors_and_timeouts_retry_without_stale_success() {
+    let (dir, harness) = devin_fixture();
+    let harness = harness.with_model_discovery_timeout(Duration::from_millis(500));
+    assert_eq!(harness.models().await.unwrap()[0].id, "gpt-old");
+    std::fs::write(dir.path().join("state"), "error").unwrap();
+    assert!(
+        harness
+            .models()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("account unavailable")
+    );
+    std::fs::write(dir.path().join("state"), "hang").unwrap();
+    assert!(
+        harness
+            .models()
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("timed out")
+    );
+    std::fs::write(dir.path().join("state"), "gpt-new").unwrap();
+    assert_eq!(harness.models().await.unwrap()[0].id, "gpt-new");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn devin_waits_for_refreshed_variant_before_prompting() {
+    let (dir, harness) = devin_fixture();
+    let (controls, _steer, _token) = controls();
+    let mut req = request("Say hello");
+    req.model = Some("gpt-new".into());
+    let events = run_to_end(&harness, req, controls).await;
+    assert_eq!(
+        dones(&events),
+        vec![(DoneStatus::Completed, None)],
+        "{events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("prompted")).unwrap(),
+        "gpt-new"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn devin_rejected_model_never_prompts_with_a_different_model() {
+    let (dir, harness) = devin_fixture();
+    std::fs::write(dir.path().join("state"), "reject").unwrap();
+    let (controls, _steer, _token) = controls();
+    let mut req = request("Say hello");
+    req.model = Some("gpt-new".into());
+    let events = run_to_end(&harness, req, controls).await;
+    assert!(
+        dones(&events)
+            .iter()
+            .any(|(status, error)| *status == DoneStatus::Errored
+                && error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("model unavailable"))),
+        "{events:?}"
+    );
+    assert!(!dir.path().join("prompted").exists());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn devin_keeps_model_refresh_that_precedes_session_response() {
+    let (dir, harness) = devin_fixture();
+    std::fs::write(dir.path().join("state"), "early").unwrap();
+    let (controls, _steer, _token) = controls();
+    let mut req = request("Say hello");
+    req.model = Some("gpt-new".into());
+    let events = run_to_end(&harness, req, controls).await;
+    assert_eq!(
+        dones(&events),
+        vec![(DoneStatus::Completed, None)],
+        "{events:?}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("prompted")).unwrap(),
+        "gpt-new"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn devin_missing_variant_is_bounded_and_never_prompts() {
+    let (dir, harness) = devin_fixture();
+    let harness = harness.with_handshake_timeout(Duration::from_millis(300));
+    let (controls, _steer, _token) = controls();
+    let mut req = request("Say hello");
+    req.model = Some("gpt-missing".into());
+    let events = run_to_end(&harness, req, controls).await;
+    assert!(
+        dones(&events)
+            .iter()
+            .any(|(status, _)| *status == DoneStatus::Errored),
+        "{events:?}"
+    );
+    assert!(!dir.path().join("prompted").exists());
 }

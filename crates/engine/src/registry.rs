@@ -435,6 +435,23 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::CursorHarness::new().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::CursorHarness::new()) as Arc<dyn Harness>)),
     );
+    // Devin over ACP (`devin acp`), same lazy pattern: the static descriptor
+    // mirrors AcpHarness::devin() exactly. No steering extension (turn
+    // boundaries) and no effort ladder — Devin bakes effort into the
+    // advertised model ids instead of a `thought_level` option.
+    registry.register_lazy(
+        HarnessDescriptor {
+            id: HarnessId::Devin,
+            name: "Devin".into(),
+            supports_steering: true,
+            steering_mode: SteeringMode::TurnBoundary,
+            reasoning_levels: Vec::new(),
+            installed: true,
+            enabled: None,
+        },
+        Box::new(|| zeron_harness::AcpHarness::devin().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::devin()) as Arc<dyn Harness>)),
+    );
     // Grok Build over ACP, same lazy pattern: the static descriptor mirrors
     // AcpHarness::grok() exactly. No `_session/steering` extension yet, so
     // steers deliver at turn boundaries; the effort ladder applies per
@@ -496,11 +513,11 @@ pub fn default_registry() -> HarnessRegistry {
         Box::new(|| zeron_harness::AcpHarness::pi().installed()),
         Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::pi()) as Arc<dyn Harness>)),
     );
-    // opencode over ACP (`opencode acp`), same lazy pattern: the static
-    // descriptor mirrors AcpHarness::opencode() exactly. No steering
-    // extension (turn boundaries) and no effort ladder — opencode exposes no
-    // thought_level config over ACP today (effort stays per-model in its own
-    // config).
+    // opencode over its NATIVE HTTP/SSE protocol (the one the opencode
+    // desktop app speaks — `opencode serve` + the /global/event bus), same
+    // lazy pattern: the static descriptor mirrors OpencodeHarness exactly.
+    // Turn-boundary steering; the effort ladder rides model VARIANTS (the
+    // run sends the first advertised variant id for the picked level).
     registry.register_lazy(
         HarnessDescriptor {
             id: HarnessId::Opencode,
@@ -517,8 +534,8 @@ pub fn default_registry() -> HarnessRegistry {
             installed: true,
             enabled: None,
         },
-        Box::new(|| zeron_harness::AcpHarness::opencode().installed()),
-        Box::new(|| Ok(Arc::new(zeron_harness::AcpHarness::opencode()) as Arc<dyn Harness>)),
+        Box::new(|| zeron_harness::OpencodeHarness::new().installed()),
+        Box::new(|| Ok(Arc::new(zeron_harness::OpencodeHarness::new()) as Arc<dyn Harness>)),
     );
     registry
 }
@@ -574,6 +591,7 @@ mod tests {
                 HarnessId::ClaudeCode,
                 HarnessId::Codex,
                 HarnessId::Cursor,
+                HarnessId::Devin,
                 HarnessId::Grok,
                 HarnessId::Hermes,
                 HarnessId::Pi,
@@ -600,12 +618,17 @@ mod tests {
                 ReasoningLevel::High
             ]
         );
-        // Cursor, Hermes and Pi mirror their specs the same way.
+        // Cursor, Devin, Hermes and Pi mirror their specs the same way.
         let cursor = registry.resolve(HarnessId::Cursor).unwrap();
         assert_eq!(cursor.id(), HarnessId::Cursor);
         assert_eq!(cursor.display_name(), "Cursor");
         assert_eq!(cursor.steering_mode(), SteeringMode::TurnBoundary);
         assert!(cursor.reasoning_levels().is_empty());
+        let devin = registry.resolve(HarnessId::Devin).unwrap();
+        assert_eq!(devin.id(), HarnessId::Devin);
+        assert_eq!(devin.display_name(), "Devin");
+        assert_eq!(devin.steering_mode(), SteeringMode::TurnBoundary);
+        assert!(devin.reasoning_levels().is_empty());
         let hermes = registry.resolve(HarnessId::Hermes).unwrap();
         assert_eq!(hermes.id(), HarnessId::Hermes);
         assert_eq!(hermes.display_name(), "Hermes");

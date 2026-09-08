@@ -14,6 +14,17 @@ use serde::{Deserialize, Serialize};
 use crate::parts::MessagePart;
 use crate::schema::SessionMessageEntry;
 
+/// Transcript changes and the current host-owned context snapshot travel together.
+/// Older readers ignore `contextUsage`; older hosts decode as unknown usage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscriptUpdate {
+    #[serde(flatten)]
+    pub frame: TranscriptFrame,
+    #[serde(default)]
+    pub context_usage: Option<zeron_proto::ContextUsage>,
+}
+
 /// One `WatchDocMessages` stream item.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -72,9 +83,10 @@ impl TranscriptFrame {
     }
 }
 
-/// When `next` is `prev` plus text appended to exactly one text part (same
-/// position, all other fields and parts identical), the change is a
-/// [`TextAppend`]. Any other difference falls back to a full upsert.
+/// When `next` is `prev` plus text appended to exactly one text-bodied part
+/// (text or reasoning; same position, all other fields and parts identical),
+/// the change is a [`TextAppend`]. Any other difference falls back to a full
+/// upsert.
 fn try_text_append(prev: &SessionMessageEntry, next: &SessionMessageEntry) -> Option<TextAppend> {
     if prev.id != next.id
         || prev.role != next.role
@@ -91,10 +103,13 @@ fn try_text_append(prev: &SessionMessageEntry, next: &SessionMessageEntry) -> Op
         if p == n {
             continue;
         }
-        let (MessagePart::Text { id: pid, text: pt }, MessagePart::Text { id: nid, text: nt }) =
-            (p, n)
-        else {
-            return None;
+        let ((pid, pt), (nid, nt)) = match (p, n) {
+            (MessagePart::Text { id: pid, text: pt }, MessagePart::Text { id: nid, text: nt })
+            | (
+                MessagePart::Reasoning { id: pid, text: pt },
+                MessagePart::Reasoning { id: nid, text: nt },
+            ) => ((pid, pt), (nid, nt)),
+            _ => return None,
         };
         if pid != nid || !nt.starts_with(pt.as_str()) || append.is_some() {
             return None;
@@ -222,11 +237,15 @@ pub fn apply_transcript_frame(
                 let Some(target) = current.iter_mut().find(|e| e.id == entry) else {
                     return Err(TranscriptDesync(format!("missing append entry {entry}")));
                 };
-                let Some(MessagePart::Text { text: tail, .. }) = target
-                    .parts
-                    .iter_mut()
-                    .find(|p| matches!(p, MessagePart::Text { id, .. } if *id == part))
-                else {
+                let tail = target.parts.iter_mut().find_map(|p| match p {
+                    MessagePart::Text { id, text } | MessagePart::Reasoning { id, text }
+                        if *id == part =>
+                    {
+                        Some(text)
+                    }
+                    _ => None,
+                });
+                let Some(tail) = tail else {
                     return Err(TranscriptDesync(format!("missing append part {part}")));
                 };
                 tail.push_str(&text);
@@ -324,6 +343,30 @@ mod tests {
     }
 
     #[test]
+    fn streaming_reasoning_tick_is_a_text_append() {
+        let mut b0 = entry("b", "prompt");
+        b0.parts = vec![MessagePart::Reasoning {
+            id: "r0".into(),
+            text: "thinking".into(),
+        }];
+        let mut b1 = b0.clone();
+        b1.parts = vec![MessagePart::Reasoning {
+            id: "r0".into(),
+            text: "thinking more".into(),
+        }];
+        let frame = diff_transcript(std::slice::from_ref(&b0), std::slice::from_ref(&b1));
+        match &frame {
+            TranscriptFrame::Delta { upsert, append, .. } => {
+                assert!(upsert.is_empty(), "reasoning growth must ride the hot path");
+                assert_eq!(append.len(), 1);
+                assert_eq!(append[0].text, " more");
+            }
+            other => panic!("expected delta, got {other:?}"),
+        }
+        apply(&[b0], &[b1]);
+    }
+
+    #[test]
     fn non_append_change_falls_back_to_upsert() {
         // Same id but a rewritten (non-prefix) text must re-send the entry.
         let b0 = entry("b", "draft text");
@@ -379,5 +422,29 @@ mod tests {
         };
         let mut current = Vec::new();
         assert!(apply_transcript_frame(&mut current, frame).is_err());
+    }
+}
+
+#[cfg(test)]
+mod context_update_tests {
+    use super::*;
+    #[test]
+    fn usage_envelope_is_compatible_with_old_hosts_and_readers() {
+        let old = serde_json::json!({"reset": []});
+        let update: TranscriptUpdate = serde_json::from_value(old).unwrap();
+        assert_eq!(update.context_usage, None);
+        let value = serde_json::to_value(TranscriptUpdate {
+            frame: TranscriptFrame::reset(&[]),
+            context_usage: Some(zeron_proto::ContextUsage {
+                tokens: Some(0),
+                window: Some(200000),
+            }),
+        })
+        .unwrap();
+        assert_eq!(value["contextUsage"]["tokens"], 0);
+        assert!(matches!(
+            serde_json::from_value::<TranscriptFrame>(value).unwrap(),
+            TranscriptFrame::Reset { .. }
+        ));
     }
 }

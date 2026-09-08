@@ -21,9 +21,14 @@ export type SessionMessageRole = "user" | "assistant" | "system";
  */
 export interface DocMessagePart {
   readonly id: string;
-  readonly kind: "text" | "tool" | "input" | "error";
+  readonly kind: "text" | "reasoning" | "tool" | "input" | "error";
   /** kind === "text" — LoroText in the doc, string in mirror state. */
   readonly text?: string;
+  /** kind === "reasoning" — LoroText in the doc. Deliberately NOT `text`:
+   * old readers' unknown-kind fallback renders `text` as prose, so reasoning
+   * on this field degrades to an invisible empty part instead of leaking
+   * raw thinking into old transcripts. */
+  readonly reasoning?: string;
   /** kind === "tool" — render-only (§1.2). */
   readonly call?: RenderToolCall;
   readonly isError?: boolean;
@@ -42,6 +47,8 @@ export const toDocParts = (
     switch (p.kind) {
       case "text":
         return { id: p.id, kind: "text", text: p.text };
+      case "reasoning":
+        return { id: p.id, kind: "reasoning", reasoning: p.text };
       case "tool":
         return {
           id: p.id,
@@ -86,6 +93,8 @@ export const fromDocParts = (
         };
       case "error":
         return { kind: "error", id: p.id, message: p.message ?? "" };
+      case "reasoning":
+        return { kind: "reasoning", id: p.id, text: p.reasoning ?? "" };
       default:
         return { kind: "text", id: p.id, text: p.text ?? "" };
     }
@@ -149,15 +158,19 @@ export const splitMessageEntry = (
   // near the cap under the render-only policy but are kept whole regardless.
   const atoms: DocMessagePart[] = [];
   entry.parts.forEach((part, i) => {
-    if (part.kind === "text" && part.text !== undefined && sizes[i]! > maxBytes) {
-      const text = part.text;
+    const body = part.kind === "text" ? part.text : part.kind === "reasoning" ? part.reasoning : undefined;
+    if ((part.kind === "text" || part.kind === "reasoning") && body !== undefined && sizes[i]! > maxBytes) {
       // Chunk by code points to avoid splitting surrogate pairs. Budget in
       // UTF-16 units approximated from the byte cap; JSON escaping overhead is
       // covered by the 4x safety divisor.
       const chunkLen = Math.max(1, Math.floor(maxBytes / 4));
       let n = 0;
-      for (let off = 0; off < text.length; off += chunkLen, n++) {
-        atoms.push({ kind: "text", id: `${part.id}#t${n}`, text: text.slice(off, off + chunkLen) });
+      for (let off = 0; off < body.length; off += chunkLen, n++) {
+        const id = `${part.id}#t${n}`;
+        const slice = body.slice(off, off + chunkLen);
+        atoms.push(
+          part.kind === "text" ? { kind: "text", id, text: slice } : { kind: "reasoning", id, reasoning: slice }
+        );
       }
     } else {
       atoms.push(part);

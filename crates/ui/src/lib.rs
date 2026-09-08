@@ -20,10 +20,13 @@ pub mod change_requests;
 pub mod changes;
 pub mod comments;
 pub mod composer;
+mod context_usage;
 pub mod edge_fade;
+pub mod files;
 pub mod frost;
 pub mod history;
 pub mod icons;
+pub mod links;
 pub mod loaders;
 pub mod markdown;
 pub mod motion;
@@ -35,45 +38,19 @@ pub mod settings;
 pub mod shell;
 pub mod sound;
 pub mod state;
+pub(crate) mod surface_chrome;
 pub mod syntax_cache;
 pub mod terminal;
 pub mod theme;
+pub mod theme_library;
 pub mod transcript;
+pub mod typography;
+mod workspace_links;
 
-use std::borrow::Cow;
 use std::path::PathBuf;
 
+use futures::StreamExt as _;
 use gpui::{App, AppContext as _, Bounds, TitlebarOptions, WindowBounds, WindowOptions, px, size};
-
-/// Embedded UI fonts — Geist and Geist Mono (variable), © Vercel Inc.,
-/// licensed under the SIL Open Font License 1.1 (https://openfontlicense.org).
-/// Bundled so the type ships with the binary instead of depending on what the
-/// host system happens to have installed.
-static FONT_GEIST: &[u8] = include_bytes!("../assets/fonts/Geist.ttf");
-static FONT_GEIST_MONO: &[u8] = include_bytes!("../assets/fonts/GeistMono.ttf");
-/// Static Geist weights alongside the variable file: gpui's cosmic-text path
-/// (Linux) rasterizes variable fonts at their default instance only — it never
-/// applies `wght` coordinates — so medium/semibold/bold text silently paints
-/// at 400 with just the variable TTF registered. The statics give the face
-/// matcher real 500/600/700 faces (macOS/CoreText applies the variable axis
-/// natively and simply never falls through to these).
-static FONT_GEIST_MEDIUM: &[u8] = include_bytes!("../assets/fonts/Geist-Medium.ttf");
-static FONT_GEIST_SEMIBOLD: &[u8] = include_bytes!("../assets/fonts/Geist-SemiBold.ttf");
-static FONT_GEIST_BOLD: &[u8] = include_bytes!("../assets/fonts/Geist-Bold.ttf");
-
-/// Register the embedded fonts with the gpui text system. Failure is non-fatal:
-/// the theme's system fallbacks take over (same families the CSS stack names).
-fn register_fonts(cx: &App) {
-    if let Err(err) = cx.text_system().add_fonts(vec![
-        Cow::Borrowed(FONT_GEIST),
-        Cow::Borrowed(FONT_GEIST_MONO),
-        Cow::Borrowed(FONT_GEIST_MEDIUM),
-        Cow::Borrowed(FONT_GEIST_SEMIBOLD),
-        Cow::Borrowed(FONT_GEIST_BOLD),
-    ]) {
-        tracing::warn!(error = %err, "failed to register embedded Geist fonts");
-    }
-}
 
 pub use state::EngineBootConfig;
 pub use zeron_proto::HarnessId;
@@ -97,6 +74,8 @@ pub struct UiConfig {
     pub workos_client_id: Option<String>,
     /// Harness for doc-command runs until per-chat config lands (M4).
     pub default_harness: HarnessId,
+    /// Conversation URL passed by the OS on a cold launch.
+    pub initial_url: Option<String>,
 }
 
 impl UiConfig {
@@ -127,6 +106,16 @@ impl gpui::Global for ReopenState {}
 /// root view, boot splash overlaid until the engine reports ready.
 pub fn run_app(config: UiConfig) {
     let app = gpui_platform::application().with_assets(icons::Assets);
+    let (url_tx, mut url_rx) = futures::channel::mpsc::unbounded::<String>();
+    let callback_tx = url_tx.clone();
+    app.on_open_urls(move |urls| {
+        for url in urls {
+            let _ = callback_tx.unbounded_send(url);
+        }
+    });
+    if let Some(url) = config.initial_url.clone() {
+        let _ = url_tx.unbounded_send(url);
+    }
     // Dock-icon click with no window (⌘W closed it): rebuild the main window
     // around the still-running engine — zed does the same via `on_reopen`
     // (crates/zed/src/main.rs `app.on_reopen`).
@@ -141,27 +130,54 @@ pub fn run_app(config: UiConfig) {
     app.run(move |cx: &mut App| {
         // NB: pinned-rev API — `gpui_tokio::init(cx)` free function (not `Tokio::init`).
         gpui_tokio::init(cx);
-        register_fonts(cx);
-        // Appearance before anything paints: the theme global has to be the
-        // final one on the very first frame, or the window flashes the wrong
-        // palette while settings load.
+        gpui_base::init(cx);
         let data_dir = config.boot().data_dir.clone();
+        let ui_settings = settings::UiSettings::load(&data_dir);
+        settings::init(ui_settings.clone(), data_dir.clone(), cx);
+        let font_availability = typography::register_fonts(cx);
+        // Typography first: theme installation reads the effective family, so
+        // the first frame has the final font and palette without a flash.
+        typography::init(
+            ui_settings.ui_font_family.clone(),
+            ui_settings.ui_font_size,
+            font_availability,
+            cx,
+        );
+        theme_library::init(data_dir.clone(), cx);
         appearance::init(
-            settings::UiSettings::load(&data_dir).appearance,
-            data_dir,
+            ui_settings.appearance,
+            ui_settings.theme_selection,
+            ui_settings.accent,
+            ui_settings.surface,
+            cx,
+        );
+        history::init(
+            ui_settings.git_history_columns,
+            ui_settings.git_history_column_widths,
+            ui_settings.git_history_column_order,
+            ui_settings.git_history_author_display,
             cx,
         );
         composer::init(cx);
         terminal::panel::init(cx);
         app_menus::init(cx);
+        cx.register_url_scheme("zeron").detach();
 
         let state = cx.new(|_| state::AppState::new());
+        let url_state = state.clone();
+        cx.spawn(async move |cx| {
+            while let Some(url) = url_rx.next().await {
+                url_state.update(cx, |state, cx| state.open_deep_link(&url, cx));
+            }
+        })
+        .detach();
         state::AppState::bootstrap(state.clone(), config.boot(), cx);
 
         // Graceful teardown: an in-process engine drains live runs and flushes
         // doc snapshots before the process exits (remote engines outlive us).
         let quit_state = state.clone();
         cx.on_app_quit(move |cx| {
+            settings::flush(cx);
             let shutdown =
                 quit_state.read(cx).engine().cloned().map(|handle| {
                     gpui_tokio::Tokio::spawn(cx, async move { handle.shutdown().await })
@@ -250,11 +266,19 @@ fn open_main_window(state: gpui::Entity<state::AppState>, boot: EngineBootConfig
             ..Default::default()
         },
         move |window, cx| {
+            window.set_rem_size(px(typography::font_size(cx).pixels()));
             // React to the user flipping macOS between light and dark. Detached:
             // the subscription lives as long as the window does, and the window
             // owns nothing that would drop it early.
             appearance::observe_window(window, cx).detach();
-            cx.new(|cx| shell::Shell::new(state, boot, cx))
+            let shell = cx.new(|cx| shell::Shell::new(state, boot, cx));
+            let weak_shell = shell.downgrade();
+            window.on_window_should_close(cx, move |_, cx| {
+                weak_shell
+                    .update(cx, |shell, cx| shell.prepare_window_close(cx))
+                    .unwrap_or(true)
+            });
+            shell
         },
     )
     .expect("failed to open window");

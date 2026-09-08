@@ -1,6 +1,7 @@
-//! Live probe: drive the real opencode CLI through AcpHarness and print the
-//! event stream, verifying task-chip correlation + the sidecar-bus-tailed
-//! subagent transcript end-to-end. Needs `opencode` on PATH (or
+//! Live probe: drive the real opencode CLI through the NATIVE OpencodeHarness
+//! (`opencode serve` + /global/event SSE) and print the event stream,
+//! verifying task-chip correlation + the bus-tailed subagent transcript
+//! end-to-end. Needs `opencode` on PATH (or
 //! OPENCODE_EXECUTABLE) with a model provider configured in the target cwd —
 //! the rig recipe uses a mock OpenAI-compatible provider in the workspace's
 //! opencode.json, so no real login is required:
@@ -13,7 +14,7 @@
 
 use futures::StreamExt;
 use tokio::sync::{mpsc, oneshot};
-use zeron_harness::{AcpHarness, CancellationToken, Harness, RunControls};
+use zeron_harness::{CancellationToken, Harness, OpencodeHarness, RunControls};
 use zeron_proto::{AgentEvent, RunRequest, SandboxLevel, UserInputAnswer};
 
 #[tokio::main]
@@ -60,7 +61,7 @@ async fn main() {
         resume: None,
         worktree: None,
     };
-    let mut stream = AcpHarness::opencode()
+    let mut stream = OpencodeHarness::new()
         .run(request, controls)
         .await
         .expect("run starts");
@@ -96,7 +97,7 @@ async fn main() {
                 eprintln!("EV Done({status:?}) [parent]");
             }
             Ok(AgentEvent::TextDelta { text }) => eprintln!("TXT {}", text.trim_end()),
-            Ok(AgentEvent::ReasoningDelta { .. }) => {}
+            Ok(AgentEvent::ReasoningDelta { text }) => eprintln!("THK {}", text.trim_end()),
             Ok(other) => eprintln!("EV {other:?}"),
             Err(e) => eprintln!("ERR {e}"),
         }

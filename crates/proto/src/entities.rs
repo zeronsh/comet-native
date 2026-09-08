@@ -83,6 +83,23 @@ pub struct ChatConfig {
     pub sandbox: SandboxLevel,
 }
 
+/// Immutable-at-run-start repository context owned by one conversation.
+///
+/// This is deliberately separate from the live checkout snapshot: another
+/// chat may change the branch at the same checkout without changing which
+/// branch this conversation belongs to.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConversationSourceContext {
+    pub checkout_id: String,
+    pub repo_root: String,
+    pub cwd: String,
+    pub branch: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_sha: Option<String>,
+    pub observed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Chat {
@@ -95,6 +112,11 @@ pub struct Chat {
     pub branch: Option<String>,
     /// Canonical id of the repo checkout/worktree this chat operates in.
     pub checkout_id: Option<String>,
+    /// Repository identity captured for this conversation immediately before
+    /// its harness run. Unlike `branch`, this is never inferred from another
+    /// chat sharing the same checkout.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_context: Option<ConversationSourceContext>,
     pub config: Option<ChatConfig>,
     pub last_message_preview: Option<String>,
     pub last_message_at: Option<DateTime<Utc>>,
@@ -247,16 +269,39 @@ pub struct GitHistoryCommit {
     pub refs: Vec<GitHistoryRef>,
 }
 
+/// Divergence between the checked-out branch and the repository's integration
+/// branch. Counts are computed only from locally available refs; callers must
+/// fetch explicitly when they want newer remote state.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GitHistoryComparison {
+    /// The local remote-tracking ref used as the comparison base, e.g.
+    /// `upstream/main`.
+    pub base: String,
+    /// Commits reachable from HEAD but not from [`Self::base`].
+    pub ahead: usize,
+    /// Commits reachable from [`Self::base`] but not from HEAD.
+    pub behind: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitHistoryPage {
     pub commits: Vec<GitHistoryCommit>,
+    /// Deduplicated tips of every public local/remote branch. Populated with
+    /// the first page so clients can switch to the compact overview without
+    /// another round trip or loading the complete history.
+    #[serde(default)]
+    pub branch_tips: Vec<GitHistoryCommit>,
     pub head_sha: Option<String>,
     pub next_cursor: Option<usize>,
     pub total_count: Option<usize>,
     /// Number of commits reachable from the active checkout's HEAD.
     #[serde(default)]
     pub head_commit_count: Option<usize>,
+    /// Current branch divergence from the preferred integration branch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<GitHistoryComparison>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -315,6 +360,239 @@ pub struct DriveListing {
 pub struct FileSearchMatch {
     pub path: String,
     pub is_dir: bool,
+}
+
+/// Identifies the local checkout used by workspace file operations.
+/// Exactly one of `chat_id` and `space_id` must be present.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceTarget {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkspaceDirectoryRequest {
+    #[serde(flatten)]
+    pub target: WorkspaceTarget,
+    #[serde(default)]
+    pub directory: String,
+    #[serde(default)]
+    pub include_ignored: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceDirectoryPage {
+    pub directory: String,
+    pub entries: Vec<WorkspaceEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceEntry {
+    pub path: String,
+    pub name: String,
+    pub kind: WorkspaceEntryKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<DateTime<Utc>>,
+    pub ignored: bool,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceEntryKind {
+    File,
+    Directory,
+    Symlink,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchWorkspaceFilesRequest {
+    #[serde(flatten)]
+    pub target: WorkspaceTarget,
+    pub query: String,
+    #[serde(default)]
+    pub include_ignored: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u16>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileSearchMatch {
+    pub path: String,
+    pub name: String,
+    pub kind: WorkspaceEntryKind,
+    pub score: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReadWorkspaceFileRequest {
+    #[serde(flatten)]
+    pub target: WorkspaceTarget,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileText {
+    /// Identity of the checkout this snapshot was read from.
+    pub checkout_id: String,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<DateTime<Utc>>,
+    pub encoding: WorkspaceTextEncoding,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line_ending: Option<WorkspaceLineEnding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_reason: Option<WorkspaceReadOnlyReason>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceTextEncoding {
+    Utf8,
+    Utf8Bom,
+    Binary,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceLineEnding {
+    Lf,
+    Crlf,
+    Mixed,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceReadOnlyReason {
+    Binary,
+    UnsupportedEncoding,
+    MixedLineEndings,
+    Symlink,
+    TooLarge,
+    PermissionDenied,
+    NotRegularFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WriteWorkspaceFileRequest {
+    /// Must match the read snapshot, even if the chat has since changed cwd.
+    pub expected_checkout_id: String,
+    #[serde(flatten)]
+    pub target: WorkspaceTarget,
+    pub path: String,
+    pub text: String,
+    pub expected_content_hash: String,
+    pub encoding: WorkspaceWritableEncoding,
+    pub line_ending: WorkspaceWritableLineEnding,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceWritableEncoding {
+    Utf8,
+    Utf8Bom,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceWritableLineEnding {
+    Lf,
+    Crlf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum WriteWorkspaceFileOutcome {
+    #[serde(rename_all = "camelCase")]
+    Written { file: WorkspaceFileWriteResult },
+    #[serde(rename_all = "camelCase")]
+    Conflict {
+        reason: WorkspaceFileConflictReason,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current_content_hash: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current_modified_at: Option<DateTime<Utc>>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileWriteResult {
+    pub path: String,
+    pub content_hash: String,
+    pub size: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceFileConflictReason {
+    Changed,
+    Deleted,
+    Replaced,
+    NotRegularFile,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatchWorkspaceFilesRequest {
+    #[serde(flatten)]
+    pub target: WorkspaceTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileChanges {
+    pub sequence: u64,
+    pub resync_required: bool,
+    pub changes: Vec<WorkspaceFileChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceFileChange {
+    pub kind: WorkspaceFileChangeKind,
+    pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum WorkspaceFileChangeKind {
+    Created,
+    Modified,
+    Removed,
+    Renamed,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -690,6 +968,118 @@ mod tests {
         assert_eq!(
             serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(),
             request
+        );
+    }
+
+    #[test]
+    fn workspace_file_requests_flatten_target_and_omit_options() {
+        let request = ListWorkspaceDirectoryRequest {
+            target: WorkspaceTarget {
+                chat_id: Some("chat-1".into()),
+                space_id: None,
+                checkout_path: None,
+            },
+            directory: "src/日本語".into(),
+            include_ignored: false,
+            cursor: None,
+        };
+        let value = serde_json::to_value(&request).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "chatId": "chat-1",
+                "directory": "src/日本語",
+                "includeIgnored": false,
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<ListWorkspaceDirectoryRequest>(value).unwrap(),
+            request
+        );
+
+        let requests = [
+            serde_json::to_value(SearchWorkspaceFilesRequest {
+                target: request.target.clone(),
+                query: "main".into(),
+                include_ignored: false,
+                limit: None,
+            })
+            .unwrap(),
+            serde_json::to_value(ReadWorkspaceFileRequest {
+                target: request.target.clone(),
+                path: "src/main.rs".into(),
+            })
+            .unwrap(),
+            serde_json::to_value(WatchWorkspaceFilesRequest {
+                target: request.target,
+            })
+            .unwrap(),
+        ];
+        assert!(requests.iter().all(|value| value["chatId"] == "chat-1"));
+    }
+
+    #[test]
+    fn workspace_write_outcomes_have_stable_tags() {
+        let written = WriteWorkspaceFileOutcome::Written {
+            file: WorkspaceFileWriteResult {
+                path: "src/emoji-🛰️.rs".into(),
+                content_hash: "hash-2".into(),
+                size: 12,
+                modified_at: None,
+            },
+        };
+        assert_eq!(
+            serde_json::to_value(&written).unwrap(),
+            serde_json::json!({
+                "status": "written",
+                "file": {
+                    "path": "src/emoji-🛰️.rs",
+                    "contentHash": "hash-2",
+                    "size": 12,
+                }
+            })
+        );
+        assert_eq!(
+            serde_json::from_value::<WriteWorkspaceFileOutcome>(
+                serde_json::to_value(&written).unwrap()
+            )
+            .unwrap(),
+            written
+        );
+
+        let conflict = WriteWorkspaceFileOutcome::Conflict {
+            reason: WorkspaceFileConflictReason::Changed,
+            current_content_hash: Some("hash-3".into()),
+            current_modified_at: None,
+        };
+        assert_eq!(
+            serde_json::to_value(&conflict).unwrap(),
+            serde_json::json!({
+                "status": "conflict",
+                "reason": "changed",
+                "currentContentHash": "hash-3",
+            })
+        );
+    }
+
+    #[test]
+    fn workspace_file_change_contract_is_camel_case() {
+        let changes = WorkspaceFileChanges {
+            sequence: 4,
+            resync_required: false,
+            changes: vec![WorkspaceFileChange {
+                kind: WorkspaceFileChangeKind::Renamed,
+                path: "src/new.rs".into(),
+                old_path: Some("src/old.rs".into()),
+            }],
+        };
+        let value = serde_json::to_value(&changes).unwrap();
+        assert_eq!(value["resyncRequired"], false);
+        assert_eq!(value["changes"][0]["kind"], "renamed");
+        assert_eq!(value["changes"][0]["oldPath"], "src/old.rs");
+        assert_eq!(
+            serde_json::from_value::<WorkspaceFileChanges>(value).unwrap(),
+            changes
         );
     }
 }

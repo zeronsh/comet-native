@@ -24,6 +24,17 @@
     <string>__VERSION__</string>
     <key>CFBundleVersion</key>
     <string>__VERSION__</string>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>sh.zeron.app.conversation</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>zeron</string>
+            </array>
+        </dict>
+    </array>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>

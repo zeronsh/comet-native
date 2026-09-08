@@ -8,13 +8,17 @@ pub enum HarnessId {
     ClaudeCode,
     Codex,
     Cursor,
+    /// Cognition's Devin agent, driven over ACP (`devin acp`).
+    Devin,
     /// xAI's Grok Build agent, driven over ACP (`grok agent stdio`).
     Grok,
     /// Nous Research's Hermes Agent, driven over ACP (`hermes acp`).
     Hermes,
     /// The pi coding agent (pi.dev), driven over ACP via the `pi-acp` adapter.
     Pi,
-    /// SST's opencode agent, driven over ACP (`opencode acp`).
+    /// SST's opencode agent, driven natively over its own HTTP/SSE server
+    /// protocol (`opencode serve` — the same wire the opencode desktop app
+    /// speaks).
     Opencode,
     /// Test harness; never shown in production pickers.
     Mock,
@@ -220,7 +224,49 @@ impl ToolCall {
         };
         name == "Agent" || name.starts_with("Agent: ")
     }
+
+    /// The model a subagent SPAWN was given, when the spawn named one.
+    ///
+    /// Read off the spawn's own input rather than the session's picked model:
+    /// a spawn may override it per child (claude's `Agent` takes `model`, grok
+    /// `spawn_subagent` a `model_id`), and two chips spawned in one turn can
+    /// legitimately name different models. `None` means the spawn didn't say —
+    /// the child inherits the parent's model, which the chip already implies,
+    /// so nothing is rendered rather than guessing a name.
+    ///
+    /// Only ever answers for [`is_subagent_spawn`](Self::is_subagent_spawn)
+    /// calls: an ordinary tool with a stray `model` argument is not a spawn.
+    pub fn subagent_model(&self) -> Option<&str> {
+        if !self.is_subagent_spawn() {
+            return None;
+        }
+        let input = match self {
+            ToolCall::Unknown { input, .. } | ToolCall::Mcp { input, .. } => input.as_ref()?,
+            _ => return None,
+        };
+        SUBAGENT_MODEL_KEYS
+            .iter()
+            .find_map(|key| input.get(key).and_then(serde_json::Value::as_str))
+            .map(str::trim)
+            .filter(|model| !model.is_empty())
+    }
 }
+
+/// Spawn-input keys that carry a child model, in precedence order. Drivers
+/// disagree on the spelling, so the lookup is by key set, not by harness —
+/// a new adapter naming it any of these needs no code change here.
+pub const SUBAGENT_MODEL_KEYS: [&str; 4] = ["model", "modelId", "model_id", "subagent_model"];
+
+/// The spawn-input keys [`sanitize_tool_call`](crate::) must preserve so the
+/// chip can name the child's model. Deliberately tiny: everything else on a
+/// spawn's input (the whole prompt, most of all) stays host-local.
+pub const SUBAGENT_INPUT_KEEP: [&str; 5] = [
+    "model",
+    "modelId",
+    "model_id",
+    "subagent_model",
+    "subagent_type",
+];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -324,6 +370,13 @@ pub enum AgentEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         diff: Option<ToolDiff>,
     },
+    /// Latest context occupancy, independent of cumulative billing usage.
+    /// Missing fields preserve the previous measurement; zero tokens is valid.
+    #[serde(rename_all = "camelCase")]
+    ContextUsage {
+        tokens: Option<u64>,
+        window: Option<u64>,
+    },
     /// Kept as a harness passthrough (rate-limit probes); never persisted to docs.
     #[serde(rename_all = "camelCase")]
     Usage {
@@ -402,6 +455,61 @@ mod tests {
         assert_eq!(serde_json::from_str::<AgentEvent>(&json).unwrap(), ev);
     }
 
+    /// Drivers spell the key differently; the chip must not care which one
+    /// spawned the child. Non-spawns never answer, whatever they carry.
+    #[test]
+    fn subagent_model_reads_every_spelling_and_only_off_a_spawn() {
+        let spawn = |input: serde_json::Value| ToolCall::Unknown {
+            name: "Agent: scan".into(),
+            input: Some(input),
+        };
+        for key in SUBAGENT_MODEL_KEYS {
+            let call = spawn(serde_json::json!({ key: "haiku" }));
+            assert_eq!(call.subagent_model(), Some("haiku"), "key {key}");
+        }
+        // An MCP-shaped spawn (cursor routes its `task` through MCP) too.
+        assert_eq!(
+            ToolCall::Mcp {
+                server: "s".into(),
+                tool: "Agent: scan".into(),
+                input: Some(serde_json::json!({ "model": "sonnet" })),
+            }
+            .subagent_model(),
+            Some("sonnet")
+        );
+        // Not a spawn: the name gate wins over the key.
+        assert_eq!(
+            ToolCall::Unknown {
+                name: "Bash".into(),
+                input: Some(serde_json::json!({ "model": "haiku" })),
+            }
+            .subagent_model(),
+            None
+        );
+        // A spawn that named nothing usable inherits — nothing to render.
+        assert_eq!(
+            spawn(serde_json::json!({ "model": " " })).subagent_model(),
+            None
+        );
+        assert_eq!(
+            spawn(serde_json::json!({ "prompt": "x" })).subagent_model(),
+            None
+        );
+        assert_eq!(
+            ToolCall::Unknown {
+                name: "Agent".into(),
+                input: None
+            }
+            .subagent_model(),
+            None
+        );
+        // Non-string values are not names.
+        assert_eq!(
+            spawn(serde_json::json!({ "model": 5 })).subagent_model(),
+            None
+        );
+    }
+
     #[test]
     fn run_request_attachments_default_and_round_trip() {
         // Old-wire JSON without the field parses (additive compat)…
@@ -450,5 +558,19 @@ mod tests {
             serde_json::to_string(&HarnessId::ClaudeCode).unwrap(),
             "\"claude-code\""
         );
+    }
+}
+
+/// Host-owned context snapshot, replicated with the chat document.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContextUsage {
+    pub tokens: Option<u64>,
+    pub window: Option<u64>,
+}
+
+impl ContextUsage {
+    pub fn fraction(self) -> Option<f64> {
+        Some(self.tokens? as f64 / self.window.filter(|n| *n > 0)? as f64)
     }
 }

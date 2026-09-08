@@ -310,7 +310,7 @@ impl Render for DevicesPage {
                     div()
                         .id(("device-id", ix))
                         .font_family(theme.font_mono.clone())
-                        .text_size(px(10.5))
+                        .text_size(crate::typography::ui_rems(10.5))
                         .text_color(if id_copied {
                             theme.success_muted.opacity(0.9)
                         } else {
@@ -386,7 +386,7 @@ impl Render for DevicesPage {
                     .px(px(20.0))
                     .py(px(40.0))
                     .text_center()
-                    .text_size(px(14.0))
+                    .text_size(crate::typography::ui_rems(14.0))
                     .text_color(theme.text_muted.opacity(0.6))
                     .child(SharedString::from("No devices registered")),
             )

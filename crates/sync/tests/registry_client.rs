@@ -36,6 +36,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         cwd: Some("/tmp".into()),
         branch: None,
         checkout_id: None,
+        source_context: None,
         config: None,
         last_message_preview: None,
         last_message_at: None,
@@ -335,6 +336,7 @@ async fn probe_answers_and_stats_flow() {
         .expect("connects");
     let before = client.stats();
     assert!(before.connected);
+    assert!(before.synced, "hello state apply latches synced");
     client.probe();
     let events = client.events();
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -483,4 +485,82 @@ async fn applied_events_fire_for_republish() {
     assert_eq!(event, RegistryEvent::Applied);
     client_a.shutdown().await;
     client_b.shutdown().await;
+}
+
+/// HTTPS-transport seam for the pure-offline tests below: pulls answer with
+/// an empty delta; the FIRST push ack comes back unreadable (a captive
+/// portal / proxy interposing on the response body), later pushes ack
+/// properly. The regression: an unreadable ack used to be silently ignored,
+/// leaving the batch marked in-flight — and with no socket session there is
+/// no disconnect to un-mark it, so the write was stranded until restart.
+struct FlakyAckTransport {
+    push_calls: Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl zeron_sync::registry::RegistryTransport for FlakyAckTransport {
+    fn fetch(
+        &self,
+        _since: u64,
+    ) -> futures::future::BoxFuture<'static, Result<String, zeron_sync::SyncError>> {
+        Box::pin(async {
+            Ok(r#"{"seq":0,"full":false,"gcFloor":0,"rows":[],"presence":{}}"#.to_string())
+        })
+    }
+
+    fn push(
+        &self,
+        body: String,
+    ) -> futures::future::BoxFuture<'static, Result<String, zeron_sync::SyncError>> {
+        let call = self
+            .push_calls
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Box::pin(async move {
+            if call == 0 {
+                return Ok("<html>proxy login required</html>".to_string());
+            }
+            let v: serde_json::Value = serde_json::from_str(&body).expect("push body is json");
+            let batch = v["batch"].as_str().expect("batch id").to_owned();
+            Ok(format!(r#"{{"batch":"{batch}","seq":1,"applied":1}}"#))
+        })
+    }
+}
+
+#[tokio::test]
+async fn unreadable_http_ack_retries_instead_of_stranding_the_batch() {
+    let push_calls = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let doc = new_doc("dev-a");
+    {
+        let mut d = doc.lock().unwrap();
+        d.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+        assert_eq!(d.pending_len(), 1);
+    }
+    // The WS side never connects (dead port): every sync runs over HTTPS.
+    let client = RegistryClient::connect_via_transport(
+        Arc::new(zeron_sync::StaticUrl("ws://127.0.0.1:1/ws".into())),
+        doc.clone(),
+        "dev-a",
+        zeron_sync::RegistryTuning::default(),
+        Arc::new(FlakyAckTransport {
+            push_calls: push_calls.clone(),
+        }),
+    )
+    .await
+    .expect("transport clients construct immediately");
+
+    // Cycle 1 push gets the unreadable ack; the batch must become pushable
+    // again so a later cycle (here: the next dial backoff) retries and the
+    // proper ack clears it.
+    wait_until(|| doc.lock().unwrap().pending_len() == 0).await;
+    assert!(
+        push_calls.load(std::sync::atomic::Ordering::SeqCst) >= 2,
+        "the stranded batch must be re-pushed after the unreadable ack"
+    );
+
+    // The empty pulls also latched the synced flag — server truth has been
+    // heard this process even though no socket ever joined.
+    let stats = client.stats();
+    assert!(stats.synced, "HTTP pull apply must latch synced");
+    assert!(!stats.connected, "no WS session ever joined");
+
+    client.shutdown().await;
 }

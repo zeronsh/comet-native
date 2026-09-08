@@ -16,8 +16,8 @@ use zeron_proto::CheckoutChangeRequestStatus;
 
 use crate::repos::{CheckoutIdentity, Repos};
 use crate::source_control::{
-    ChangeRequestError, ChangeRequestResolver, CheckoutChangeRequestLookup, CheckoutSourceContext,
-    parse_git_remote,
+    BranchHeadContext, ChangeRequestError, ChangeRequestResolver, CheckoutChangeRequestLookup,
+    CheckoutSourceContext, parse_git_remote,
 };
 
 const WITH_CHANGE_REQUEST_TTL: Duration = Duration::from_secs(2 * 60);
@@ -118,24 +118,46 @@ impl CheckoutChangeRequests {
         &self,
         cwd: &Path,
     ) -> Result<BoxStream<'static, CheckoutChangeRequestStatus>, ChangeRequestError> {
+        self.watch_for_branch(cwd, None).await
+    }
+
+    /// Resolve a PR for the conversation-owned branch while using `cwd` only
+    /// for repository/remote identity. This keeps a later checkout switch from
+    /// changing which PR an older conversation displays.
+    pub async fn watch_for_branch(
+        &self,
+        cwd: &Path,
+        branch: Option<&str>,
+    ) -> Result<BoxStream<'static, CheckoutChangeRequestStatus>, ChangeRequestError> {
         let identity = self
             .inner
             .repos
             .checkout_identity(cwd)
             .await
             .map_err(|_| ChangeRequestError::RepositoryUnavailable)?;
-        Ok(self.watch_checkout(cwd.to_owned(), identity))
+        Ok(self.watch_checkout_for_branch(cwd.to_owned(), identity, branch.map(str::to_owned)))
     }
 
+    #[cfg(test)]
     fn watch_checkout(
         &self,
         cwd: PathBuf,
         identity: CheckoutIdentity,
     ) -> BoxStream<'static, CheckoutChangeRequestStatus> {
+        self.watch_checkout_for_branch(cwd, identity, None)
+    }
+
+    fn watch_checkout_for_branch(
+        &self,
+        cwd: PathBuf,
+        identity: CheckoutIdentity,
+        requested_branch: Option<String>,
+    ) -> BoxStream<'static, CheckoutChangeRequestStatus> {
         let state = SubscriptionState {
             service: self.clone(),
             cwd,
             identity,
+            requested_branch,
             lease: None,
             last_emitted: None,
         };
@@ -144,7 +166,7 @@ impl CheckoutChangeRequests {
                 if state.service.inner.shutdown.is_cancelled() {
                     return None;
                 }
-                let source = match state
+                let mut source = match state
                     .service
                     .inner
                     .lookup
@@ -163,6 +185,16 @@ impl CheckoutChangeRequests {
                         continue;
                     }
                 };
+                if let Some(branch) = state.requested_branch.as_deref()
+                    && source.branch.local_branch != branch
+                {
+                    source.branch = BranchHeadContext::resolve(
+                        branch,
+                        None,
+                        source.branch.remote_name.as_deref(),
+                        source.branch.remote_url.as_deref(),
+                    );
+                }
                 let key = cache_key(&state.identity.id, &source);
                 if state.lease.as_ref().map(|lease| &lease.key) != Some(&key) {
                     state.lease = Some(state.service.acquire(key.clone()));
@@ -310,6 +342,7 @@ struct SubscriptionState {
     service: CheckoutChangeRequests,
     cwd: PathBuf,
     identity: CheckoutIdentity,
+    requested_branch: Option<String>,
     lease: Option<DemandLease>,
     last_emitted: Option<SemanticStatus>,
 }
@@ -484,6 +517,19 @@ mod tests {
             failure_max_backoff: Duration::from_secs(2),
             context_poll_interval: Duration::from_millis(5),
         }
+    }
+
+    #[tokio::test]
+    async fn requested_conversation_branch_overrides_live_checkout_branch() {
+        let lookup = FakeLookup::new(source("main"), [Ok(Some(pull_request(90)))]);
+        let service = service(lookup, Timing::default());
+        let mut stream = service.watch_checkout_for_branch(
+            PathBuf::from("/checkout"),
+            identity(),
+            Some("feature/sidebar".into()),
+        );
+        let snapshot = stream.next().await.expect("opening snapshot");
+        assert_eq!(snapshot.branch, "feature/sidebar");
     }
 
     #[tokio::test]

@@ -3,14 +3,16 @@
 //! NATIVE DRIVERS speak each agent's own wire directly: Claude Code over
 //! stream-json ([`ClaudeHarness`]), Codex over the app-server JSON-RPC
 //! ([`CodexHarness`]), Cursor through a pinned @cursor/sdk shim
-//! ([`CursorHarness`]). The shared [`AcpHarness`] remains ONLY for agents
-//! built ground-up on ACP — Grok (`grok agent stdio`), Hermes
-//! (`hermes acp`) and opencode (`opencode acp`) — plus pi via the community
-//! `pi-acp` adapter until a native driver exists. Adapter-mediated ACP for
-//! claude/codex/cursor was retired: the
-//! adapters held prompt turns open for background work the
-//! CLIs themselves settle eagerly, manufacturing done-status bugs the
-//! native wires don't have (decision record: docs/research/acp.md).
+//! ([`CursorHarness`]), and opencode over its own HTTP/SSE server protocol
+//! ([`OpencodeHarness`] — what the opencode desktop app speaks). The shared
+//! [`AcpHarness`] remains ONLY for agents built ground-up on ACP — Devin
+//! (`devin acp`), Grok (`grok agent stdio`) and Hermes (`hermes acp`) — plus
+//! pi via the community `pi-acp` adapter until a native driver exists.
+//! Adapter-mediated ACP for claude/codex/cursor was retired — and opencode's
+//! ACP layer with it: the adapters held prompt turns open for background
+//! work the CLIs themselves settle eagerly (and opencode's settles on the
+//! first uncorrelated idle), manufacturing done-status bugs the native
+//! wires don't have (decision record: docs/research/acp.md).
 
 use async_trait::async_trait;
 use futures::stream::BoxStream;
@@ -98,6 +100,7 @@ pub mod codex;
 pub mod cursor;
 pub(crate) mod jsonrpc;
 pub mod mock;
+pub mod opencode;
 pub mod shell_env;
 
 /// Bin directories where npm-installed CLIs land under Node version managers.
@@ -255,6 +258,7 @@ pub use acp::AcpHarness;
 pub use claude::ClaudeHarness;
 pub use codex::CodexHarness;
 pub use cursor::CursorHarness;
+pub use opencode::OpencodeHarness;
 
 // ---------------------------------------------------------------------------
 // Child lifecycle (shared by the codex and ACP harnesses)

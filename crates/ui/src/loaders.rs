@@ -2,20 +2,19 @@
 //! splash content. All motion routes through `crate::motion` pure helpers, so
 //! the math is unit-tested and these elements are testable-by-compile.
 //!
-//! Rendering pattern: each cell is its own `with_animation` repeating element
-//! sharing one period; per-cell offsets come from [`motion::staggered_phase`],
-//! so all cells stay phase-locked (they start on the same frame) without a
-//! shared clock. Cells animate inside fixed-size slots — opacity and inner size
+//! Rendering pattern: cells share a self-parking pulse clock; per-cell offsets
+//! come from [`motion::staggered_phase`], so all cells stay phase-locked.
+//! Cells animate inside fixed-size slots — opacity and inner size
 //! are paint-local and never move surrounding layout. Reduced motion snaps every
 //! cell to its rest state automatically (gpui `reduce_motion`).
 
 use gpui::{
-    AnyElement, App, EntityId, IntoElement, ParentElement, PathBuilder, SharedString, Styled,
-    canvas, div, point, px,
+    AnyElement, App, AppContext, Context, Entity, EntityId, IntoElement, ParentElement,
+    PathBuilder, Render, RenderOnce, SharedString, Styled, Window, canvas, div, point, px,
 };
 
 use crate::motion::{self, GRADIENT_SPIN, PULSE_STAGGER, SPLASH_OUT, ZERON_PULSE};
-use crate::theme::Theme;
+use crate::theme::{GlyphPalette, Theme};
 
 // Shared with the terminal viewport (`zeron_proto::motion`) so both animate the
 // same loaders from the same numbers.
@@ -122,7 +121,7 @@ pub fn gradient_spinner(
 ) -> impl IntoElement {
     let center = (MATRIX_SIDE as f32 - 1.0) / 2.0;
     let max = MATRIX_SIDE as f32 - 1.0 + center;
-    let delta = motion::pulse_delta(&GRADIENT_SPIN, view, cx);
+    let delta = motion::pulse_delta_slow(&GRADIENT_SPIN, view, cx);
     div()
         .flex()
         .flex_col()
@@ -147,24 +146,22 @@ pub fn gradient_spinner(
         }))
 }
 
-/// A 2×3 miniature of [`gradient_spinner`] sized for a status-dot slot
-/// (sessions-sidebar working rows): same row tints and pulse timing, but the
-/// brightness SNAKES around the grid's perimeter (every cell of a 2×3 grid is
-/// on the ring) instead of sweeping as a vertical wave — a tiny radial chase.
-/// ~6×10px footprint at the default 2.5px cells.
-pub fn mini_gradient_spinner(
+/// A 2×3 activity glyph sized for compact status slots. Its color is an
+/// explicit accent-preset role supplied by the caller, while brightness snakes
+/// around the grid's perimeter as a tiny radial chase.
+pub fn mini_glyph_spinner(
     key: impl Into<SharedString>,
     cell_px: f32,
+    palette: GlyphPalette,
     view: EntityId,
     cx: &mut App,
 ) -> impl IntoElement {
-    let tints = GSPIN_ROW_TINTS.map(|t| gpui::rgb(t).into());
-    mini_spinner_tinted(key, cell_px, tints, view, cx)
+    mini_spinner_tinted(key, cell_px, palette.rows(), view, cx)
 }
 
-/// [`mini_gradient_spinner`] in a single flat tint — the grayscale take for
-/// surfaces where the brand gradient would pull focus (the sidebar
-/// connection line): same grid, snake, and timing, color left to the caller.
+/// Grayscale variant for surfaces where an accent would pull focus (the
+/// sidebar connection line): same grid, snake, and timing, color left to the
+/// caller.
 pub fn mini_mono_spinner(
     key: impl Into<SharedString>,
     cell_px: f32,
@@ -179,6 +176,67 @@ fn mini_spinner_tinted(
     key: impl Into<SharedString>,
     cell_px: f32,
     row_tints: [gpui::Hsla; 3],
+    _view: EntityId,
+    _cx: &mut App,
+) -> impl IntoElement {
+    MiniSpinner {
+        key: key.into(),
+        cell_px,
+        row_tints,
+    }
+}
+
+#[derive(IntoElement)]
+struct MiniSpinner {
+    key: SharedString,
+    cell_px: f32,
+    row_tints: [gpui::Hsla; 3],
+}
+
+impl RenderOnce for MiniSpinner {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        // Keep pulse invalidation separate from container state changes so
+        // cached sibling rows can be reused while these six cells animate.
+        let view = window.with_global_id(self.key.into(), |id, window| {
+            window.with_element_state(id, |previous: Option<Entity<MiniSpinnerView>>, _| {
+                let view = previous.unwrap_or_else(|| {
+                    cx.new(|_| MiniSpinnerView {
+                        cell_px: self.cell_px,
+                        row_tints: self.row_tints,
+                    })
+                });
+                view.update(cx, |view, cx| {
+                    if view.cell_px != self.cell_px || view.row_tints != self.row_tints {
+                        view.cell_px = self.cell_px;
+                        view.row_tints = self.row_tints;
+                        cx.notify();
+                    }
+                });
+                (view.clone(), view)
+            })
+        });
+        view.cached(
+            gpui::StyleRefinement::default()
+                .w(px(self.cell_px * 2.5))
+                .h(px(self.cell_px * 4.0)),
+        )
+    }
+}
+
+struct MiniSpinnerView {
+    cell_px: f32,
+    row_tints: [gpui::Hsla; 3],
+}
+
+impl Render for MiniSpinnerView {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        mini_spinner_cells(self.cell_px, self.row_tints, cx.entity_id(), cx)
+    }
+}
+
+fn mini_spinner_cells(
+    cell_px: f32,
+    row_tints: [gpui::Hsla; 3],
     view: EntityId,
     cx: &mut App,
 ) -> impl IntoElement {
@@ -188,7 +246,6 @@ fn mini_spinner_tinted(
     /// (0,0) → (0,1) → (1,1) → (2,1) → (2,0) → (1,0).
     const RING: [[usize; COLS]; ROWS] = [[0, 1], [5, 2], [4, 3]];
     const RING_LEN: f32 = (COLS * ROWS) as f32;
-    let _key = key.into();
     let delta = motion::pulse_delta(&GRADIENT_SPIN, view, cx);
     div()
         .flex()
@@ -276,11 +333,12 @@ pub fn upload_progress_ring(percent: u8, diameter: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// Full-window boot splash (zeron App.tsx `Splash`): the animated zeron mark
-/// (`h-16`) over the app background with an uppercase tracked "Loading" line.
-/// While `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px
-/// lift); the shell removes it once [`SPLASH_OUT`] has run its course.
-pub fn splash_overlay(theme: &Theme, fading: bool) -> AnyElement {
+/// Full-window boot splash: the app's dot loader (the same [`gradient_spinner`]
+/// the session list and the reconnecting line pulse — user request, replacing
+/// the hero ascii) over the app background with a quiet status line. While
+/// `fading` it plays `splash-out` (150ms hold, then 0.5s fade + 6px lift); the
+/// shell removes it once [`SPLASH_OUT`] has run its course.
+pub fn splash_overlay(theme: &Theme, fading: bool, view: EntityId, cx: &mut App) -> AnyElement {
     let content = div()
         .absolute()
         .inset_0()
@@ -293,72 +351,27 @@ pub fn splash_overlay(theme: &Theme, fading: bool) -> AnyElement {
         .flex_col()
         .items_center()
         .justify_center()
-        .gap(px(28.0))
-        .child(hero_ascii(theme))
-        .child(loading_word(theme));
+        .gap(px(12.0))
+        // Cell 2.5 — the size every other surface runs this spinner at (the
+        // "Sending…" strip, the transcript working trailer).
+        .child(gradient_spinner(
+            "boot-splash-spinner",
+            theme,
+            2.5,
+            view,
+            cx,
+        ))
+        .child(
+            div()
+                .text_size(crate::typography::ui_rems(12.0))
+                .text_color(theme.text_muted.opacity(0.7))
+                .child(SharedString::from("Setting up Zeron environment")),
+        );
     if fading {
         motion::splash_out("boot-splash-out", content).into_any_element()
     } else {
         content.into_any_element()
     }
-}
-
-/// The landing page's hero comet, monochrome (user request: white instead of
-/// the site's purple gradient). One div per row — gpui has no `white-space:
-/// pre`, and the art's leading/interior spaces carry the shading.
-///
-/// The site masks the rectangle behind a radial gradient; here the same
-/// softening comes from an [`crate::edge_fade`] scope on all four edges, so
-/// the block dissolves into the frost instead of ending on a hard edge.
-fn hero_ascii(theme: &Theme) -> AnyElement {
-    /// Glyph cell: the site runs 7.6px/1.25; a hair smaller keeps the 110-col
-    /// art inside a narrow window.
-    const FONT: f32 = 7.0;
-    const LINE: f32 = 8.75;
-    const FADE_BAND: f32 = 72.0;
-    let art = div()
-        .flex()
-        .flex_col()
-        .font_family(theme.font_mono.clone())
-        // Ligatures OFF, like the terminal grid and the landing page's own
-        // `.hero-ascii` rule: the art is a character grid full of `--`/`::`
-        // runs, and a contextual substitution would collapse cells and bend
-        // the picture (the `codex --yolo` bug, in still life).
-        .font_features(gpui::FontFeatures(std::sync::Arc::new(vec![
-            ("liga".into(), 0),
-            ("calt".into(), 0),
-            ("dlig".into(), 0),
-        ])))
-        .text_size(px(FONT))
-        .line_height(px(LINE))
-        // `theme.text` IS near-white on dark; on light it flips to the ink
-        // tone rather than painting an invisible white block.
-        .text_color(theme.text.opacity(0.55))
-        .children(
-            HERO_ASCII
-                .lines()
-                .map(|line| div().child(SharedString::from(line.to_string()))),
-        );
-    crate::edge_fade::edge_faded(FADE_BAND, true, true, art)
-        .fade_left(true)
-        .fade_right(true)
-        .into_any_element()
-}
-
-/// The landing page's hero comet (apps/landing/public/index.html
-/// `.hero-ascii`), kept as an asset so both surfaces render the same art.
-const HERO_ASCII: &str = include_str!("../assets/hero.txt");
-
-/// "L O A D I N G" — `text-[11px] uppercase tracking-[0.32em]
-/// text-muted-foreground/70`; tracking approximated with thin spaces (gpui has
-/// no letter-spacing at the pinned rev).
-pub fn loading_word(theme: &Theme) -> impl IntoElement {
-    div()
-        .text_size(px(11.0))
-        .text_color(theme.text_muted.opacity(0.7))
-        .child(SharedString::from(
-            "L\u{2009}O\u{2009}A\u{2009}D\u{2009}I\u{2009}N\u{2009}G",
-        ))
 }
 
 // Compile-time proof the specs referenced here stay wired to the catalog.

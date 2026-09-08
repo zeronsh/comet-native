@@ -1,0 +1,494 @@
+{
+  "date": "2026-09-08",
+  "baselineMain": "f9fbca6ea7526e1801169e20e6d30e51aebf72aa",
+  "beforeOptimization": "28e1537",
+  "candidate": "composer layout-cache + resolved-layout notification fix",
+  "platform": "Linux x86_64, Xvfb :117, 1280x900, LP_NUM_THREADS=4",
+  "rustc": "1.97.1 (8bab26f4f 2026-07-14)",
+  "build": "cargo build --release --locked -p zeron; immutable executable copies",
+  "scope": "UI process only; CPU percent of one core; main-thread CPU sampled separately; RSS sampled every 100ms; /proc counters at 100 ticks/s",
+  "runs": [
+    {
+      "name": "main-1",
+      "binarySha256": "ab9dc2d507536b3835ebde32cf04dd48589ec2641206144aebed941f0b8abcb8",
+      "phases": [
+        {
+          "phase": "idle_focused",
+          "seconds": 5.000263559166342,
+          "cpuPercent": 8.799536160317077,
+          "mainCpuPercent": 0.19998945818902467,
+          "peakRssMiB": 201.1328125,
+          "endRssMiB": 201.1328125
+        },
+        {
+          "phase": "typing_resize",
+          "seconds": 5.959245202597231,
+          "cpuPercent": 173.84752007661606,
+          "mainCpuPercent": 14.934777303879182,
+          "peakRssMiB": 206.1953125,
+          "endRssMiB": 206.1953125
+        },
+        {
+          "phase": "scroll",
+          "seconds": 9.07674321020022,
+          "cpuPercent": 30.517553883061733,
+          "mainCpuPercent": 0.8813733973447416,
+          "peakRssMiB": 206.1953125,
+          "endRssMiB": 205.8203125
+        },
+        {
+          "phase": "paste_resize",
+          "seconds": 3.47995494492352,
+          "cpuPercent": 217.5315519829631,
+          "mainCpuPercent": 4.310400633744318,
+          "peakRssMiB": 206.0078125,
+          "endRssMiB": 205.8203125
+        },
+        {
+          "phase": "large_paste",
+          "seconds": 1.9688164042308927,
+          "cpuPercent": 226.0241224340249,
+          "mainCpuPercent": 5.587113138818587,
+          "peakRssMiB": 212.1953125,
+          "endRssMiB": 212.1953125
+        },
+        {
+          "phase": "large_scroll",
+          "seconds": 9.068150906823575,
+          "cpuPercent": 62.8573571235,
+          "mainCpuPercent": 3.41855801899737,
+          "peakRssMiB": 212.7578125,
+          "endRssMiB": 212.7578125
+        },
+        {
+          "phase": "large_idle_focused",
+          "seconds": 5.000249783042818,
+          "cpuPercent": 15.599220715836823,
+          "mainCpuPercent": 0.7999600367095803,
+          "peakRssMiB": 212.7578125,
+          "endRssMiB": 212.5703125
+        },
+        {
+          "phase": "idle_unfocused",
+          "seconds": 5.0002551027573645,
+          "cpuPercent": 0.1999897964102584,
+          "mainCpuPercent": 0.19998979641029838,
+          "peakRssMiB": 212.5703125,
+          "endRssMiB": 212.5703125
+        }
+      ]
+    },
+    {
+      "name": "before-1",
+      "binarySha256": "713788226f9f83d3cce5ac15905edfbbc79054f64d40c5dcfbfd06633ae08832",
+      "phases": [
+        {
+          "phase": "idle_focused",
+          "seconds": 5.000198378227651,
+          "cpuPercent": 8.599658802985646,
+          "mainCpuPercent": 0.19999206518571302,
+          "peakRssMiB": 200.00390625,
+          "endRssMiB": 200.00390625
+        },
+        {
+          "phase": "typing_resize",
+          "seconds": 5.925925221759826,
+          "cpuPercent": 211.7812751655516,
+          "mainCpuPercent": 26.493753148200476,
+          "peakRssMiB": 205.44140625,
+          "endRssMiB": 205.44140625
+        },
+        {
+          "phase": "scroll",
+          "seconds": 9.071667826268822,
+          "cpuPercent": 233.47415718495654,
+          "mainCpuPercent": 5.401432342805886,
+          "peakRssMiB": 206.00390625,
+          "endRssMiB": 206.00390625
+        },
+        {
+          "phase": "paste_resize",
+          "seconds": 3.4742184868082404,
+          "cpuPercent": 204.93817608290755,
+          "mainCpuPercent": 6.620193890318645,
+          "peakRssMiB": 206.19140625,
+          "endRssMiB": 206.00390625
+        },
+        {
+          "phase": "large_paste",
+          "seconds": 1.965907318983227,
+          "cpuPercent": 230.42795335554936,
+          "mainCpuPercent": 16.277471318714312,
+          "peakRssMiB": 212.56640625,
+          "endRssMiB": 212.37890625
+        },
+        {
+          "phase": "large_scroll",
+          "seconds": 9.07743330905214,
+          "cpuPercent": 239.16452218217339,
+          "mainCpuPercent": 13.660249079037083,
+          "peakRssMiB": 212.94140625,
+          "endRssMiB": 212.75390625
+        },
+        {
+          "phase": "large_idle_focused",
+          "seconds": 5.0002614739350975,
+          "cpuPercent": 241.3873766985462,
+          "mainCpuPercent": 13.799278369676625,
+          "peakRssMiB": 212.75390625,
+          "endRssMiB": 211.81640625
+        },
+        {
+          "phase": "idle_unfocused",
+          "seconds": 5.000277273822576,
+          "cpuPercent": 237.98680249790985,
+          "mainCpuPercent": 13.399256947361305,
+          "peakRssMiB": 212.37890625,
+          "endRssMiB": 212.37890625
+        }
+      ]
+    },
+    {
+      "name": "after-1",
+      "binarySha256": "bb68fbcc7d78ba3ca4fae38d9a3966fba3b365706eb34bc80925e173848c82e5",
+      "phases": [
+        {
+          "phase": "idle_focused",
+          "seconds": 5.00031814025715,
+          "cpuPercent": 8.999427383971575,
+          "mainCpuPercent": 0.39997455039873636,
+          "peakRssMiB": 201.09765625,
+          "endRssMiB": 201.09765625
+        },
+        {
+          "phase": "typing_resize",
+          "seconds": 5.989682451356202,
+          "cpuPercent": 201.84709453608087,
+          "mainCpuPercent": 15.526699579698528,
+          "peakRssMiB": 206.1875,
+          "endRssMiB": 206.1875
+        },
+        {
+          "phase": "scroll",
+          "seconds": 9.06894272333011,
+          "cpuPercent": 29.771937946572024,
+          "mainCpuPercent": 0.7718650578740903,
+          "peakRssMiB": 206.5625,
+          "endRssMiB": 206.5625
+        },
+        {
+          "phase": "paste_resize",
+          "seconds": 3.4663270208984613,
+          "cpuPercent": 214.92490336555093,
+          "mainCpuPercent": 5.19281645715425,
+          "peakRssMiB": 206.5625,
+          "endRssMiB": 206.375
+        },
+        {
+          "phase": "large_paste",
+          "seconds": 1.964813796337694,
+          "cpuPercent": 233.60992316704568,
+          "mainCpuPercent": 5.089540809739562,
+          "peakRssMiB": 212.1875,
+          "endRssMiB": 211.8125
+        },
+        {
+          "phase": "large_scroll",
+          "seconds": 9.061849133111537,
+          "cpuPercent": 61.90789448812769,
+          "mainCpuPercent": 2.5381133212601354,
+          "peakRssMiB": 212.5625,
+          "endRssMiB": 212.5625
+        },
+        {
+          "phase": "large_idle_focused",
+          "seconds": 5.000254201237112,
+          "cpuPercent": 16.799145927264497,
+          "mainCpuPercent": 0.7999593298697423,
+          "peakRssMiB": 212.9375,
+          "endRssMiB": 212.75
+        },
+        {
+          "phase": "idle_unfocused",
+          "seconds": 5.000245986040682,
+          "cpuPercent": 0.19999016104238218,
+          "mainCpuPercent": 0.19999016104242215,
+          "peakRssMiB": 212.75,
+          "endRssMiB": 212.75
+        }
+      ]
+    },
+    {
+      "name": "after-2",
+      "binarySha256": "bb68fbcc7d78ba3ca4fae38d9a3966fba3b365706eb34bc80925e173848c82e5",
+      "phases": [
+        {
+          "phase": "idle_focused",
+          "seconds": 5.000249362085015,
+          "cpuPercent": 9.199541196645205,
+          "mainCpuPercent": 0.39998005202805226,
+          "peakRssMiB": 199.23828125,
+          "endRssMiB": 199.23828125
+        },
+        {
+          "phase": "typing_resize",
+          "seconds": 5.948086879681796,
+          "cpuPercent": 201.40929751585762,
+          "mainCpuPercent": 16.139643206612963,
+          "peakRssMiB": 204.67578125,
+          "endRssMiB": 204.48828125
+        },
+        {
+          "phase": "scroll",
+          "seconds": 9.06272948300466,
+          "cpuPercent": 30.12337513901935,
+          "mainCpuPercent": 0.7723942343338295,
+          "peakRssMiB": 205.05078125,
+          "endRssMiB": 205.05078125
+        },
+        {
+          "phase": "paste_resize",
+          "seconds": 3.471098992973566,
+          "cpuPercent": 212.03659172206298,
+          "mainCpuPercent": 5.185677514941756,
+          "peakRssMiB": 205.80078125,
+          "endRssMiB": 205.80078125
+        },
+        {
+          "phase": "large_paste",
+          "seconds": 1.9644745280966163,
+          "cpuPercent": 227.0327222985834,
+          "mainCpuPercent": 5.090419782479456,
+          "peakRssMiB": 211.80078125,
+          "endRssMiB": 211.42578125
+        },
+        {
+          "phase": "large_scroll",
+          "seconds": 9.062160599976778,
+          "cpuPercent": 62.12646463156291,
+          "mainCpuPercent": 2.427677125922528,
+          "peakRssMiB": 211.80078125,
+          "endRssMiB": 211.80078125
+        },
+        {
+          "phase": "large_idle_focused",
+          "seconds": 5.000243060756475,
+          "cpuPercent": 16.799183355557012,
+          "mainCpuPercent": 0.7999611121693858,
+          "peakRssMiB": 211.80078125,
+          "endRssMiB": 211.80078125
+        },
+        {
+          "phase": "idle_unfocused",
+          "seconds": 5.000262095127255,
+          "cpuPercent": 0.19998951674439205,
+          "mainCpuPercent": 0.0,
+          "peakRssMiB": 211.80078125,
+          "endRssMiB": 211.80078125
+        }
+      ]
+    },
+    {
+      "name": "main-2",
+      "binarySha256": "ab9dc2d507536b3835ebde32cf04dd48589ec2641206144aebed941f0b8abcb8",
+      "phases": [
+        {
+          "phase": "idle_focused",
+          "seconds": 5.000295836944133,
+          "cpuPercent": 9.199455692228065,
+          "mainCpuPercent": 0.5999645016670477,
+          "peakRssMiB": 200.71484375,
+          "endRssMiB": 200.71484375
+        },
+        {
+          "phase": "typing_resize",
+          "seconds": 5.958886589854956,
+          "cpuPercent": 160.93610535107413,
+          "mainCpuPercent": 14.600042925488479,
+          "peakRssMiB": 205.58984375,
+          "endRssMiB": 205.58984375
+        },
+        {
+          "phase": "scroll",
+          "seconds": 9.063138409983367,
+          "cpuPercent": 29.45999364920766,
+          "mainCpuPercent": 0.8826964389275687,
+          "peakRssMiB": 206.15234375,
+          "endRssMiB": 206.15234375
+        },
+        {
+          "phase": "paste_resize",
+          "seconds": 3.4686198318377137,
+          "cpuPercent": 219.3956204179383,
+          "mainCpuPercent": 4.32448660482139,
+          "peakRssMiB": 206.15234375,
+          "endRssMiB": 206.15234375
+        },
+        {
+          "phase": "large_paste",
+          "seconds": 1.9671238479204476,
+          "cpuPercent": 231.30216253593034,
+          "mainCpuPercent": 5.591920412956551,
+          "peakRssMiB": 212.71484375,
+          "endRssMiB": 212.71484375
+        },
+        {
+          "phase": "large_scroll",
+          "seconds": 9.060269671026617,
+          "cpuPercent": 61.91868679074684,
+          "mainCpuPercent": 3.3111597214303123,
+          "peakRssMiB": 212.71484375,
+          "endRssMiB": 212.52734375
+        },
+        {
+          "phase": "large_idle_focused",
+          "seconds": 5.000257855746895,
+          "cpuPercent": 15.399205845255098,
+          "mainCpuPercent": 1.1999381178120818,
+          "peakRssMiB": 212.52734375,
+          "endRssMiB": 212.33984375
+        },
+        {
+          "phase": "idle_unfocused",
+          "seconds": 5.000247416086495,
+          "cpuPercent": 0.0,
+          "mainCpuPercent": 0.19999010384623392,
+          "peakRssMiB": 212.33984375,
+          "endRssMiB": 212.33984375
+        }
+      ]
+    }
+  ],
+  "summary": {
+    "main": {
+      "idle_focused": {
+        "cpuPercent": 8.999495926272571,
+        "mainCpuPercent": 0.3999769799280362,
+        "peakRssMiB": 200.923828125
+      },
+      "typing_resize": {
+        "cpuPercent": 167.3918127138451,
+        "mainCpuPercent": 14.76741011468383,
+        "peakRssMiB": 205.892578125
+      },
+      "scroll": {
+        "cpuPercent": 29.9887737661347,
+        "mainCpuPercent": 0.8820349181361551,
+        "peakRssMiB": 206.173828125
+      },
+      "paste_resize": {
+        "cpuPercent": 218.4635862004507,
+        "mainCpuPercent": 4.317443619282853,
+        "peakRssMiB": 206.080078125
+      },
+      "large_paste": {
+        "cpuPercent": 228.6631424849776,
+        "mainCpuPercent": 5.589516775887569,
+        "peakRssMiB": 212.455078125
+      },
+      "large_scroll": {
+        "cpuPercent": 62.38802195712342,
+        "mainCpuPercent": 3.3648588702138413,
+        "peakRssMiB": 212.736328125
+      },
+      "large_idle_focused": {
+        "cpuPercent": 15.49921328054596,
+        "mainCpuPercent": 0.999949077260831,
+        "peakRssMiB": 212.642578125
+      },
+      "idle_unfocused": {
+        "cpuPercent": 0.0999948982051292,
+        "mainCpuPercent": 0.19998995012826615,
+        "peakRssMiB": 212.455078125
+      },
+      "peakRssMiB": 212.736328125
+    },
+    "before": {
+      "idle_focused": {
+        "cpuPercent": 8.599658802985646,
+        "mainCpuPercent": 0.19999206518571302,
+        "peakRssMiB": 200.00390625
+      },
+      "typing_resize": {
+        "cpuPercent": 211.7812751655516,
+        "mainCpuPercent": 26.493753148200476,
+        "peakRssMiB": 205.44140625
+      },
+      "scroll": {
+        "cpuPercent": 233.47415718495654,
+        "mainCpuPercent": 5.401432342805886,
+        "peakRssMiB": 206.00390625
+      },
+      "paste_resize": {
+        "cpuPercent": 204.93817608290755,
+        "mainCpuPercent": 6.620193890318645,
+        "peakRssMiB": 206.19140625
+      },
+      "large_paste": {
+        "cpuPercent": 230.42795335554936,
+        "mainCpuPercent": 16.277471318714312,
+        "peakRssMiB": 212.56640625
+      },
+      "large_scroll": {
+        "cpuPercent": 239.16452218217339,
+        "mainCpuPercent": 13.660249079037083,
+        "peakRssMiB": 212.94140625
+      },
+      "large_idle_focused": {
+        "cpuPercent": 241.3873766985462,
+        "mainCpuPercent": 13.799278369676625,
+        "peakRssMiB": 212.75390625
+      },
+      "idle_unfocused": {
+        "cpuPercent": 237.98680249790985,
+        "mainCpuPercent": 13.399256947361305,
+        "peakRssMiB": 212.37890625
+      },
+      "peakRssMiB": 212.94140625
+    },
+    "after": {
+      "idle_focused": {
+        "cpuPercent": 9.09948429030839,
+        "mainCpuPercent": 0.3999773012133943,
+        "peakRssMiB": 200.16796875
+      },
+      "typing_resize": {
+        "cpuPercent": 201.62819602596926,
+        "mainCpuPercent": 15.833171393155745,
+        "peakRssMiB": 205.431640625
+      },
+      "scroll": {
+        "cpuPercent": 29.947656542795684,
+        "mainCpuPercent": 0.77212964610396,
+        "peakRssMiB": 205.806640625
+      },
+      "paste_resize": {
+        "cpuPercent": 213.48074754380696,
+        "mainCpuPercent": 5.189246986048003,
+        "peakRssMiB": 206.181640625
+      },
+      "large_paste": {
+        "cpuPercent": 230.32132273281454,
+        "mainCpuPercent": 5.089980296109509,
+        "peakRssMiB": 211.994140625
+      },
+      "large_scroll": {
+        "cpuPercent": 62.0171795598453,
+        "mainCpuPercent": 2.4828952235913317,
+        "peakRssMiB": 212.181640625
+      },
+      "large_idle_focused": {
+        "cpuPercent": 16.799164641410755,
+        "mainCpuPercent": 0.799960221019564,
+        "peakRssMiB": 212.369140625
+      },
+      "idle_unfocused": {
+        "cpuPercent": 0.19998983889338712,
+        "mainCpuPercent": 0.09999508052121107,
+        "peakRssMiB": 212.275390625
+      },
+      "peakRssMiB": 212.369140625
+    }
+  },
+  "candidateSourceSha256": "48d6842b7fb272ba7c2d028b94ed679a8235285ef1c26c4458a7faeba4cd32d5"
+}

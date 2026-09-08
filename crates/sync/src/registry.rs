@@ -243,6 +243,9 @@ async fn pump(
 #[derive(Default)]
 struct Stats {
     connected: std::sync::atomic::AtomicBool,
+    /// Latched once a server state applies this process (hello or HTTPS
+    /// pull) — never cleared by disconnects; see `RoomStatsSnapshot::synced`.
+    synced: std::sync::atomic::AtomicBool,
     last_pushed_ms: std::sync::atomic::AtomicI64,
     last_ack_ms: std::sync::atomic::AtomicI64,
     rejoins: std::sync::atomic::AtomicU64,
@@ -276,6 +279,7 @@ impl Stats {
         use std::sync::atomic::Ordering::Relaxed;
         RoomStatsSnapshot {
             connected: self.connected.load(Relaxed),
+            synced: self.synced.load(Relaxed),
             last_pushed_ms: self.last_pushed_ms.load(Relaxed),
             last_ack_ms: self.last_ack_ms.load(Relaxed),
             rejoins: self.rejoins.load(Relaxed),
@@ -768,6 +772,7 @@ impl Actor {
             }
         }
         self.stats.connected.store(true, Relaxed);
+        self.stats.synced.store(true, Relaxed);
         self.stats.last_pushed_ms.store(epoch_ms(), Relaxed);
         self.stats.retry_at_ms.store(0, Relaxed);
         *lock(&self.stats.last_failure) = None;
@@ -888,11 +893,27 @@ impl Actor {
                     serde_json::json!({ "batch": batch.batch, "ops": batch.ops }).to_string();
                 match transport.push(body).await {
                     Ok(ack) => {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&ack) {
-                            if let (Some(b), Some(seq)) = (v["batch"].as_str(), v["seq"].as_u64()) {
-                                lock(&doc).ack_batch(b, seq);
+                        let parsed = serde_json::from_str::<serde_json::Value>(&ack)
+                            .ok()
+                            .and_then(|v| {
+                                Some((v["batch"].as_str()?.to_owned(), v["seq"].as_u64()?))
+                            });
+                        match parsed {
+                            Some((b, seq)) => {
+                                lock(&doc).ack_batch(&b, seq);
                                 stats.last_ack_ms.store(epoch_ms(), Relaxed);
                                 let _ = events.send(RegistryEvent::Applied);
+                            }
+                            None => {
+                                // An unreadable ack must count as a FAILED
+                                // push: swallowing it left the batch marked
+                                // in-flight, and on a pure-HTTPS device no
+                                // socket disconnect ever comes along to
+                                // un-mark it — the write was stranded until
+                                // process restart.
+                                tracing::warn!("registry: http push ack unreadable; will retry");
+                                push_failed = true;
+                                break;
                             }
                         }
                     }
@@ -933,6 +954,7 @@ impl Actor {
                                 map.insert(device, (at, now));
                             }
                             drop(map);
+                            stats.synced.store(true, Relaxed);
                             stats.last_pushed_ms.store(epoch_ms(), Relaxed);
                             let _ = events.send(RegistryEvent::Applied);
                         }
@@ -976,9 +998,16 @@ impl Actor {
         };
         match frame {
             ServerFrame::Rows { seq, rows } => {
-                lock(&self.doc).apply_rows(seq, rows);
+                let contiguous = lock(&self.doc).apply_rows(seq, rows);
                 self.stats.last_pushed_ms.store(epoch_ms(), Relaxed);
                 let _ = self.events.send(RegistryEvent::Applied);
+                if !contiguous {
+                    // Frames between the cursor and this batch were missed;
+                    // the cursor held. Reconnect — the fresh hello pulls the
+                    // whole gap from the true cursor.
+                    tracing::warn!(seq, "registry: broadcast seq gap; resyncing");
+                    return false;
+                }
             }
             ServerFrame::Ack { batch, seq, .. } => {
                 lock(&self.doc).ack_batch(&batch, seq);

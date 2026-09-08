@@ -7,9 +7,10 @@
 //! - `commands`: LoroList of LoroMap {
 //!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
 //!
-//! Part maps: { id, kind: "text"|"tool"|"input"|"error", text?: LoroText, call?: json,
-//! isError?, questions?: json, resolved?, message? }. Text bodies are **LoroText** so streaming
-//! appends RLE-merge (1.03x oplog overhead vs 125x for whole-value rewrites).
+//! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"error", text?: LoroText,
+//! reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message? }.
+//! Text bodies are **LoroText** so streaming appends RLE-merge (1.03x oplog overhead vs
+//! 125x for whole-value rewrites).
 
 use loro::{ExportMode, LoroDoc, LoroError, LoroList, LoroMap, LoroText, LoroValue, ToJson};
 use serde::{Deserialize, Serialize};
@@ -61,6 +62,12 @@ struct DocPartJson {
     kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     text: Option<String>,
+    /// Thinking body for `kind: "reasoning"` (additive). Deliberately NOT the
+    /// `text` field: old readers' unknown-kind fallback renders `text` as
+    /// prose, so reasoning riding `text` would leak raw thinking into old
+    /// transcripts; on this field they degrade to an invisible empty part.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     call: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -108,6 +115,12 @@ fn to_doc_part(part: &MessagePart) -> Result<DocPartJson, DocError> {
             id: id.clone(),
             kind: "text".into(),
             text: Some(text.clone()),
+            ..Default::default()
+        },
+        MessagePart::Reasoning { id, text } => DocPartJson {
+            id: id.clone(),
+            kind: "reasoning".into(),
+            reasoning: Some(text.clone()),
             ..Default::default()
         },
         MessagePart::Tool {
@@ -212,6 +225,10 @@ fn from_doc_part(p: DocPartJson) -> MessagePart {
             id: p.id,
             message: p.message.unwrap_or_default(),
         },
+        "reasoning" => MessagePart::Reasoning {
+            id: p.id,
+            text: p.reasoning.unwrap_or_default(),
+        },
         _ => MessagePart::Text {
             id: p.id,
             text: p.text.unwrap_or_default(),
@@ -242,6 +259,41 @@ impl SessionDoc {
 
     pub fn doc(&self) -> &LoroDoc {
         &self.doc
+    }
+
+    /// A single atomic value prevents tokens and capacity from tearing on sync.
+    pub fn context_usage(&self) -> Option<zeron_proto::ContextUsage> {
+        let loro::ValueOrContainer::Value(LoroValue::String(value)) =
+            self.doc.get_map("meta").get("contextUsage")?
+        else {
+            return None;
+        };
+        serde_json::from_str(&value).ok()
+    }
+
+    pub fn update_context_usage(
+        &self,
+        tokens: Option<u64>,
+        window: Option<u64>,
+    ) -> Result<(), DocError> {
+        let previous = self.context_usage().unwrap_or_default();
+        let next = zeron_proto::ContextUsage {
+            tokens: tokens.or(previous.tokens),
+            window: window.filter(|n| *n > 0).or(previous.window),
+        };
+        if next != previous {
+            self.doc
+                .get_map("meta")
+                .insert("contextUsage", serde_json::to_string(&next)?)?;
+            self.doc.commit();
+        }
+        Ok(())
+    }
+
+    pub fn clear_context_usage(&self) -> Result<(), DocError> {
+        self.doc.get_map("meta").delete("contextUsage")?;
+        self.doc.commit();
+        Ok(())
     }
 
     pub fn chat_id(&self) -> Option<String> {
@@ -565,9 +617,7 @@ impl SessionDoc {
                             loro::ValueOrContainer::Value(v) => serde_json::to_value(v).ok(),
                             _ => None,
                         })
-                        .and_then(|j| {
-                            serde_json::from_value::<zeron_proto::ToolCall>(j).ok()
-                        })
+                        .and_then(|j| serde_json::from_value::<zeron_proto::ToolCall>(j).ok())
                         .is_some_and(|c| c.is_subagent_spawn());
                     if !is_spawn {
                         return Ok(false);
@@ -635,6 +685,12 @@ fn push_part(parts: &LoroList, part: &MessagePart) -> Result<(), DocError> {
     if let Some(text) = &doc_part.text {
         let t = map.insert_container("text", LoroText::new())?;
         t.insert(0, text)?;
+    }
+    if let Some(reasoning) = &doc_part.reasoning {
+        // LoroText like `text`: reasoning streams token by token, and
+        // whole-value rewrites cost ~125x the oplog of a text append.
+        let t = map.insert_container("reasoning", LoroText::new())?;
+        t.insert(0, reasoning)?;
     }
     if let Some(call) = &doc_part.call {
         map.insert("call", loro_value_from_json(call))?;
@@ -782,6 +838,12 @@ fn salvage_part(part: &serde_json::Value, entry_id: &str, ix: usize) -> Option<M
         .and_then(|x| x.as_str())
         .map(str::to_owned)
         .unwrap_or_else(|| format!("{entry_id}#recovered-{ix}"));
+    if let Some(reasoning) = obj.get("reasoning").and_then(|x| x.as_str()) {
+        return Some(MessagePart::Reasoning {
+            id,
+            text: reasoning.to_owned(),
+        });
+    }
     if let Some(text) = obj.get("text").and_then(|x| x.as_str()) {
         return Some(MessagePart::Text {
             id,
@@ -952,16 +1014,25 @@ impl<'a> SegmentWriter<'a> {
                 }
                 Some(prev) if prev == part => {}
                 Some(prev) => {
-                    match (prev, part) {
+                    // Trailing growth of a text-bodied part appends into its
+                    // LoroText container instead of rewriting the map value.
+                    let grown = match (prev, part) {
                         (
                             MessagePart::Text { text: old, .. },
                             MessagePart::Text { text: new, .. },
-                        ) if new.starts_with(old.as_str()) => {
-                            // Trailing-text growth: append the suffix into the LoroText.
+                        ) if new.starts_with(old.as_str()) => Some(("text", old, new)),
+                        (
+                            MessagePart::Reasoning { text: old, .. },
+                            MessagePart::Reasoning { text: new, .. },
+                        ) if new.starts_with(old.as_str()) => Some(("reasoning", old, new)),
+                        _ => None,
+                    };
+                    match grown {
+                        Some((field, old, new)) => {
                             let delta = &new[old.len()..];
                             if !delta.is_empty() {
                                 let part_map = part_map_at(&parts, i)?;
-                                match part_map.get("text") {
+                                match part_map.get(field) {
                                     Some(loro::ValueOrContainer::Container(
                                         loro::Container::Text(t),
                                     )) => {
@@ -969,15 +1040,15 @@ impl<'a> SegmentWriter<'a> {
                                         t.insert(len, delta)?;
                                     }
                                     _ => {
-                                        return Err(DocError::Schema(
-                                            "text part missing LoroText".into(),
-                                        ));
+                                        return Err(DocError::Schema(format!(
+                                            "{field} part missing LoroText"
+                                        )));
                                     }
                                 }
                                 dirty = true;
                             }
                         }
-                        _ => {
+                        None => {
                             // Field-level update (tool refresh/resolve, input resolve, or a
                             // non-append text rewrite, which the fold shouldn't produce —
                             // rewrite the part map fields defensively).
@@ -1063,6 +1134,15 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
         // Defensive path only — the fold never rewrites earlier text.
         if let Some(loro::ValueOrContainer::Container(loro::Container::Text(t))) = map.get("text") {
             t.update(text, Default::default())
+                .map_err(|e| DocError::Schema(e.to_string()))?;
+        }
+    }
+    if let Some(reasoning) = &doc_part.reasoning {
+        // Same defensive rewrite for the reasoning body.
+        if let Some(loro::ValueOrContainer::Container(loro::Container::Text(t))) =
+            map.get("reasoning")
+        {
+            t.update(reasoning, Default::default())
                 .map_err(|e| DocError::Schema(e.to_string()))?;
         }
     }
@@ -1398,6 +1478,59 @@ mod tests {
         }
     }
 
+    /// Reasoning streams like text: LoroText appends into the `reasoning`
+    /// field (not `text` — old readers' unknown-kind fallback renders `text`
+    /// as prose), interleaving with text/tool parts, and round-trips through
+    /// the doc read path.
+    #[test]
+    fn segment_writer_streams_reasoning_incrementally() {
+        let doc = SessionDoc::init("chat-r").unwrap();
+        let mut writer = SegmentWriter::begin(&doc, "a1", "dev-a", 5).unwrap();
+
+        let mut folded = Vec::new();
+        fold_event_into_parts(
+            &mut folded,
+            &AgentEvent::ReasoningDelta {
+                text: "let me ".into(),
+            },
+        );
+        writer.sync(&folded).unwrap();
+        fold_event_into_parts(
+            &mut folded,
+            &AgentEvent::ReasoningDelta {
+                text: "think".into(),
+            },
+        );
+        writer.sync(&folded).unwrap();
+        fold_event_into_parts(&mut folded, &AgentEvent::TextDelta { text: "Done".into() });
+        writer.sync(&folded).unwrap();
+        writer.finish(&folded, MessageStatus::Complete).unwrap();
+
+        let entries = doc.read_entries().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].parts.len(), 2);
+        match &entries[0].parts[0] {
+            MessagePart::Reasoning { id, text } => {
+                assert_eq!(id, "r0");
+                assert_eq!(text, "let me think");
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        match &entries[0].parts[1] {
+            MessagePart::Text { text, .. } => assert_eq!(text, "Done"),
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // Old-reader degradation contract: the raw doc part carries NO
+        // `text` field, so a pre-reasoning client's fallback renders an
+        // empty (invisible) text part, never the thinking body.
+        let value = doc.doc.get_deep_value().to_json_value();
+        let part = &value["messages"][0]["parts"][0];
+        assert_eq!(part["kind"], "reasoning");
+        assert_eq!(part["reasoning"], "let me think");
+        assert!(part.get("text").is_none(), "{part:?}");
+    }
+
     /// The ToolResult resolution path goes through `update_part_fields` —
     /// the stripped output summary, sidecar refs, and diff stats must survive
     /// the doc round trip (regression: output/diff were silently dropped
@@ -1628,5 +1761,43 @@ mod tests {
         });
         let entry = entry_from_json(v).expect("strict");
         assert_eq!(entry.id, "m1");
+    }
+}
+
+#[cfg(test)]
+mod context_usage_tests {
+    use super::*;
+    #[test]
+    fn context_snapshot_survives_remote_import_restart_and_rebuild() {
+        let host = SessionDoc::init("context-chat").unwrap();
+        assert_eq!(host.context_usage(), None);
+        host.update_context_usage(Some(150_000), Some(200_000))
+            .unwrap();
+        let replica = SessionDoc::from_doc(LoroDoc::new());
+        replica
+            .doc()
+            .import(&host.export_snapshot().unwrap())
+            .unwrap();
+        assert_eq!(replica.context_usage(), host.context_usage());
+        let version = host.doc().oplog_vv();
+        // Compaction is a replacement, not an accumulating counter. Zero capacity is invalid.
+        host.update_context_usage(Some(0), Some(0)).unwrap();
+        replica
+            .doc()
+            .import(&host.doc().export(ExportMode::updates(&version)).unwrap())
+            .unwrap();
+        assert_eq!(
+            replica.context_usage(),
+            Some(zeron_proto::ContextUsage {
+                tokens: Some(0),
+                window: Some(200_000)
+            })
+        );
+        host.update_context_usage(None, Some(1_000_000)).unwrap();
+        assert_eq!(host.context_usage().unwrap().tokens, Some(0));
+        let rebuilt = crate::rebuild_thin_doc(&host).unwrap().doc;
+        assert_eq!(rebuilt.context_usage(), host.context_usage());
+        rebuilt.clear_context_usage().unwrap();
+        assert_eq!(rebuilt.context_usage(), None);
     }
 }

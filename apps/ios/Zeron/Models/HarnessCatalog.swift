@@ -1,8 +1,8 @@
 // Harness + model catalogs — ports of crates/harness's curated static
-// catalogs (claude/catalog.rs, codex/catalog.rs). The desktop overlays these
-// on runtime discovery; the phone uses them directly for the pickers.
-// Defaults mirror pickers.rs: first catalog row, reasoning xhigh where the
-// ladder has it, else high.
+// catalogs (claude/catalog.rs, codex/catalog.rs). Desktop discovers at runtime;
+// the phone mirrors its run device's live catalog and falls back to these.
+// Defaults mirror pickers.rs: first catalog row, reasoning high where the
+// ladder has it, else medium/first.
 
 import Foundation
 
@@ -11,12 +11,35 @@ struct HarnessInfo: Identifiable, Hashable {
     let label: String
 }
 
+struct ModelOptionChoiceInfo: Identifiable, Hashable {
+    let id: String
+    let label: String
+}
+
+struct ModelOptionInfo: Identifiable, Hashable {
+    let id: String
+    let label: String
+    let choices: [ModelOptionChoiceInfo]
+    let defaultChoice: String
+}
+
 struct ModelInfo: Identifiable, Hashable {
     let id: String
     let label: String
     let description: String?
     /// Unified reasoning ladder, lowercase wire values. Empty = no efforts.
     let reasoningLevels: [String]
+    /// Harness-specific traits such as Codex Standard/Fast.
+    let options: [ModelOptionInfo]
+
+    init(id: String, label: String, description: String?, reasoningLevels: [String],
+         options: [ModelOptionInfo] = []) {
+        self.id = id
+        self.label = label
+        self.description = description
+        self.reasoningLevels = reasoningLevels
+        self.options = options
+    }
 }
 
 enum HarnessCatalog {
@@ -34,10 +57,12 @@ enum HarnessCatalog {
     static let knownLabels: [String: String] = [
         "claude-code": "Claude Code",
         "codex": "Codex",
+        "devin": "Devin",
         "grok": "Grok",
         "hermes": "Hermes",
         "pi": "Pi",
         "cursor": "Cursor",
+        "opencode": "OpenCode",
         "mock": "Mock",
     ]
 
@@ -50,6 +75,12 @@ enum HarnessCatalog {
     private static let codexUltraLadder = ["low", "medium", "high", "xhigh", "max", "ultra"]
     private static let codexMaxLadder = ["low", "medium", "high", "xhigh", "max"]
     private static let codexXhighLadder = ["low", "medium", "high", "xhigh"]
+    private static let codexServiceTier = [
+        ModelOptionInfo(id: "serviceTier", label: "Service Tier", choices: [
+            ModelOptionChoiceInfo(id: "default", label: "Standard"),
+            ModelOptionChoiceInfo(id: "fast", label: "Fast"),
+        ], defaultChoice: "default"),
+    ]
 
     static func models(for harness: String) -> [ModelInfo] {
         switch harness {
@@ -58,6 +89,15 @@ enum HarnessCatalog {
                 ModelInfo(id: "grok-4.5", label: "Grok 4.5",
                           description: "xAI's coding model — 500k context",
                           reasoningLevels: ["low", "medium", "high"]),
+            ]
+        case "devin":
+            return [
+                ModelInfo(id: "swe-1-7-medium", label: "SWE-1.7 Medium",
+                          description: "Devin's default coding model", reasoningLevels: []),
+                ModelInfo(id: "claude-fable-5-1-high", label: "Claude Fable 5.1 High",
+                          description: "Anthropic's frontier model through Devin", reasoningLevels: []),
+                ModelInfo(id: "adaptive", label: "Adaptive",
+                          description: "Devin picks the model per request", reasoningLevels: []),
             ]
         case "hermes":
             return [
@@ -72,22 +112,48 @@ enum HarnessCatalog {
                           description: "Runs the model configured in pi (`pi` settings)",
                           reasoningLevels: ["minimal", "low", "medium", "high", "xhigh", "max"]),
             ]
+        case "opencode":
+            // Static fallback only — a reachable host answers `listModels`
+            // with its live discovery (connected providers). The anonymous
+            // OpenCode Zen tier is always available, so these always run.
+            return [
+                ModelInfo(id: "opencode/big-pickle", label: "Big Pickle",
+                          description: "OpenCode Zen's flagship coding model", reasoningLevels: []),
+                ModelInfo(id: "opencode/mimo-v2.5-free", label: "MiMo V2.5 Free",
+                          description: "Free tier on OpenCode Zen", reasoningLevels: []),
+                ModelInfo(id: "opencode/hy3-free", label: "Hy3 Free",
+                          description: "Free tier on OpenCode Zen",
+                          reasoningLevels: ["low", "medium", "high"]),
+            ]
         case "codex":
             return [
+                ModelInfo(id: "gpt-6-astra", label: "GPT-6-Astra",
+                          description: "Our most capable model for complex, demanding work.",
+                          reasoningLevels: codexUltraLadder, options: codexServiceTier),
                 ModelInfo(id: "gpt-5.6-sol", label: "GPT-5.6-Sol",
-                          description: "Frontier reasoning flagship", reasoningLevels: codexUltraLadder),
+                          description: "Frontier reasoning flagship", reasoningLevels: codexUltraLadder,
+                          options: codexServiceTier),
                 ModelInfo(id: "gpt-5.6-terra", label: "GPT-5.6-Terra",
-                          description: "Deep multi-step agentic work", reasoningLevels: codexUltraLadder),
+                          description: "Deep multi-step agentic work", reasoningLevels: codexUltraLadder,
+                          options: codexServiceTier),
                 ModelInfo(id: "gpt-5.6-luna", label: "GPT-5.6-Luna",
-                          description: "Fast frontier model", reasoningLevels: codexMaxLadder),
+                          description: "Fast frontier model", reasoningLevels: codexMaxLadder,
+                          options: codexServiceTier),
+                ModelInfo(id: "gpt-daybreak-blue-latest", label: "Daybreak Blue",
+                          description: "Frontier model for defensive cybersecurity work",
+                          reasoningLevels: codexUltraLadder),
                 ModelInfo(id: "gpt-5.5", label: "GPT-5.5",
-                          description: "Previous generation flagship", reasoningLevels: codexXhighLadder),
+                          description: "Previous generation flagship", reasoningLevels: codexXhighLadder,
+                          options: codexServiceTier),
                 ModelInfo(id: "gpt-5.4", label: "GPT-5.4",
-                          description: "Reliable general coding", reasoningLevels: codexXhighLadder),
+                          description: "Reliable general coding", reasoningLevels: codexXhighLadder,
+                          options: codexServiceTier),
                 ModelInfo(id: "gpt-5.4-mini", label: "GPT-5.4-Mini",
-                          description: "Small, fast and capable", reasoningLevels: codexXhighLadder),
+                          description: "Small, fast and capable", reasoningLevels: codexXhighLadder,
+                          options: codexServiceTier),
                 ModelInfo(id: "gpt-5.3-codex-spark", label: "GPT-5.3-Codex-Spark",
-                          description: "Ultra-fast lightweight coding", reasoningLevels: codexXhighLadder),
+                          description: "Ultra-fast lightweight coding", reasoningLevels: codexXhighLadder,
+                          options: codexServiceTier),
             ]
         default:  // claude-code (mock shares it)
             return [
@@ -111,10 +177,20 @@ enum HarnessCatalog {
         models(for: harness)[0]
     }
 
-    /// pickers.rs:126 — X-High when the ladder has it, else High.
+    /// pickers.rs — High when available, then Medium, then the first level.
     static func defaultReasoning(for model: ModelInfo) -> String? {
         if model.reasoningLevels.isEmpty { return nil }
-        return model.reasoningLevels.contains("xhigh") ? "xhigh" : "high"
+        if model.reasoningLevels.contains("high") { return "high" }
+        if model.reasoningLevels.contains("medium") { return "medium" }
+        return model.reasoningLevels.first
+    }
+
+    static func selectedChoice(for option: ModelOptionInfo,
+                               selectedId: String?) -> ModelOptionChoiceInfo {
+        option.choices.first { $0.id == selectedId }
+            ?? option.choices.first { $0.id == option.defaultChoice }
+            ?? option.choices.first
+            ?? ModelOptionChoiceInfo(id: option.defaultChoice, label: option.defaultChoice)
     }
 
     static func reasoningLabel(_ level: String) -> String {

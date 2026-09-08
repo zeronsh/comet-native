@@ -247,6 +247,49 @@ impl Harness for MockHarness {
             )
             .into(),
         });
+        // Dev/testing knob: `ZERON_MOCK_THINKING=1` appends a markdown-heavy
+        // reasoning stream plus a command — the thought-process chip inside a
+        // tool-group accordion, for checking that thinking renders styled
+        // (bold/lists/inline code) instead of literal `**` markers.
+        let mock_thinking = std::env::var("ZERON_MOCK_THINKING")
+            .ok()
+            .is_some_and(|v| !v.is_empty() && v != "0");
+        let thinking_events = mock_thinking
+            .then(|| {
+                [
+                    AgentEvent::ReasoningDelta {
+                        text: concat!(
+                            "**Planning message rollback helper extraction**\n\n",
+                            "The `discard_message` helper needs to roll back optimistic sends on error. ",
+                            "Three constraints stand out:\n\n",
+                            "1. **Rollback** — remove the user message only when the server never persisted it\n",
+                            "2. **Credit state** — clear the exhaustion flag per workspace on auth changes\n",
+                            "3. **Paywall copy** — resolve icon conflicts, *then* update the tests\n\n",
+                            "Checking call sites before patching:\n\n",
+                            "```rust\n",
+                            "let rolled_back = ledger.discard(message_id)?;\n",
+                            "```\n\n",
+                            "The [ledger docs](https://example.com) say discard is idempotent, so ",
+                            "re-running the rollback on a retry is safe.",
+                        )
+                        .into(),
+                    },
+                    AgentEvent::ToolCall {
+                        id: "mock-think-tool".into(),
+                        call: zeron_proto::ToolCall::Exec {
+                            command: "rg -n walletInsufficient apps/word/src | wc -l".into(),
+                        },
+                    },
+                    AgentEvent::ToolResult {
+                        id: "mock-think-tool".into(),
+                        is_error: false,
+                        output: None,
+                        diff: None,
+                    },
+                ]
+            })
+            .into_iter()
+            .flatten();
         // Dev/testing knob: `ZERON_MOCK_SUBAGENT=1` appends two spawn chips
         // whose nested traffic arrives as tagged `AgentEvent::Subagent`
         // events — the only data-side way to put spawn chips (running → done)
@@ -455,6 +498,7 @@ impl Harness for MockHarness {
             .cycle()
             .take(body.len() * repeat)
             .cloned()
+            .chain(thinking_events)
             .chain(code_tool_events)
             .chain(subagent_events)
             .chain(code_event)
@@ -484,6 +528,20 @@ impl Harness for MockHarness {
                             .chunks(n)
                             .map(|c| {
                                 Ok(AgentEvent::TextDelta {
+                                    text: c.iter().collect(),
+                                })
+                            })
+                            .collect::<Vec<_>>()
+                    }
+                    // Reasoning streams the same char-paced way — thought
+                    // chips have their own streaming display (mend + live
+                    // tail), which whole-block deltas would never exercise.
+                    Ok(AgentEvent::ReasoningDelta { text }) => {
+                        let chars: Vec<char> = text.chars().collect();
+                        chars
+                            .chunks(n)
+                            .map(|c| {
+                                Ok(AgentEvent::ReasoningDelta {
                                     text: c.iter().collect(),
                                 })
                             })

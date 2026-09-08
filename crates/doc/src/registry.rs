@@ -311,10 +311,21 @@ pub enum StateOutcome {
     Reseeded,
 }
 
+/// Bump to force every client ONE full resync on its next boot (persisted
+/// snapshots below this epoch zero their cursor on load). 1 = the
+/// cursor-jump healing (ack/gap fixes below).
+const CURRENT_RESYNC_EPOCH: u32 = 1;
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PersistedState {
     v: u32,
+    /// Cursor-integrity epoch: bumping [`CURRENT_RESYNC_EPOCH`] forces every
+    /// client one full resync on its first load after upgrading (heals
+    /// snapshots whose cursor jumped past unapplied rows). Additive —
+    /// pre-epoch snapshots default to 0.
+    #[serde(default)]
+    resync_epoch: u32,
     device_id: String,
     server_seq: u64,
     gc_floor: u64,
@@ -371,6 +382,8 @@ impl RegistryDoc {
 
     // ── persistence ─────────────────────────────────────────────────────────
 
+    // (see PersistedState::resync_epoch)
+
     pub fn to_bytes(&self) -> Result<Vec<u8>, DocError> {
         let rows = self
             .authoritative
@@ -379,6 +392,7 @@ impl RegistryDoc {
             .collect();
         let state = PersistedState {
             v: 1,
+            resync_epoch: CURRENT_RESYNC_EPOCH,
             device_id: self.device_id.clone(),
             server_seq: self.server_seq,
             gc_floor: self.gc_floor,
@@ -398,7 +412,17 @@ impl RegistryDoc {
             )));
         }
         let mut doc = Self::new(device_id);
-        doc.server_seq = state.server_seq;
+        // One-shot healing resync: snapshots from before a cursor-integrity
+        // fix may have a cursor that JUMPED past rows this replica never
+        // applied (the ack/gap bugs above) — those rows are invisible and no
+        // amount of ordinary syncing refetches them. Zeroing the cursor once
+        // forces the next hello/pull to return full state; local rows are
+        // kept (and local-only ones re-seed through apply_state's full path).
+        if state.resync_epoch < CURRENT_RESYNC_EPOCH {
+            doc.server_seq = 0;
+        } else {
+            doc.server_seq = state.server_seq;
+        }
         doc.gc_floor = state.gc_floor;
         doc.clock = state.clock;
         doc.pending = state.pending;
@@ -478,23 +502,42 @@ impl RegistryDoc {
     }
 
     /// Apply a `rows` broadcast (merged truth for the touched rows).
-    pub fn apply_rows(&mut self, seq: u64, rows: Vec<RegistryRow>) {
+    /// Apply one broadcast batch. Returns `false` on a SEQ GAP — frames
+    /// between the cursor and this batch were missed (a hibernating DO, a
+    /// half-dead socket): the rows still apply (fresh data), but the cursor
+    /// holds so the caller can resync (reconnect → hello/pull from the true
+    /// cursor backfills the window). Advancing across a gap made the missed
+    /// rows permanently invisible.
+    #[must_use]
+    pub fn apply_rows(&mut self, seq: u64, rows: Vec<RegistryRow>) -> bool {
         self.generation += 1;
         for row in rows {
             self.put_authoritative(row);
         }
+        if seq > self.server_seq + 1 {
+            return false;
+        }
         if seq > self.server_seq {
             self.server_seq = seq;
         }
+        true
     }
 
     /// Retire an acked batch; returns whether it existed.
-    pub fn ack_batch(&mut self, batch: &str, seq: u64) -> bool {
+    ///
+    /// Deliberately does NOT advance the sync cursor: the ack's `seq` is OUR
+    /// batch's position, and other devices' batches may sit between the
+    /// cursor and it. Jumping the cursor skipped those forever — on the
+    /// HTTPS transport the very next pull used the jumped cursor, so a
+    /// device that pushed anything (a seen-marker was enough) while behind
+    /// permanently missed every row its peers wrote since its last sync
+    /// (field incident: new sessions never appeared in a laptop's sidebar
+    /// while updates to already-known rows kept flowing). The cursor only
+    /// advances with actual row payloads (state/pull/contiguous broadcasts);
+    /// re-pulling our own batch is an idempotent LWW no-op.
+    pub fn ack_batch(&mut self, batch: &str, _seq: u64) -> bool {
         let before = self.pending.len();
         self.pending.retain(|b| b.batch != batch);
-        if seq > self.server_seq {
-            self.server_seq = seq;
-        }
         if self.pending.len() != before {
             self.generation += 1;
             true
@@ -829,6 +872,14 @@ impl RegistryDoc {
             ("cwd", opt_str(chat.cwd.as_deref())),
             ("branch", opt_str(chat.branch.as_deref())),
             ("checkoutId", opt_str(chat.checkout_id.as_deref())),
+            (
+                "sourceContext",
+                chat.source_context
+                    .as_ref()
+                    .map(serde_json::to_value)
+                    .transpose()?
+                    .unwrap_or(Value::Null),
+            ),
             ("config", config),
             (
                 "lastMessagePreview",
@@ -969,6 +1020,27 @@ impl RegistryDoc {
             chat_id,
             OpKind::Update,
             fields([("branch", json!(branch))]),
+        );
+        Ok(true)
+    }
+
+    pub fn set_chat_source_context(
+        &mut self,
+        chat_id: &str,
+        context: &zeron_proto::ConversationSourceContext,
+    ) -> Result<bool, DocError> {
+        if !self.row_exists(KIND_CHATS, chat_id) {
+            return Ok(false);
+        }
+        self.write(
+            KIND_CHATS,
+            chat_id,
+            OpKind::Update,
+            fields([
+                ("sourceContext", serde_json::to_value(context)?),
+                ("branch", json!(context.branch)),
+                ("checkoutId", json!(context.checkout_id)),
+            ]),
         );
         Ok(true)
     }

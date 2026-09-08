@@ -257,6 +257,7 @@ fn chat(id: &str, device_id: &str) -> Chat {
         cwd: Some("/tmp/repo".into()),
         branch: Some("main".into()),
         checkout_id: None,
+        source_context: None,
         config: Some(ChatConfig {
             harness: HarnessId::Mock,
             model: Some("mock-1".into()),
@@ -333,7 +334,7 @@ fn server_round(
         touched_all.extend(touched);
     }
     for doc in docs.iter_mut() {
-        doc.apply_rows(*seq, touched_all.clone());
+        let _ = doc.apply_rows(*seq, touched_all.clone());
     }
     for (i, batch) in acks {
         docs[i].ack_batch(&batch, *seq);
@@ -365,6 +366,139 @@ fn rows_round_trip_and_upsert_refreshes() {
     assert_eq!(chats.len(), 1);
     assert_eq!(chats[0].title, None);
     assert_eq!(chats[0].last_message_preview.as_deref(), Some("hello"));
+}
+
+#[test]
+fn own_push_ack_never_advances_the_cursor() {
+    // Field incident: on the HTTPS transport, push ran before pull in one
+    // cycle — the ack jumped the cursor to OUR batch's seq, and the pull
+    // then fetched "since" that jumped cursor, permanently skipping every
+    // batch other devices wrote in between (new sessions never appeared in
+    // a laptop's sidebar while updates to known rows kept flowing).
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.apply_state(10, true, 0, Vec::new());
+    assert_eq!(ws.cursor(), 10);
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    let batch = ws.take_pushable().pop().expect("pending batch");
+    // The server assigns our batch seq 15 — batches 11..=14 belong to peers
+    // and have not reached us yet.
+    assert!(ws.ack_batch(&batch.batch, 15));
+    assert_eq!(
+        ws.cursor(),
+        10,
+        "the next pull must still fetch the peers' batches 11..=14"
+    );
+    assert_eq!(ws.pending_len(), 0, "the ack still retires the batch");
+}
+
+#[test]
+fn broadcast_seq_gap_applies_rows_but_holds_the_cursor() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.apply_state(10, true, 0, Vec::new());
+    let row = |id: &str, seq: u64| RegistryRow {
+        kind: "chats".into(),
+        id: id.into(),
+        seq,
+        deleted: false,
+        del_hlc: None,
+        fields: [
+            ("id".to_owned(), json!(id)),
+            ("deviceId".to_owned(), json!("dev-b")),
+            ("createdAt".to_owned(), json!(1_000)),
+        ]
+        .into_iter()
+        .collect(),
+        clocks: Default::default(),
+    };
+    // Contiguous broadcast advances.
+    assert!(ws.apply_rows(11, vec![row("chat-a", 11)]));
+    assert_eq!(ws.cursor(), 11);
+    // A GAPPED broadcast (12..=14 were missed) applies its rows but must
+    // not advance — the caller resyncs and the reconnect hello backfills.
+    assert!(!ws.apply_rows(15, vec![row("chat-b", 15)]));
+    assert_eq!(ws.cursor(), 11, "cursor holds across the gap");
+    assert_eq!(ws.read_chats().unwrap().len(), 2, "fresh rows still apply");
+    // Idempotent replay of an already-seen batch is not a gap.
+    assert!(ws.apply_rows(11, vec![row("chat-a", 11)]));
+}
+
+#[test]
+fn pre_epoch_snapshots_resync_in_full_once() {
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.apply_state(42, true, 0, Vec::new());
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    let bytes = ws.to_bytes().unwrap();
+
+    // A current-epoch snapshot keeps its cursor.
+    let restored = RegistryDoc::from_bytes(&bytes, "dev-a").unwrap();
+    assert_eq!(restored.cursor(), 42);
+    assert_eq!(restored.read_chats().unwrap().len(), 1);
+
+    // A snapshot from BEFORE the cursor-integrity fixes (no epoch field)
+    // may hide a jumped cursor: it zeroes on load so the next hello/pull is
+    // a full state, healing any invisible-row window. Rows are kept.
+    let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    v.as_object_mut().unwrap().remove("resyncEpoch");
+    let old = serde_json::to_vec(&v).unwrap();
+    let healed = RegistryDoc::from_bytes(&old, "dev-a").unwrap();
+    assert_eq!(
+        healed.cursor(),
+        0,
+        "pre-epoch snapshot forces a full resync"
+    );
+    assert_eq!(
+        healed.read_chats().unwrap().len(),
+        1,
+        "rows survive the reset"
+    );
+}
+
+#[test]
+fn future_harness_chat_rows_stay_visible_without_their_config() {
+    // Field incident: a pre-v0.2.10 client received rows whose
+    // config.harness said "opencode" — a variant it didn't have — and
+    // dropped the WHOLE row ("skipping malformed registry row"), so new
+    // sessions silently never appeared in that device's sidebar. Unknown
+    // config values must cost the config, not the row.
+    let mut ws = RegistryDoc::new("dev-a");
+    ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+    let fields: std::collections::BTreeMap<String, serde_json::Value> = [
+        ("id".to_owned(), json!("chat-2")),
+        ("deviceId".to_owned(), json!("dev-b")),
+        ("createdAt".to_owned(), json!(1_000)),
+        (
+            "config".to_owned(),
+            json!({
+                "harness": "harness-from-the-future",
+                "model": "novel/model",
+                "sandbox": "workspace-write",
+            }),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let _ = ws.apply_rows(
+        7,
+        vec![RegistryRow {
+            kind: "chats".into(),
+            id: "chat-2".into(),
+            seq: 7,
+            deleted: false,
+            del_hlc: None,
+            fields,
+            clocks: Default::default(),
+        }],
+    );
+
+    let chats = ws.read_chats().unwrap();
+    assert_eq!(chats.len(), 2, "the future-harness row must not vanish");
+    let newcomer = chats.iter().find(|c| c.id == "chat-2").expect("visible");
+    assert_eq!(
+        newcomer.config, None,
+        "unknown config degrades, row survives"
+    );
+    // The well-formed sibling keeps its config untouched.
+    assert!(chats.iter().any(|c| c.id == "chat-1" && c.config.is_some()));
 }
 
 #[test]

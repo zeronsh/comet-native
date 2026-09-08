@@ -60,6 +60,13 @@ export type MessagePart =
       readonly text: string;
     }
   | {
+      /** Model thinking. Carries its body in `reasoning` (never `text`) so
+       * pre-reasoning readers degrade to an invisible empty text part. */
+      readonly kind: "reasoning";
+      readonly id: string;
+      readonly text: string;
+    }
+  | {
       readonly kind: "tool";
       readonly id: string;
       readonly call: ToolCall;

@@ -41,6 +41,7 @@ pub fn blurb(harness: HarnessId) -> &'static str {
         HarnessId::ClaudeCode => "Anthropic's coding agent, driven through the Claude Code CLI.",
         HarnessId::Codex => "OpenAI's coding agent, driven through the Codex CLI.",
         HarnessId::Cursor => "Cursor's coding agent, driven through the cursor-agent CLI.",
+        HarnessId::Devin => "Cognition's Devin agent (devin CLI).",
         HarnessId::Grok => "xAI's Grok Build agent (grok CLI).",
         HarnessId::Hermes => "Nous Research's Hermes Agent (hermes CLI).",
         HarnessId::Pi => "The pi coding agent (pi CLI).",
@@ -55,6 +56,7 @@ pub fn cli_name(harness: HarnessId) -> &'static str {
         HarnessId::ClaudeCode => "claude",
         HarnessId::Codex => "codex",
         HarnessId::Cursor => "cursor-agent",
+        HarnessId::Devin => "devin",
         HarnessId::Grok => "grok",
         HarnessId::Hermes => "hermes",
         HarnessId::Pi => "pi",
@@ -258,7 +260,7 @@ impl HarnessesPage {
                     div()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(12.5))
+                        .text_size(crate::typography::ui_rems(12.5))
                         .font_weight(gpui::FontWeight::MEDIUM)
                         .text_color(theme.text)
                         .child(trigger_label),
@@ -313,7 +315,7 @@ impl HarnessesPage {
                             el.child(
                                 div()
                                     .flex_none()
-                                    .text_size(px(10.5))
+                                    .text_size(crate::typography::ui_rems(10.5))
                                     .text_color(theme.text_muted.opacity(0.35))
                                     .child(SharedString::from("You")),
                             )

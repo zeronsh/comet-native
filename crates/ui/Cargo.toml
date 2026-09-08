@@ -5,6 +5,13 @@ edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
+[features]
+resource-profile = ["gpui/bench", "gpui_platform/test-support"]
+
+[[example]]
+name = "macos-resource-profile"
+required-features = ["resource-profile"]
+
 [dependencies]
 zeron-proto.workspace = true
 similar.workspace = true
@@ -14,9 +21,11 @@ zeron-harness.workspace = true
 zeron-rpc.workspace = true
 zeron-update.workspace = true
 zeron-syntax.workspace = true
+zeron-theme.workspace = true
 gpui.workspace = true
 gpui_platform.workspace = true
 gpui_tokio.workspace = true
+gpui-base.workspace = true
 tokio.workspace = true
 futures.workspace = true
 async-trait.workspace = true
@@ -26,14 +35,21 @@ pulldown-cmark.workspace = true
 alacritty_terminal.workspace = true
 base64 = "0.22"
 unicode-segmentation.workspace = true
+unicode-width.workspace = true
+fontdb.workspace = true
+ttf-parser.workspace = true
 uuid.workspace = true
 chrono.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 sha2.workspace = true
+thiserror.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc = "0.2"
 
 [dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
 tempfile.workspace = true
+mimalloc.workspace = true
+tracing-subscriber.workspace = true

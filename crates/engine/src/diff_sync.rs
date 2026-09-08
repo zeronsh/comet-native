@@ -11,17 +11,17 @@
 //! - a [`DiffSidecar`] JSON `POST {edge}/diff/{chatId}` for every syncing chat of
 //!   the checkout (bearer = engine edge token), so "review pending changes while
 //!   the host sleeps" works;
-//! - `chat.branch` upkeep: the same fs events cover the checkout's git dir (HEAD),
-//!   so each snapshot reconciles mismatched workspace chat rows' `branch` (and
-//!   `checkoutId` at reconcile time).
+//! Checkout snapshots remain live checkout state. Conversation branch identity
+//! is captured by the command host and is never rewritten from this watcher;
+//! otherwise one checkout change would relabel every chat sharing that folder.
 //!
 //! Fast recursive `notify` watchers (debounced [`WATCH_DEBOUNCE`]) are backed by a
 //! slow 2-minute repair tick because native watchers may coalesce or drop events.
 //! Snapshots carry a sha256 checksum; an unchanged checksum publishes nothing.
 //!
 //! Reconcile is deliberately damped, because it runs on *every* workspace chat
-//! row change — including the `branch`/`checkoutId` writes `sync_entry` itself
-//! makes. Checkout identities are memoized per cwd (chat-watch reconciles spawn
+//! row change — including the `checkoutId` writes reconcile itself makes.
+//! Checkout identities are memoized per cwd (chat-watch reconciles spawn
 //! no git; the repair tick revalidates), and an entry whose chats vanish is torn
 //! down only after [`REPAIR_INTERVAL`] of continuous absence rather than on the
 //! first pass that misses it. See [`resolve_identity`] for the incident this
@@ -654,17 +654,6 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
         }
     };
 
-    // chat.branch upkeep — the git-dir watcher covers HEAD, so every snapshot
-    // reconciles mismatched rows (repair tick covers dropped events).
-    let chats = lock(&entry.chats).clone();
-    for chat in &chats {
-        if chat.branch.as_deref() != Some(snapshot.branch.as_str())
-            && let Err(err) = inner.workspace.set_chat_branch(&chat.id, &snapshot.branch)
-        {
-            tracing::debug!(chat = %chat.id, error = %err, "diff-sync: branch write failed");
-        }
-    }
-
     if lock(&entry.checksum).as_deref() == Some(snapshot.checksum.as_str()) {
         return; // unchanged — publish nothing
     }
@@ -691,6 +680,7 @@ async fn sync_entry(inner: &Arc<DiffSyncInner>, entry: &Arc<CheckoutEntry>) {
     publish_watch_with(inner, Some(diff));
 
     // Latest-only sidecar to every syncing chat's session DO slot.
+    let chats = lock(&entry.chats).clone();
     if let Some(edge) = &inner.edge {
         for chat in &chats {
             let sidecar = DiffSidecar {

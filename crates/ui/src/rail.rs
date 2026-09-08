@@ -249,6 +249,7 @@ impl Transcript {
     ///   measurement correcting the estimate just re-enters the timeline;
     /// - once the target row is measured the glide is pixel-exact.
     pub fn scroll_to_row(&mut self, target: usize, cx: &mut Context<Self>) {
+        self.begin_scroll_navigation();
         if motion::reduced_motion(cx) {
             self.list_state().scroll_to(ListOffset {
                 item_ix: target,
@@ -510,14 +511,14 @@ impl Transcript {
                         .gap(px(6.0))
                         .child(
                             div()
-                                .text_size(px(12.0))
+                                .text_size(crate::typography::ui_rems(12.0))
                                 .text_color(theme.text)
                                 .child(SharedString::from(prompt.clone())),
                         )
                         .when_some(reply.clone(), |el, reply| {
                             el.child(
                                 div()
-                                    .text_size(px(11.0))
+                                    .text_size(crate::typography::ui_rems(11.0))
                                     .text_color(theme.text_muted)
                                     .child(SharedString::from(reply)),
                             )
@@ -527,7 +528,7 @@ impl Transcript {
                         .when(bucket_len > 1, |el| {
                             el.child(
                                 div()
-                                    .text_size(px(10.0))
+                                    .text_size(crate::typography::ui_rems(10.0))
                                     .text_color(theme.text_muted.opacity(0.7))
                                     .child(SharedString::from(format!("{bucket_len} prompts"))),
                             )

@@ -244,6 +244,13 @@ impl WorkspaceDoc {
         set_opt_str(&row, "cwd", chat.cwd.as_deref())?;
         set_opt_str(&row, "branch", chat.branch.as_deref())?;
         set_opt_str(&row, "checkoutId", chat.checkout_id.as_deref())?;
+        match &chat.source_context {
+            Some(context) => row.insert(
+                "sourceContext",
+                LoroValue::from(serde_json::to_value(context)?),
+            )?,
+            None => row.delete("sourceContext")?,
+        }
         match &chat.config {
             Some(config) => row.insert("config", LoroValue::from(serde_json::to_value(config)?))?,
             None => row.delete("config")?,
@@ -341,6 +348,26 @@ impl WorkspaceDoc {
             return Ok(false);
         };
         row.insert("branch", branch)?;
+        self.doc.commit();
+        Ok(true)
+    }
+
+    /// Capture repository identity for one conversation. Legacy branch and
+    /// checkout fields are written alongside it for older synced clients.
+    pub fn set_chat_source_context(
+        &self,
+        chat_id: &str,
+        context: &zeron_proto::ConversationSourceContext,
+    ) -> Result<bool, DocError> {
+        let Some(row) = self.existing_row("chats", chat_id) else {
+            return Ok(false);
+        };
+        row.insert(
+            "sourceContext",
+            LoroValue::from(serde_json::to_value(context)?),
+        )?;
+        row.insert("branch", context.branch.as_str())?;
+        row.insert("checkoutId", context.checkout_id.as_str())?;
         self.doc.commit();
         Ok(true)
     }
@@ -632,6 +659,14 @@ pub(crate) struct RawChat {
     #[serde(default)]
     checkout_id: Option<String>,
     #[serde(default)]
+    source_context: Option<zeron_proto::ConversationSourceContext>,
+    /// LENIENT: a config this build can't decode (a harness/reasoning/sandbox
+    /// id from a NEWER peer — field incident: pre-v0.2.10 laptops dropped
+    /// every `"opencode"` chat row wholesale, so new sessions silently never
+    /// appeared in the sidebar) degrades to `None` instead of failing the
+    /// row. The chat stays visible and selectable with generic defaults;
+    /// up-to-date devices still see the real config.
+    #[serde(default, deserialize_with = "lenient_chat_config")]
     config: Option<ChatConfig>,
     #[serde(default)]
     last_message_preview: Option<String>,
@@ -651,6 +686,24 @@ pub(crate) struct RawChat {
     room_gen: Option<u32>,
 }
 
+/// Decode a chat row's `config` leniently: unknown enum values (a newer
+/// peer's harness id, reasoning level or sandbox mode) cost the CONFIG, not
+/// the row. Mirrors the transcript salvage rule: a missing field must cost
+/// at most what the field carried.
+fn lenient_chat_config<'de, D>(deserializer: D) -> Result<Option<ChatConfig>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match serde_json::from_value::<ChatConfig>(value) {
+        Ok(config) => Some(config),
+        Err(err) => {
+            tracing::warn!(error = %err, "chat config from a newer peer; showing the row without it");
+            None
+        }
+    }))
+}
+
 impl From<RawChat> for Chat {
     fn from(raw: RawChat) -> Self {
         Chat {
@@ -661,6 +714,7 @@ impl From<RawChat> for Chat {
             cwd: raw.cwd,
             branch: raw.branch,
             checkout_id: raw.checkout_id,
+            source_context: raw.source_context,
             config: raw.config,
             last_message_preview: raw.last_message_preview,
             last_message_at: raw.last_message_at.map(dt),
@@ -727,6 +781,7 @@ mod tests {
             cwd: Some("/tmp/repo".into()),
             branch: Some("main".into()),
             checkout_id: None,
+            source_context: None,
             config: Some(ChatConfig {
                 harness: HarnessId::Mock,
                 model: Some("mock-1".into()),
@@ -803,6 +858,25 @@ mod tests {
         // No such row: false, nothing created.
         assert!(!ws.set_chat_config("nope", &config).unwrap());
         assert!(ws.chat("nope").unwrap().is_none());
+    }
+
+    #[test]
+    fn conversation_source_context_round_trips_with_legacy_fields() {
+        let ws = WorkspaceDoc::new();
+        ws.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
+        let context = zeron_proto::ConversationSourceContext {
+            checkout_id: "checkout-a".into(),
+            repo_root: "/repo".into(),
+            cwd: "/repo/worktree".into(),
+            branch: "feature/sidebar".into(),
+            head_sha: Some("abc123".into()),
+            observed_at: ts(8_000),
+        };
+        assert!(ws.set_chat_source_context("chat-1", &context).unwrap());
+        let row = ws.chat("chat-1").unwrap().expect("row exists");
+        assert_eq!(row.source_context, Some(context));
+        assert_eq!(row.branch.as_deref(), Some("feature/sidebar"));
+        assert_eq!(row.checkout_id.as_deref(), Some("checkout-a"));
     }
 
     #[test]

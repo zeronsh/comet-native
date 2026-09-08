@@ -227,7 +227,11 @@ final class WorkspaceStore {
                 restartChangeRequestStreams(resetUnsupported: true)
             }
         case .rows(let seq, let rows):
-            doc.applyRows(seq: seq, rows: rows)
+            // A false return = seq gap (missed frames): the rows applied but
+            // the cursor held, so the next reconnect's hello backfills the
+            // window instead of skipping it forever. iOS sockets churn on
+            // every suspension, so convergence is quick without forcing one.
+            _ = doc.applyRows(seq: seq, rows: rows)
             project()
             saver?.poke()
         case .ack(let batch, let seq, _):
@@ -564,18 +568,39 @@ final class WorkspaceStore {
     }
 
     func listModels(deviceId: String, harness: String) async -> [ModelInfo]? {
+        struct WireChoice: Decodable {
+            var id: String
+            var label: String
+        }
+        struct WireOption: Decodable {
+            var id: String
+            var label: String
+            var choices: [WireChoice]
+            var defaultChoice: String
+        }
         struct WireModel: Decodable {
             var id: String
             var label: String
             var description: String?
             var reasoningLevels: [String]?
+            var options: [WireOption]?
         }
         let wire: [WireModel]? = try? await relay(for: deviceId)
             .call(method: "ListModels", params: ["harness": harness])
         return wire.map { models in
             models.map {
                 ModelInfo(id: $0.id, label: $0.label, description: $0.description,
-                          reasoningLevels: $0.reasoningLevels ?? [])
+                          reasoningLevels: $0.reasoningLevels ?? [],
+                          options: ($0.options ?? []).map { option in
+                              ModelOptionInfo(
+                                  id: option.id,
+                                  label: option.label,
+                                  choices: option.choices.map {
+                                      ModelOptionChoiceInfo(id: $0.id, label: $0.label)
+                                  },
+                                  defaultChoice: option.defaultChoice
+                              )
+                          })
             }
         }
     }

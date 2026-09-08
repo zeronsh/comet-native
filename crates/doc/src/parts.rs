@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use zeron_proto::{AgentEvent, ToolCall, ToolDiff, UserInputQuestion};
+use zeron_proto::{AgentEvent, SUBAGENT_INPUT_KEEP, ToolCall, ToolDiff, UserInputQuestion};
 
 use crate::constants::MSG_INLINE_MAX;
 
@@ -127,6 +127,15 @@ pub enum MessagePart {
         id: String,
         text: String,
     },
+    /// Model thinking. Carries its body in a dedicated doc field (`reasoning`,
+    /// never `text`) so pre-reasoning desktop builds — whose unknown-kind
+    /// fallback renders `text` as prose — degrade to an invisible empty text
+    /// part instead of leaking raw thinking into the transcript. iOS drops
+    /// unknown kinds entirely.
+    Reasoning {
+        id: String,
+        text: String,
+    },
     #[serde(rename_all = "camelCase")]
     Tool {
         id: String,
@@ -194,6 +203,7 @@ impl MessagePart {
     pub fn id(&self) -> &str {
         match self {
             MessagePart::Text { id, .. }
+            | MessagePart::Reasoning { id, .. }
             | MessagePart::Tool { id, .. }
             | MessagePart::Input { id, .. }
             | MessagePart::Error { id, .. } => id,
@@ -202,7 +212,7 @@ impl MessagePart {
 
     pub fn byte_len(&self) -> usize {
         match self {
-            MessagePart::Text { text, .. } => text.len(),
+            MessagePart::Text { text, .. } | MessagePart::Reasoning { text, .. } => text.len(),
             MessagePart::Tool {
                 call,
                 output,
@@ -256,8 +266,21 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
                 });
             }
         }
-        AgentEvent::ReasoningDelta { .. } => {
-            // Reasoning is not rendered as a transcript part (matches zeron).
+        AgentEvent::ReasoningDelta { text } => {
+            // Empty deltas are liveness heartbeats (redacted thinking) — the
+            // engine drops them before the fold, but stay tolerant here too.
+            if text.is_empty() {
+                return;
+            }
+            if let Some(MessagePart::Reasoning { text: tail, .. }) = out.last_mut() {
+                tail.push_str(text);
+            } else {
+                let id = format!("r{}", out.len());
+                out.push(MessagePart::Reasoning {
+                    id,
+                    text: text.clone(),
+                });
+            }
         }
         AgentEvent::ToolCall { id, call } => {
             if let Some(existing) = out.iter_mut().find_map(|p| match p {
@@ -421,11 +444,11 @@ pub fn fold_event_into_parts(out: &mut Vec<MessagePart>, event: &AgentEvent) {
         // subagent sink writes it), never a part of the assistant message.
         AgentEvent::AssistantMessageCompleted { .. }
         | AgentEvent::Usage { .. }
+        | AgentEvent::ContextUsage { .. }
         | AgentEvent::AvailableCommands { .. }
         | AgentEvent::UserMessage { .. } => {}
     }
 }
-
 
 /// Stamp sidecar keys onto resolved tool parts that have sidecar content.
 ///
@@ -485,7 +508,9 @@ pub fn sidecar_payload(event: &AgentEvent) -> Option<SidecarPayload> {
 
 /// Render-only privacy policy — strip heavy/sensitive tool inputs before a call enters the doc.
 ///
-/// Keeps: command / path / pattern / url / query / todo items / server+tool names.
+/// Keeps: command / path / pattern / url / query / todo items / server+tool names,
+/// and a subagent spawn's model/type (see [`spawn_badge`] — a couple of short
+/// identifiers the chip names the child by).
 /// Drops: WriteFile content, EditFile old/new strings, WebFetch prompt, Mcp/Unknown input.
 /// Full inputs remain only in the host's local run journal. Idempotent.
 pub fn sanitize_tool_call(call: &ToolCall) -> ToolCall {
@@ -506,14 +531,41 @@ pub fn sanitize_tool_call(call: &ToolCall) -> ToolCall {
         ToolCall::Mcp { server, tool, .. } => ToolCall::Mcp {
             server: server.clone(),
             tool: tool.clone(),
-            input: None,
+            input: spawn_badge(call),
         },
         ToolCall::Unknown { name, .. } => ToolCall::Unknown {
             name: name.clone(),
-            input: None,
+            input: spawn_badge(call),
         },
         other => other.clone(),
     }
+}
+
+/// The only slice of a tool input allowed into the doc: a subagent spawn's
+/// [`SUBAGENT_INPUT_KEEP`] keys, so the chip can say WHICH model the child
+/// runs on (`Agent · haiku`) without the reader opening the subagent tab.
+///
+/// Everything else — the prompt above all — stays in the host's run journal,
+/// so this stays a whitelist of short identifiers rather than a size cap.
+/// `None` for anything that is not a spawn, and for a spawn that named
+/// neither, which keeps it idempotent: re-sanitizing a sanitized call is a
+/// fixpoint (the kept keys are themselves kept).
+fn spawn_badge(call: &ToolCall) -> Option<serde_json::Value> {
+    if !call.is_subagent_spawn() {
+        return None;
+    }
+    let input = match call {
+        ToolCall::Unknown { input, .. } | ToolCall::Mcp { input, .. } => input.as_ref()?,
+        _ => return None,
+    };
+    let kept: serde_json::Map<String, serde_json::Value> = SUBAGENT_INPUT_KEEP
+        .iter()
+        .filter_map(|key| {
+            let value = input.get(key)?.as_str()?.trim();
+            (!value.is_empty()).then(|| ((*key).to_owned(), serde_json::Value::from(value)))
+        })
+        .collect();
+    (!kept.is_empty()).then(|| serde_json::Value::Object(kept))
 }
 
 /// Deterministic continuation id: `"{root}#c{n}"`.
@@ -541,34 +593,48 @@ pub fn split_parts(parts: &[MessagePart]) -> Vec<Vec<MessagePart>> {
     };
 
     for part in parts {
-        match part {
-            MessagePart::Text { id, text } if text.len() > MSG_INLINE_MAX => {
-                // Chunk oversized text at char boundaries.
-                let mut start = 0usize;
-                let mut piece = 0usize;
-                while start < text.len() {
-                    let mut end = (start + MSG_INLINE_MAX).min(text.len());
-                    while end < text.len() && !text.is_char_boundary(end) {
-                        end -= 1;
-                    }
-                    // Guard: ensure forward progress on pathological boundaries.
-                    if end <= start {
-                        end = text.len();
-                    }
-                    let sub = MessagePart::Text {
-                        id: if piece == 0 {
-                            id.clone()
-                        } else {
-                            format!("{id}~{piece}")
-                        },
-                        text: text[start..end].to_string(),
-                    };
-                    push_part(&mut chunks, &mut current_bytes, sub);
-                    start = end;
-                    piece += 1;
-                }
+        // Both text-bodied kinds chunk the same way; extended thinking can
+        // exceed the cap just as easily as a long reply.
+        let (id, text, reasoning) = match part {
+            MessagePart::Text { id, text } if text.len() > MSG_INLINE_MAX => (id, text, false),
+            MessagePart::Reasoning { id, text } if text.len() > MSG_INLINE_MAX => (id, text, true),
+            other => {
+                push_part(&mut chunks, &mut current_bytes, other.clone());
+                continue;
             }
-            other => push_part(&mut chunks, &mut current_bytes, other.clone()),
+        };
+        // Chunk oversized text at char boundaries.
+        let mut start = 0usize;
+        let mut piece = 0usize;
+        while start < text.len() {
+            let mut end = (start + MSG_INLINE_MAX).min(text.len());
+            while end < text.len() && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            // Guard: ensure forward progress on pathological boundaries.
+            if end <= start {
+                end = text.len();
+            }
+            let sub_id = if piece == 0 {
+                id.clone()
+            } else {
+                format!("{id}~{piece}")
+            };
+            let body = text[start..end].to_string();
+            let sub = if reasoning {
+                MessagePart::Reasoning {
+                    id: sub_id,
+                    text: body,
+                }
+            } else {
+                MessagePart::Text {
+                    id: sub_id,
+                    text: body,
+                }
+            };
+            push_part(&mut chunks, &mut current_bytes, sub);
+            start = end;
+            piece += 1;
         }
     }
     chunks
@@ -585,6 +651,64 @@ mod tests {
 
     fn text_delta(s: &str) -> AgentEvent {
         AgentEvent::TextDelta { text: s.into() }
+    }
+
+    #[test]
+    fn reasoning_deltas_fold_into_their_own_part() {
+        let mut parts = Vec::new();
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::ReasoningDelta {
+                text: "let me ".into(),
+            },
+        );
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::ReasoningDelta {
+                text: "think".into(),
+            },
+        );
+        // Empty deltas (redacted-thinking heartbeats) never mint a part.
+        fold_event_into_parts(&mut parts, &AgentEvent::ReasoningDelta { text: "".into() });
+        assert_eq!(parts.len(), 1);
+        assert_eq!(
+            parts[0],
+            MessagePart::Reasoning {
+                id: "r0".into(),
+                text: "let me think".into()
+            }
+        );
+        // Text breaks the reasoning block; a later thought starts a new part.
+        fold_event_into_parts(&mut parts, &text_delta("Answer"));
+        fold_event_into_parts(
+            &mut parts,
+            &AgentEvent::ReasoningDelta {
+                text: "more".into(),
+            },
+        );
+        assert_eq!(parts.len(), 3);
+        assert!(matches!(
+            &parts[2],
+            MessagePart::Reasoning { id, text } if id == "r2" && text == "more"
+        ));
+    }
+
+    #[test]
+    fn oversized_reasoning_splits_like_text() {
+        let big = "x".repeat(MSG_INLINE_MAX + 10);
+        let parts = vec![MessagePart::Reasoning {
+            id: "r0".into(),
+            text: big,
+        }];
+        let chunks = split_parts(&parts);
+        let flat = join_continuations(chunks);
+        assert!(flat.len() >= 2, "{}", flat.len());
+        assert!(
+            flat.iter()
+                .all(|p| matches!(p, MessagePart::Reasoning { .. }))
+        );
+        assert!(flat.iter().all(|p| p.byte_len() <= MSG_INLINE_MAX));
+        assert_eq!(flat[1].id(), "r0~1");
     }
 
     #[test]
@@ -690,6 +814,70 @@ mod tests {
             }
         );
         assert_eq!(sanitize_tool_call(&clean), clean);
+    }
+
+    /// A spawn keeps the two short identifiers its chip names the child by and
+    /// drops the prompt — the whole point of the whitelist. Still a fixpoint.
+    #[test]
+    fn sanitize_keeps_a_spawns_model_and_drops_its_prompt() {
+        let call = ToolCall::Unknown {
+            name: "Agent: Explore theme system".into(),
+            input: Some(serde_json::json!({
+                "description": "Explore theme system",
+                "subagent_type": "Explore",
+                "model": "haiku",
+                "prompt": "a very long private prompt",
+            })),
+        };
+        let clean = sanitize_tool_call(&call);
+        assert_eq!(
+            clean,
+            ToolCall::Unknown {
+                name: "Agent: Explore theme system".into(),
+                input: Some(serde_json::json!({
+                    "model": "haiku",
+                    "subagent_type": "Explore",
+                })),
+            }
+        );
+        assert_eq!(clean.subagent_model(), Some("haiku"));
+        assert_eq!(sanitize_tool_call(&clean), clean);
+    }
+
+    /// An ordinary tool's input still goes, even when it happens to carry a
+    /// `model` argument — the badge is gated on the spawn genus, not the key.
+    #[test]
+    fn sanitize_still_strips_a_non_spawn_carrying_a_model_argument() {
+        let call = ToolCall::Unknown {
+            name: "SomeTool".into(),
+            input: Some(serde_json::json!({ "model": "haiku", "prompt": "secret" })),
+        };
+        assert_eq!(
+            sanitize_tool_call(&call),
+            ToolCall::Unknown {
+                name: "SomeTool".into(),
+                input: None,
+            }
+        );
+    }
+
+    /// A spawn that named no model keeps no input at all — `None`, not an
+    /// empty object, so the doc gains nothing and the fixpoint is exact.
+    #[test]
+    fn sanitize_drops_a_spawn_input_that_names_nothing_worth_keeping() {
+        let call = ToolCall::Unknown {
+            name: "Agent".into(),
+            input: Some(serde_json::json!({ "prompt": "secret", "model": "  " })),
+        };
+        let clean = sanitize_tool_call(&call);
+        assert_eq!(
+            clean,
+            ToolCall::Unknown {
+                name: "Agent".into(),
+                input: None,
+            }
+        );
+        assert_eq!(clean.subagent_model(), None);
     }
 
     #[test]

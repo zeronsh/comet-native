@@ -373,8 +373,13 @@ final class RegistryDoc {
 
     // MARK: Persistence ({rows, cursor, gcFloor, clock, pending} JSON blob)
 
+    /// Bump to force one full resync on next load (heals snapshots whose
+    /// cursor jumped past unapplied rows; mirrors the desktop epoch).
+    private static let currentResyncEpoch = 1
+
     private struct Persisted: Codable {
         var v: Int
+        var resyncEpoch: Int?
         var deviceId: String
         var serverSeq: UInt64
         var gcFloor: UInt64
@@ -384,7 +389,8 @@ final class RegistryDoc {
     }
 
     func toData() throws -> Data {
-        let state = Persisted(v: 1, deviceId: deviceId, serverSeq: serverSeq, gcFloor: gcFloor,
+        let state = Persisted(v: 1, resyncEpoch: Self.currentResyncEpoch,
+                              deviceId: deviceId, serverSeq: serverSeq, gcFloor: gcFloor,
                               clock: clock, rows: authoritative.values.flatMap(\.values),
                               pending: pending)
         return try JSONEncoder().encode(state)
@@ -396,7 +402,9 @@ final class RegistryDoc {
             throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "unknown registry snapshot version \(state.v)"))
         }
         let doc = RegistryDoc(deviceId: deviceId)
-        doc.serverSeq = state.serverSeq
+        // Pre-epoch snapshots may hide a jumped cursor: zero it once so the
+        // next hello returns full state. Rows are kept.
+        doc.serverSeq = (state.resyncEpoch ?? 0) < Self.currentResyncEpoch ? 0 : state.serverSeq
         doc.gcFloor = state.gcFloor
         doc.clock = state.clock
         doc.pending = state.pending
@@ -449,17 +457,25 @@ final class RegistryDoc {
     }
 
     /// Apply a `rows` broadcast (merged truth for the touched rows).
-    func applyRows(seq: UInt64, rows: [RegistryRow]) {
+    /// Returns false on a SEQ GAP — frames between the cursor and this batch
+    /// were missed: the rows still apply, but the cursor holds so the caller
+    /// resyncs (a fresh hello backfills the window). Advancing across a gap
+    /// makes the missed rows permanently invisible (desktop field incident).
+    func applyRows(seq: UInt64, rows: [RegistryRow]) -> Bool {
         generation += 1
         for row in rows { putAuthoritative(row) }
+        if seq > serverSeq + 1 { return false }
         if seq > serverSeq { serverSeq = seq }
+        return true
     }
 
-    /// Retire an acked batch; the ack's seq advances the cursor.
+    /// Retire an acked batch. Deliberately does NOT advance the cursor: the
+    /// ack's seq is OUR batch's position, and peers' batches may sit between
+    /// the cursor and it — jumping skipped them forever (desktop field
+    /// incident; the cursor advances only with actual row payloads).
     func ackBatch(_ batch: String, seq: UInt64) {
         let before = pending.count
         pending.removeAll { $0.batch == batch }
-        if seq > serverSeq { serverSeq = seq }
         if pending.count != before { generation += 1 }
     }
 

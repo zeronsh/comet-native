@@ -1,28 +1,25 @@
-// Markdown block rendering — metrics ported from crates/ui/src/markdown/render.rs.
-//
-// Every constant here mirrors the desktop values so the two apps read the same:
-// body 14/22, headings (19/27, 16/24, 15/22, 14/22), code 12.5/18, block gap 12.
-// Code blocks render one fixed-height row per line, so their height is analytic
-// (lines × 18 + padding) and syntax highlighting is a pure recolor.
+// Desktop markdown palette and hierarchy at a mobile reading scale.
+// Body 17/26, code 14/21; code rows and list markers scale with Dynamic Type.
+// Highlighting remains a paint-only update.
 
 import SwiftUI
 
 enum MD {
-    static let textSize: CGFloat = 14
-    static let lineHeight: CGFloat = 22
+    static let textSize: CGFloat = 17
+    static let lineHeight: CGFloat = 26
     static let blockGap: CGFloat = 12
-    static let codeTextSize: CGFloat = 12.5
-    static let codeLineHeight: CGFloat = 18
+    static let codeTextSize: CGFloat = 14
+    static let codeLineHeight: CGFloat = 21
     static let codePaddingX: CGFloat = 12
     static let codePaddingY: CGFloat = 10
     static let inlineCodeRadius: CGFloat = 4.5
 
     static func headingMetrics(_ level: Int) -> (size: CGFloat, line: CGFloat) {
         switch level {
-        case 1: return (19, 27)
-        case 2: return (16, 24)
-        case 3: return (15, 22)
-        default: return (14, 22)
+        case 1: return (23, 31)
+        case 2: return (20, 28)
+        case 3: return (18, 26)
+        default: return (17, 26)
         }
     }
 }
@@ -189,6 +186,7 @@ struct CodeBlockView: View {
     var cacheKey: String = ""
 
     @State private var spans: [[TokenSpan]] = []
+    @ScaledMetric(relativeTo: .body) private var codeLineHeight = MD.codeLineHeight
 
     private var lines: [String] { code.components(separatedBy: "\n") }
 
@@ -212,7 +210,7 @@ struct CodeBlockView: View {
                         Text(attributedLine(line, spans: ix < spans.count ? spans[ix] : []))
                             .font(Theme.mono(MD.codeTextSize))
                             .lineLimit(1)
-                            .frame(height: MD.codeLineHeight, alignment: .leading)
+                            .frame(height: codeLineHeight, alignment: .leading)
                     }
                 }
                 .padding(.horizontal, MD.codePaddingX)
@@ -307,6 +305,7 @@ struct BlockquoteView: View {
 // MARK: - Lists
 
 struct ListBlockView: View {
+    @ScaledMetric(relativeTo: .body) private var markerHeight = MD.lineHeight
     let orderedStart: Int?
     let items: [MDListItem]
     var cacheKey: String = ""
@@ -333,17 +332,17 @@ struct ListBlockView: View {
             Image(systemName: checked ? "checkmark.square.fill" : "square")
                 .font(.system(size: 12))
                 .foregroundStyle(checked ? Theme.accent.opacity(0.85) : Theme.textMuted)
-                .frame(height: MD.lineHeight)
+                .frame(height: markerHeight)
         } else if let start = orderedStart {
             Text("\(start + ix).")
                 .font(Theme.sans(MD.textSize))
                 .foregroundStyle(Theme.accent.opacity(0.85))
-                .frame(height: MD.lineHeight)
+                .frame(height: markerHeight)
         } else {
             Circle()
                 .fill(Theme.accent.opacity(0.85))
                 .frame(width: 5, height: 5)
-                .frame(height: MD.lineHeight)
+                .frame(height: markerHeight)
         }
     }
 }

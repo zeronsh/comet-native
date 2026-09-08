@@ -12,7 +12,8 @@
 //! feed them measurements/events.
 
 use gpui::{
-    Anchor, AnyElement, ElementId, IntoElement, Pixels, Point, SharedString, div, prelude::*, px,
+    Anchor, AnyElement, Context, Div, ElementId, IntoElement, Pixels, Point, SharedString, Window,
+    div, prelude::*, px,
 };
 
 use crate::motion::{self, ZERON_PULSE};
@@ -312,7 +313,7 @@ pub fn popover_card(theme: &Theme) -> gpui::Div {
         .shadow_lg()
         .p(px(4.0))
         .overflow_hidden()
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_rems(13.0))
         .text_color(theme.text);
     if theme.is_frost() {
         // Translucent tint — the backdrop blur beneath it comes from the
@@ -425,6 +426,38 @@ pub fn anchored_menu_below(
     closing: Option<std::time::Instant>,
 ) -> AnyElement {
     anchored_menu_below_gap(id, content, closing, 6.0)
+}
+
+/// [`anchored_menu_below`] right-aligned to the trigger's right edge. This is
+/// the dropdown counterpart to [`anchored_menu_above_end`]: trailing sidebar
+/// controls can open a full-width card leftward without leaving the sidebar.
+pub fn anchored_menu_below_end(
+    id: impl Into<SharedString>,
+    content: AnyElement,
+    closing: Option<std::time::Instant>,
+) -> AnyElement {
+    let exit = closing.map(exit_progress);
+    let content = frosted_menu(exit, content);
+    div()
+        .absolute()
+        .bottom_0()
+        .right_0()
+        .size_0()
+        .child(
+            gpui::deferred(
+                gpui::anchored()
+                    .anchor(Anchor::TopRight)
+                    .snap_to_window_with_margin(px(8.0))
+                    .child(menu_motion(
+                        id.into(),
+                        exit,
+                        div().occlude().pt(px(6.0)).child(content),
+                    )),
+            )
+            .priority(1)
+            .into_any_element(),
+        )
+        .into_any_element()
 }
 
 /// [`anchored_menu_below`] with a caller-chosen trigger→card gap — the
@@ -662,7 +695,7 @@ pub fn menu_row(theme: &Theme, active: bool, fade_key: impl Into<SharedString>) 
         .px(px(8.0))
         .py(px(6.0))
         .rounded(px(8.0))
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_rems(13.0))
         .cursor_pointer();
     if active {
         row.bg(crate::theme::card_selected_bg())
@@ -716,7 +749,7 @@ pub fn menu_heading(theme: &Theme, label: &str) -> gpui::Div {
         .px(px(8.0))
         .pb(px(4.0))
         .pt(px(6.0))
-        .text_size(px(10.0))
+        .text_size(crate::typography::ui_rems(10.0))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(theme.text_muted.opacity(0.6))
         .child(SharedString::from(tracked_upper(label)))
@@ -756,6 +789,28 @@ pub fn band() -> gpui::Hsla {
     crate::theme::band()
 }
 
+/// Shared shell for command-palette-style flows. The recessed header/footer
+/// bands are supplied by callers, while this owns the glass tint, outline,
+/// radius, clipping, and shadow that make Cmd+K and its sibling flows read as
+/// one component family.
+pub fn palette_card(theme: &Theme, width: Pixels, corner_radius: f32) -> gpui::Div {
+    div()
+        .w(width)
+        .rounded(px(corner_radius))
+        .border_1()
+        .border_color(hairline(0.10))
+        .bg(if theme.is_frost() {
+            theme.glass_overlay()
+        } else {
+            theme.surface_overlay
+        })
+        .shadow_lg()
+        .overflow_hidden()
+        .flex()
+        .flex_col()
+        .text_color(theme.text)
+}
+
 /// One footer key-cap (22px, rounded-5, `white/[0.05]`) holding arbitrary
 /// children — the base of [`key_hint`]/[`key_hint_pair`] and the search-bar
 /// chips ("⌘K", "esc").
@@ -775,7 +830,7 @@ pub fn key_cap(_theme: &Theme) -> gpui::Div {
 /// The tiny verb after a key-cap.
 fn key_hint_label(theme: &Theme, label: &'static str) -> gpui::Div {
     div()
-        .text_size(px(10.5))
+        .text_size(crate::typography::ui_rems(10.5))
         .text_color(theme.text_muted.opacity(0.45))
         .child(SharedString::from(label))
 }
@@ -854,7 +909,7 @@ pub fn kbd_hint(theme: &Theme, label: &str) -> gpui::Div {
         .py(px(1.0))
         .rounded(px(5.0))
         .bg(ink(0.05))
-        .text_size(px(10.0))
+        .text_size(crate::typography::ui_rems(10.0))
         .font_family(theme.font_mono.clone())
         .text_color(theme.text_muted.opacity(0.6))
         .child(SharedString::from(label.to_string()))
@@ -871,7 +926,7 @@ pub fn search_input_frame(_theme: &Theme, input: AnyElement) -> gpui::Div {
         .py(px(6.0))
         .rounded(px(8.0))
         .bg(ink(0.04))
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_rems(13.0))
         .child(input)
 }
 
@@ -913,7 +968,7 @@ pub fn dialog_card(theme: &Theme) -> gpui::Div {
 /// Dialog title: `text-[15px] font-semibold tracking-tight`.
 pub fn dialog_title(theme: &Theme, title: &str) -> gpui::Div {
     div()
-        .text_size(px(15.0))
+        .text_size(crate::typography::ui_rems(15.0))
         .font_weight(gpui::FontWeight::SEMIBOLD)
         .text_color(theme.text)
         .child(SharedString::from(title.to_string()))
@@ -922,7 +977,7 @@ pub fn dialog_title(theme: &Theme, title: &str) -> gpui::Div {
 /// Dialog body copy: `text-[13px] leading-relaxed text-muted-foreground`.
 pub fn dialog_body(theme: &Theme, copy: impl Into<SharedString>) -> gpui::Div {
     div()
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_rems(13.0))
         .line_height(px(19.0))
         .text_color(theme.text_muted)
         .child(copy.into())
@@ -939,7 +994,7 @@ pub fn dialog_field(input: AnyElement) -> gpui::Div {
         .border_1()
         .border_color(hairline(0.08))
         .bg(ink(0.04))
-        .text_size(px(14.0))
+        .text_size(crate::typography::ui_rems(14.0))
         .child(input)
 }
 
@@ -952,7 +1007,7 @@ pub fn btn_ghost(theme: &Theme, label: &str, fade_key: impl Into<SharedString>) 
         .px(px(12.0))
         .py(px(6.0))
         .rounded(px(8.0))
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_rems(13.0))
         .text_color(motion::hover_blend(&fade_key, theme.text_muted, theme.text))
         .bg(motion::hover_blend(
             &fade_key,
@@ -973,7 +1028,7 @@ pub fn btn_primary(theme: &Theme, label: &str) -> gpui::Div {
         .py(px(6.0))
         .rounded(px(8.0))
         .bg(theme.text)
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_rems(13.0))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(theme.on_solid)
         .cursor_pointer()
@@ -988,7 +1043,7 @@ pub fn btn_danger(theme: &Theme, label: &str) -> gpui::Div {
         .py(px(6.0))
         .rounded(px(8.0))
         .bg(theme.danger_strong)
-        .text_size(px(13.0))
+        .text_size(crate::typography::ui_rems(13.0))
         .font_weight(gpui::FontWeight::MEDIUM)
         .text_color(gpui::white())
         .cursor_pointer()
@@ -1023,6 +1078,53 @@ pub fn skeleton_rows(
         .into_any_element()
 }
 
+/// One pulsing ghost label — the trigger chip's label slot while the
+/// selected model still resolves (a chip collapsing to its bare icon read
+/// as broken; user report).
+pub fn skeleton_bar(width: f32, view: gpui::EntityId, cx: &mut gpui::App) -> AnyElement {
+    let delta = motion::pulse_delta(&ZERON_PULSE, view, cx);
+    div()
+        .w(px(width))
+        .h(px(11.0))
+        .rounded(px(5.5))
+        .bg(ink(0.08))
+        .opacity(0.35 + 0.4 * motion::pulse_wave(motion::staggered_phase(delta, 0, 0.0)))
+        .into_any_element()
+}
+
+/// [`skeleton_rows`] shaped like a MENU loading: shorter bars of varied
+/// widths reading as ghost labels rather than full-width slabs (the model
+/// picker's loading state — reference design's skeleton). Widths cycle a
+/// small deterministic ladder so the stagger reads organic without
+/// randomness (randomness would repaint differently every open).
+pub fn skeleton_menu_rows(
+    _id: &'static str,
+    _theme: &Theme,
+    count: usize,
+    view: gpui::EntityId,
+    cx: &mut gpui::App,
+) -> AnyElement {
+    const WIDTHS: [f32; 4] = [0.42, 0.58, 0.48, 0.66];
+    let wash = ink(0.05);
+    let delta = motion::pulse_delta(&ZERON_PULSE, view, cx);
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(8.0))
+        .py(px(6.0))
+        .px(px(4.0))
+        .children((0..count).map(move |i| {
+            let phase = motion::staggered_phase(delta, i, 0.08);
+            div()
+                .h(px(14.0))
+                .w(gpui::relative(WIDTHS[i % WIDTHS.len()]))
+                .rounded(px(7.0))
+                .bg(wash)
+                .opacity(0.35 + 0.4 * motion::pulse_wave(phase))
+        }))
+        .into_any_element()
+}
+
 /// Inline error row + Retry affordance (the caller attaches the listener to the
 /// returned id).
 pub fn error_row(theme: &Theme, message: &str) -> gpui::Div {
@@ -1031,9 +1133,392 @@ pub fn error_row(theme: &Theme, message: &str) -> gpui::Div {
         .flex_col()
         .gap(px(6.0))
         .p(px(Theme::SPACE_SM))
-        .text_size(px(12.0))
+        .text_size(crate::typography::ui_rems(12.0))
         .text_color(theme.danger)
         .child(gpui::SharedString::from(message.to_string()))
+}
+
+// ---------------------------------------------------------------------------
+// Floating menu scrollbar — the model-list treatment, shared
+// ---------------------------------------------------------------------------
+
+/// Track inset top/bottom; the thumb travels inside it.
+pub const MENU_SCROLLBAR_TRACK_INSET: f32 = 4.0;
+/// Invisible hit strip width on the right edge.
+pub const MENU_SCROLLBAR_HIT_WIDTH: f32 = 10.0;
+/// Resting thumb width.
+pub const MENU_SCROLLBAR_THUMB_WIDTH: f32 = 3.0;
+/// Thumb width while hovered/dragged.
+pub const MENU_SCROLLBAR_HOVER_THUMB_WIDTH: f32 = 5.0;
+/// Smallest readable thumb on very long lists.
+pub const MENU_SCROLLBAR_MIN_THUMB: f32 = 24.0;
+
+/// Geometry of the floating thumb for a scroll viewport at one instant.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MenuScrollbarMetrics {
+    pub track_height: f32,
+    pub thumb_top: f32,
+    pub thumb_height: f32,
+    pub max_scroll: f32,
+}
+
+impl MenuScrollbarMetrics {
+    /// Distance the thumb itself can travel.
+    pub fn travel(self) -> f32 {
+        (self.track_height - self.thumb_height).max(0.0)
+    }
+
+    /// Pure geometry from the viewport and scroll distances. `None` when the
+    /// content fits (`max_scroll <= 0`) or the viewport is too small to hold
+    /// a track.
+    pub fn from_viewport(
+        viewport_height: f32,
+        max_scroll: f32,
+        current_scroll: f32,
+    ) -> Option<Self> {
+        let max_scroll = max_scroll.max(0.0);
+        if viewport_height <= 0.0 || max_scroll <= 0.0 {
+            return None;
+        }
+        let track_height = (viewport_height - MENU_SCROLLBAR_TRACK_INSET * 2.0).max(0.0);
+        if track_height <= 0.0 {
+            return None;
+        }
+        let content_height = viewport_height + max_scroll;
+        let thumb_height = (track_height * viewport_height / content_height)
+            .max(MENU_SCROLLBAR_MIN_THUMB)
+            .min(track_height);
+        let current_scroll = current_scroll.clamp(0.0, max_scroll);
+        let travel = (track_height - thumb_height).max(0.0);
+        Some(Self {
+            track_height,
+            thumb_top: travel * current_scroll / max_scroll,
+            thumb_height,
+            max_scroll,
+        })
+    }
+}
+
+/// Marker for GPUI's captured drag stream. The actual grab geometry stays in
+/// [`MenuScrollbarState`] so a track click can center the thumb first.
+pub struct MenuScrollbarDrag;
+
+/// Invisible drag preview: scrollbar drags manipulate the existing thumb.
+pub struct MenuScrollbarDragGhost;
+
+impl gpui::Render for MenuScrollbarDragGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        gpui::Empty
+    }
+}
+
+/// Hover/drag interaction state for one floating scrollbar, owned by the view
+/// that renders the list. Event handlers stay on the view (they need its
+/// listeners) and delegate here; only one list surface owns a state at a
+/// time, so mutually exclusive popups may share one instance.
+#[derive(Default)]
+pub struct MenuScrollbarState {
+    list_hovered: bool,
+    bar_hovered: bool,
+    grab: Option<f32>,
+}
+
+impl MenuScrollbarState {
+    /// Metrics from any scroll handle's live bounds/offset — both
+    /// `ScrollHandle` and a virtualized list's base handle qualify. `None`
+    /// when the content fits.
+    pub fn metrics(&self, scroll: &gpui::ScrollHandle) -> Option<MenuScrollbarMetrics> {
+        let bounds = scroll.bounds();
+        // GPUI stores the maximum as a positive distance; only the live
+        // scroll offset is negative while content moves upward.
+        let max_scroll = f32::from(scroll.max_offset().y).max(0.0);
+        let current_scroll = (-f32::from(scroll.offset().y)).clamp(0.0, max_scroll);
+        MenuScrollbarMetrics::from_viewport(
+            f32::from(bounds.size.height),
+            max_scroll,
+            current_scroll,
+        )
+    }
+
+    /// Whether the rail paints at all — an on-demand affordance like the
+    /// model list's: hidden until the list is hovered or a drag holds it.
+    pub fn visible(&self) -> bool {
+        self.list_hovered || self.grab.is_some()
+    }
+
+    /// Whether the thumb carries the expanded/stronger treatment.
+    pub fn active(&self) -> bool {
+        self.bar_hovered || self.grab.is_some()
+    }
+
+    /// The pointer entered/left the LIST. Returns whether anything changed.
+    pub fn set_list_hovered(&mut self, hovered: bool) -> bool {
+        if self.list_hovered == hovered {
+            return false;
+        }
+        self.list_hovered = hovered;
+        if !hovered && self.grab.is_none() {
+            self.bar_hovered = false;
+        }
+        true
+    }
+
+    /// The pointer entered/left the RAIL. Keeps the active treatment while a
+    /// captured drag travels outside (the hover callback correctly turns
+    /// false there). Returns whether anything changed.
+    pub fn set_bar_hovered(&mut self, hovered: bool) -> bool {
+        let active = hovered || self.grab.is_some();
+        if self.bar_hovered == active {
+            return false;
+        }
+        self.bar_hovered = active;
+        true
+    }
+
+    /// A press landed on the rail: choose the grab point (pressing the thumb
+    /// keeps its relative position; pressing the track centers the thumb
+    /// under the pointer first), engage the drag, and scroll to the pointer.
+    /// `false` when there is nothing to scroll.
+    pub fn begin_press(&mut self, scroll: &gpui::ScrollHandle, pointer_y: Pixels) -> bool {
+        let Some(metrics) = self.metrics(scroll) else {
+            return false;
+        };
+        let pointer_in_track = self.pointer_in_track(scroll, pointer_y);
+        let grab_offset = if (metrics.thumb_top..=metrics.thumb_top + metrics.thumb_height)
+            .contains(&pointer_in_track)
+        {
+            pointer_in_track - metrics.thumb_top
+        } else {
+            metrics.thumb_height / 2.0
+        };
+        self.grab = Some(grab_offset);
+        self.drag_to(scroll, pointer_y);
+        true
+    }
+
+    /// Move an engaged drag to `pointer_y`. `false` when no drag is engaged
+    /// or the content stopped scrolling mid-drag.
+    pub fn drag_to(&self, scroll: &gpui::ScrollHandle, pointer_y: Pixels) -> bool {
+        let Some(grab_offset) = self.grab else {
+            return false;
+        };
+        let Some(metrics) = self.metrics(scroll) else {
+            return false;
+        };
+        let thumb_top =
+            (self.pointer_in_track(scroll, pointer_y) - grab_offset).clamp(0.0, metrics.travel());
+        let scroll_to = if metrics.travel() <= 0.0 {
+            0.0
+        } else {
+            thumb_top / metrics.travel() * metrics.max_scroll
+        };
+        let offset = scroll.offset();
+        scroll.set_offset(gpui::Point::new(offset.x, px(-scroll_to)));
+        true
+    }
+
+    /// The press ended anywhere: drop the drag; the rail stays armed only
+    /// while the list is still hovered. Returns whether anything changed.
+    pub fn end_press(&mut self) -> bool {
+        self.grab = None;
+        if !self.list_hovered && self.bar_hovered {
+            self.bar_hovered = false;
+            return true;
+        }
+        false
+    }
+
+    fn pointer_in_track(&self, scroll: &gpui::ScrollHandle, pointer_y: Pixels) -> f32 {
+        f32::from(pointer_y - scroll.bounds().top()) - MENU_SCROLLBAR_TRACK_INSET
+    }
+
+    /// The positioned rail visuals: a full-height hit strip on the right with
+    /// the thumb inside. Callers layer identity + their own listeners onto
+    /// the returned strip — `.id(...)` first (hover needs element state),
+    /// then `.on_hover`, `.on_mouse_down`,
+    /// `.on_drag(MenuScrollbarDrag, |_, _, _, cx| { cx.stop_propagation();
+    /// cx.new(|_| MenuScrollbarDragGhost) })`, `.on_mouse_up_out` /
+    /// `.on_mouse_up`. `None` while hidden or the content fits.
+    pub fn render_rail(&self, theme: &Theme, metrics: MenuScrollbarMetrics) -> Option<Div> {
+        if !self.visible() {
+            return None;
+        }
+        let active = self.active();
+        let thumb_width = if active {
+            MENU_SCROLLBAR_HOVER_THUMB_WIDTH
+        } else {
+            MENU_SCROLLBAR_THUMB_WIDTH
+        };
+        Some(
+            div()
+                .absolute()
+                .top(px(0.0))
+                .bottom(px(0.0))
+                .right(px(0.0))
+                .w(px(MENU_SCROLLBAR_HIT_WIDTH))
+                // The thumb is an absolute child inside a fixed-width hit
+                // rail, so hover expansion never reflows rows.
+                .child(
+                    div()
+                        .absolute()
+                        .top(px(MENU_SCROLLBAR_TRACK_INSET + metrics.thumb_top))
+                        .right(px(2.0))
+                        .w(px(thumb_width))
+                        .h(px(metrics.thumb_height))
+                        .rounded(px(thumb_width / 2.0))
+                        .bg(theme.text_faint.opacity(if active { 0.68 } else { 0.5 })),
+                ),
+        )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Horizontal floating scrollbar — the same quiet rail used by menus, rotated
+// for local code planes. Kept separate from `MenuScrollbarState` so a code
+// fence can own one state per stable block while existing menu callers retain
+// their vertical API.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HorizontalScrollbarMetrics {
+    pub track_width: f32,
+    pub thumb_left: f32,
+    pub thumb_width: f32,
+    pub max_scroll: f32,
+}
+
+impl HorizontalScrollbarMetrics {
+    pub fn travel(self) -> f32 {
+        (self.track_width - self.thumb_width).max(0.0)
+    }
+
+    pub fn from_viewport(
+        viewport_width: f32,
+        max_scroll: f32,
+        current_scroll: f32,
+    ) -> Option<Self> {
+        let max_scroll = max_scroll.max(0.0);
+        if viewport_width <= 0.0 || max_scroll <= 0.0 {
+            return None;
+        }
+        let track_width = (viewport_width - MENU_SCROLLBAR_TRACK_INSET * 2.0).max(0.0);
+        if track_width <= 0.0 {
+            return None;
+        }
+        let content_width = viewport_width + max_scroll;
+        let thumb_width = (track_width * viewport_width / content_width)
+            .max(MENU_SCROLLBAR_MIN_THUMB)
+            .min(track_width);
+        let current_scroll = current_scroll.clamp(0.0, max_scroll);
+        let travel = (track_width - thumb_width).max(0.0);
+        Some(Self {
+            track_width,
+            thumb_left: travel * current_scroll / max_scroll,
+            thumb_width,
+            max_scroll,
+        })
+    }
+}
+
+/// Hover/drag state for one horizontal code viewport. Geometry comes from the
+/// same tracked [`gpui::ScrollHandle`] that moves the code, so the thumb always
+/// represents the block's real local overflow (virtual transcript height is
+/// irrelevant here).
+#[derive(Default)]
+pub struct HorizontalScrollbarState {
+    viewport_hovered: bool,
+    bar_hovered: bool,
+    grab: Option<f32>,
+}
+
+impl HorizontalScrollbarState {
+    pub fn metrics(&self, scroll: &gpui::ScrollHandle) -> Option<HorizontalScrollbarMetrics> {
+        let bounds = scroll.bounds();
+        let max_scroll = f32::from(scroll.max_offset().x).max(0.0);
+        let current_scroll = (-f32::from(scroll.offset().x)).clamp(0.0, max_scroll);
+        HorizontalScrollbarMetrics::from_viewport(
+            f32::from(bounds.size.width),
+            max_scroll,
+            current_scroll,
+        )
+    }
+
+    pub fn visible(&self) -> bool {
+        self.viewport_hovered || self.grab.is_some()
+    }
+
+    pub fn active(&self) -> bool {
+        self.bar_hovered || self.grab.is_some()
+    }
+
+    pub fn set_viewport_hovered(&mut self, hovered: bool) -> bool {
+        if self.viewport_hovered == hovered {
+            return false;
+        }
+        self.viewport_hovered = hovered;
+        if !hovered && self.grab.is_none() {
+            self.bar_hovered = false;
+        }
+        true
+    }
+
+    pub fn set_bar_hovered(&mut self, hovered: bool) -> bool {
+        let active = hovered || self.grab.is_some();
+        if self.bar_hovered == active {
+            return false;
+        }
+        self.bar_hovered = active;
+        true
+    }
+
+    pub fn begin_press(&mut self, scroll: &gpui::ScrollHandle, pointer_x: Pixels) -> bool {
+        let Some(metrics) = self.metrics(scroll) else {
+            return false;
+        };
+        let pointer_in_track = self.pointer_in_track(scroll, pointer_x);
+        let grab_offset = if (metrics.thumb_left..=metrics.thumb_left + metrics.thumb_width)
+            .contains(&pointer_in_track)
+        {
+            pointer_in_track - metrics.thumb_left
+        } else {
+            metrics.thumb_width / 2.0
+        };
+        self.grab = Some(grab_offset);
+        self.drag_to(scroll, pointer_x);
+        true
+    }
+
+    pub fn drag_to(&self, scroll: &gpui::ScrollHandle, pointer_x: Pixels) -> bool {
+        let Some(grab_offset) = self.grab else {
+            return false;
+        };
+        let Some(metrics) = self.metrics(scroll) else {
+            return false;
+        };
+        let thumb_left =
+            (self.pointer_in_track(scroll, pointer_x) - grab_offset).clamp(0.0, metrics.travel());
+        let scroll_to = if metrics.travel() <= 0.0 {
+            0.0
+        } else {
+            thumb_left / metrics.travel() * metrics.max_scroll
+        };
+        let offset = scroll.offset();
+        scroll.set_offset(gpui::Point::new(px(-scroll_to), offset.y));
+        true
+    }
+
+    pub fn end_press(&mut self) -> bool {
+        self.grab = None;
+        if !self.viewport_hovered && self.bar_hovered {
+            self.bar_hovered = false;
+            return true;
+        }
+        false
+    }
+
+    fn pointer_in_track(&self, scroll: &gpui::ScrollHandle, pointer_x: Pixels) -> f32 {
+        f32::from(pointer_x - scroll.bounds().left()) - MENU_SCROLLBAR_TRACK_INSET
+    }
 }
 
 #[cfg(test)]
@@ -1146,5 +1631,65 @@ mod tests {
         assert_eq!(e.error(), Some("boom"));
         assert!(Loadable::<u32>::Loading.is_loading());
         assert_eq!(Loadable::<u32>::default(), Loadable::Idle);
+    }
+
+    #[test]
+    fn scrollbar_metrics_hidden_when_content_fits_or_viewport_tiny() {
+        // No overflow → no scrollbar.
+        assert_eq!(MenuScrollbarMetrics::from_viewport(300.0, 0.0, 0.0), None);
+        assert_eq!(MenuScrollbarMetrics::from_viewport(300.0, -5.0, 0.0), None);
+        // No viewport → no scrollbar.
+        assert_eq!(MenuScrollbarMetrics::from_viewport(0.0, 300.0, 0.0), None);
+        // Viewport smaller than two track insets → no track.
+        assert_eq!(MenuScrollbarMetrics::from_viewport(8.0, 300.0, 0.0), None);
+    }
+
+    #[test]
+    fn scrollbar_metrics_scales_thumb_to_content_ratio() {
+        let m = MenuScrollbarMetrics::from_viewport(300.0, 300.0, 150.0).unwrap();
+        // Track = 300 - 2*4; thumb = half the content (600) → 146.
+        assert_eq!(m.track_height, 292.0);
+        assert_eq!(m.thumb_height, 146.0);
+        assert_eq!(m.travel(), 146.0);
+        // Half-scrolled puts the thumb mid-track.
+        assert_eq!(m.thumb_top, 73.0);
+        assert_eq!(m.max_scroll, 300.0);
+    }
+
+    #[test]
+    fn scrollbar_metrics_clamps_min_thumb_and_position() {
+        let m = MenuScrollbarMetrics::from_viewport(100.0, 9900.0, 4950.0).unwrap();
+        // Raw ratio (92 * 100 / 10000 ≈ 0.92px) clamps to the readable minimum.
+        assert_eq!(m.thumb_height, MENU_SCROLLBAR_MIN_THUMB);
+        assert_eq!(m.travel(), 92.0 - MENU_SCROLLBAR_MIN_THUMB);
+        assert_eq!(m.thumb_top, (92.0 - MENU_SCROLLBAR_MIN_THUMB) / 2.0);
+        // Overscroll clamps to the bottom of the track.
+        let m = MenuScrollbarMetrics::from_viewport(100.0, 9900.0, 99_999.0).unwrap();
+        assert_eq!(m.thumb_top, 92.0 - MENU_SCROLLBAR_MIN_THUMB);
+        // Negative offsets clamp to the top.
+        let m = MenuScrollbarMetrics::from_viewport(100.0, 9900.0, -3.0).unwrap();
+        assert_eq!(m.thumb_top, 0.0);
+    }
+
+    #[test]
+    fn horizontal_scrollbar_metrics_match_the_vertical_treatment() {
+        let m = HorizontalScrollbarMetrics::from_viewport(300.0, 300.0, 150.0).unwrap();
+        assert_eq!(m.track_width, 292.0);
+        assert_eq!(m.thumb_width, 146.0);
+        assert_eq!(m.travel(), 146.0);
+        assert_eq!(m.thumb_left, 73.0);
+        assert_eq!(m.max_scroll, 300.0);
+    }
+
+    #[test]
+    fn horizontal_scrollbar_hides_without_overflow_and_clamps_position() {
+        assert_eq!(
+            HorizontalScrollbarMetrics::from_viewport(300.0, 0.0, 0.0),
+            None
+        );
+        let m = HorizontalScrollbarMetrics::from_viewport(100.0, 9900.0, 99_999.0).unwrap();
+        assert_eq!(m.thumb_left, 92.0 - MENU_SCROLLBAR_MIN_THUMB);
+        let m = HorizontalScrollbarMetrics::from_viewport(100.0, 9900.0, -3.0).unwrap();
+        assert_eq!(m.thumb_left, 0.0);
     }
 }

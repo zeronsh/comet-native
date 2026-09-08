@@ -160,7 +160,7 @@ impl Render for ArchivedPage {
                                         div()
                                             .min_w_0()
                                             .truncate()
-                                            .text_size(px(13.0))
+                                            .text_size(crate::typography::ui_rems(13.0))
                                             .font_weight(gpui::FontWeight::MEDIUM)
                                             .text_color(theme.text)
                                             .child(title),
@@ -168,7 +168,7 @@ impl Render for ArchivedPage {
                                     .child(
                                         div()
                                             .flex_none()
-                                            .text_size(px(11.0))
+                                            .text_size(crate::typography::ui_rems(11.0))
                                             .text_color(theme.text_muted.opacity(0.5))
                                             .child(time_ago),
                                     ),
@@ -183,7 +183,7 @@ impl Render for ArchivedPage {
                                     .flex_row()
                                     .items_center()
                                     .gap(px(6.0))
-                                    .text_size(px(11.0))
+                                    .text_size(crate::typography::ui_rems(11.0))
                                     .text_color(theme.text_muted.opacity(0.55));
                                 let both = device.is_some() && location.is_some();
                                 if let Some(device) = device {
@@ -214,7 +214,7 @@ impl Render for ArchivedPage {
                             .rounded(px(6.0))
                             .border_1()
                             .border_color(theme.border)
-                            .text_size(px(12.0))
+                            .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
                             .opacity(if row_hovered || is_busy { 1.0 } else { 0.0 })
                             .when(is_busy, |el| el.opacity(0.4))
@@ -257,13 +257,13 @@ impl Render for ArchivedPage {
                 .child(
                     div()
                         .mt(px(12.0))
-                        .text_size(px(14.0))
+                        .text_size(crate::typography::ui_rems(14.0))
                         .child(SharedString::from("Nothing archived")),
                 )
                 .child(
                     div()
                         .mt(px(4.0))
-                        .text_size(px(12.0))
+                        .text_size(crate::typography::ui_rems(12.0))
                         .text_color(theme.text_muted.opacity(0.4))
                         .child(SharedString::from(
                             "Right-click a session in the sidebar to archive it.",
@@ -325,6 +325,7 @@ mod tests {
             cwd: None,
             branch: None,
             checkout_id: None,
+            source_context: None,
             config: None,
             last_message_preview: None,
             last_message_at: None,

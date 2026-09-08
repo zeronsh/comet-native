@@ -50,6 +50,11 @@ impl UrlProvider for StaticUrl {
 pub struct RoomStatsSnapshot {
     /// A join is currently established.
     pub connected: bool,
+    /// A server state has been APPLIED this process (WS hello answer or
+    /// HTTPS pull) — the local replica has heard authoritative truth at
+    /// least once this boot. Destructive repair (the orphan sweep) gates on
+    /// this: before it, "row absent locally" is not evidence of deletion.
+    pub synced: bool,
     /// Epoch ms of the last SERVER-PUSHED frame (broadcast, backfill,
     /// join answer) — 0 = never. The deaf-socket tell: fresh acks + stale
     /// pushes.

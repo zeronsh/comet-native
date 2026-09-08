@@ -28,6 +28,8 @@ rm -rf "$APP" "$DMG" "$APP_TARBALL"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 install -m 755 "$ROOT/target/release/zeron" "$APP/Contents/MacOS/zeron"
 sed "s/__VERSION__/$VERSION/" "$ROOT/dist/macos/Info.plist" >"$APP/Contents/Info.plist"
+mkdir -p "$APP/Contents/Resources/licenses/fonts"
+cp "$ROOT/crates/ui/assets/fonts/licenses/"* "$APP/Contents/Resources/licenses/fonts/"
 
 # Icon: iconset from the pre-masked macOS icon (squircle + margins + shadow
 # baked into dist/macos/icon-1024.png — sips can't alpha-mask, so the mask is

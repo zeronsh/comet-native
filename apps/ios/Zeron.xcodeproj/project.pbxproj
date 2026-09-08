@@ -30,10 +30,22 @@
 			path = ZeronTests;
 			sourceTree = "<group>";
 		};
+		A3000000000000000000G001 /* ZeronUITests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = ZeronUITests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXContainerItemProxy section */
 		A2000000000000000000X001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A1000000000000000000PJ01 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A1000000000000000000T001;
+			remoteInfo = Zeron;
+		};
+		A3000000000000000000X001 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = A1000000000000000000PJ01 /* Project object */;
 			proxyType = 1;
@@ -48,11 +60,17 @@
 			target = A1000000000000000000T001 /* Zeron */;
 			targetProxy = A2000000000000000000X001 /* PBXContainerItemProxy */;
 		};
+		A3000000000000000000D001 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A1000000000000000000T001 /* Zeron */;
+			targetProxy = A3000000000000000000X001 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
 
 /* Begin PBXFileReference section */
 		A1000000000000000000PR01 /* Zeron.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Zeron.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		A2000000000000000000PR01 /* ZeronTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZeronTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		A3000000000000000000PR01 /* ZeronUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = ZeronUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -78,6 +96,7 @@
 			children = (
 				A1000000000000000000G001 /* Zeron */,
 				A2000000000000000000G001 /* ZeronTests */,
+				A3000000000000000000G001 /* ZeronUITests */,
 				A1000000000000000000G002 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -87,6 +106,7 @@
 			children = (
 				A1000000000000000000PR01 /* Zeron.app */,
 				A2000000000000000000PR01 /* ZeronTests.xctest */,
+				A3000000000000000000PR01 /* ZeronUITests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -139,6 +159,27 @@
 			productReference = A2000000000000000000PR01 /* ZeronTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		A3000000000000000000T001 /* ZeronUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A3000000000000000000C001 /* Build configuration list for PBXNativeTarget "ZeronUITests" */;
+			buildPhases = (
+				A3000000000000000000S001 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A3000000000000000000D001 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				A3000000000000000000G001 /* ZeronUITests */,
+			);
+			name = ZeronUITests;
+			packageProductDependencies = (
+			);
+			productName = ZeronUITests;
+			productReference = A3000000000000000000PR01 /* ZeronUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -174,6 +215,7 @@
 			targets = (
 				A1000000000000000000T001 /* Zeron */,
 				A2000000000000000000T001 /* ZeronTests */,
+				A3000000000000000000T001 /* ZeronUITests */,
 			);
 		};
 /* End PBXProject section */
@@ -197,6 +239,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		A2000000000000000000S001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A3000000000000000000S001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -326,6 +375,24 @@
 			};
 			name = Debug;
 		};
+		A3000000000000000000BC03 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.zeron.ios.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Zeron;
+			};
+			name = Debug;
+		};
 		A2000000000000000000BC04 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -341,6 +408,24 @@
 				SWIFT_VERSION = 5.0;
 				TARGETED_DEVICE_FAMILY = "1,2";
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Zeron.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Zeron";
+			};
+			name = Release;
+		};
+		A3000000000000000000BC04 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = sh.zeron.ios.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_TARGET_NAME = Zeron;
 			};
 			name = Release;
 		};
@@ -370,6 +455,15 @@
 			buildConfigurations = (
 				A2000000000000000000BC03 /* Debug */,
 				A2000000000000000000BC04 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A3000000000000000000C001 /* Build configuration list for PBXNativeTarget "ZeronUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A3000000000000000000BC03 /* Debug */,
+				A3000000000000000000BC04 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

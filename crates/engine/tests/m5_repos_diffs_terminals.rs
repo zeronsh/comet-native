@@ -265,6 +265,12 @@ async fn git_history_is_topological_paged_and_carries_public_refs() {
     assert_eq!(first.commits.len(), 2);
     assert_eq!(first.total_count, Some(4));
     assert_eq!(first.head_commit_count, Some(4));
+    assert_eq!(first.branch_tips.len(), 2);
+    assert!(first.branch_tips.iter().any(|commit| {
+        commit.refs.iter().any(|reference| {
+            reference.kind == GitHistoryRefKind::Branch && reference.label == "feature"
+        })
+    }));
     assert_eq!(first.next_cursor, Some(2));
     assert_eq!(
         first.head_sha.as_deref(),
@@ -288,6 +294,74 @@ async fn git_history_is_topological_paged_and_carries_public_refs() {
     assert_eq!(second.next_cursor, None);
     assert_eq!(second.total_count, None);
     assert_eq!(second.head_commit_count, None);
+    assert!(second.branch_tips.is_empty());
+}
+
+#[tokio::test]
+async fn git_history_reports_ahead_and_behind_against_integration_branch() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = tmp.path().join("history-comparison-repo");
+    init_repo(&repo_dir).await;
+
+    git(&repo_dir, &["checkout", "-b", "feature"]).await;
+    std::fs::write(repo_dir.join("feature.txt"), "feature\n").expect("feature file");
+    git(&repo_dir, &["add", "."]).await;
+    git(&repo_dir, &["commit", "-m", "feature commit"]).await;
+
+    git(&repo_dir, &["checkout", "main"]).await;
+    std::fs::write(repo_dir.join("main.txt"), "main\n").expect("main file");
+    git(&repo_dir, &["add", "."]).await;
+    git(&repo_dir, &["commit", "-m", "upstream main commit"]).await;
+    git(
+        &repo_dir,
+        &["update-ref", "refs/remotes/upstream/main", "HEAD"],
+    )
+    .await;
+    git(&repo_dir, &["checkout", "feature"]).await;
+
+    let repos = test_repos(&tmp.path().join("data"));
+    let page = repos.history(&repo_dir, 0, 20).await.expect("history page");
+    let comparison = page.comparison.expect("integration comparison");
+    assert_eq!(comparison.base, "upstream/main");
+    assert_eq!(comparison.ahead, 1);
+    assert_eq!(comparison.behind, 1);
+}
+
+#[tokio::test]
+async fn git_history_search_is_fuzzy_complete_and_accepts_sha_prefixes() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let repo_dir = tmp.path().join("history-search-repo");
+    init_repo(&repo_dir).await;
+    for (name, subject) in [
+        ("one.txt", "prepare history search"),
+        ("two.txt", "unrelated middle commit"),
+        ("three.txt", "polish searchable graph"),
+    ] {
+        std::fs::write(repo_dir.join(name), subject).expect("history search fixture");
+        git(&repo_dir, &["add", "."]).await;
+        git(&repo_dir, &["commit", "-m", subject]).await;
+    }
+
+    let repos = test_repos(&tmp.path().join("data"));
+    let first_page = repos
+        .history(&repo_dir, 0, 1)
+        .await
+        .expect("first history page");
+    assert_eq!(first_page.commits[0].subject, "polish searchable graph");
+    let fuzzy = repos
+        .search_history(&repo_dir, "prpr hstry", 0, 20)
+        .await
+        .expect("fuzzy history search");
+    assert_eq!(fuzzy.total_count, Some(1));
+    assert_eq!(fuzzy.commits[0].subject, "prepare history search");
+
+    let sha = fuzzy.commits[0].sha.clone();
+    let by_sha = repos
+        .search_history(&repo_dir, &sha[..8], 0, 20)
+        .await
+        .expect("sha history search");
+    assert_eq!(by_sha.commits.len(), 1);
+    assert_eq!(by_sha.commits[0].sha, sha);
 }
 
 #[tokio::test]
@@ -937,7 +1011,7 @@ async fn delete_space_cascades_chats_and_sessions() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn diff_sync_publishes_and_updates_chat_branch() {
+async fn diff_sync_publishes_without_rewriting_chat_branch() {
     let tmp = tempfile::tempdir().expect("tempdir");
     let repo_dir = tmp.path().join("repo");
     init_repo(&repo_dir).await;
@@ -978,13 +1052,16 @@ async fn diff_sync_publishes_and_updates_chat_branch() {
     assert!(!diff.checkout_id.is_empty());
     assert!(!diff.checksum.is_empty());
 
-    // Row upkeep: branch + checkoutId stamped on the workspace chat row.
+    // Branch identity is conversation-owned: the checkout watcher must NOT
+    // relabel chat rows with the live branch — only a dispatch stamps it.
+    // Reconcile still stamps checkoutId (row ↔ checkout identity).
     let chat = core
         .workspace
         .chat("chat-diff")
         .expect("read chat")
         .expect("row");
-    assert_eq!(chat.branch.as_deref(), Some("main"));
+    assert_eq!(chat.branch, None);
+    assert_eq!(chat.source_context, None);
     assert_eq!(chat.checkout_id.as_deref(), Some(diff.checkout_id.as_str()));
 
     // File watcher path: another edit re-publishes without a manual kick.
