@@ -1331,6 +1331,20 @@ pub enum ComposerInputEvent {
     PastedPaths(Vec<PathBuf>),
 }
 
+/// Shaping inputs excluding mutable viewport and selection geometry.
+#[derive(Clone, PartialEq)]
+struct InputLayoutKey {
+    width: Pixels,
+    font: gpui::Font,
+    font_size: Pixels,
+    color: gpui::Hsla,
+    chip_family: SharedString,
+    chip_color: gpui::Hsla,
+    marked_range: Option<Range<usize>>,
+    placeholder: SharedString,
+    mentions_enabled: bool,
+}
+
 /// Multiline input entity: content + selection + IME marked text + measured
 /// layout (wrapped lines) for mouse mapping and auto-grow.
 pub struct ComposerInput {
@@ -1356,6 +1370,11 @@ pub struct ComposerInput {
     resizing: bool,
     overflow_top_padding: f32,
     needs_measure: bool,
+    last_layout_key: Option<InputLayoutKey>,
+    last_notified_layout: Option<(Pixels, f32)>,
+    max_ascent: f32,
+    #[cfg(test)]
+    layout_rebuilds: usize,
     /// Normally keeps the caret visible through edits and rewraps. Manual
     /// wheel scrolling pauses it until the next caret move or edit.
     follow_cursor: bool,
@@ -1440,6 +1459,11 @@ impl ComposerInput {
             resizing: false,
             overflow_top_padding: 0.0,
             needs_measure: true,
+            last_layout_key: None,
+            last_notified_layout: None,
+            max_ascent: INPUT_TEXT_SIZE,
+            #[cfg(test)]
+            layout_rebuilds: 0,
             follow_cursor: true,
             last_lines: Vec::new(),
             line_starts: vec![0],
@@ -2566,6 +2590,29 @@ impl ComposerInput {
         window: &mut Window,
         cx: &App,
     ) -> f32 {
+        let theme = Theme::of(cx);
+        let key = InputLayoutKey {
+            width,
+            font: style.font(),
+            font_size: style.font_size.to_pixels(window.rem_size()),
+            color: style.color,
+            chip_family: theme.font_mono.clone(),
+            chip_color: theme.code_text,
+            marked_range: self.marked_range.clone(),
+            placeholder: self.placeholder.clone(),
+            mentions_enabled: self.mentions_enabled,
+        };
+        // Height-only animation, scrolling, selection and caret blinking do
+        // not change shaping. Reuse the entity's single retained layout,
+        // including the parent's early measurement of this same edit.
+        if !self.needs_measure && self.last_layout_key.as_ref() == Some(&key) {
+            self.layout_epoch += 1;
+            return self.content_height;
+        }
+        #[cfg(test)]
+        {
+            self.layout_rebuilds += 1;
+        }
         // Rebuild this even for an empty draft. Otherwise deleting the final
         // mention can leave its previous paint geometry alive while the
         // placeholder is already being shaped, tinting "Do anything" for a
@@ -2661,6 +2708,11 @@ impl ComposerInput {
             .fold(0.0, f32::max);
 
         self.display_is_placeholder = is_placeholder;
+        self.max_ascent = lines
+            .iter()
+            .map(|line| f32::from(line.unwrapped_layout.ascent))
+            .fold(INPUT_TEXT_SIZE, f32::max);
+        self.last_layout_key = Some(key);
         self.last_lines = lines;
         self.line_starts = line_starts;
         self.content_height = content_height.max(INPUT_LINE_HEIGHT);
@@ -2962,12 +3014,7 @@ impl gpui::Element for ComposerTextElement {
                     _ => px(320.0),
                 });
                 let content_height = input.update(cx, |input, cx| {
-                    let previous = input.content_height;
-                    let height = input.layout_text(width, &text_style, window, cx);
-                    if (height - previous).abs() > 0.5 {
-                        cx.emit(ComposerInputEvent::ViewportChanged);
-                    }
-                    height
+                    input.layout_text(width, &text_style, window, cx)
                 });
                 size(width, px(content_height.min(max_content)))
             });
@@ -2983,10 +3030,18 @@ impl gpui::Element for ComposerTextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let text_style = window.text_style();
         self.input.update(cx, |input, cx| {
+            // Intrinsic measurement may try several widths in one layout.
+            // Only publish the resolved geometry, once: notifying for each
+            // provisional width starts an endless measure/notify loop.
+            input.layout_text(bounds.size.width, &text_style, window, cx);
+            let layout = (bounds.size.width, input.content_height);
+            let layout_changed = input.last_notified_layout != Some(layout);
+            input.last_notified_layout = Some(layout);
             let scrolled = input.clamp_scroll(f32::from(bounds.size.height));
             input.last_bounds = Some(bounds);
-            if scrolled {
+            if scrolled || layout_changed {
                 cx.emit(ComposerInputEvent::ViewportChanged);
             }
         });
@@ -3307,11 +3362,7 @@ impl Render for ComposerInput {
             .font_family(theme.font_sans.clone())
             .child({
                 let input = cx.entity();
-                let ascent = self
-                    .last_lines
-                    .iter()
-                    .map(|line| f32::from(line.unwrapped_layout.ascent))
-                    .fold(INPUT_TEXT_SIZE, f32::max);
+                let ascent = self.max_ascent;
                 crate::edge_fade::edge_faded(
                     INPUT_FADE_BAND,
                     true,
@@ -7015,6 +7066,117 @@ mod tests {
             flip_morph_step(Some(m), false, 124.0, 300.0, false, false),
             None
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn resolved_layout_does_not_keep_notifying_on_repaint() {
+        use std::cell::Cell;
+        gpui_platform::headless().run(|cx| {
+            cx.set_global(Theme::dark());
+            let handle = cx.open_window(gpui::WindowOptions::default(), |_, cx| {
+                cx.new(|cx| {
+                    let mut input = ComposerInput::new("Draft", cx);
+                    input.set_text("A long line whose wrapping differs between provisional and resolved widths.\n".repeat(100), cx);
+                    input
+                })
+            }).unwrap();
+            let changes = Rc::new(Cell::new(0));
+            let observed = changes.clone();
+            let subscription = cx.subscribe(&handle.entity(cx).unwrap(), move |_, event, _| {
+                if matches!(event, ComposerInputEvent::ViewportChanged) {
+                    observed.set(observed.get() + 1);
+                }
+            });
+            cx.spawn(async move |cx| {
+                let _subscription = subscription;
+                cx.update(|cx| {
+                    handle.update(cx, |input, _, _| input.last_notified_layout = None).unwrap();
+                    cx.update_window(handle.into(), |_, window, cx| { window.refresh(); let _ = window.draw(cx); }).unwrap();
+                });
+                let settled = changes.get();
+                assert!(settled > 0, "the first resolved layout must be published");
+                for _ in 0..30 {
+                    cx.update(|cx| {
+                        cx.update_window(handle.into(), |_, window, cx| { window.refresh(); let _ = window.draw(cx); }).unwrap();
+                    });
+                }
+                assert_eq!(changes.get(), settled, "unchanged draws must not schedule more layout");
+                cx.update(|cx| cx.quit());
+            }).detach();
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn layout_cache_reuses_resize_frames_and_invalidates_text_inputs() {
+        gpui_platform::headless().run(|cx| {
+            cx.set_global(Theme::dark());
+            let handle = cx
+                .open_window(gpui::WindowOptions::default(), |_, cx| {
+                    cx.new(|cx| ComposerInput::new("Draft", cx))
+                })
+                .unwrap();
+            handle
+                .update(cx, |input, window, cx| {
+                    input.layout_rebuilds = 0; // Exclude the window's initial placeholder paint.
+                    let mut style = window.text_style();
+                    style.font_size = px(INPUT_TEXT_SIZE).into();
+                    input.set_text(
+                        "A wrapped draft with enough text to measure.\n".repeat(100),
+                        cx,
+                    );
+                    input.layout_text(px(400.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 1);
+                    let height = input.content_height;
+                    for frame in 0..120 {
+                        input.viewport_height = Some(40.0 + frame as f32);
+                        input.scroll_top = frame as f32;
+                        input.selected_range = 2..8;
+                        assert_eq!(input.layout_text(px(400.0), &style, window, cx), height);
+                    }
+                    assert_eq!(
+                        input.layout_rebuilds, 1,
+                        "resize/scroll/selection must reuse shaping"
+                    );
+                    input.set_text("Edited draft", cx);
+                    input.layout_text(px(400.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 2);
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 3, "width changes must rewrap");
+                    style.font_size = px(18.0).into();
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 4);
+                    input.marked_range = Some(0..2);
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(
+                        input.layout_rebuilds, 5,
+                        "IME marking must repaint decoration"
+                    );
+                    input.unmark_text(window, cx);
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 6, "IME unmark must also invalidate");
+                    input.set_text("", cx);
+                    input.layout_text(px(200.0), &style, window, cx);
+                    input.set_placeholder("New placeholder", cx);
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 8);
+                    style.color = gpui::rgb(0xff0000).into();
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 9);
+                    input.enable_mentions();
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 10);
+                    cx.set_global(Theme::light());
+                    input.layout_text(px(200.0), &style, window, cx);
+                    assert_eq!(input.layout_rebuilds, 11, "mention colors follow the theme");
+                })
+                .unwrap();
+            cx.spawn(async move |cx| {
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
+        });
     }
 
     #[test]
