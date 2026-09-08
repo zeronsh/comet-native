@@ -1,6 +1,6 @@
 # Markdown file preview
 
-Files offers a native preview for `.md` and `.markdown` documents. It renders the current buffer, including unsaved edits, using Zeron's Markdown typography and existing toolbar controls. The preview does not change autosave settings.
+Files opens `.md` and `.markdown` documents in Preview by default (case-insensitive extensions). The Code / Preview selector preserves the user's choice while the document remains open. The preview renders the current buffer, including unsaved edits, using Zeron's Markdown typography and existing toolbar controls. It does not change autosave settings.
 
 The document is presented in a centered responsive column capped at 900px for readable line lengths. Code, tables and media share that column; images and Mermaid diagrams are centered at their natural size when narrower. On small panels the column fills the available width with Zeron's standard gutters.
 

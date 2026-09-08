@@ -2780,13 +2780,16 @@ impl FilesSurface {
             return None;
         }
         let text = document.file.as_ref()?.text.clone()?;
+        let focus_editor = !document.show_markdown;
         let editor =
             super::editor::new_file_editor(text, path, self.preview.word_wrap, theme, window, cx);
         let event_path = path.to_string();
         let editor_events = super::editor::subscribe_to_changes(&editor, event_path, cx);
         let editor_observer = cx.observe(&editor, |_, _, cx| cx.notify());
-        let focus = editor.focus_handle(cx);
-        window.defer(cx, move |window, cx| focus.focus(window, cx));
+        if focus_editor {
+            let focus = editor.focus_handle(cx);
+            window.defer(cx, move |window, cx| focus.focus(window, cx));
+        }
         let document = self.preview.documents.get_mut(path)?;
         document.editor = Some(editor.clone());
         document.editor_events = Some(editor_events);

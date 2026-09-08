@@ -74,7 +74,7 @@ impl FileDocument {
     pub fn loading(key: DocumentKey) -> Self {
         Self {
             markdown: None,
-            show_markdown: false,
+            show_markdown: super::markdown_preview::is_markdown(&key.path),
             key,
             generation: 1,
             phase: DocumentPhase::Loading,
