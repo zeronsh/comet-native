@@ -29,6 +29,16 @@ pub struct InlineStyle {
     pub strikethrough: bool,
     /// Destination URL when inside a link.
     pub link: Option<String>,
+    pub image: Option<InlineImage>,
+}
+
+/// An image remains inline in the AST; hosts can opt in to visual media.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineImage {
+    pub source: String,
+    pub alt: String,
+    pub title: String,
+    pub link: Option<String>,
 }
 
 /// One run of identically-styled inline text.
@@ -418,7 +428,27 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
                 Tag::Emphasis => inner.italic = true,
                 Tag::Strong => inner.bold = true,
                 Tag::Strikethrough => inner.strikethrough = true,
-                Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
+                Tag::Image {
+                    dest_url, title, ..
+                } => {
+                    let alt: String = parse_inline_container(cur, style)
+                        .iter()
+                        .map(|run| run.text.as_str())
+                        .collect();
+                    inner.image = Some(InlineImage {
+                        source: dest_url.to_string(),
+                        alt: alt.clone(),
+                        title: title.to_string(),
+                        link: style.link.clone(),
+                    });
+                    inner.link = Some(dest_url.into_string());
+                    runs.push(InlineRun {
+                        text: alt,
+                        style: inner,
+                    });
+                    return;
+                }
+                Tag::Link { dest_url, .. } => {
                     inner.link = Some(dest_url.into_string());
                 }
                 _ => {}
@@ -530,7 +560,9 @@ fn merge_runs(runs: Vec<InlineRun>) -> Vec<InlineRun> {
     let mut out: Vec<InlineRun> = Vec::with_capacity(runs.len());
     for run in runs {
         match out.last_mut() {
-            Some(last) if last.style == run.style => last.text.push_str(&run.text),
+            Some(last) if last.style == run.style && run.style.image.is_none() => {
+                last.text.push_str(&run.text)
+            }
             _ => out.push(run),
         }
     }

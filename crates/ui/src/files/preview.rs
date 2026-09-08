@@ -2248,6 +2248,17 @@ impl FilesSurface {
                     })
                 })
                 .clone();
+            let media_client = self
+                .request_context
+                .clone()
+                .zip(self.state.read(cx).engine().cloned())
+                .map(|(context, engine)| {
+                    (
+                        WorkspaceFilesClient::new(engine, context),
+                        document.file.as_ref().unwrap().checkout_id.clone(),
+                    )
+                });
+            view.update(cx, |view, _| view.media_client = media_client);
             if view.read(cx).version.as_ref() != Some(&version) {
                 let source = editor
                     .as_ref()

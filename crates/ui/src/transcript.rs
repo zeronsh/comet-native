@@ -4837,6 +4837,7 @@ impl Transcript {
                 };
                 let code = self.code_uis_for(&row.id, &top.block, *block_ix, cx);
                 let opts = RenderOptions {
+                    media: None,
                     row_key: row.id.clone(),
                     veil: None,
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),
@@ -4882,6 +4883,7 @@ impl Transcript {
                         .clone()
                 });
                 let opts = RenderOptions {
+                    media: None,
                     row_key: row.id.clone(),
                     veil: veil.clone(),
                     cache: (!render_cache_disabled()).then(|| self.render_cache.clone()),

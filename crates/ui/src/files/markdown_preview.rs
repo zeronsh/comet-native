@@ -77,6 +77,9 @@ pub(super) struct MarkdownPreview {
     epoch: u64,
     loading: bool,
     truncated: bool,
+    pub media_client: Option<(super::client::WorkspaceFilesClient, String)>,
+    images: HashMap<String, Result<super::markdown_media::MediaImage, String>>,
+    image_task: Option<Task<()>>,
     open_file: Rc<dyn Fn(String, &mut gpui::App)>,
 }
 
@@ -87,6 +90,9 @@ impl MarkdownPreview {
         cx: &mut Context<Self>,
     ) -> Self {
         Self {
+            media_client: None,
+            images: HashMap::new(),
+            image_task: None,
             focus: cx.focus_handle(),
             version: None,
             path,
@@ -168,10 +174,79 @@ impl MarkdownPreview {
                 view.anchors = anchors;
                 view.cache.borrow_mut().clear();
                 view.loading = false;
+                view.load_images(cx);
                 cx.notify();
             });
         }));
         cx.notify();
+    }
+
+    fn load_images(&mut self, cx: &mut Context<Self>) {
+        use futures::{StreamExt as _, stream};
+        let sources = super::markdown_media::image_sources(&self.tree);
+        self.images.retain(|source, _| sources.contains(source));
+        let Some((client, checkout)) = self.media_client.clone() else {
+            return;
+        };
+        let jobs: Vec<_> = sources
+            .into_iter()
+            .filter(|s| !self.images.contains_key(s))
+            .take(32)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .filter_map(|source| {
+                if source.starts_with("https://") || source.starts_with("http://") {
+                    return None;
+                }
+                match relative_target(&self.path, &source) {
+                    Some((path, _)) => Some((source, path)),
+                    None => {
+                        self.images
+                            .insert(source, Err("Image path is outside the workspace".into()));
+                        None
+                    }
+                }
+            })
+            .collect();
+        let epoch = self.epoch;
+        self.image_task = Some(cx.spawn(async move |this, cx| {
+            let executor = cx.background_executor().clone();
+            let mut results = stream::iter(jobs)
+                .map(|(source, path)| {
+                    let client = client.clone();
+                    let checkout = checkout.clone();
+                    let executor = executor.clone();
+                    async move {
+                        let result = match client.read_image(path, checkout).await {
+                            Ok((mime, bytes)) => {
+                                executor
+                                    .spawn(async move {
+                                        super::markdown_media::decode_image(&mime, bytes)
+                                    })
+                                    .await
+                            }
+                            Err(error) => Err(error.to_string()),
+                        };
+                        (source, result)
+                    }
+                })
+                .buffer_unordered(3);
+            while let Some((source, result)) = results.next().await {
+                if this
+                    .update(cx, |view, cx| {
+                        if view.epoch != epoch {
+                            return;
+                        }
+                        view.images.insert(source, result);
+                        view.list.remeasure();
+                        cx.notify();
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        }));
     }
 
     fn render_row(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
@@ -217,6 +292,53 @@ impl MarkdownPreview {
                 let top = self.tree.blocks.get(ix)?;
                 let mut opts = RenderOptions::settled(format!("{}{ix}", self.scope).into());
                 opts.cache = Some(self.cache.clone());
+                let images = self.images.clone();
+                opts.media = Some(render::MediaUi {
+                    image: Rc::new(move |image, id, theme| {
+                        use gpui::StyledImage as _;
+                        match images.get(&image.source) {
+                            Some(Ok(loaded)) => div()
+                                .id(id)
+                                .w_full()
+                                .max_w(px(loaded.width))
+                                .child(
+                                    gpui::img(loaded.image.clone())
+                                        .w_full()
+                                        .max_h(px(480.0))
+                                        .object_fit(gpui::ObjectFit::Contain),
+                                )
+                                .into_any_element(),
+                            state => {
+                                let text = if image.source.starts_with("https://")
+                                    || image.source.starts_with("http://")
+                                {
+                                    format!("{} — {}", image.alt, image.source)
+                                } else {
+                                    format!(
+                                        "{} — {}",
+                                        image.alt,
+                                        state
+                                            .and_then(|s| s.as_ref().err())
+                                            .map(String::as_str)
+                                            .unwrap_or("Loading image…")
+                                    )
+                                };
+                                let target = image.source.clone();
+                                let external =
+                                    target.starts_with("https://") || target.starts_with("http://");
+                                div()
+                                    .id(id)
+                                    .text_color(theme.text_muted)
+                                    .child(text)
+                                    .when(external, |el| {
+                                        el.cursor_pointer()
+                                            .on_click(move |_, _, cx| cx.open_url(&target))
+                                    })
+                                    .into_any_element()
+                            }
+                        }
+                    }),
+                });
                 opts.link = Some(link.clone());
                 opts.copy = Some(render::CopyUi {
                     handler: Rc::new(|_, code, _, cx| {

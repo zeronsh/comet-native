@@ -66,6 +66,7 @@ pub fn table_hairline() -> Hsla {
 
 /// Options for one rendered tree (a transcript row or a whole live message).
 pub struct RenderOptions {
+    pub media: Option<MediaUi>,
     /// Stable row key — prefixes element ids (scroll state, animations).
     pub row_key: SharedString,
     /// Streaming veil state for a live row: newly appended text fades in via
@@ -89,6 +90,11 @@ pub struct RenderOptions {
     /// scroll state, keyed by the same element discriminator passed to
     /// [`render_block`]. `None` keeps non-chat Markdown surfaces unchanged.
     pub code: Option<HashMap<usize, CodeUi>>,
+}
+
+#[derive(Clone)]
+pub struct MediaUi {
+    pub image: Rc<dyn Fn(&super::parser::InlineImage, SharedString, &Theme) -> AnyElement>,
 }
 
 /// Copy-button wiring for one row's code blocks: the handler writes the code
@@ -169,6 +175,7 @@ impl RenderOptions {
     pub fn settled(row_key: SharedString) -> Self {
         Self {
             row_key,
+            media: None,
             veil: None,
             cache: None,
             now: Instant::now(),
@@ -596,7 +603,22 @@ fn render_table(
                 TableAlign::Center => cell.text_center(),
                 TableAlign::Right => cell.text_right(),
             };
-            if let Some(flat) = cell_flat {
+            if opts.media.is_some()
+                && all[r]
+                    .get(c)
+                    .is_some_and(|runs| runs.iter().any(|run| run.style.image.is_some()))
+            {
+                cell = cell.child(text_element(
+                    &all[r][c],
+                    MD_TEXT_SIZE,
+                    MD_LINE_HEIGHT,
+                    has_header && r == 0,
+                    top_ix,
+                    table_cell_ix(ix, r, c),
+                    opts,
+                    theme,
+                ));
+            } else if let Some(flat) = cell_flat {
                 cell = cell.child(flat_text_element(
                     flat,
                     table_cell_ix(ix, r, c),
@@ -1201,6 +1223,52 @@ fn text_element(
     opts: &RenderOptions,
     theme: &Theme,
 ) -> AnyElement {
+    if let Some(media) = &opts.media {
+        if runs.iter().any(|run| run.style.image.is_some()) {
+            let mut elements = Vec::new();
+            let mut start = 0;
+            for (index, run) in runs.iter().enumerate() {
+                if let Some(image) = &run.style.image {
+                    if start < index {
+                        elements.push(text_element(
+                            &runs[start..index],
+                            size,
+                            line_height,
+                            bold_default,
+                            top_ix,
+                            ix.wrapping_mul(4099).wrapping_add(start + 1000),
+                            opts,
+                            theme,
+                        ));
+                    }
+                    elements.push((media.image)(
+                        image,
+                        format!("{}-image-{ix}-{index}", opts.row_key).into(),
+                        theme,
+                    ));
+                    start = index + 1;
+                }
+            }
+            if start < runs.len() {
+                elements.push(text_element(
+                    &runs[start..],
+                    size,
+                    line_height,
+                    bold_default,
+                    top_ix,
+                    ix.wrapping_mul(4099).wrapping_add(start + 1000),
+                    opts,
+                    theme,
+                ));
+            }
+            return div()
+                .flex()
+                .flex_col()
+                .gap(px(8.0))
+                .children(elements)
+                .into_any_element();
+        }
+    }
     let weight = if bold_default {
         FontWeight::SEMIBOLD
     } else {
