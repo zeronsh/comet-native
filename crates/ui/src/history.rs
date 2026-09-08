@@ -3813,10 +3813,18 @@ impl GitHistory {
                             )
                         })
                         .when(!has_avatar, |avatar| {
-                            avatar
-                                .text_size(px(9.0))
-                                .text_color(theme.text_faint)
-                                .child(initial)
+                            avatar.child(
+                                div()
+                                    .w_full()
+                                    .text_center()
+                                    .font_family(theme.font_sans.clone())
+                                    .text_size(px(9.0))
+                                    .line_height(px(18.0))
+                                    .relative()
+                                    .top(px(0.5))
+                                    .text_color(theme.text_faint)
+                                    .child(initial),
+                            )
                         })
                         .tooltip(move |_, cx| {
                             cx.new(|_| HistoryAuthorTooltip {

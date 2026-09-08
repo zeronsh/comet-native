@@ -66,6 +66,7 @@ use spaces::{AddSpaceFlow, RenameSpaceDialog};
 actions!(
     shell,
     [
+        SaveFile,
         ToggleSidebar,
         ToggleChanges,
         AddSpacePalette,
@@ -283,12 +284,17 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     crate::app_menus::bind_keys(cx);
     cx.bind_keys([
         KeyBinding::new(
-            &valid_or_default(&keymap.toggle_sidebar, "mod-s"),
+            &valid_or_default(&keymap.save_file, "mod-s"),
+            SaveFile,
+            None,
+        ),
+        KeyBinding::new(
+            &valid_or_default(&keymap.toggle_sidebar, "mod-b"),
             ToggleSidebar,
             None,
         ),
         KeyBinding::new(
-            &valid_or_default(&keymap.toggle_changes, "mod-b"),
+            &valid_or_default(&keymap.toggle_changes, "mod-r"),
             ToggleChanges,
             None,
         ),
@@ -8150,7 +8156,7 @@ impl Render for Shell {
             ));
         }
 
-        // Keyboard shortcuts (mod-s/b/j) dispatch through the window focus
+        // Keyboard shortcuts (mod-s/b/r/j) dispatch through the window focus
         // chain — with nothing focused they go dead. Land initial focus on the
         // composer, and whenever focus is lost with no successor (e.g. the
         // focused element unmounted), route it back there after allowing any
@@ -8201,6 +8207,18 @@ impl Render for Shell {
                     this.toggle_terminal(window, cx)
                 }
             }))
+            .on_action(cx.listener(|this, _: &SaveFile, _, cx| {
+                if matches!(this.route, Route::Chat) && this.right_pane_open(cx) {
+                    let file = match this.resolved_right_active(cx) {
+                        RightSurface::Files => this.files.get(&this.panel_key(cx)).cloned(),
+                        RightSurface::File(id) => this.file_surfaces.get(&id).cloned(),
+                        _ => None,
+                    };
+                    if let Some(file) = file {
+                        file.update(cx, |file, cx| file.save_active_document(cx));
+                    }
+                }
+            }))
             .on_action(cx.listener(|this, _: &ToggleSidebar, _, cx| this.toggle_sidebar(cx)))
             // New session works from anywhere — `open_new_session` routes back
             // to chat itself, so Settings is not a dead spot.
@@ -8214,9 +8232,14 @@ impl Render for Shell {
             // and says why.
             .on_action(cx.listener(|this, _: &NextSession, _, cx| this.cycle_session(true, cx)))
             .on_action(cx.listener(|this, _: &PrevSession, _, cx| this.cycle_session(false, cx)))
-            .on_action(cx.listener(|this, _: &ToggleChanges, _, cx| {
+            .on_action(cx.listener(|this, _: &ToggleChanges, window, cx| {
                 if matches!(this.route, Route::Chat) {
-                    this.toggle_right_pane(cx)
+                    this.toggle_right_pane(cx);
+                    if !this.right_pane_open(cx) {
+                        // The hidden editor can retain a focus handle after unmounting.
+                        // Restore a mounted target so the next shortcut can reopen it.
+                        window.focus(&this.composer.focus_handle(cx), cx);
+                    }
                 }
             }))
             // Chat-scoped like the panel toggles: Settings has no current

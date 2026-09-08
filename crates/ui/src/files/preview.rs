@@ -1697,6 +1697,12 @@ impl FilesSurface {
         cx.notify();
     }
 
+    pub fn save_active_document(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.preview.active.clone() {
+            self.save_document(path, cx);
+        }
+    }
+
     fn retry_active_save(&mut self, cx: &mut Context<Self>) {
         let Some(path) = self.preview.active.clone() else {
             return;
