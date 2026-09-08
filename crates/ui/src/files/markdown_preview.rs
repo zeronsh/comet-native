@@ -702,105 +702,44 @@ impl MarkdownPreview {
                     diagram: Some(Rc::new(move |code, id, theme| {
                         let state = diagrams.get(code);
                         let allowed = diagram_allowed.contains(code);
-                        let source_shown = source_visible.contains(id.as_ref())
-                            || state.is_some_and(Result::is_err)
-                            || !allowed;
+                        let source_shown = source_visible.contains(id.as_ref()) || !allowed;
                         let owner = diagram_owner.clone();
                         let toggle_id = id.to_string();
-                        let source = code.to_string();
-                        let mut header = super::toolbar(theme)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .text_size(px(11.0))
-                                    .text_color(theme.text_muted)
-                                    .child("Mermaid"),
-                            )
-                            .child(
-                                super::toolbar_button(
-                                    "mermaid-source",
-                                    if source_shown {
-                                        "Show diagram"
-                                    } else {
-                                        "Show source"
-                                    },
-                                )
-                                .on_click(move |_, _, cx| {
-                                    let _ = owner.update(cx, |view, cx| {
-                                        if !view.source_visible.remove(&toggle_id) {
-                                            view.source_visible.insert(toggle_id.clone());
-                                        }
-                                        view.list.remeasure_items(0..view.tree.len());
-                                        cx.notify();
-                                    });
+                        let body = match state {
+                            Some(Ok(loaded)) => Self::media_element(
+                                loaded,
+                                format!("{id}-image").into(),
+                                "Mermaid diagram".into(),
+                                diagram_owner.clone(),
+                            ),
+                            Some(Err(error)) => div()
+                                .p(px(12.0))
+                                .text_size(px(12.0))
+                                .text_color(theme.warning_muted)
+                                .child(error.clone())
+                                .into_any_element(),
+                            None => div()
+                                .p(px(12.0))
+                                .text_color(theme.text_muted)
+                                .child(if diagram_allowed.contains(code) {
+                                    "Rendering diagram…"
+                                } else {
+                                    "Document diagram preview limit reached"
                                 })
-                                .child(
-                                    crate::icons::icon(if source_shown {
-                                        crate::icons::EYE
-                                    } else {
-                                        crate::icons::FILE_CODE
-                                    })
-                                    .size(px(crate::surface_chrome::ICON_SIZE))
-                                    .text_color(theme.text_muted),
-                                ),
-                            );
-                        header = header.child(
-                            super::toolbar_button("mermaid-copy", "Copy Mermaid source")
-                                .on_click(move |_, _, cx| {
-                                    cx.write_to_clipboard(gpui::ClipboardItem::new_string(
-                                        source.clone(),
-                                    ))
-                                })
-                                .child(
-                                    crate::icons::icon(crate::icons::COPY)
-                                        .size(px(crate::surface_chrome::ICON_SIZE))
-                                        .text_color(theme.text_muted),
-                                ),
-                        );
-                        let mut card = div()
-                            .id(id.clone())
-                            .w_full()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .rounded(px(crate::surface_chrome::CONTROL_RADIUS))
-                            .border_1()
-                            .border_color(theme.border)
-                            .child(header);
-                        match state {
-                            Some(Ok(loaded)) if !source_shown => {
-                                card = card.child(Self::media_element(
-                                    loaded,
-                                    format!("{id}-image").into(),
-                                    "Mermaid diagram".into(),
-                                    diagram_owner.clone(),
-                                ));
-                            }
-                            Some(Err(error)) => {
-                                card = card.child(
-                                    div()
-                                        .p(px(12.0))
-                                        .text_size(px(12.0))
-                                        .text_color(theme.warning_muted)
-                                        .child(error.clone()),
-                                );
-                            }
-                            None => {
-                                card = card.child(
-                                    div().p(px(12.0)).text_color(theme.text_muted).child(
-                                        if diagram_allowed.contains(code) {
-                                            "Rendering diagram…"
-                                        } else {
-                                            "Document diagram preview limit reached"
-                                        },
-                                    ),
-                                );
-                            }
-                            _ => {}
-                        }
+                                .into_any_element(),
+                        };
                         render::DiagramUi {
-                            element: card.into_any_element(),
+                            body,
                             show_source: source_shown,
+                            toggle_source: Rc::new(move |_, cx| {
+                                let _ = owner.update(cx, |view, cx| {
+                                    if !view.source_visible.remove(&toggle_id) {
+                                        view.source_visible.insert(toggle_id.clone());
+                                    }
+                                    view.list.remeasure_items(0..view.tree.len());
+                                    cx.notify();
+                                });
+                            }),
                         }
                     })),
                     image: Rc::new(move |image, id, theme| match images.get(&image.source) {
@@ -1133,6 +1072,128 @@ mod layout_tests {
             assert!(view.read(cx).preview_image.is_none());
             cx.update_window(window.into(), |_, window, cx| { assert!(view.read(cx).focus.is_focused(window)); }).unwrap();
             cx.spawn(async move |cx| { cx.update(|cx| cx.quit()); }).detach();
+        });
+    }
+
+    #[test]
+    fn rendered_mermaid_opens_lightbox_and_toggles_source() {
+        gpui_platform::headless().run(|cx| {
+            cx.set_global(Theme::dark());
+            let window = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(
+                            Point::default(),
+                            gpui::size(px(1200.0), px(600.0)),
+                        ))),
+                        ..Default::default()
+                    },
+                    |_, cx| {
+                        cx.new(|cx| {
+                            let mut view = MarkdownPreview::new(
+                                "README.md".into(),
+                                Rc::new(|_, _| {}),
+                                cx,
+                            );
+                            view.tree = parser::parse_full(
+                                "```mermaid\nflowchart LR\n    A --> B\n```",
+                            );
+                            let Block::CodeBlock { code, .. } = &view.tree.blocks[0].block else {
+                                panic!("missing Mermaid block");
+                            };
+                            let media = super::super::markdown_media::decode_image(
+                                "image/svg+xml",
+                                br##"<svg xmlns="http://www.w3.org/2000/svg" width="240" height="160"><rect width="240" height="160" fill="#468"/></svg>"##.to_vec(),
+                            )
+                            .unwrap();
+                            view.diagrams.insert(code.clone(), Ok(media));
+                            view.diagram_allowed = Rc::new(HashSet::from([code.clone()]));
+                            view.list.reset(1);
+                            view.diagram_style = crate::theme::style_generation();
+                            view
+                        })
+                    },
+                )
+                .unwrap();
+            let view = window.entity(cx).unwrap();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+
+            let bounds = view.read(cx).list.bounds_for_item(0).unwrap();
+            let image_position =
+                gpui::point(bounds.center().x, bounds.top() + px(28.0 + 80.0));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        position: image_position,
+                        click_count: 1,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        button: gpui::MouseButton::Left,
+                        position: image_position,
+                        click_count: 1,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+            })
+            .unwrap();
+            assert!(view.read(cx).preview_image.is_some());
+
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+                window.dispatch_event(
+                    gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                        keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                        is_held: false,
+                        prefer_character_input: false,
+                    }),
+                    cx,
+                );
+                window.refresh();
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+
+            let frame_right = bounds.center().x + px(MAX_PREVIEW_CONTENT_WIDTH / 2.0);
+            let toggle_position = gpui::point(frame_right - px(42.0), bounds.top() + px(14.0));
+            cx.update_window(window.into(), |_, window, cx| {
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                        button: gpui::MouseButton::Left,
+                        position: toggle_position,
+                        click_count: 1,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+                window.dispatch_event(
+                    gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                        button: gpui::MouseButton::Left,
+                        position: toggle_position,
+                        click_count: 1,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+            })
+            .unwrap();
+            assert_eq!(view.read(cx).source_visible.len(), 1);
+            assert!(view.read(cx).preview_image.is_none());
+
+            cx.spawn(async move |cx| {
+                cx.update(|cx| cx.quit());
+            })
+            .detach();
         });
     }
 }

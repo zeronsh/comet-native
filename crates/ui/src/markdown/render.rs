@@ -99,8 +99,9 @@ pub struct MediaUi {
 }
 
 pub struct DiagramUi {
-    pub element: AnyElement,
+    pub body: AnyElement,
     pub show_source: bool,
+    pub toggle_source: Rc<dyn Fn(&mut Window, &mut gpui::App)>,
 }
 
 /// Copy-button wiring for one row's code blocks: the handler writes the code
@@ -1311,17 +1312,184 @@ fn render_code_block(
 ) -> AnyElement {
     if language.is_some_and(|l| l.eq_ignore_ascii_case("mermaid")) {
         if let Some(handler) = opts.media.as_ref().and_then(|media| media.diagram.as_ref()) {
-            let diagram = handler(code, format!("{}-mermaid-{ix}", opts.row_key).into(), theme);
-            let mut el = div().flex().flex_col().gap(px(4.0)).child(diagram.element);
+            let frame_id: SharedString = format!("{}-mermaid-{ix}", opts.row_key).into();
+            let diagram = handler(code, frame_id.clone(), theme);
+            let toggle = diagram.toggle_source.clone();
+            let toggle_action = code_icon_action(
+                format!("{frame_id}-source-toggle").into(),
+                if diagram.show_source {
+                    "Show diagram"
+                } else {
+                    "Show source"
+                },
+                if diagram.show_source {
+                    crate::icons::EYE
+                } else {
+                    crate::icons::FILE_CODE
+                },
+                Rc::new(move |window, cx| toggle(window, cx)),
+                theme,
+            );
             if diagram.show_source {
-                el = el.child(render_code_block_source(
-                    language, code, top_ix, ix, opts, theme, highlight,
-                ));
+                return render_code_block_source_with_actions(
+                    language,
+                    code,
+                    top_ix,
+                    ix,
+                    opts,
+                    theme,
+                    highlight,
+                    vec![toggle_action],
+                );
             }
-            return el.into_any_element();
+            let mut actions = vec![toggle_action];
+            actions.extend(code_copy_button(code, ix, opts, theme));
+            return code_block_frame(frame_id, language, actions, diagram.body, theme)
+                .into_any_element();
         }
     }
     render_code_block_source(language, code, top_ix, ix, opts, theme, highlight)
+}
+
+fn code_icon_action(
+    id: SharedString,
+    label: &'static str,
+    icon_path: &'static str,
+    handler: Rc<dyn Fn(&mut Window, &mut gpui::App)>,
+    theme: &Theme,
+) -> AnyElement {
+    let fade_key = id.to_string();
+    div()
+        .id(id)
+        .size(px(CODE_ACTION_SIZE))
+        .rounded(px(6.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .bg(crate::motion::hover_blend(
+            &fade_key,
+            gpui::transparent_black(),
+            crate::theme::ink(0.08),
+        ))
+        .on_hover(crate::motion::hover_listener(fade_key))
+        .on_click(move |_, window, cx| {
+            cx.stop_propagation();
+            handler(window, cx);
+        })
+        .tooltip(move |_, cx| cx.new(move |_| CodeBlockTooltip(label)).into())
+        .child(
+            crate::icons::icon(icon_path)
+                .size(px(13.0))
+                .text_color(theme.text_muted),
+        )
+        .into_any_element()
+}
+
+fn code_copy_button(
+    code: &str,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+) -> Option<AnyElement> {
+    opts.copy.clone().map(|copy| {
+        let copied = copy.copied_ix == Some(ix);
+        let code_text: SharedString = code.to_string().into();
+        let handler = copy.handler.clone();
+        let fade_key = format!("{}-copy{ix}", opts.row_key);
+        div()
+            .id(SharedString::from(fade_key.clone()))
+            .h(px(CODE_ACTION_SIZE))
+            .px(px(6.0))
+            .rounded(px(5.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(4.0))
+            .cursor_pointer()
+            .bg(crate::motion::hover_blend(
+                &fade_key,
+                gpui::transparent_black(),
+                crate::theme::ink(0.08),
+            ))
+            .on_hover(crate::motion::hover_listener(fade_key))
+            .text_size(px(10.5))
+            .text_color(theme.text_muted)
+            .on_click(move |_, window, cx| {
+                cx.stop_propagation();
+                handler(ix, code_text.clone(), window, cx);
+            })
+            .child(
+                crate::icons::icon(if copied {
+                    crate::icons::CHECK
+                } else {
+                    crate::icons::COPY
+                })
+                .size(px(12.0))
+                .text_color(theme.text_muted),
+            )
+            .when(copied, |el| el.child(SharedString::from("Copied")))
+            .into_any_element()
+    })
+}
+
+fn code_block_header(
+    language: Option<&str>,
+    actions: Vec<AnyElement>,
+    theme: &Theme,
+) -> Option<gpui::Div> {
+    if language.is_none() && actions.is_empty() {
+        return None;
+    }
+    Some(
+        div()
+            .h(px(CODE_HEADER_HEIGHT))
+            .pl(px(CODE_PADDING_X))
+            .pr(px(5.0))
+            .border_b_1()
+            .border_color(theme.border)
+            .bg(crate::theme::ink(0.02))
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .child(
+                div()
+                    .min_w_0()
+                    .text_size(px(11.0))
+                    .text_color(theme.text_muted)
+                    .children(language.map(|lang| SharedString::from(lang.to_string()))),
+            )
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(2.0))
+                    .children(actions),
+            ),
+    )
+}
+
+/// Shared visual shell for ordinary code and generated diagram fences.
+fn code_block_frame(
+    id: SharedString,
+    language: Option<&str>,
+    actions: Vec<AnyElement>,
+    body: AnyElement,
+    theme: &Theme,
+) -> gpui::Stateful<gpui::Div> {
+    div()
+        .id(id)
+        .rounded(px(10.0))
+        .bg(crate::theme::ink(0.035))
+        .border_1()
+        .border_color(theme.border)
+        .overflow_hidden()
+        .relative()
+        .children(code_block_header(language, actions, theme))
+        .child(body)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1333,6 +1501,29 @@ fn render_code_block_source(
     opts: &RenderOptions,
     theme: &Theme,
     highlight: CodeHighlight,
+) -> AnyElement {
+    render_code_block_source_with_actions(
+        language,
+        code,
+        top_ix,
+        ix,
+        opts,
+        theme,
+        highlight,
+        Vec::new(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_code_block_source_with_actions(
+    language: Option<&str>,
+    code: &str,
+    top_ix: usize,
+    ix: usize,
+    opts: &RenderOptions,
+    theme: &Theme,
+    highlight: CodeHighlight,
+    mut extra_actions: Vec<AnyElement>,
 ) -> AnyElement {
     let mono = font(theme.font_mono.clone());
     // Per-line strings + runs through the cross-frame cache (validity: code
@@ -1384,50 +1575,6 @@ fn render_code_block_source(
     let code_ui = opts.code.as_ref().and_then(|code| code.get(&ix)).cloned();
     let fit_content = code_ui.as_ref().is_some_and(|ui| ui.fit_content);
 
-    // Header actions stay in normal header flow so Fit and Copy never overlap.
-    // The feedback label may widen Copy, but the fixed header height keeps the
-    // virtual row stable.
-    let copy_button = opts.copy.clone().map(|copy| {
-        let copied = copy.copied_ix == Some(ix);
-        let code_text: SharedString = code.to_string().into();
-        let handler = copy.handler.clone();
-        let fade_key = format!("{}-copy{ix}", opts.row_key);
-        div()
-            .id(SharedString::from(fade_key.clone()))
-            .h(px(CODE_ACTION_SIZE))
-            .px(px(6.0))
-            .rounded(px(5.0))
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(4.0))
-            .cursor_pointer()
-            // Ghost-button hover wash fades over transition-colors like every
-            // other interactive chrome (crate::motion hover fades).
-            .bg(crate::motion::hover_blend(
-                &fade_key,
-                gpui::transparent_black(),
-                crate::theme::ink(0.08),
-            ))
-            .on_hover(crate::motion::hover_listener(fade_key))
-            .text_size(px(10.5))
-            .text_color(theme.text_muted)
-            .on_click(move |_, window, cx| {
-                cx.stop_propagation();
-                handler(ix, code_text.clone(), window, cx);
-            })
-            .child(
-                crate::icons::icon(if copied {
-                    crate::icons::CHECK
-                } else {
-                    crate::icons::COPY
-                })
-                .size(px(12.0))
-                .text_color(theme.text_muted),
-            )
-            .when(copied, |el| el.child(SharedString::from("Copied")))
-    });
-
     let fit_button = code_ui.as_ref().map(|ui| {
         let toggle = ui.toggle_fit.clone();
         let fade_key = format!("{}-fit{ix}", opts.row_key);
@@ -1467,38 +1614,10 @@ fn render_code_block_source(
                     .text_color(theme.text_muted),
             )
     });
-
-    let show_header = language.is_some() || copy_button.is_some() || fit_button.is_some();
-    let header = show_header.then(|| {
-        div()
-            .h(px(CODE_HEADER_HEIGHT))
-            .pl(px(CODE_PADDING_X))
-            .pr(px(5.0))
-            .border_b_1()
-            .border_color(theme.border)
-            .bg(crate::theme::ink(0.02))
-            .flex()
-            .flex_row()
-            .items_center()
-            .justify_between()
-            .child(
-                div()
-                    .min_w_0()
-                    .text_size(px(11.0))
-                    .text_color(theme.text_muted)
-                    .children(language.map(|lang| SharedString::from(lang.to_string()))),
-            )
-            .child(
-                div()
-                    .flex_none()
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(2.0))
-                    .children(fit_button)
-                    .children(copy_button),
-            )
-    });
+    let mut actions = Vec::new();
+    actions.extend(fit_button.map(IntoElement::into_any_element));
+    actions.append(&mut extra_actions);
+    actions.extend(code_copy_button(code, ix, opts, theme));
 
     let lines = div()
         .map(|el| {
@@ -1632,21 +1751,14 @@ fn render_code_block_source(
             )
         });
 
-    let mut block = div()
-        .id(SharedString::from(format!(
-            "{}-code-frame{ix}",
-            opts.row_key
-        )))
-        .rounded(px(10.0))
-        // Faint white wash over the near-black panel ≈ #101010 (zeron's code
-        // surface), with the hairline border.
-        .bg(crate::theme::ink(0.035))
-        .border_1()
-        .border_color(theme.border)
-        .overflow_hidden()
-        .relative()
-        .children(header)
-        .child(div().w_full().relative().child(body).children(scrollbar));
+    let frame_body = div().w_full().relative().child(body).children(scrollbar);
+    let mut block = code_block_frame(
+        format!("{}-code-frame{ix}", opts.row_key).into(),
+        language,
+        actions,
+        frame_body.into_any_element(),
+        theme,
+    );
     if let Some(ui) = code_ui {
         let viewport_hover = ui.viewport_hover.clone();
         let drag_move = ui.drag_move.clone();

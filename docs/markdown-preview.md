@@ -6,6 +6,8 @@ The document is presented in a centered responsive column capped at 900px for re
 
 Workspace-relative images are loaded from the device owning the checkout. HTTP(S) images remain links. HTML and MDX are not executed. Images and diagrams open in the existing centered lightbox; wheel zoom and pan are not included. Mermaid in chat is not enabled by this change.
 
+Mermaid diagrams use the same fence frame, header metrics, border, background and code actions as ordinary fenced code blocks. Switching between diagram and source replaces the body inside that single frame.
+
 ## Mermaid engine decision
 
 The embedded engine is `mermaid-rs-renderer` **0.3.1**, MIT licensed, with default CLI/PNG features disabled. Its interface is isolated in `markdown/mermaid.rs`. Generated SVG is consumed by GPUI's existing SVG renderer.
@@ -34,7 +36,7 @@ The implementation was checked on Linux with the following commands:
 
 | Command | Result |
 | --- | --- |
-| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 752 passed |
+| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 753 passed |
 | `cargo test --release --locked -p zeron-engine --lib` | 161 passed |
 | `cargo test --release --locked -p zeron-proto -p zeron-rpc` | 47 passed, 1 previously ignored |
 | `cargo test --release --locked -p zeron-engine --test workspace_files` | 3 passed |
