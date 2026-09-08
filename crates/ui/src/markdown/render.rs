@@ -1444,6 +1444,7 @@ fn code_block_header(
     Some(
         div()
             .h(px(CODE_HEADER_HEIGHT))
+            .flex_none()
             .pl(px(CODE_PADDING_X))
             .pr(px(5.0))
             .border_b_1()
@@ -1482,6 +1483,10 @@ fn code_block_frame(
 ) -> gpui::Stateful<gpui::Div> {
     div()
         .id(id)
+        .w_full()
+        .min_w_0()
+        .flex()
+        .flex_col()
         .rounded(px(10.0))
         .bg(crate::theme::ink(0.035))
         .border_1()
