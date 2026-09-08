@@ -3105,3 +3105,21 @@ mod tests {
         assert_eq!(editor_comment_overlay_horizontal(&layout), (8.0, 194.0));
     }
 }
+
+#[cfg(test)]
+impl FilesSurface {
+    pub(crate) fn seed_pending_exit_test_document(&mut self, failed: bool) {
+        let mut document = FileDocument::loading(DocumentKey {
+            chat_id: "test".into(),
+            checkout_id: None,
+            path: "test.rs".into(),
+        });
+        document.revision = 1;
+        document.phase = if failed {
+            DocumentPhase::SaveFailed("offline".into())
+        } else {
+            DocumentPhase::Saving
+        };
+        self.preview.documents.insert("test.rs".into(), document);
+    }
+}

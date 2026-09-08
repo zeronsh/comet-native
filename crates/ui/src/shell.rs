@@ -1068,6 +1068,14 @@ impl Render for SidebarPane {
     }
 }
 
+#[derive(Debug, Clone)]
+enum PendingExit {
+    CloseWindow,
+    Quit,
+    RuntimeChange,
+    InstallUpdate(PathBuf),
+}
+
 pub struct Shell {
     state: Entity<AppState>,
     sidebar_pane: Entity<SidebarPane>,
@@ -1125,7 +1133,7 @@ pub struct Shell {
     file_surface_subs: std::collections::HashMap<u64, Subscription>,
     file_surface_seq: u64,
     pending_file_closes: std::collections::HashSet<RightSurface>,
-    window_close_pending: bool,
+    pending_exit: Option<PendingExit>,
     /// Event hookups for [`Self::diffs`] (History rows opening commit tabs).
     diff_subs: std::collections::HashMap<u64, Subscription>,
     diff_seq: u64,
@@ -1457,7 +1465,7 @@ impl Shell {
             file_surface_subs: std::collections::HashMap::new(),
             file_surface_seq: 0,
             pending_file_closes: std::collections::HashSet::new(),
-            window_close_pending: false,
+            pending_exit: None,
             diff_subs: std::collections::HashMap::new(),
             diff_seq: 0,
             subagent_tabs: std::collections::HashMap::new(),
@@ -2625,17 +2633,28 @@ impl Shell {
         if self.pending_file_closes.contains(&surface) {
             self.complete_file_close(surface, panel_key, cx);
         } else {
+            if self.pending_exit.is_some() {
+                self.reveal_unsaved_file(cx);
+            }
             cx.notify();
         }
     }
 
     fn cancel_file_close(&mut self, surface: RightSurface, cx: &mut Context<Self>) {
         self.pending_file_closes.remove(&surface);
-        self.window_close_pending = false;
+        self.pending_exit = None;
         cx.notify();
     }
 
     pub fn prepare_window_close(&mut self, cx: &mut Context<Self>) -> bool {
+        self.prepare_exit(PendingExit::CloseWindow, cx)
+    }
+
+    pub fn prepare_quit(&mut self, cx: &mut Context<Self>) -> bool {
+        self.prepare_exit(PendingExit::Quit, cx)
+    }
+
+    fn prepare_exit(&mut self, action: PendingExit, cx: &mut Context<Self>) -> bool {
         let surfaces = self
             .files
             .values()
@@ -2646,19 +2665,47 @@ impl Shell {
             .iter()
             .all(|surface| !surface.read(cx).has_unsaved_changes())
         {
-            self.window_close_pending = false;
+            self.pending_exit = None;
             return true;
         }
-        self.window_close_pending = true;
+        self.pending_exit = Some(action);
         let mut all_ready = true;
         for surface in surfaces {
             let disposition = surface.update(cx, |surface, cx| surface.prepare_close(cx));
             all_ready &= disposition == FilesCloseDisposition::Allow;
         }
         if all_ready {
-            self.window_close_pending = false;
+            self.pending_exit = None;
+        } else {
+            self.reveal_unsaved_file(cx);
         }
+        cx.notify();
         all_ready
+    }
+
+    fn reveal_unsaved_file(&mut self, cx: &mut Context<Self>) {
+        let browser = self.files.iter().filter_map(|(key, files)| {
+            files
+                .read(cx)
+                .has_unsaved_changes()
+                .then(|| (key.clone(), RightSurface::Files))
+        });
+        let editors = self.file_surface_keys.iter().filter_map(|((key, _), id)| {
+            self.file_surfaces
+                .get(id)
+                .filter(|files| files.read(cx).has_unsaved_changes())
+                .map(|_| (key.clone(), RightSurface::File(*id)))
+        });
+        let current = self.panel_key(cx);
+        let mut dirty = browser.chain(editors).collect::<Vec<_>>();
+        dirty.sort_by_key(|(key, _)| (key != &current, key.clone()));
+        if let Some((key, surface)) = dirty.into_iter().next() {
+            self.panels.update(&key, |panel| {
+                panel.changes_open = true;
+                panel.right_active = surface;
+            });
+            self.apply_nav(NavEntry::Chat(key), cx);
+        }
     }
 
     fn all_file_edits_flushed(&self, cx: &App) -> bool {
@@ -3640,13 +3687,16 @@ impl Shell {
     }
 
     fn quit_for_runtime_change(&mut self, cx: &mut Context<Self>) {
+        if !self.prepare_exit(PendingExit::RuntimeChange, cx) {
+            return;
+        }
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.runtime_change_error = Some("Engine not connected".into());
             cx.notify();
             return;
         };
         if engine.mode() == EngineMode::InProcess {
-            cx.quit();
+            crate::app_menus::quit_after_save(cx);
             return;
         }
         if self.runtime_change_task.is_some() {
@@ -3672,7 +3722,11 @@ impl Shell {
             this.update(cx, |shell, cx| {
                 shell.runtime_change_task = None;
                 match result {
-                    Ok(_) => cx.quit(),
+                    Ok(_) => {
+                        if shell.prepare_quit(cx) {
+                            crate::app_menus::quit_after_save(cx);
+                        }
+                    },
                     Err(err) => {
                         shell.runtime_change_error = Some(format!(
                             "Could not stop the remote engine: {err}. Run `zeron daemon stop`, then quit and reopen Zeron."
@@ -5197,13 +5251,16 @@ impl Shell {
     /// relauncher, and quit — the relauncher `open`s the new bundle once this
     /// process (and its engine lock / IPC port) is gone.
     fn apply_staged_update(&mut self, staged: PathBuf, cx: &mut Context<Self>) {
+        if !self.prepare_exit(PendingExit::InstallUpdate(staged.clone()), cx) {
+            return;
+        }
         let zeron_update::InstallKind::MacApp { bundle } = self.install.clone() else {
             return;
         };
         match zeron_update::apply_mac_app(&staged, &bundle) {
             Ok(()) => {
                 zeron_update::relaunch_app_after_exit(&bundle);
-                cx.quit();
+                crate::app_menus::quit_after_save(cx);
             }
             Err(err) => {
                 tracing::error!(error = %err, "update apply failed");
@@ -8085,9 +8142,30 @@ fn header_icon_button(
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        if self.window_close_pending && self.all_file_edits_flushed(cx) {
-            self.window_close_pending = false;
-            window.defer(cx, |window, _| window.remove_window());
+        if self.all_file_edits_flushed(cx)
+            && let Some(action) = self.pending_exit.take()
+        {
+            let shell = cx.weak_entity();
+            window.defer(cx, move |window, cx| {
+                if matches!(action, PendingExit::Quit) {
+                    crate::app_menus::request_quit(cx);
+                } else {
+                    shell
+                        .update(cx, |shell, cx| match action {
+                            PendingExit::CloseWindow => {
+                                if shell.prepare_window_close(cx) {
+                                    window.remove_window();
+                                }
+                            }
+                            PendingExit::RuntimeChange => shell.quit_for_runtime_change(cx),
+                            PendingExit::InstallUpdate(staged) => {
+                                shell.apply_staged_update(staged, cx)
+                            }
+                            PendingExit::Quit => unreachable!(),
+                        })
+                        .ok();
+                }
+            });
         }
         crate::transcript::record_view_frame("shell");
         self.viewport_width = f32::from(window.viewport_size().width);
@@ -9310,5 +9388,91 @@ mod tests {
         tween.started = std::time::Instant::now() - motion::COLLAPSE.total().mul_f32(2.0);
         assert_eq!(tween.current(), 0.0);
         assert!(!tween.animating());
+    }
+}
+
+#[cfg(test)]
+mod exit_regressions {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn lifecycle_actions_keep_pending_and_failed_file_saves_alive(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        for failed in [false, true] {
+            window
+                .update(cx, |shell, window, cx| {
+                    window.activate_window();
+                    let state = shell.state.clone();
+                    let files = cx.new(|cx| {
+                        let mut files = FilesSurface::new(
+                            state,
+                            "test".into(),
+                            false,
+                            1000,
+                            13.0,
+                            false,
+                            false,
+                            cx,
+                        );
+                        files.seed_pending_exit_test_document(failed);
+                        files
+                    });
+                    shell.files.insert("test".into(), files);
+                })
+                .unwrap();
+            cx.update(|cx| cx.dispatch_action(&crate::app_menus::Quit));
+            cx.run_until_parked();
+            window
+                .update(cx, |shell, _, cx| {
+                    assert!(matches!(shell.pending_exit, Some(PendingExit::Quit)));
+                    assert!(!shell.all_file_edits_flushed(cx));
+                    shell.cancel_file_close(RightSurface::Files, cx);
+                    assert!(shell.pending_exit.is_none());
+                })
+                .unwrap();
+            cx.update(|cx| cx.dispatch_action(&crate::app_menus::CloseWindow));
+            cx.run_until_parked();
+            window
+                .update(cx, |shell, _, cx| {
+                    assert!(matches!(shell.pending_exit, Some(PendingExit::CloseWindow)));
+                    shell.quit_for_runtime_change(cx);
+                    assert!(matches!(
+                        shell.pending_exit,
+                        Some(PendingExit::RuntimeChange)
+                    ));
+                    assert!(shell.runtime_change_task.is_none());
+                    shell.apply_staged_update(PathBuf::from("must-not-install"), cx);
+                    assert!(matches!(
+                        shell.pending_exit,
+                        Some(PendingExit::InstallUpdate(_))
+                    ));
+                    assert!(matches!(shell.update_flow, UpdateFlow::Idle));
+                    shell.cancel_file_close(RightSurface::Files, cx);
+                    assert!(shell.pending_exit.is_none());
+                })
+                .unwrap();
+        }
     }
 }

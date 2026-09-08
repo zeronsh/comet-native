@@ -908,14 +908,53 @@ impl UiSettings {
                         .and_then(serde_json::Value::as_object_mut)
                         && !keymap.contains_key("saveFile")
                     {
-                        // Migrate only the old defaults; recorded custom shortcuts survive.
-                        for (field, old, new) in [
-                            ("toggleSidebar", "mod-s", "mod-b"),
-                            ("toggleChanges", "mod-b", "mod-r"),
+                        // Reserve customized chords before assigning any new defaults.
+                        // An older map may already use Cmd+S/B/R for another action.
+                        let mut migrating =
+                            vec![(ShortcutId::SaveFile, "saveFile", "", "mod-shift-s")];
+                        for (id, field, old, fallback) in [
+                            (
+                                ShortcutId::ToggleSidebar,
+                                "toggleSidebar",
+                                "mod-s",
+                                "mod-shift-b",
+                            ),
+                            (
+                                ShortcutId::ToggleChanges,
+                                "toggleChanges",
+                                "mod-b",
+                                "mod-shift-r",
+                            ),
                         ] {
-                            if keymap.get(field).and_then(serde_json::Value::as_str) == Some(old) {
-                                keymap.insert(field.into(), serde_json::json!(new));
+                            if keymap
+                                .get(field)
+                                .and_then(serde_json::Value::as_str)
+                                .unwrap_or(old)
+                                == old
+                            {
+                                migrating.push((id, field, old, fallback));
                             }
+                        }
+                        for (_, field, _, _) in &migrating {
+                            keymap.insert((*field).into(), serde_json::json!(""));
+                        }
+                        let mut resolved: KeymapConfig =
+                            serde_json::from_value(serde_json::Value::Object(keymap.clone()))?;
+                        for (id, field, old, fallback) in migrating {
+                            let combo = [id.default_combo(), old, fallback]
+                                .into_iter()
+                                .find(|candidate| {
+                                    !candidate.is_empty()
+                                        && !ShortcutId::ALL.iter().any(|other| {
+                                            let existing = resolved.get(*other);
+                                            !existing.is_empty()
+                                                && platform_combo(existing)
+                                                    == platform_combo(candidate)
+                                        })
+                                })
+                                .unwrap_or("");
+                            resolved.set(id, combo.into());
+                            keymap.insert(field.into(), serde_json::json!(combo));
                         }
                     }
                     serde_json::from_value::<UiSettings>(value)
@@ -1370,6 +1409,36 @@ mod tests {
         settings.keymap.toggle_sidebar = "mod-s".into();
         settings.save(dir.path()).unwrap();
         assert_eq!(UiSettings::load(dir.path()).keymap, settings.keymap);
+    }
+
+    #[test]
+    fn legacy_migration_reserves_custom_chords_and_survives_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        for (custom, expected_save) in [
+            ("mod-s", "mod-shift-s"),
+            ("mod-b", "mod-s"),
+            ("mod-r", "mod-s"),
+        ] {
+            std::fs::write(UiSettings::path(dir.path()), serde_json::json!({
+                "keymap": {"toggleSidebar": "mod-shift-b", "toggleChanges": "mod-b", "newSession": custom}
+            }).to_string()).unwrap();
+            let loaded = UiSettings::load(dir.path());
+            assert_eq!(loaded.keymap.new_session, custom);
+            assert_eq!(loaded.keymap.toggle_sidebar, "mod-shift-b");
+            assert_eq!(loaded.keymap.save_file, expected_save);
+            assert!(conflicted_shortcuts(&loaded.keymap).is_empty());
+            loaded.save(dir.path()).unwrap();
+            assert_eq!(UiSettings::load(dir.path()).keymap, loaded.keymap);
+        }
+        // If every candidate is already custom-bound, leave the new action
+        // unbound rather than steal a working shortcut from another action.
+        std::fs::write(UiSettings::path(dir.path()), serde_json::json!({
+            "keymap": {"toggleSidebar": "mod-shift-s", "newSession": "mod-s", "toggleChanges": "mod-r"}
+        }).to_string()).unwrap();
+        let loaded = UiSettings::load(dir.path());
+        assert_eq!(loaded.keymap.save_file, "");
+        assert_eq!(loaded.keymap.new_session, "mod-s");
+        assert!(conflicted_shortcuts(&loaded.keymap).is_empty());
     }
 
     #[test]

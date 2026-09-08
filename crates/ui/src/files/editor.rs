@@ -58,7 +58,7 @@ pub(super) fn new_file_editor(
             .default_value(text)
     });
     let surface = cx.weak_entity();
-    let menu_editor = editor.clone();
+    let menu_editor = editor.downgrade();
     editor.update(cx, |state, cx| {
         state.set_editor_style(super::editor_adapter::editor_style(theme));
         state.set_readonly(false, cx);
@@ -67,10 +67,13 @@ pub(super) fn new_file_editor(
                 .read_from_clipboard()
                 .and_then(|item| item.text())
                 .is_some();
+            let Some(menu_editor) = menu_editor.upgrade() else {
+                return;
+            };
             surface
                 .update(cx, |surface, cx| {
                     surface.open_editor_context_menu(
-                        menu_editor.clone(),
+                        menu_editor,
                         EditorMenuAvailability::new(capabilities, clipboard_has_text),
                         position,
                         cx,
@@ -172,5 +175,37 @@ mod tests {
                 paste: false,
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod lifetime_tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[gpui::test]
+    fn dropping_file_editor_releases_entity_with_context_menu(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| crate::state::AppState::new());
+            FilesSurface::new(state, "test".into(), false, 1000, 13.0, false, false, cx)
+        });
+        let weak = window
+            .update(cx, |_, window, cx| {
+                let theme = Theme::of(cx).clone();
+                let editor = new_file_editor("unsaved text", "test.rs", false, &theme, window, cx);
+                editor.downgrade()
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.update(|_| {
+            assert!(
+                weak.upgrade().is_none(),
+                "closed editor retained by its own menu callback"
+            )
+        });
     }
 }
