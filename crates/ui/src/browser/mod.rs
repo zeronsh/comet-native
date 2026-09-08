@@ -484,6 +484,49 @@ impl BrowserSurface {
 mod tests {
     use super::*;
     #[gpui::test]
+    fn address_enter_rejects_unsupported_schemes_and_escape_restores_url(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            crate::composer::init(cx);
+            cx.set_global(crate::theme::Theme::default());
+            bind_keys(cx, &crate::settings::KeymapConfig::default());
+        });
+        let window = cx.add_window(|window, cx| {
+            BrowserSurface::new(BrowserContext::default(), false, window, cx)
+        });
+        window
+            .update(cx, |browser, window, cx| {
+                browser.page.url = Some("https://example.com/".into());
+                browser.address.update(cx, |input, cx| {
+                    input.set_text("javascript:alert(1)", cx)
+                });
+                browser.focus_address(window, cx);
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "enter");
+        window
+            .update(cx, |browser, _, _| {
+                assert!(
+                    browser.validation.is_some(),
+                    "Enter did not reach browser address handling"
+                );
+                assert_eq!(browser.page.url.as_deref(), Some("https://example.com/"));
+            })
+            .unwrap();
+        cx.simulate_keystrokes(window.into(), "escape");
+        window
+            .update(cx, |browser, window, cx| {
+                assert!(browser.validation.is_none());
+                assert_eq!(browser.address.read(cx).text(), "https://example.com/");
+                assert!(browser.focus.is_focused(window));
+                window.blur();
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn customized_app_shortcuts_win_over_browser_defaults(cx: &mut gpui::TestAppContext) {
         cx.update(|cx| {
             let mut config = crate::settings::KeymapConfig::default();

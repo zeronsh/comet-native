@@ -2239,9 +2239,7 @@ impl Shell {
         cx.notify();
     }
 
-    /// The picker's Diffs card / the `+` menu's Diff row: every click opens a
-    /// FRESH diff tab with its own scope/base selection (multiple diff
-    /// panels, user request).
+    /// Browser tabs are independent instances owned by the current session.
     fn add_browser_surface(
         &mut self,
         url: Option<String>,
@@ -2296,6 +2294,9 @@ impl Shell {
         });
     }
 
+    /// The picker's Diffs card / the `+` menu's Diff row: every click opens a
+    /// FRESH diff tab with its own scope/base selection (multiple diff
+    /// panels, user request).
     fn add_diff_surface(&mut self, cx: &mut Context<Self>) {
         let changes = cx.new(|cx| Changes::new(self.state.clone(), cx));
         self.register_diff_surface(changes, cx);
