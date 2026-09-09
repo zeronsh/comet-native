@@ -274,6 +274,73 @@ fn main() -> anyhow::Result<()> {
                     }
                     anyhow::ensure!(std::fs::metadata(output.join("browser-hover.mov"))?.len() > 10000, "screen recording is empty");
                 }
+                #[cfg(target_os = "macos")]
+                {
+                    first.read_with(cx, |b,_| b.fixture_eval("(() => {let grid=document.createElement('div'); grid.style='height:140px;background:repeating-conic-gradient(#172f25 0% 25%,#f5f0df 0% 50%) 0 0/16px 16px'; document.body.prepend(grid);})()"));
+                    pause(cx,300).await;
+                    let mut layout_video = std::process::Command::new("/usr/sbin/screencapture").args(["-v","-V","24","-C","-k","-D","1"]).arg(output.join("browser-layout.mov")).spawn()?;
+                    pause(cx,800).await;
+                    let before=first.read_with(cx,|b,_|b.fixture_stats());
+                    let (left,top)=first.read_with(cx,|b,_|b.fixture_origin());
+                    // Real resize-handle drag, including crossing into the native page.
+                    let start=gpui::point(px(left-2.),px(top+120.));
+                    window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
+                    for delta in [10.,30.,60.,100.,140.,180.,140.,100.,60.,20.,-20.,-60.,-100.,-140.,-180.,-140.,-100.,-60.,-20.,0.] {
+                        let pos=gpui::point(px(left-2.+delta),start.y);
+                        first.read_with(cx,|b,_|b.fixture_move_cursor(f32::from(pos.x) as f64,f32::from(pos.y) as f64));
+                        window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent{position:pos,pressed_button:Some(gpui::MouseButton::Left),modifiers:Default::default()}),cx);})?;
+                        pause(cx,100).await;
+                        anyhow::ensure!(cx.update(|cx|cx.has_active_drag()),"resize did not start a real GPUI drag");
+                        let (layout,native,clip)=first.read_with(cx,|b,_|b.fixture_geometry());
+                        anyhow::ensure!((layout-native).abs()<1.1 && clip<=layout+1.,"native browser geometry diverged while resizing");
+                        anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_stats()==before),"resize hid the live browser");
+                    }
+                    window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
+                    pause(cx,250).await;
+                    anyhow::ensure!(!cx.update(|cx|cx.has_active_drag()),"resize drag did not end");
+                    // CSS viewport must follow the native frame, rather than a scaled image.
+                    first.read_with(cx,|b,_|b.fixture_eval("document.title='Viewport:'+window.innerWidth"));
+                    let deadline=std::time::Instant::now()+Duration::from_secs(5);
+                    loop {
+                        let title=first.read_with(cx,|b,_|b.page.title.clone());
+                        if let Some(width)=title.strip_prefix("Viewport:").and_then(|v|v.parse::<f32>().ok()) {
+                            anyhow::ensure!((width-first.read_with(cx,|b,_|b.fixture_geometry().0)).abs()<2.,"CSS viewport did not reflow"); break;
+                        }
+                        anyhow::ensure!(std::time::Instant::now()<deadline,"viewport measurement timed out");pause(cx,50).await;
+                    }
+                    capture(&output,"browser-resize-dark")?;
+                    // Left sidebar does not occlude the browser at any point.
+                    for _ in 0..4 {
+                        window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(false,cx))?;
+                        for _ in 0..20 {pause(cx,16).await;anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_stats()==before),"left sidebar toggle hid the browser");}
+                    }
+                    // Reverse the right sidebar mid-animation. It must remain
+                    // live inside a narrowing mask, without bleeding into chat.
+                    for _ in 0..3 {
+                        window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(true,cx))?;
+                        pause(cx,70).await;
+                        let (width,_,clip)=first.read_with(cx,|b,_|b.fixture_geometry());
+                        anyhow::ensure!(clip<width && first.read_with(cx,|b,_|b.fixture_native_visible()),"closing sidebar did not clip the live browser");
+                        window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(true,cx))?;
+                        pause(cx,350).await;
+                        anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible()),"interrupted toggle lost browser visibility");
+                    }
+                    window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(true,cx))?;
+                    pause(cx,350).await;
+                    anyhow::ensure!(!first.read_with(cx,|b,_|b.fixture_native_visible()),"closed sidebar retained native content");
+                    window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(true,cx))?;
+                    pause(cx,350).await;
+                    first.read_with(cx,|b,_|b.fixture_eval("document.title='Fieldnotes'"));
+                    capture(&output,"browser-blur-baseline-dark")?;
+                    window.update(cx,|s,_,cx|s.fixture_browser_menu(true,cx))?;
+                    pause(cx,1000).await;
+                    capture(&output,"browser-blur-dark")?;
+                    window.update(cx,|s,_,cx|s.fixture_browser_menu(false,cx))?;
+                    pause(cx,500).await;
+                    let deadline=std::time::Instant::now()+Duration::from_secs(30);
+                    loop {if let Some(status)=layout_video.try_wait()? {anyhow::ensure!(status.success(),"layout recording failed");break;}anyhow::ensure!(std::time::Instant::now()<deadline,"layout recording timed out");pause(cx,100).await;}
+                    anyhow::ensure!(std::fs::metadata(output.join("browser-layout.mov"))?.len()>10000,"layout recording is empty");
+                }
                 for width in [380., 640., 520.] {
                     window.update(cx, |shell, _, cx| shell.fixture_resize_browser(width, cx))?;
                     pause(cx, 150).await;

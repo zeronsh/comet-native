@@ -307,20 +307,16 @@ impl Render for BrowserSurface {
             if self.page.error.is_some() {
                 body.child(self.empty_body(&theme, cx))
             } else {
-                let snapshot = native.snapshot();
                 let native = native.handle();
-                body.when_some(snapshot, |body, image| {
-                    body.child(
-                        gpui::img(image)
-                            .size_full()
-                            .object_fit(gpui::ObjectFit::Fill),
-                    )
-                })
-                .child(
+                body.child(
                     gpui::canvas(
                         |_, _, _| (),
-                        move |bounds, _, window, _| {
-                            native.borrow_mut().sync(bounds, window.scale_factor());
+                        move |bounds, _, window, cx| {
+                            native.borrow_mut().sync(
+                                bounds,
+                                window.content_mask().bounds,
+                                cx.has_active_drag(),
+                            );
                         },
                     )
                     .absolute()

@@ -6811,7 +6811,7 @@ impl Shell {
     fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let bg = theme.bg;
-        let content: AnyElement = if self.right_pane_open(cx) {
+        let content: AnyElement = if self.right_pane_open(cx) || self.tween_active(self.right_tween) {
             match self.resolved_right_active(cx) {
                 RightSurface::Files => {
                     let key = self.panel_key(cx);
@@ -8357,12 +8357,10 @@ impl Render for Shell {
         let browser_active = matches!(gate, GatePhase::Ready)
             && !restart_required
             && matches!(self.route, Route::Chat)
-            && self.right_pane_open(cx);
-        // Deferred GPUI menus, tooltips and prompts composite over the live
-        // page. Only transitions that clip/move the native body need snapshots.
-        let browser_covered = self.tween_active(self.right_tween)
-            || self.tween_active(self.sidebar_tween)
-            || cx.has_active_drag();
+            && (self.right_pane_open(cx) || self.tween_active(self.right_tween));
+        // Native clipping follows the animated GPUI mask. Drags only transfer
+        // pointer ownership; the browser continues rendering and reflowing.
+        let browser_covered = cx.has_active_drag();
         let selected_surface = self.resolved_right_active(cx);
         for (id, browser) in &self.browsers {
             let presentation = crate::browser::model::presentation(
@@ -9779,6 +9777,9 @@ impl Shell {
         self.route = Route::Settings(SettingsSection::Devices);
         window.blur();
         cx.notify();
+    }
+    pub fn fixture_toggle_sidebar(&mut self, right: bool, cx: &mut Context<Self>) {
+        if right { self.toggle_right_pane(cx); } else { self.toggle_sidebar(cx); }
     }
     pub fn fixture_resize_browser(&mut self, width: f32, cx: &mut Context<Self>) {
         self.settings.right_pane_width = width;

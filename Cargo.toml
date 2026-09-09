@@ -62,15 +62,15 @@ loro-protocol = "0.3"
 # stopped vending CABackdropLayer for Selection — window blur went dead);
 # b68970e rasterizes BackdropBlur in the wgpu renderer (frosted floats on
 # Linux — the Metal path's snapshot/blur/composite, ported).
-gpui = { git = "https://github.com/zeronsh/zui", rev = "73633fb1227eb694d41f0a9a75e5e5a0c7ada03a" }
-gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "73633fb1227eb694d41f0a9a75e5e5a0c7ada03a", features = [
+gpui = { git = "https://github.com/zeronsh/zui", rev = "1750e5e5a88bca517845cb606f2b4f26104f3ee4" }
+gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "1750e5e5a88bca517845cb606f2b4f26104f3ee4", features = [
     "wayland",
     "x11",
     "font-kit",
     "runtime_shaders",
 ] }
-gpui_tokio = { git = "https://github.com/zeronsh/zui", rev = "73633fb1227eb694d41f0a9a75e5e5a0c7ada03a" }
-gpui-base = { git = "https://github.com/zeronsh/gpui-component", rev = "7e863cc27ea5ad626e09374e3beb826af55d7e98" }
+gpui_tokio = { git = "https://github.com/zeronsh/zui", rev = "1750e5e5a88bca517845cb606f2b4f26104f3ee4" }
+gpui-base = { git = "https://github.com/zeronsh/gpui-component", rev = "b2ce6e61ff5b1094c80c9f208b522e77513b8cf3" }
 
 # diffs
 similar = "2"
