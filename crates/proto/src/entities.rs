@@ -8,6 +8,29 @@ use serde::{Deserialize, Serialize};
 
 use crate::{HarnessId, ReasoningLevel, SandboxLevel};
 
+/// A deliberately bounded sidebar preference: one ordered list is the full
+/// pin membership and order, so a cross-device write converges atomically.
+pub const MAX_SIDEBAR_PINS: usize = 200;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarPreferences {
+    #[serde(default)]
+    pub pinned_session_ids: Vec<String>,
+}
+
+/// Watch payload for sidebar preferences. `initialized` distinguishes a
+/// missing row (eligible for one-time local migration) from an explicit empty
+/// list, while `synced` prevents migration before authoritative state lands.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SidebarPreferencesState {
+    pub synced: bool,
+    pub initialized: bool,
+    #[serde(default)]
+    pub pinned_session_ids: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Device {

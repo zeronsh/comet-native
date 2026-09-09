@@ -11,7 +11,277 @@
 use super::*;
 use crate::pickers::{breadcrumbs, browser_rows, completion_prefix_len, parent_path};
 use gpui::FocusHandle;
+use std::collections::HashSet;
 use zeron_proto::{ChatIndicator, Device, DriveEntry, DriveListing, FolderListing, Space};
+
+/// Promote the user's ordered pins above the untouched activity projection.
+/// Every unpinned id keeps exactly the relative order supplied by recency.
+pub(super) fn project_pinned_first(recency_ids: &[String], pinned_ids: &[String]) -> Vec<String> {
+    let active: HashSet<&str> = recency_ids.iter().map(String::as_str).collect();
+    let pinned: HashSet<&str> = pinned_ids.iter().map(String::as_str).collect();
+    let mut seen = HashSet::new();
+    pinned_ids
+        .iter()
+        .filter(|id| active.contains(id.as_str()))
+        .chain(
+            recency_ids
+                .iter()
+                .filter(|id| !pinned.contains(id.as_str())),
+        )
+        .filter(|id| seen.insert(id.as_str()))
+        .cloned()
+        .collect()
+}
+
+/// Reorder the visible pinned projection while preserving hidden or archived
+/// pins in their existing global slots.
+pub(super) fn reorder_visible_pins(
+    pinned_ids: &[String],
+    visible_ids: &[String],
+    from: usize,
+    to: usize,
+) -> Vec<String> {
+    if from >= visible_ids.len() || to >= visible_ids.len() || from == to {
+        return pinned_ids.to_vec();
+    }
+
+    let mut reordered = visible_ids.to_vec();
+    let moved = reordered.remove(from);
+    reordered.insert(to, moved);
+    let visible: HashSet<&str> = visible_ids.iter().map(String::as_str).collect();
+    let mut replacements = reordered.into_iter();
+    pinned_ids
+        .iter()
+        .map(|id| {
+            if visible.contains(id.as_str()) {
+                replacements.next().unwrap_or_else(|| id.clone())
+            } else {
+                id.clone()
+            }
+        })
+        .collect()
+}
+
+/// Remove only ids absent from the workspace. Archived sessions remain known
+/// so unarchiving restores their local pin and position.
+pub(super) fn retain_known_pins(
+    pinned_ids: &mut Vec<String>,
+    known_chat_ids: &HashSet<String>,
+) -> bool {
+    let before = pinned_ids.len();
+    let mut seen = HashSet::new();
+    pinned_ids.retain(|id| known_chat_ids.contains(id) && seen.insert(id.clone()));
+    pinned_ids.len() != before
+}
+
+pub(super) fn pinned_session_drop_index(rel_y: f32, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    let height = count as f32 * super::SIDEBAR_SESSION_SLOT - super::SIDEBAR_LIST_GAP;
+    (rel_y >= 0.0 && rel_y <= height)
+        .then(|| ((rel_y / super::SIDEBAR_SESSION_SLOT).floor() as usize).min(count - 1))
+}
+
+/// Keep a sidebar-wide drag physically bounded to the pinned section. The
+/// strict drop helper above still identifies whether the pointer is actually
+/// inside the section; this helper supplies the nearest valid pinned slot
+/// while the pointer is over regular sessions.
+pub(super) fn pinned_session_clamped_index(rel_y: f32, count: usize) -> Option<usize> {
+    if count == 0 {
+        return None;
+    }
+    Some(((rel_y.max(0.0) / super::SIDEBAR_SESSION_SLOT).floor() as usize).min(count - 1))
+}
+
+fn pinned_session_is_draggable(count: usize) -> bool {
+    count > 1
+}
+
+pub(super) fn pinned_drag_scroll_delta(
+    pointer_y: f32,
+    viewport_top: f32,
+    viewport_bottom: f32,
+) -> f32 {
+    if viewport_bottom <= viewport_top {
+        return 0.0;
+    }
+    if pointer_y < viewport_top + super::SIDEBAR_DRAG_SCROLL_BAND {
+        let penetration = ((viewport_top + super::SIDEBAR_DRAG_SCROLL_BAND - pointer_y)
+            / super::SIDEBAR_DRAG_SCROLL_BAND)
+            .clamp(0.0, 1.0);
+        -super::SIDEBAR_DRAG_SCROLL_MAX * penetration
+    } else if pointer_y > viewport_bottom - super::SIDEBAR_DRAG_SCROLL_BAND {
+        let penetration = ((pointer_y - (viewport_bottom - super::SIDEBAR_DRAG_SCROLL_BAND))
+            / super::SIDEBAR_DRAG_SCROLL_BAND)
+            .clamp(0.0, 1.0);
+        super::SIDEBAR_DRAG_SCROLL_MAX * penetration
+    } else {
+        0.0
+    }
+}
+
+#[cfg(test)]
+mod pinned_session_tests {
+    use super::{
+        pinned_drag_scroll_delta, pinned_drag_scroll_step, pinned_drag_snapshot_is_valid,
+        pinned_session_clamped_index, pinned_session_drop_index, pinned_session_is_draggable,
+        project_pinned_first, reorder_visible_pins, retain_known_pins,
+    };
+    use std::collections::HashSet;
+
+    fn ids(values: &[&str]) -> Vec<String> {
+        values.iter().map(|value| (*value).to_string()).collect()
+    }
+
+    #[test]
+    fn pins_lead_without_changing_unpinned_recency() {
+        let recency = ids(&["newest", "p2", "middle", "p1", "oldest"]);
+        assert_eq!(
+            project_pinned_first(&recency, &ids(&["p1", "p2"])),
+            ids(&["p1", "p2", "newest", "middle", "oldest"])
+        );
+    }
+
+    #[test]
+    fn missing_duplicate_and_archived_pins_do_not_disturb_regular_rows() {
+        let recency = ids(&["b", "a", "c"]);
+        assert_eq!(
+            project_pinned_first(&recency, &ids(&["archived", "a", "a"])),
+            ids(&["a", "b", "c"])
+        );
+    }
+
+    #[test]
+    fn filtered_pin_reorder_preserves_hidden_slots() {
+        let saved = ids(&["a1", "b1", "a2", "archived", "b2"]);
+        let visible = ids(&["a1", "a2"]);
+        assert_eq!(
+            reorder_visible_pins(&saved, &visible, 0, 1),
+            ids(&["a2", "b1", "a1", "archived", "b2"])
+        );
+    }
+
+    #[test]
+    fn pin_reorder_rejects_invalid_or_noop_moves() {
+        let saved = ids(&["a", "b"]);
+        assert_eq!(reorder_visible_pins(&saved, &saved, 0, 0), saved);
+        assert_eq!(reorder_visible_pins(&saved, &saved, 8, 0), saved);
+    }
+
+    #[test]
+    fn pin_cleanup_retains_archived_and_prunes_deleted() {
+        let mut saved = ids(&["active", "archived", "deleted", "active"]);
+        let known = HashSet::from(["active".to_string(), "archived".to_string()]);
+        assert!(retain_known_pins(&mut saved, &known));
+        assert_eq!(saved, ids(&["active", "archived"]));
+        assert!(!retain_known_pins(&mut saved, &known));
+    }
+
+    #[test]
+    fn pin_cleanup_for_one_profile_leaves_other_profiles_untouched() {
+        let mut settings = crate::settings::UiSettings::default();
+        settings
+            .sidebar_pins_mut("local".to_string())
+            .extend(ids(&["local-active", "local-deleted"]));
+        settings
+            .sidebar_pins_mut("synced:org-1:user-1".to_string())
+            .push("synced-pin".to_string());
+
+        let known = HashSet::from(["local-active".to_string()]);
+        assert!(retain_known_pins(
+            settings.sidebar_pins_mut("local".to_string()),
+            &known,
+        ));
+        assert_eq!(settings.sidebar_pins("local"), ["local-active"]);
+        assert_eq!(settings.sidebar_pins("synced:org-1:user-1"), ["synced-pin"]);
+    }
+
+    #[test]
+    fn pinned_drop_index_quantizes_clamps_and_rejects_outside() {
+        assert_eq!(pinned_session_drop_index(-1.0, 3), None);
+        assert_eq!(pinned_session_drop_index(0.0, 3), Some(0));
+        assert_eq!(
+            pinned_session_drop_index(super::super::SIDEBAR_SESSION_SLOT, 3),
+            Some(1)
+        );
+        assert_eq!(pinned_session_drop_index(500.0, 3), None);
+        assert_eq!(pinned_session_drop_index(0.0, 0), None);
+    }
+
+    #[test]
+    fn sidebar_wide_pin_drag_clamps_to_the_nearest_pinned_slot() {
+        assert_eq!(pinned_session_clamped_index(-50.0, 3), Some(0));
+        assert_eq!(
+            pinned_session_clamped_index(super::super::SIDEBAR_SESSION_SLOT, 3),
+            Some(1)
+        );
+        assert_eq!(pinned_session_clamped_index(500.0, 3), Some(2));
+        assert_eq!(pinned_session_clamped_index(0.0, 0), None);
+    }
+
+    #[test]
+    fn a_single_pin_does_not_start_a_drag() {
+        assert!(!pinned_session_is_draggable(0));
+        assert!(!pinned_session_is_draggable(1));
+        assert!(pinned_session_is_draggable(2));
+    }
+
+    #[test]
+    fn pinned_edge_scroll_is_proportional_and_lifecycle_bound() {
+        let top = 100.0;
+        let bottom = 300.0;
+        assert_eq!(pinned_drag_scroll_delta(200.0, top, bottom), 0.0);
+        assert_eq!(pinned_drag_scroll_delta(124.0, top, bottom), -6.0);
+        assert_eq!(pinned_drag_scroll_delta(276.0, top, bottom), 6.0);
+        assert_eq!(
+            pinned_drag_scroll_step(true, 4, 4, 20.0, 100.0, 6.0),
+            Some(26.0)
+        );
+        assert_eq!(pinned_drag_scroll_step(false, 4, 4, 20.0, 100.0, 6.0), None);
+        assert_eq!(pinned_drag_scroll_step(true, 3, 4, 20.0, 100.0, 6.0), None);
+    }
+
+    #[test]
+    fn pinned_drag_snapshot_requires_the_same_remote_order() {
+        let snapshot = ids(&["a", "b"]);
+        assert!(pinned_drag_snapshot_is_valid("a", &snapshot, &snapshot));
+        assert!(!pinned_drag_snapshot_is_valid(
+            "a",
+            &snapshot,
+            &ids(&["b", "a"])
+        ));
+        assert!(!pinned_drag_snapshot_is_valid(
+            "a",
+            &snapshot,
+            &ids(&["a"])
+        ));
+    }
+}
+
+pub(super) fn pinned_drag_scroll_step(
+    drag_active: bool,
+    loop_generation: u64,
+    drag_generation: u64,
+    current: f32,
+    max: f32,
+    delta: f32,
+) -> Option<f32> {
+    if !drag_active || loop_generation != drag_generation || delta == 0.0 {
+        return None;
+    }
+    let next = (current + delta).clamp(0.0, max.max(0.0));
+    (next != current).then_some(next)
+}
+
+pub(super) fn pinned_drag_snapshot_is_valid(
+    dragged_id: &str,
+    snapshot_ids: &[String],
+    current_ids: &[String],
+) -> bool {
+    snapshot_ids.iter().any(|id| id == dragged_id)
+        && snapshot_ids == current_ids
+}
 
 struct ActiveChatRow {
     status: ChatIndicator,
@@ -363,6 +633,9 @@ impl Shell {
     /// new-session canvas the space context follows the filter — the canvas
     /// default is "the space you're looking at".
     pub(super) fn set_space_filter(&mut self, filter: Option<String>, cx: &mut Context<Self>) {
+        if self.settings.space_filter != filter {
+            self.cancel_pinned_session_drag(cx);
+        }
         self.settings.space_filter = filter.clone();
         if let Some(space_id) = filter
             && self.state.read(cx).selected_chat.is_none()
@@ -388,6 +661,7 @@ impl Shell {
     /// Land in a just-added space: filter the sidebar to it and open the
     /// new-session canvas there.
     pub(super) fn land_in_space(&mut self, space_id: String, cx: &mut Context<Self>) {
+        self.cancel_pinned_session_drag(cx);
         self.route = Route::Chat;
         self.settings.space_filter = Some(space_id.clone());
         self.settings.last_space_id = Some(space_id.clone());
@@ -400,6 +674,264 @@ impl Shell {
     }
 
     // ---- sidebar sections ----
+
+    pub(super) fn update_pinned_session_drag(
+        &mut self,
+        payload: &PinnedSessionDrag,
+        over: usize,
+        cx: &mut Context<Self>,
+    ) {
+        if self.active_sidebar_pin_profile_key(cx).as_deref() != Some(&payload.profile_key) {
+            self.cancel_pinned_session_drag(cx);
+            return;
+        }
+        let Some(from) = payload
+            .visible_ids
+            .iter()
+            .position(|id| id == &payload.chat_id)
+        else {
+            self.cancel_pinned_session_drag(cx);
+            return;
+        };
+        if payload.visible_ids.len() < 2 || over >= payload.visible_ids.len() {
+            self.cancel_pinned_session_drag(cx);
+            return;
+        }
+        match &mut self.pinned_session_drag {
+            Some(drag)
+                if drag.chat_id == payload.chat_id
+                    && drag.filter == payload.filter
+                    && drag.profile_key == payload.profile_key
+                    && drag.visible_ids.as_ref() == payload.visible_ids.as_ref()
+                    && drag.over != over =>
+            {
+                drag.prev_over = drag.over;
+                drag.over = over;
+                drag.epoch = drag.epoch.wrapping_add(1);
+                cx.notify();
+            }
+            Some(drag)
+                if drag.chat_id == payload.chat_id
+                    && drag.filter == payload.filter
+                    && drag.profile_key == payload.profile_key
+                    && drag.visible_ids.as_ref() == payload.visible_ids.as_ref() => {}
+            _ => {
+                self.pinned_session_drag_generation =
+                    self.pinned_session_drag_generation.wrapping_add(1);
+                self.pinned_session_drag = Some(PinnedSessionDragState {
+                    chat_id: payload.chat_id.clone(),
+                    visible_ids: payload.visible_ids.clone(),
+                    from,
+                    over,
+                    prev_over: from,
+                    epoch: 0,
+                    filter: payload.filter.clone(),
+                    profile_key: payload.profile_key.clone(),
+                    pointer_y: None,
+                    viewport_top: 0.0,
+                    viewport_bottom: 0.0,
+                    generation: self.pinned_session_drag_generation,
+                    autoscroll_active: false,
+                });
+                cx.notify();
+            }
+        }
+    }
+
+    pub(super) fn track_pinned_session_drag_pointer(
+        &mut self,
+        payload: PinnedSessionDrag,
+        pointer_y: f32,
+        viewport_top: f32,
+        viewport_bottom: f32,
+        cx: &mut Context<Self>,
+    ) {
+        let scroll_top = -f32::from(self.sidebar_scroll.offset().y);
+        let rel_y = pointer_y - viewport_top + scroll_top - super::SIDEBAR_LIST_PAD_TOP;
+        let inside_pinned_section =
+            pinned_session_drop_index(rel_y, payload.visible_ids.len()).is_some();
+        let Some(over) = pinned_session_clamped_index(rel_y, payload.visible_ids.len()) else {
+            if let Some(drag) = self.pinned_session_drag.as_mut() {
+                drag.pointer_y = None;
+                drag.autoscroll_active = false;
+            }
+            return;
+        };
+
+        self.update_pinned_session_drag(&payload, over, cx);
+        if !inside_pinned_section {
+            if let Some(drag) = self.pinned_session_drag.as_mut() {
+                drag.pointer_y = None;
+                drag.autoscroll_active = false;
+            }
+            return;
+        }
+        let delta = pinned_drag_scroll_delta(pointer_y, viewport_top, viewport_bottom);
+        let Some(drag) = self.pinned_session_drag.as_mut() else {
+            return;
+        };
+        drag.pointer_y = Some(pointer_y);
+        drag.viewport_top = viewport_top;
+        drag.viewport_bottom = viewport_bottom;
+        let should_start = delta != 0.0 && !drag.autoscroll_active;
+        let generation = drag.generation;
+        if should_start {
+            drag.autoscroll_active = true;
+            self.start_pinned_session_autoscroll(generation, cx);
+        }
+    }
+
+    fn start_pinned_session_autoscroll(&mut self, generation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(
+                        super::SIDEBAR_DRAG_SCROLL_FRAME_MS,
+                    ))
+                    .await;
+                let keep_running = this
+                    .update(cx, |shell, cx| {
+                        shell.pinned_session_autoscroll_tick(generation, cx)
+                    })
+                    .unwrap_or(false);
+                if !keep_running {
+                    break;
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn pinned_session_autoscroll_tick(&mut self, generation: u64, cx: &mut Context<Self>) -> bool {
+        let Some(drag) = self.pinned_session_drag.as_ref() else {
+            return false;
+        };
+        if drag.generation != generation || !cx.has_active_drag() {
+            if let Some(drag) = self.pinned_session_drag.as_mut() {
+                drag.autoscroll_active = false;
+            }
+            return false;
+        }
+        let Some(pointer_y) = drag.pointer_y else {
+            if let Some(drag) = self.pinned_session_drag.as_mut() {
+                drag.autoscroll_active = false;
+            }
+            return false;
+        };
+        let viewport_top = drag.viewport_top;
+        let viewport_bottom = drag.viewport_bottom;
+        let delta = pinned_drag_scroll_delta(pointer_y, viewport_top, viewport_bottom);
+        let scroll_top = -f32::from(self.sidebar_scroll.offset().y);
+        let max_scroll = f32::from(self.sidebar_scroll.max_offset().y);
+        let Some(next_scroll) = pinned_drag_scroll_step(
+            true,
+            generation,
+            drag.generation,
+            scroll_top,
+            max_scroll,
+            delta,
+        ) else {
+            if let Some(drag) = self.pinned_session_drag.as_mut() {
+                drag.autoscroll_active = false;
+            }
+            return false;
+        };
+
+        let rel_y = pointer_y - viewport_top + next_scroll - super::SIDEBAR_LIST_PAD_TOP;
+        let Some(over) = pinned_session_drop_index(rel_y, drag.visible_ids.len()) else {
+            if let Some(drag) = self.pinned_session_drag.as_mut() {
+                drag.autoscroll_active = false;
+            }
+            return false;
+        };
+
+        let offset = self.sidebar_scroll.offset();
+        self.sidebar_scroll
+            .set_offset(gpui::point(offset.x, px(-next_scroll)));
+        if let Some(drag) = self.pinned_session_drag.as_mut()
+            && drag.over != over
+        {
+            drag.prev_over = drag.over;
+            drag.over = over;
+            drag.epoch = drag.epoch.wrapping_add(1);
+        }
+        cx.notify();
+        true
+    }
+
+    pub(super) fn pinned_session_drag_is_valid(&self, cx: &App) -> bool {
+        let Some(drag) = self.pinned_session_drag.as_ref() else {
+            return true;
+        };
+        if drag.filter != self.settings.space_filter
+            || self.active_sidebar_pin_profile_key(cx).as_deref() != Some(&drag.profile_key)
+        {
+            return false;
+        }
+        let current_pins = self.sidebar_pins_for_profile(&drag.profile_key, cx);
+        let visible_ids: HashSet<String> = self
+            .state
+            .read(cx)
+            .overview_chats(Utc::now())
+            .into_iter()
+            .filter(|(_, chat)| match &drag.filter {
+                Some(space_id) => chat.space_id.as_deref() == Some(space_id.as_str()),
+                None => true,
+            })
+            .map(|(_, chat)| chat.id.clone())
+            .collect();
+        let current_ids = current_pins
+            .iter()
+            .filter(|id| visible_ids.contains(id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        pinned_drag_snapshot_is_valid(&drag.chat_id, drag.visible_ids.as_ref(), &current_ids)
+    }
+
+    pub(super) fn cancel_pinned_session_drag(&mut self, cx: &mut Context<Self>) {
+        if self.pinned_session_drag.take().is_some() {
+            self.pinned_session_drag_generation =
+                self.pinned_session_drag_generation.wrapping_add(1);
+            cx.notify();
+        }
+    }
+
+    pub(super) fn commit_pinned_session_drag(
+        &mut self,
+        payload: &PinnedSessionDrag,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.pinned_session_drag_is_valid(cx) {
+            self.cancel_pinned_session_drag(cx);
+            return;
+        }
+        let Some(drag) = self.pinned_session_drag.take() else {
+            return;
+        };
+        self.pinned_session_drag_generation = self.pinned_session_drag_generation.wrapping_add(1);
+        if drag.chat_id != payload.chat_id
+            || drag.filter != payload.filter
+            || drag.profile_key != payload.profile_key
+            || drag.visible_ids.as_ref() != payload.visible_ids.as_ref()
+        {
+            cx.notify();
+            return;
+        }
+        let Some(from) = drag.visible_ids.iter().position(|id| id == &drag.chat_id) else {
+            cx.notify();
+            return;
+        };
+        let to = drag.over.min(drag.visible_ids.len().saturating_sub(1));
+        let saved_pins = self.sidebar_pins_for_profile(&drag.profile_key, cx);
+        let next = reorder_visible_pins(&saved_pins, drag.visible_ids.as_ref(), from, to);
+        if next != saved_pins {
+            self.replace_sidebar_pins(drag.profile_key, next, cx);
+            self.sidebar_prev_order.clear();
+            self.sidebar_resort.clear();
+            self.sidebar_new_keys.clear();
+        }
+        cx.notify();
+    }
 
     /// The filter's display rows: "All projects", then spaces matching the
     /// search (ranked — `popover::filter_indices`), then "New project…".
@@ -1054,12 +1586,23 @@ impl Shell {
     }
 
     /// Flat top-to-bottom chat ids exactly as [`Self::render_active_rows`]
-    /// draws them — the user's sort, device grouping, and local-device
-    /// promotion applied. The jump shortcuts and session cycling read THIS
-    /// order (not the raw recency list) so keyboard order never drifts from
-    /// the screen.
+    /// draws them: pins first, then the user's sort, device grouping,
+    /// and local-device promotion. Jump shortcuts and session cycling read
+    /// this projection so keyboard order never drifts from the screen.
     pub(super) fn sidebar_visible_order(&self, cx: &Context<Self>) -> Vec<String> {
         let filter = self.settings.space_filter.clone();
+        let profile_key = self.active_sidebar_pin_profile_key(cx);
+        let saved_pins = self.active_sidebar_pins(cx);
+        let frozen_pinned = self
+            .pinned_session_drag
+            .as_ref()
+            .filter(|drag| {
+                drag.filter == filter && profile_key.as_deref() == Some(&drag.profile_key)
+            })
+            .map(|drag| drag.visible_ids.clone());
+        let pinned_order = frozen_pinned
+            .as_ref()
+            .map_or(saved_pins.as_slice(), |ids| ids.as_slice());
         let state = self.state.read(cx);
         let mut chats: Vec<zeron_proto::Chat> = state
             .sidebar_chats(Utc::now(), filter.as_deref())
@@ -1067,36 +1610,47 @@ impl Shell {
             .map(|(_, chat)| chat.clone())
             .collect();
         chats.sort_by(|left, right| compare_sidebar_chats(self.settings.sidebar_sort, left, right));
-        if self.settings.sidebar_organization != SidebarOrganization::ByDevice {
-            return chats.into_iter().map(|chat| chat.id).collect();
-        }
-        let mut groups: Vec<(Option<(String, String)>, Vec<zeron_proto::Chat>)> = Vec::new();
-        for chat in chats {
-            let key = Some((chat.device_id.clone(), String::new()));
-            if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &key) {
-                existing.push(chat);
-            } else {
-                groups.push((key, vec![chat]));
+        let ordered = if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
+            let mut groups: Vec<(Option<(String, String)>, Vec<zeron_proto::Chat>)> = Vec::new();
+            for chat in chats {
+                let key = Some((chat.device_id.clone(), String::new()));
+                if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &key) {
+                    existing.push(chat);
+                } else {
+                    groups.push((key, vec![chat]));
+                }
             }
-        }
-        promote_local_device_group(&mut groups, state.local_device_id.as_deref());
-        groups
-            .into_iter()
-            .flat_map(|(_, rows)| rows)
-            .map(|chat| chat.id)
-            .collect()
+            promote_local_device_group(&mut groups, state.local_device_id.as_deref());
+            groups
+                .into_iter()
+                .flat_map(|(_, rows)| rows)
+                .map(|chat| chat.id)
+                .collect::<Vec<_>>()
+        } else {
+            chats.into_iter().map(|chat| chat.id).collect()
+        };
+        project_pinned_first(&ordered, pinned_order)
     }
 
-    /// The sidebar's Sessions list: every session (idle included) of the
-    /// filter space — or all spaces under "All" — attention-sorted. Rows are
-    /// keyed for the FLIP resort glide.
+    /// Pinned sessions form a manually ordered section above the configured
+    /// projection. Unpinned rows retain the selected automatic sort and any
+    /// device grouping; all rows remain keyed for the FLIP resort glide.
     pub(super) fn render_active_rows(
         &mut self,
         theme: &Theme,
         cx: &mut Context<Self>,
-    ) -> Vec<(String, f32, AnyElement)> {
+    ) -> SidebarSessionRows {
         let now = Utc::now();
         let filter = self.settings.space_filter.clone();
+        let profile_key = self.active_sidebar_pin_profile_key(cx);
+        let saved_pins = self.active_sidebar_pins(cx);
+        let frozen_pinned = self
+            .pinned_session_drag
+            .as_ref()
+            .filter(|drag| {
+                drag.filter == filter && profile_key.as_deref() == Some(&drag.profile_key)
+            })
+            .map(|drag| drag.visible_ids.clone());
         let mut rows: Vec<ActiveChatRow> = {
             let state = self.state.read(cx);
             let mut chats: Vec<_> = state
@@ -1160,18 +1714,56 @@ impl Shell {
             }
         }
 
-        let mut groups: Vec<(Option<(String, String)>, Vec<ActiveChatRow>)> = Vec::new();
-        for row in rows {
-            if let Some((_, existing)) = groups.iter_mut().find(|(group, _)| group == &row.group) {
+        let pinned_order = frozen_pinned
+            .as_ref()
+            .map_or(saved_pins.as_slice(), |ids| ids.as_slice());
+        let base_ids: Vec<String> = rows.iter().map(|row| row.chat.id.clone()).collect();
+        let ordered_ids = project_pinned_first(&base_ids, pinned_order);
+        let rank: std::collections::HashMap<&str, usize> = ordered_ids
+            .iter()
+            .enumerate()
+            .map(|(ix, id)| (id.as_str(), ix))
+            .collect();
+        rows.sort_by_key(|row| {
+            rank.get(row.chat.id.as_str())
+                .copied()
+                .unwrap_or(usize::MAX)
+        });
+        let active: HashSet<&str> = base_ids.iter().map(String::as_str).collect();
+        let pinned_count = pinned_order
+            .iter()
+            .filter(|id| active.contains(id.as_str()))
+            .collect::<HashSet<_>>()
+            .len();
+        let regular_rows = rows.split_off(pinned_count);
+        let pinned_rows = rows;
+        let visible_pinned_ids = std::sync::Arc::new(
+            pinned_rows
+                .iter()
+                .map(|row| row.chat.id.clone())
+                .collect::<Vec<_>>(),
+        );
+
+        let mut regular_groups: Vec<(Option<(String, String)>, Vec<ActiveChatRow>)> = Vec::new();
+        for row in regular_rows {
+            if let Some((_, existing)) = regular_groups
+                .iter_mut()
+                .find(|(group, _)| group == &row.group)
+            {
                 existing.push(row);
             } else {
-                groups.push((row.group.clone(), vec![row]));
+                regular_groups.push((row.group.clone(), vec![row]));
             }
         }
         if self.settings.sidebar_organization == SidebarOrganization::ByDevice {
             let local_device_id = self.state.read(cx).local_device_id.clone();
-            promote_local_device_group(&mut groups, local_device_id.as_deref());
+            promote_local_device_group(&mut regular_groups, local_device_id.as_deref());
         }
+        let mut sections = Vec::with_capacity(regular_groups.len() + usize::from(pinned_count > 0));
+        if !pinned_rows.is_empty() {
+            sections.push((None, pinned_rows));
+        }
+        sections.extend(regular_groups);
 
         let selected = self.state.read(cx).selected_chat.clone();
         // Re-checked at render so the chips drop the FRAME a popover opens,
@@ -1183,7 +1775,7 @@ impl Shell {
         // chip always names the key that opens its row.
         let mut slot = 0usize;
         let mut rendered = Vec::new();
-        for (group, rows) in groups {
+        for (group, rows) in sections {
             let mut rendered_rows = Vec::with_capacity(rows.len());
             for row in rows {
                 let ActiveChatRow {
@@ -1211,6 +1803,16 @@ impl Shell {
                 } else {
                     None
                 };
+                let drag = (slot < pinned_count && pinned_session_is_draggable(pinned_count))
+                    .then(|| {
+                        profile_key.as_ref().map(|profile_key| PinnedSessionDrag {
+                            chat_id: chat.id.clone(),
+                            visible_ids: visible_pinned_ids.clone(),
+                            filter: filter.clone(),
+                            profile_key: profile_key.clone(),
+                        })
+                    })
+                    .flatten();
                 slot += 1;
                 let element = self.render_chat_row(
                     chat.id.clone(),
@@ -1226,6 +1828,7 @@ impl Shell {
                     status,
                     is_selected,
                     false,
+                    drag,
                     jump_label,
                     theme,
                     cx,
@@ -1300,7 +1903,10 @@ impl Shell {
                 .into_any_element();
             rendered.push((format!("g:{collapse_key}"), height, element));
         }
-        rendered
+        SidebarSessionRows {
+            rows: rendered,
+            pinned_count,
+        }
     }
 
     /// The sidebar's archived shelf — a direct port of t3code's settled

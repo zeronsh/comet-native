@@ -26,6 +26,7 @@ struct SpaceView: View {
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
                 .listRowInsets(EdgeInsets(top: 1, leading: 12, bottom: 1, trailing: 12))
+                .sessionPinAction(chat: chat, model: model)
                 .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                     Button {
                         withAnimation(Motion.resort) {

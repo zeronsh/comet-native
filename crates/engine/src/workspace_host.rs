@@ -4,7 +4,8 @@
 //! (`/registry/{orgId}/ws` → room `reg1/{orgId}/{userId}`, offline-tolerant —
 //! spaces/sessions are private to their owner, never org-visible), the device
 //! registry row for THIS device, and the typed watch channels the
-//! WatchChats/WatchDevices/WatchSessions RPC streams are fed from.
+//! WatchChats/WatchDevices/WatchSessions/WatchSidebarPreferences RPC streams
+//! are fed from.
 //!
 //! Writer discipline (kept from the doc schema): this host writes its own device row,
 //! its own session-status rows, and rows for chats it hosts; renames/archives are LWW
@@ -26,7 +27,7 @@ use chrono::Utc;
 use tokio::sync::watch;
 
 use zeron_doc::{DeletedSpace, REGISTRY_DOC_ID, RegistryDoc, WorkspaceDoc};
-use zeron_proto::{Chat, ChatConfig, Device, Session, Space};
+use zeron_proto::{Chat, ChatConfig, Device, Session, SidebarPreferencesState, Space};
 use zeron_sync::{DocsStore, RegistryClient, RegistryTuning};
 
 use crate::doc_host::EdgeConfig;
@@ -158,6 +159,7 @@ struct WorkspaceHostInner {
     devices_tx: watch::Sender<Vec<Device>>,
     sessions_tx: watch::Sender<Vec<Session>>,
     spaces_tx: watch::Sender<Vec<Space>>,
+    sidebar_preferences_tx: watch::Sender<SidebarPreferencesState>,
     room: Mutex<Option<Arc<RegistryClient>>>,
     /// Bumped on every registry change (local mutation or applied server
     /// frame) — drives republish + the snapshot debounce in `workspace_task`.
@@ -275,6 +277,14 @@ impl WorkspaceHost {
         let (devices_tx, _) = watch::channel(state.devices);
         let (sessions_tx, _) = watch::channel(state.sessions);
         let (spaces_tx, _) = watch::channel(state.spaces);
+        let preferences = doc.sidebar_preferences();
+        let (sidebar_preferences_tx, _) = watch::channel(SidebarPreferencesState {
+            synced: false,
+            initialized: preferences.is_some(),
+            pinned_session_ids: preferences
+                .map(|preferences| preferences.pinned_session_ids)
+                .unwrap_or_default(),
+        });
         let (changed_tx, changed_rx) = watch::channel(0u64);
 
         let host = Self {
@@ -286,6 +296,7 @@ impl WorkspaceHost {
                 devices_tx,
                 sessions_tx,
                 spaces_tx,
+                sidebar_preferences_tx,
                 room: Mutex::new(None),
                 changed_tx,
                 presence_seen: Mutex::new(std::collections::HashMap::new()),
@@ -634,6 +645,13 @@ impl WorkspaceHost {
         Ok(self.read(|doc| doc.read_sessions())?)
     }
 
+    pub fn set_sidebar_pinned_sessions(
+        &self,
+        pinned_session_ids: &[String],
+    ) -> Result<(), EngineError> {
+        Ok(self.mutate(|doc| doc.set_sidebar_pinned_sessions(pinned_session_ids))?)
+    }
+
     // ── watches (WatchChats / WatchDevices / merged WatchSessions) ──────────
 
     pub fn watch_chats(&self) -> watch::Receiver<Vec<Chat>> {
@@ -651,6 +669,10 @@ impl WorkspaceHost {
 
     pub fn watch_spaces(&self) -> watch::Receiver<Vec<Space>> {
         self.inner.spaces_tx.subscribe()
+    }
+
+    pub fn watch_sidebar_preferences(&self) -> watch::Receiver<SidebarPreferencesState> {
+        self.inner.sidebar_preferences_tx.subscribe()
     }
 
     /// WatchSessions source: remote devices' rows from the registry merged with
@@ -1107,8 +1129,16 @@ impl WorkspaceHostInner {
     }
 
     fn publish_lists(&self, clock_tick: bool) {
-        match lock(&self.reg).read_all() {
-            Ok(mut state) => {
+        let registry_synced = lock(&self.room)
+            .as_ref()
+            .is_some_and(|room| room.stats().synced);
+        let snapshot = {
+            let doc = lock(&self.reg);
+            doc.read_all()
+                .map(|state| (state, doc.sidebar_preferences()))
+        };
+        match snapshot {
+            Ok((mut state, preferences)) => {
                 self.overlay_presence(&mut state.devices);
                 // Retain the latest value even with no subscribers, but don't
                 // wake every list for unrelated registry/presence changes.
@@ -1122,6 +1152,16 @@ impl WorkspaceHostInner {
                 }
                 publish_if_changed(&self.sessions_tx, state.sessions);
                 publish_if_changed(&self.spaces_tx, state.spaces);
+                publish_if_changed(
+                    &self.sidebar_preferences_tx,
+                    SidebarPreferencesState {
+                        synced: registry_synced,
+                        initialized: preferences.is_some(),
+                        pinned_session_ids: preferences
+                            .map(|preferences| preferences.pinned_session_ids)
+                            .unwrap_or_default(),
+                    },
+                );
             }
             Err(err) => {
                 tracing::warn!(error = %err, "registry read failed");
@@ -1621,6 +1661,35 @@ mod tests {
             host.watch_spaces().borrow()[0].name.as_deref(),
             Some("Renamed")
         );
+    }
+
+    #[tokio::test]
+    async fn sidebar_preferences_watch_preserves_explicit_empty_state() {
+        use super::*;
+
+        let dir = tempfile::tempdir().unwrap();
+        let host = WorkspaceHost::open(
+            Arc::new(DocsStore::open(dir.path()).unwrap()),
+            WorkspaceHostConfig {
+                device_id: "test-device".into(),
+                device_name: "Test device".into(),
+                platform: "macos".into(),
+                org_id: "test-org".into(),
+                user_id: "test-user".into(),
+                edge: None,
+            },
+        )
+        .unwrap();
+        let mut preferences = host.watch_sidebar_preferences();
+        assert!(!preferences.borrow().initialized);
+
+        host.set_sidebar_pinned_sessions(&[]).unwrap();
+        host.inner.publish();
+        assert!(preferences.has_changed().unwrap());
+        let state = preferences.borrow_and_update();
+        assert!(state.initialized);
+        assert!(!state.synced);
+        assert!(state.pinned_session_ids.is_empty());
     }
 
     #[test]

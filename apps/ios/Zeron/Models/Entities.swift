@@ -195,6 +195,20 @@ func sortActive(_ chats: [Chat]) -> [Chat] {
     }
 }
 
+/// Place known pins in their shared manual order, then preserve the automatic
+/// recency order for every unpinned session. Archived/deleted ids are harmless
+/// because callers pass only the rows visible in the current active scope.
+func sortPinnedFirst(_ chats: [Chat], pinnedSessionIds: [String]) -> [Chat] {
+    let recent = sortActive(chats)
+    let byId = Dictionary(uniqueKeysWithValues: recent.map { ($0.id, $0) })
+    var seen = Set<String>()
+    let pinned = pinnedSessionIds.compactMap { id -> Chat? in
+        guard seen.insert(id).inserted else { return nil }
+        return byId[id]
+    }
+    return pinned + recent.filter { seen.insert($0.id).inserted }
+}
+
 // MARK: - Session doc entries
 
 enum MessageRole: String {

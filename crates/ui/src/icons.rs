@@ -119,6 +119,8 @@ icon_assets![
     (EYE, "eye"),
     (EYE_CLOSED, "eye-closed"),
     (PAPERCLIP, "paperclip"),
+    // Hand-drawn pushpin in the Solar Linear style for local sidebar pins.
+    (PIN, "pin"),
     (PEN, "pen"),
     (ARCHIVE_MINIMALISTIC, "archive-minimalistic"),
     (TRASH_BIN_MINIMALISTIC, "trash-bin-minimalistic"),

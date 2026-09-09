@@ -375,6 +375,9 @@ enum MutateParams {
     SetChatHost { chat_id: String, device_id: String },
     #[serde(rename_all = "camelCase")]
     SetChatArchived { chat_id: String, archived: bool },
+    /// Replace the user's complete ordered sidebar pin list.
+    #[serde(rename_all = "camelCase")]
+    SetSidebarPinnedSessions { pinned_session_ids: Vec<String> },
     /// Full-config replace on the chat row (zeron `SetChatConfig`): the
     /// composer's mid-session model / reasoning / options changes, LWW-synced
     /// so they survive restarts and reach every device.
@@ -779,6 +782,10 @@ impl EngineRpc {
                 .set_chat_archived(&chat_id, archived)
                 .map_err(failed)
                 .map(drop),
+            MutateParams::SetSidebarPinnedSessions { pinned_session_ids } => self
+                .workspace
+                .set_sidebar_pinned_sessions(&pinned_session_ids)
+                .map_err(failed),
             MutateParams::SetChatConfig { chat_id, config } => self
                 .workspace
                 .set_chat_config(&chat_id, &config)
@@ -1234,6 +1241,9 @@ impl RpcService for EngineRpc {
             methods::WATCH_CHATS => {
                 Ok(RpcReply::Stream(watch_stream(self.workspace.watch_chats())))
             }
+            methods::WATCH_SIDEBAR_PREFERENCES => Ok(RpcReply::Stream(watch_stream(
+                self.workspace.watch_sidebar_preferences(),
+            ))),
             methods::WATCH_DEVICES => Ok(RpcReply::Stream(watch_stream(
                 self.workspace.watch_devices(),
             ))),
@@ -2004,6 +2014,20 @@ mod tests {
         .expect("ui param shape");
         assert_eq!(p.account_id, "acct-1");
         assert_eq!(p.harness, HarnessId::ClaudeCode);
+    }
+
+    #[test]
+    fn sidebar_preferences_mutation_accepts_desktop_wire_shape() {
+        let p: MutateParams = parse_params(serde_json::json!({
+            "op": "setSidebarPinnedSessions",
+            "pinnedSessionIds": ["chat-b", "chat-a"],
+        }))
+        .expect("sidebar preferences params");
+        assert!(matches!(
+            p,
+            MutateParams::SetSidebarPinnedSessions { pinned_session_ids }
+                if pinned_session_ids == ["chat-b", "chat-a"]
+        ));
     }
 
     #[test]

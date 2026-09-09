@@ -20,16 +20,20 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use zeron_proto::{Chat, ChatConfig, Device, Session, Space};
+use zeron_proto::{Chat, ChatConfig, Device, MAX_SIDEBAR_PINS, Session, SidebarPreferences, Space};
 
 use crate::schema::DocError;
 use crate::workspace::{DeletedSpace, WorkspaceState};
 
-/// Row kinds — the four sidebar tables.
+/// Row kinds — synced sidebar entities plus user preferences.
 pub const KIND_DEVICES: &str = "devices";
 pub const KIND_SPACES: &str = "spaces";
 pub const KIND_CHATS: &str = "chats";
 pub const KIND_SESSIONS: &str = "sessions";
+pub const KIND_PREFERENCES: &str = "preferences";
+
+/// One row owns the complete sidebar pin order for this user and organization.
+pub const SIDEBAR_PREFERENCES_ID: &str = "sidebar-v1";
 
 /// Snapshot row id in the local `DocsStore` for the persisted registry state.
 pub const REGISTRY_DOC_ID: &str = "registry1";
@@ -1176,6 +1180,41 @@ impl RegistryDoc {
     }
 
     // ── whole-doc read ──────────────────────────────────────────────────────
+
+    pub fn sidebar_preferences(&self) -> Option<SidebarPreferences> {
+        self.overlay_row(KIND_PREFERENCES, SIDEBAR_PREFERENCES_ID)
+            .and_then(|row| row_to(&row))
+    }
+
+    /// Replace the complete ordered pin list. The row is always upserted,
+    /// including for an empty list, so "unpin all" cannot be mistaken for a
+    /// missing row and re-imported by another desktop.
+    pub fn set_sidebar_pinned_sessions(
+        &mut self,
+        pinned_session_ids: &[String],
+    ) -> Result<(), DocError> {
+        if pinned_session_ids.len() > MAX_SIDEBAR_PINS {
+            return Err(DocError::Schema(format!(
+                "sidebar pins exceed the {MAX_SIDEBAR_PINS}-item limit"
+            )));
+        }
+        let mut seen = std::collections::HashSet::new();
+        if pinned_session_ids
+            .iter()
+            .any(|id| id.is_empty() || !seen.insert(id.as_str()))
+        {
+            return Err(DocError::Schema(
+                "sidebar pins must be non-empty and unique".into(),
+            ));
+        }
+        self.write(
+            KIND_PREFERENCES,
+            SIDEBAR_PREFERENCES_ID,
+            OpKind::Upsert,
+            fields([("pinnedSessionIds", json!(pinned_session_ids))]),
+        );
+        Ok(())
+    }
 
     pub fn read_all(&self) -> Result<WorkspaceState, DocError> {
         Ok(WorkspaceState {

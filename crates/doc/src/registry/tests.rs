@@ -834,6 +834,81 @@ fn reconnect_replay_is_idempotent() {
 }
 
 #[test]
+fn sidebar_preferences_preserve_absent_empty_and_ordered_states() {
+    let mut doc = RegistryDoc::new("dev-a");
+    assert_eq!(doc.sidebar_preferences(), None);
+
+    doc.set_sidebar_pinned_sessions(&[]).unwrap();
+    assert_eq!(
+        doc.sidebar_preferences(),
+        Some(SidebarPreferences {
+            pinned_session_ids: vec![],
+        })
+    );
+
+    let ordered = vec!["chat-b".to_string(), "chat-a".to_string()];
+    doc.set_sidebar_pinned_sessions(&ordered).unwrap();
+    assert_eq!(
+        doc.sidebar_preferences()
+            .expect("preferences row")
+            .pinned_session_ids,
+        ordered
+    );
+}
+
+#[test]
+fn sidebar_preferences_reject_invalid_lists() {
+    let mut doc = RegistryDoc::new("dev-a");
+    let duplicate = vec!["chat-a".to_string(), "chat-a".to_string()];
+    assert!(doc.set_sidebar_pinned_sessions(&duplicate).is_err());
+    assert!(doc.sidebar_preferences().is_none());
+
+    let too_many = (0..=MAX_SIDEBAR_PINS)
+        .map(|index| format!("chat-{index}"))
+        .collect::<Vec<_>>();
+    assert!(doc.set_sidebar_pinned_sessions(&too_many).is_err());
+    assert!(doc.sidebar_preferences().is_none());
+}
+
+#[test]
+fn sidebar_preferences_converge_between_devices() {
+    let mut desktop = RegistryDoc::new("desktop");
+    let mut phone = RegistryDoc::new("phone");
+    let mut server = HashMap::new();
+    let mut seq = 0u64;
+
+    desktop
+        .set_sidebar_pinned_sessions(&["chat-b".into(), "chat-a".into()])
+        .unwrap();
+    server_round(
+        &mut server,
+        &mut seq,
+        &mut [&mut desktop, &mut phone],
+    );
+    assert_eq!(
+        phone.sidebar_preferences().unwrap().pinned_session_ids,
+        vec!["chat-b", "chat-a"]
+    );
+
+    phone
+        .set_sidebar_pinned_sessions(&["chat-a".into(), "chat-b".into()])
+        .unwrap();
+    server_round(
+        &mut server,
+        &mut seq,
+        &mut [&mut desktop, &mut phone],
+    );
+    assert_eq!(
+        desktop.sidebar_preferences(),
+        phone.sidebar_preferences()
+    );
+    assert_eq!(
+        desktop.sidebar_preferences().unwrap().pinned_session_ids,
+        vec!["chat-a", "chat-b"]
+    );
+}
+
+#[test]
 fn migration_seeds_pending_upserts_that_lose_to_live_writes() {
     // Build a legacy loro workspace doc, materialize, seed.
     let legacy = crate::workspace::WorkspaceDoc::new();
