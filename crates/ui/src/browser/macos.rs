@@ -174,6 +174,7 @@ pub(super) struct Host {
     observer: Retained<Observer>,
     clip: Retained<BrowserClipView>,
     clip_mask: Retained<AnyObject>,
+    clip_background: Retained<AnyObject>,
     parent: Retained<NSView>,
     visible_bounds: Option<Bounds<Pixels>>,
     monitor: Option<Retained<AnyObject>>,
@@ -191,6 +192,9 @@ impl NativePage {
         let new_tab = tx.clone();
         let web = wry::WebViewBuilder::new()
             .with_webview_configuration(data.configuration(mtm))
+            // Exposed tiles use our page-colored backing instead of WebKit's
+            // opaque default background while the remote page reflows.
+            .with_transparent(true)
             .with_visible(false)
             .with_focused(false)
             .with_incognito(true)
@@ -218,12 +222,14 @@ impl NativePage {
         clip.setWantsLayer(true);
         clip.setAutoresizesSubviews(false);
         let clip_mask: Retained<AnyObject> = unsafe { msg_send![class!(CALayer), new] };
+        let clip_background: Retained<AnyObject> = unsafe { msg_send![class!(CALayer), new] };
         unsafe {
             let color = NSColor::blackColor().CGColor();
             let _: () = msg_send![&*clip_mask, setBackgroundColor: &*color];
             let layer: *mut AnyObject = msg_send![&*clip, layer];
             let _: () = msg_send![layer, setMasksToBounds: true];
             let _: () = msg_send![layer, setMask: &*clip_mask];
+            let _: () = msg_send![layer, insertSublayer: &*clip_background atIndex: 0u32];
         }
         clip.setHidden(true);
         parent.addSubview(&clip);
@@ -313,6 +319,7 @@ impl NativePage {
             observer,
             clip,
             clip_mask,
+            clip_background,
             parent,
             visible_bounds: None,
             monitor,
@@ -427,8 +434,7 @@ impl Host {
         // the application's dark window background at the resize edge.
         unsafe {
             let color = self.view.underPageBackgroundColor().CGColor();
-            let layer: *mut AnyObject = msg_send![&*self.clip, layer];
-            let _: () = msg_send![layer, setBackgroundColor: &*color];
+            let _: () = msg_send![&*self.clip_background, setBackgroundColor: &*color];
         }
         let visible = bounds.intersect(&mask);
         self.clip.ivars().dragging.set(dragging);
@@ -452,6 +458,9 @@ impl Host {
             // Keep the host stationary. Moving it while WebKit updates its
             // remote layer tree can combine the old origin with the new size.
             self.clip.setFrame(self.parent.bounds());
+            unsafe {
+                let _: () = msg_send![&*self.clip_background, setFrame: self.clip.bounds()];
+            }
             let region = objc2_foundation::NSRect::new(
                 objc2_foundation::NSPoint::new(x, y),
                 objc2_foundation::NSSize::new(width, height),
