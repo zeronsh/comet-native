@@ -259,7 +259,6 @@ fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    std::fs::write(output.join("backdrop-layers.txt"),first.read_with(cx,|b,_|b.fixture_backdrop_layers()))?;
                     capture(&output, "browser-menu-dark")?;
                     window.update(cx, |shell, _, cx| shell.fixture_browser_menu(false, cx))?;
                 }
