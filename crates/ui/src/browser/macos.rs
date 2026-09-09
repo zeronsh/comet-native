@@ -8,7 +8,9 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{
     AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send,
 };
-use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindowOrderingMode};
+use objc2_app_kit::{
+    NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindowOrderingMode,
+};
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObject,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString,
@@ -138,18 +140,27 @@ impl Observer {
     }
 }
 
+struct ClipState {
+    dragging: Cell<bool>,
+    region: Cell<objc2_foundation::NSRect>,
+}
+
 // Clips native content to GPUI's current paint mask. During app drags the
 // entire native subtree passes pointer events back to GPUI, without hiding it.
 define_class!(
     #[unsafe(super(NSView))]
     #[thread_kind = MainThreadOnly]
     #[name = "ZeronBrowserClipView"]
-    #[ivars = Cell<bool>]
+    #[ivars = ClipState]
     struct BrowserClipView;
     impl BrowserClipView {
         #[unsafe(method(hitTest:))]
         fn hit_test(&self, point: objc2_foundation::NSPoint) -> *mut NSView {
-            if self.ivars().get() { std::ptr::null_mut() }
+            let region = self.ivars().region.get();
+            if self.ivars().dragging.get()
+                || point.x < region.origin.x || point.x >= region.origin.x + region.size.width
+                || point.y < region.origin.y || point.y >= region.origin.y + region.size.height
+            { std::ptr::null_mut() }
             else { unsafe { msg_send![super(self), hitTest: point] } }
         }
     }
@@ -162,6 +173,7 @@ pub(super) struct Host {
     view: Retained<WKWebView>,
     observer: Retained<Observer>,
     clip: Retained<BrowserClipView>,
+    clip_mask: Retained<AnyObject>,
     parent: Retained<NSView>,
     visible_bounds: Option<Bounds<Pixels>>,
     monitor: Option<Retained<AnyObject>>,
@@ -197,13 +209,21 @@ impl NativePage {
             .map_err(|error| error.to_string())?;
         let parent = unsafe { view.superview() }.ok_or("Browser parent is missing")?;
         let clip: Retained<BrowserClipView> = unsafe {
-            let object = mtm.alloc().set_ivars(Cell::new(false));
+            let object = mtm.alloc().set_ivars(ClipState {
+                dragging: Cell::new(false),
+                region: Cell::new(objc2_foundation::NSRect::ZERO),
+            });
             msg_send![super(object), initWithFrame: objc2_foundation::NSRect::ZERO]
         };
         clip.setWantsLayer(true);
+        clip.setAutoresizesSubviews(false);
+        let clip_mask: Retained<AnyObject> = unsafe { msg_send![class!(CALayer), new] };
         unsafe {
+            let color = NSColor::blackColor().CGColor();
+            let _: () = msg_send![&*clip_mask, setBackgroundColor: &*color];
             let layer: *mut AnyObject = msg_send![&*clip, layer];
             let _: () = msg_send![layer, setMasksToBounds: true];
+            let _: () = msg_send![layer, setMask: &*clip_mask];
         }
         clip.setHidden(true);
         parent.addSubview(&clip);
@@ -292,6 +312,7 @@ impl NativePage {
             view,
             observer,
             clip,
+            clip_mask,
             parent,
             visible_bounds: None,
             monitor,
@@ -410,7 +431,7 @@ impl Host {
             let _: () = msg_send![layer, setBackgroundColor: &*color];
         }
         let visible = bounds.intersect(&mask);
-        self.clip.ivars().set(dragging);
+        self.clip.ivars().dragging.set(dragging);
         if self.bounds != Some(bounds) || self.visible_bounds != Some(visible) {
             self.bounds = Some(bounds);
             self.visible_bounds = Some(visible);
@@ -427,14 +448,21 @@ impl Host {
                 let _: () = msg_send![class!(CATransaction), begin];
                 let _: () = msg_send![class!(CATransaction), setDisableActions: true];
             }
-            self.clip.setFrame(objc2_foundation::NSRect::new(
+            // Keep the host stationary. Moving it while WebKit updates its
+            // remote layer tree can combine the old origin with the new size.
+            self.clip.setFrame(self.parent.bounds());
+            let region = objc2_foundation::NSRect::new(
                 objc2_foundation::NSPoint::new(x, y),
                 objc2_foundation::NSSize::new(width, height),
-            ));
+            );
+            self.clip.ivars().region.set(region);
+            unsafe {
+                let _: () = msg_send![&*self.clip_mask, setFrame: region];
+            }
             let rect = wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
-                    f64::from(f32::from(bounds.origin.x - visible.origin.x)),
-                    f64::from(f32::from(bounds.origin.y - visible.origin.y)),
+                    f64::from(f32::from(bounds.origin.x)),
+                    f64::from(f32::from(bounds.origin.y)),
                 )
                 .into(),
                 size: wry::dpi::LogicalSize::new(
@@ -488,6 +516,7 @@ impl Host {
         self.presentation = presentation;
         self.clip
             .ivars()
+            .dragging
             .set(presentation == Presentation::Passthrough);
         self.update_visibility();
     }
