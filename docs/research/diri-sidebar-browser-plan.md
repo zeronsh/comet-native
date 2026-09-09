@@ -1,4 +1,4 @@
-# Native browser tabs for Zeron: Waku-style v1
+# Native browser tabs for Zeron: system-webview v1
 
 Research date: 2026-09-08. Status: implemented. All 746 UI tests and the real-shell macOS browser fixture pass; screenshots and provenance are in `docs/screenshots/browser`.
 
@@ -6,7 +6,7 @@ Zeron baseline: `8de07ee6d783a37c2cac39a259ba896d704c40e8` (latest fetched `orig
 
 Diri reference: [`c564784199cfbeabd29f011bac28467a2b12fccf`](https://github.com/cristicretu/diri/tree/c564784199cfbeabd29f011bac28467a2b12fccf). Findings below come from source inspection, not a running Diri build.
 
-Waku reference: [`e3e47aa6b53fba8b0b09491b29b186a7916aa29d`](https://github.com/egoist/waku/tree/e3e47aa6b53fba8b0b09491b29b186a7916aa29d). Following discussion, v1 now favors Waku's system-webview and compositing architecture; CEF remains a possible later backend.
+V1 uses the system webview and native compositing; CEF remains a possible later backend.
 
 ## Implementation
 
@@ -67,11 +67,11 @@ Add `Browser(id)` to Zeron's existing right-pane surfaces. Build the address bar
 
 The first release supports multiple independent browser tabs, editable URLs, back/forward/reload, page titles and favicons, open externally, and load-failure recovery. Keep pages alive when switching tabs or sessions during the app run; closing a browser tab destroys its native view. Browser tabs remain device-local and in memory, consistent with the existing panel lifecycle. No restart restoration in this milestone.
 
-## What to take from Waku
+## Native compositing architecture
 
-Waku's [`src/browser.rs`](https://github.com/egoist/waku/blob/e3e47aa6b53fba8b0b09491b29b186a7916aa29d/src/browser.rs) uses Wry/WKWebView on macOS and a directly hosted WebView2 composition controller on Windows. Linux has no embedded path. Its GPUI fork supplies layered rendering so app menus can appear above native page content. Where the overlay plane is unavailable, it substitutes a frozen page snapshot while overlays are open. Native callbacks schedule foreground updates rather than re-entering GPUI entities during native callbacks.
+Use Wry/WKWebView on macOS, with a transparent GPUI layer above native page content. Deferred menus, dialogs and tooltips render on that layer while the page stays live. Native callbacks schedule foreground updates rather than re-entering GPUI entities during native callbacks.
 
-Use these architectural choices as the v1 reference, implemented for Zeron's existing shell and Zui fork. Waku's app source is GPL-3.0-only and Zeron is MIT: do not directly transplant Waku app code under Zeron's current licensing. Independently verify the licensing and provenance of any upstream GPUI rendering changes before adapting them; the app's license does not establish the license of a separate GPUI patch.
+The renderer adapts Apache-2.0 GPUI code from [`egoist/zed` at `57bd4fe`](https://github.com/egoist/zed/tree/57bd4fe181639797d395978d5de17bc9e10a6219/crates/gpui_macos). Preserve its license and source attribution in the dependency notices.
 
 Keep the backend boundary small: create/navigate/history/reload, geometry and visibility, focus, close, and state events. Isolate Wry/WebKit handles in the platform module. This preserves the tab UI and model if CEF is evaluated later, but does not promise a drop-in replacement: CEF would still need its own process lifecycle, compositor/input integration, packaging and profiling. Do not add CEF dependencies or build a speculative multi-engine framework for v1.
 
@@ -112,7 +112,7 @@ Suggested new modules: `browser/mod.rs` (surface/controller and events), `browse
 
 Build an opt-in macOS fixture with one loopback page in a GPUI pane before changing the production shell. The pinned Zui source already implements `HasWindowHandle` for `Window`; invoke the trait explicitly where GPUI's own `window_handle()` name overlaps. Check the exact AppKit parent, main-thread ownership, logical coordinates and backing-scale behavior.
 
-Use macOS-only Wry plus narrowly enabled `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-web-kit` and `block2` dependencies. Verify coexistence with Zeron's existing `objc` dependency. Audit Waku's layered-rendering approach against the pinned Zui renderer and its existing blur/edge-fade changes. Prototype a minimal native-surface/overlay seam in Zui if needed; do not replace Zui with Waku's fork wholesale. Prefer live page content beneath correctly composited menus. If layered integration cannot be delivered in v1, use a temporary page snapshot during overlays, with input disabled and restoration tested.
+Use macOS-only Wry plus narrowly enabled `objc2`, `objc2-app-kit`, `objc2-foundation`, `objc2-web-kit` and `block2` dependencies. Verify coexistence with Zeron's existing `objc` dependency. Audit layered rendering against the pinned Zui renderer and its existing blur/edge-fade changes. Prototype a minimal native-surface/overlay seam in Zui if needed; preserve Zui's existing renderer customizations. Prefer live page content beneath correctly composited menus. If layered integration cannot be delivered in v1, use a temporary page snapshot during overlays, with input disabled and restoration tested.
 
 Exit: a live page accepts input, reflows while resizing, hides/restores correctly, and detaches safely on window close. This is the main technical feasibility gate.
 
@@ -156,4 +156,4 @@ Ship after the macOS fixture and real shell interactions pass. Source research o
 
 The embedded browser runs on the UI machine. Opening `localhost:3000` while controlling a remote Zeron engine reaches the UI machine, not that engine. The initial UI should explain this when a loopback URL is used with a remote session and allow an explicitly entered reachable URL. Existing device-room command/file RPC is not an HTTP/WebSocket tunnel.
 
-Follow-up work can add authenticated remote port forwarding, including HTTP/WebSocket upgrades and reconnect handling. It requires a separate engine/protocol/transport design. CEF should be reconsidered only when concrete needs justify it, such as Chromium-specific compatibility, a shared automation runtime, or platform requirements the system-webview path cannot satisfy. Compare installer size, cold browser startup, representative page memory and complete teardown before adopting it. A future Windows port can evaluate Waku's WebView2 composition architecture independently. Embedded Linux browsing also needs a separate prototype for Zeron's X11 and Wayland hosts; Diri supplies no reusable Linux implementation. Restart tab restoration, developer tools, screenshots/attach-to-chat, console capture and agent control are later features rather than prerequisites for the sidebar browser.
+Follow-up work can add authenticated remote port forwarding, including HTTP/WebSocket upgrades and reconnect handling. It requires a separate engine/protocol/transport design. CEF should be reconsidered only when concrete needs justify it, such as Chromium-specific compatibility, a shared automation runtime, or platform requirements the system-webview path cannot satisfy. Compare installer size, cold browser startup, representative page memory and complete teardown before adopting it. A future Windows port can evaluate WebView2 composition independently. Embedded Linux browsing also needs a separate prototype for Zeron's X11 and Wayland hosts; Diri supplies no reusable Linux implementation. Restart tab restoration, developer tools, screenshots/attach-to-chat, console capture and agent control are later features rather than prerequisites for the sidebar browser.
