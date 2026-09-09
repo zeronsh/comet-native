@@ -45,7 +45,14 @@ impl BrowserData {
 }
 
 type Sender = tokio::sync::mpsc::Sender<NativeEvent>;
-const OBSERVED: [&str; 5] = ["URL", "title", "loading", "canGoBack", "canGoForward"];
+const OBSERVED: [&str; 6] = [
+    "URL",
+    "title",
+    "loading",
+    "canGoBack",
+    "canGoForward",
+    "underPageBackgroundColor",
+];
 
 pub(super) enum NativeEvent {
     Changed,
