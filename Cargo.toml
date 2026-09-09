@@ -15,7 +15,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.49"
+version = "0.2.50"
 edition = "2024"
 license = "MIT"
 publish = false
@@ -62,15 +62,15 @@ loro-protocol = "0.3"
 # stopped vending CABackdropLayer for Selection — window blur went dead);
 # b68970e rasterizes BackdropBlur in the wgpu renderer (frosted floats on
 # Linux — the Metal path's snapshot/blur/composite, ported).
-gpui = { git = "https://github.com/zeronsh/zui", rev = "bf2f82d3255f40a7b90aa1380028cd2502020f11" }
-gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "bf2f82d3255f40a7b90aa1380028cd2502020f11", features = [
+gpui = { git = "https://github.com/zeronsh/zui", rev = "73633fb1227eb694d41f0a9a75e5e5a0c7ada03a" }
+gpui_platform = { git = "https://github.com/zeronsh/zui", rev = "73633fb1227eb694d41f0a9a75e5e5a0c7ada03a", features = [
     "wayland",
     "x11",
     "font-kit",
     "runtime_shaders",
 ] }
-gpui_tokio = { git = "https://github.com/zeronsh/zui", rev = "bf2f82d3255f40a7b90aa1380028cd2502020f11" }
-gpui-base = { git = "https://github.com/zeronsh/gpui-component", rev = "04347d37431a539e20aab8f0d92d1bd31a6c8026" }
+gpui_tokio = { git = "https://github.com/zeronsh/zui", rev = "73633fb1227eb694d41f0a9a75e5e5a0c7ada03a" }
+gpui-base = { git = "https://github.com/zeronsh/gpui-component", rev = "7e863cc27ea5ad626e09374e3beb826af55d7e98" }
 
 # diffs
 similar = "2"

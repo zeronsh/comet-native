@@ -17,7 +17,7 @@ Zeron also uses the following editor foundations from the pinned `zeronsh/gpui-c
 
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
-| gpui-base | 0.5.2 (`04347d3`) | Apache-2.0 | https://github.com/zeronsh/gpui-component |
+| gpui-base | 0.5.2 (`7e863cc`) | Apache-2.0 | https://github.com/zeronsh/gpui-component |
 | Ropey | 2.0.0-beta.1 | MIT | https://github.com/cessen/ropey |
 
 Zeron's own source code is licensed under the terms in `LICENSE`. Bundled third-party components retain their respective licenses and notices.
