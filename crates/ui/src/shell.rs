@@ -8360,12 +8360,12 @@ impl Render for Shell {
             && (self.right_pane_open(cx) || self.tween_active(self.right_tween));
         // Native clipping follows the animated GPUI mask. Drags only transfer
         // pointer ownership; the browser continues rendering and reflowing.
-        let browser_covered = cx.has_active_drag();
+        let browser_dragging = cx.has_active_drag();
         let selected_surface = self.resolved_right_active(cx);
         for (id, browser) in &self.browsers {
             let presentation = crate::browser::model::presentation(
                 browser_active && selected_surface == RightSurface::Browser(*id),
-                browser_covered,
+                browser_dragging,
             );
             browser.update(cx, |browser, cx| {
                 browser.set_shortcuts(&self.settings.keymap);

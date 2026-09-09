@@ -54,6 +54,61 @@ fn capture(directory: &std::path::Path, name: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
+fn validate_blur(
+    directory: &std::path::Path,
+    region: (f64, f64, f64, f64),
+    window_width: f32,
+) -> anyhow::Result<()> {
+    let baseline = image::open(directory.join("browser-blur-baseline-dark.png"))?.to_rgb8();
+    let scale = baseline.width() as f64 / window_width as f64;
+    let (x, y, w, h) = region;
+    // Empty lower-right menu area: no labels, icons, border, or rounded corner.
+    let x0 = ((x + w - 45.) * scale) as u32;
+    let x1 = ((x + w - 16.) * scale) as u32;
+    let y0 = ((y + h - 33.) * scale) as u32;
+    let y1 = ((y + h - 15.) * scale) as u32;
+    let measure = |img: &image::RgbImage| {
+        let mut edges = 0.;
+        let mut mean = 0.;
+        let mut count = 0.;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                let p = img.get_pixel(x, y).0;
+                let right = img.get_pixel(x + 1, y).0;
+                let below = img.get_pixel(x, y + 1).0;
+                for c in 0..3 {
+                    edges += (p[c] as f64 - right[c] as f64).abs()
+                        + (p[c] as f64 - below[c] as f64).abs();
+                    mean += p[c] as f64;
+                    count += 1.;
+                }
+            }
+        }
+        (edges / count, mean / count)
+    };
+    let (sharp, _) = measure(&baseline);
+    let dark = measure(&image::open(directory.join("browser-blur-dark.png"))?.to_rgb8());
+    let light = measure(&image::open(directory.join("browser-blur-light.png"))?.to_rgb8());
+    let solid = measure(&image::open(directory.join("browser-blur-solid-light.png"))?.to_rgb8());
+    std::fs::write(
+        directory.join("blur-measurements.json"),
+        serde_json::to_string_pretty(
+            &serde_json::json!({"sample":[x0,y0,x1,y1],"baseline_edges":sharp,"dark_edges":dark.0,"light_edges":light.0,"light_mean":light.1,"solid_mean":solid.1}),
+        )?,
+    )?;
+    anyhow::ensure!(sharp > 10., "blur sample did not cover the checkerboard");
+    anyhow::ensure!(
+        dark.0 < sharp * 0.035 && light.0 < sharp * 0.035,
+        "menu tint did not blur checkerboard edges"
+    );
+    anyhow::ensure!(
+        (light.1 - solid.1).abs() > 3.,
+        "menu is opaque instead of showing the live page backdrop"
+    );
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt().with_env_filter("warn").init();
     let output = PathBuf::from(
@@ -121,7 +176,7 @@ fn main() -> anyhow::Result<()> {
         });
         let boot = EngineBootConfig { data_dir: data, ipc_port: 0, edge_url: String::new(), edge_token: None, org_id: None, workos_client_id: None, default_harness: HarnessId::ClaudeCode };
         let window = cx.open_window(WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(Bounds::new(gpui::point(px(20.),px(30.)), size(px(1320.),px(880.))))),
+            window_bounds: Some(WindowBounds::Windowed(Bounds::new(gpui::point(px(12.),px(30.)), size(px(1000.),px(680.))))),
             titlebar: Some(gpui::TitlebarOptions { title: None, appears_transparent: true, traffic_light_position: Some(gpui::point(px(14.),px(14.))) }),
             app_owns_titlebar_drag: true,
             ..Default::default()
@@ -278,9 +333,9 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(target_os = "macos")]
                 {
                     cx.update(|cx|appearance::set_surface(zeron_theme::SurfacePreference::Frosted,cx));
-                    first.read_with(cx, |b,_| b.fixture_eval("(() => {let grid=document.createElement('div'); grid.style='height:140px;background:repeating-conic-gradient(#172f25 0% 25%,#f5f0df 0% 50%) 0 0/16px 16px'; document.body.prepend(grid);})()"));
+                    first.read_with(cx, |b,_| b.fixture_eval("(() => {let grid=document.createElement('div'); grid.id='browser-blur-grid'; grid.style='height:140px;background:repeating-conic-gradient(#172f25 0% 25%,#f5f0df 0% 50%) 0 0/16px 16px'; document.body.prepend(grid);})()"));
                     pause(cx,300).await;
-                    let mut layout_video = std::process::Command::new("/usr/sbin/screencapture").args(["-v","-V","24","-C","-k","-D","1"]).arg(output.join("browser-layout.mov")).spawn()?;
+                    let mut layout_video = std::process::Command::new("/usr/sbin/screencapture").args(["-v","-V","30","-C","-k","-D","1"]).arg(output.join("browser-layout.mov")).spawn()?;
                     pause(cx,800).await;
                     let before=first.read_with(cx,|b,_|b.fixture_visibility_changes());
                     let (left,top)=first.read_with(cx,|b,_|b.fixture_origin());
@@ -330,9 +385,14 @@ fn main() -> anyhow::Result<()> {
                     // live inside a narrowing mask, without bleeding into chat.
                     for _ in 0..3 {
                         window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(true,cx))?;
-                        pause(cx,70).await;
-                        let (width,_,clip)=first.read_with(cx,|b,_|b.fixture_geometry());
-                        anyhow::ensure!(clip<width && first.read_with(cx,|b,_|b.fixture_native_visible()),"closing sidebar did not clip the live browser");
+                        let deadline=std::time::Instant::now()+Duration::from_secs(2);
+                        loop {
+                            pause(cx,1).await;
+                            let (width,_,clip)=first.read_with(cx,|b,_|b.fixture_geometry());
+                            anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible()),"closing sidebar skipped intermediate live frames");
+                            if clip<width { break; }
+                            anyhow::ensure!(std::time::Instant::now()<deadline,"closing sidebar did not clip the live browser");
+                        }
                         window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(true,cx))?;
                         pause(cx,350).await;
                         anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible()),"interrupted toggle lost browser visibility");
@@ -354,6 +414,10 @@ fn main() -> anyhow::Result<()> {
                     cx.update(|cx|appearance::set_mode(appearance::AppearanceMode::Light,cx));
                     pause(cx,700).await;
                     capture(&output,"browser-blur-light")?;
+                    first.read_with(cx,|b,_|b.fixture_eval("document.getElementById('browser-blur-grid').style.background='#263d35'"));
+                    pause(cx,500).await;
+                    capture(&output,"browser-blur-solid-light")?;
+                    let window_width=gpui::AnyWindowHandle::from(window).update(cx,|_,w,_|f32::from(w.viewport_size().width))?;
                     cx.update(|cx|appearance::set_surface(zeron_theme::SurfacePreference::Opaque,cx));
                     pause(cx,500).await;
                     anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_backdrops().is_empty()),"opaque appearance retained native blur");
@@ -365,6 +429,7 @@ fn main() -> anyhow::Result<()> {
                     let deadline=std::time::Instant::now()+Duration::from_secs(30);
                     loop {if let Some(status)=layout_video.try_wait()? {anyhow::ensure!(status.success(),"layout recording failed");break;}anyhow::ensure!(std::time::Instant::now()<deadline,"layout recording timed out");pause(cx,100).await;}
                     anyhow::ensure!(std::fs::metadata(output.join("browser-layout.mov"))?.len()>10000,"layout recording is empty");
+                    validate_blur(&output,regions[0],window_width)?;
                 }
                 for width in [380., 640., 520.] {
                     window.update(cx, |shell, _, cx| shell.fixture_resize_browser(width, cx))?;

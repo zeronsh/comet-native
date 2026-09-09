@@ -86,10 +86,10 @@ pub enum Presentation {
     Passthrough,
 }
 
-pub fn presentation(active: bool, covered: bool) -> Presentation {
+pub fn presentation(active: bool, dragging: bool) -> Presentation {
     if !active {
         Presentation::Hidden
-    } else if covered {
+    } else if dragging {
         Presentation::Passthrough
     } else {
         Presentation::Live

@@ -5,7 +5,9 @@ use super::model::{PageState, Presentation, allowed_navigation};
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send,
+};
 use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindowOrderingMode};
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObject,
@@ -421,6 +423,10 @@ impl Host {
             } else {
                 self.parent.bounds().size.height - y - height
             };
+            unsafe {
+                let _: () = msg_send![class!(CATransaction), begin];
+                let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+            }
             self.clip.setFrame(objc2_foundation::NSRect::new(
                 objc2_foundation::NSPoint::new(x, y),
                 objc2_foundation::NSSize::new(width, height),
@@ -438,6 +444,26 @@ impl Host {
                 .into(),
             };
             let _ = self.web.set_bounds(rect);
+            unsafe {
+                let _: () = msg_send![class!(CATransaction), commit];
+            }
+            #[cfg(feature = "browser-fixture")]
+            unsafe {
+                let layer: *mut AnyObject = msg_send![&*self.clip, layer];
+                let frame: objc2_foundation::NSRect = msg_send![layer, frame];
+                let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
+                let presented: objc2_foundation::NSRect = if presentation.is_null() {
+                    frame
+                } else {
+                    msg_send![presentation, frame]
+                };
+                eprintln!(
+                    "Browser geometry: bounds={bounds:?} mask={mask:?} clip={:?} layer={frame:?} presented={presented:?} web={:?} background={:?}",
+                    self.clip.frame(),
+                    self.view.frame(),
+                    self.view.underPageBackgroundColor()
+                );
+            }
         }
         self.update_visibility();
     }
