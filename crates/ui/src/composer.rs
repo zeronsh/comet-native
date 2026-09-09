@@ -473,6 +473,29 @@ pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
     }
 }
 
+fn begin_interrupt(pending: &mut HashSet<String>, chat_id: &str) -> bool {
+    pending.insert(chat_id.to_string())
+}
+
+fn retain_live_interrupts(pending: &mut HashSet<String>, mut is_live: impl FnMut(&str) -> bool) {
+    pending.retain(|chat_id| is_live(chat_id));
+}
+
+fn interrupt_params(chat_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "chatId": chat_id,
+        "command": { "kind": "interrupt" },
+    })
+}
+
+fn escape_dismisses_completion(key: &str, completion_open: bool) -> bool {
+    key == "escape" && completion_open
+}
+
+fn wizard_escape_goes_back(key: &str, input_focused: bool, input_empty: bool) -> bool {
+    key == "escape" && (!input_focused || input_empty)
+}
+
 /// Find the unresolved input request the panel should serve, if any: an
 /// unresolved input part on the LAST assistant entry — regardless of the
 /// entry's run status. The question stays answerable until the user actually
@@ -709,7 +732,6 @@ actions!(
         Undo,
         Redo,
         MentionTab,
-        MentionEscape,
     ]
 );
 
@@ -1215,7 +1237,6 @@ pub fn init(cx: &mut App) {
     let mut bindings = vec![
         KeyBinding::new("enter", Submit, ctx),
         KeyBinding::new("tab", MentionTab, ctx),
-        KeyBinding::new("escape", MentionEscape, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),
         KeyBinding::new("backspace", Backspace, ctx),
         KeyBinding::new("delete", Delete, ctx),
@@ -2345,11 +2366,10 @@ impl ComposerInput {
         }
     }
 
-    fn mention_escape(&mut self, _: &MentionEscape, _: &mut Window, cx: &mut Context<Self>) {
-        if self.mention_open {
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if escape_dismisses_completion(&event.keystroke.key, self.mention_open) {
             cx.emit(ComposerInputEvent::MentionDismiss);
-        } else {
-            cx.propagate();
+            cx.stop_propagation();
         }
     }
 
@@ -3427,7 +3447,6 @@ impl Render for ComposerInput {
             .on_action(cx.listener(Self::word_left))
             .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::mention_tab))
-            .on_action(cx.listener(Self::mention_escape))
             .on_action(cx.listener(Self::select_word_left))
             .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::delete_word_left))
@@ -3441,6 +3460,7 @@ impl Render for ComposerInput {
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
@@ -3685,11 +3705,15 @@ pub struct Composer {
     answered_requests: HashSet<String>,
     advance_task: Option<Task<()>>,
     send_task: Option<Task<()>>,
-    /// Interrupt/answer commands get their own slot: assigning `send_task`
-    /// DROPPED an in-flight send future mid-upload — no banner, no cleanup,
-    /// `sending` stuck true forever (2026-08-19 incident, "press Stop while
-    /// a send grinds" shape).
+    /// Question-answer commands get their own slot: assigning `send_task`
+    /// would drop an in-flight send future mid-upload, leaving the composer
+    /// stuck in its sending state.
     action_task: Option<Task<()>>,
+    /// Chats whose durable Interrupt command has been accepted or is still
+    /// being queued. Kept independently so stopping one chat cannot replace
+    /// another chat's request when the user navigates quickly.
+    interrupting: HashSet<String>,
+    interrupt_tasks: HashMap<String, Task<()>>,
     // -- compact/expanded flip state (hysteresis; see `composer_flip`) --
     /// Current layout mode (persisted across frames — never derived fresh).
     expanded_mode: bool,
@@ -3832,6 +3856,8 @@ impl Composer {
             action_task: None,
             advance_task: None,
             send_task: None,
+            interrupting: HashSet::new(),
+            interrupt_tasks: HashMap::new(),
             expanded_mode: false,
             flip_epoch: 0,
             compact_capacity: 0.0,
@@ -4898,6 +4924,19 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
+        {
+            let state = self.state.read(cx);
+            let now = chrono::Utc::now();
+            retain_live_interrupts(&mut self.interrupting, |chat_id| {
+                matches!(
+                    state.indicator_for(chat_id, now),
+                    Indicator::Working | Indicator::AwaitingInput
+                )
+            });
+        }
+        self.interrupt_tasks
+            .retain(|chat_id, _| self.interrupting.contains(chat_id));
+
         let (key, pending) = {
             let s = self.state.read(cx);
             (
@@ -5036,7 +5075,7 @@ impl Composer {
         let no_content =
             !composer_has_content(&text, self.staged().len(), self.staged_comments(cx).len());
         match self.button_mode(cx) {
-            SendButtonMode::Stop => self.interrupt(cx),
+            SendButtonMode::Stop => self.interrupt_selected(cx),
             _ if no_content => {}
             _ if self.send_blocked(cx) => {}
             SendButtonMode::Send => self.send(text, false, cx),
@@ -5631,31 +5670,40 @@ impl Composer {
         }));
     }
 
-    fn interrupt(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
+    pub(crate) fn interrupt_selected(&mut self, cx: &mut Context<Self>) {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
         };
+        self.interrupt_chat(chat_id, cx);
+    }
+
+    pub(crate) fn interrupt_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        if !begin_interrupt(&mut self.interrupting, &chat_id) {
+            return;
+        }
         let failure_chat = chat_id.clone();
-        let params = serde_json::json!({
-            "chatId": chat_id,
-            "command": { "kind": "interrupt" },
-        });
-        // `action_task`, NOT `send_task`: a Stop pressed while a send is in
-        // flight must not drop the send future on the floor.
-        self.action_task = Some(cx.spawn(async move |this, cx| {
+        let params = interrupt_params(&chat_id);
+        let task_chat_id = chat_id.clone();
+        let task = cx.spawn(async move |this, cx| {
             let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
+                    composer.interrupting.remove(&task_chat_id);
                     composer.failure = Some(format!("Stop failed: {err}").into());
                     composer.failure_key = Some(failure_chat);
                     cx.notify();
                 })
                 .ok();
             }
-        }));
+        });
+        self.interrupt_tasks.insert(chat_id, task);
+    }
+
+    pub(crate) fn is_interrupting(&self, chat_id: &str) -> bool {
+        self.interrupting.contains(chat_id)
     }
 
     // ---- wizard glue ----
@@ -5802,8 +5850,10 @@ impl Composer {
                 self.wizard_advance(cx);
                 cx.stop_propagation();
             }
-        } else if key == "escape" && (!input_focused || input_empty) {
-            self.wizard_back(cx);
+        } else if key == "escape" {
+            if wizard_escape_goes_back(key, input_focused, input_empty) {
+                self.wizard_back(cx);
+            }
             cx.stop_propagation();
         }
     }
@@ -6038,7 +6088,7 @@ impl Composer {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.85))
-                .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.interrupt_selected(cx)))
                 .child(div().size(px(11.0)).rounded(px(3.0)).bg(theme.bg))
                 .into_any_element(),
             SendButtonMode::Send | SendButtonMode::Steer => {
@@ -7580,6 +7630,42 @@ mod tests {
         assert_eq!(send_button_mode(false, true), SendButtonMode::Send);
         assert_eq!(send_button_mode(true, true), SendButtonMode::Steer);
         assert_eq!(send_button_mode(true, false), SendButtonMode::Stop);
+    }
+
+    #[test]
+    fn interrupt_tracking_is_idempotent_per_chat() {
+        let mut pending = HashSet::new();
+        assert!(begin_interrupt(&mut pending, "chat-a"));
+        assert!(!begin_interrupt(&mut pending, "chat-a"));
+        assert!(begin_interrupt(&mut pending, "chat-b"));
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn interrupt_tracking_releases_only_settled_chats() {
+        let mut pending = HashSet::from(["chat-a".to_string(), "chat-b".to_string()]);
+        retain_live_interrupts(&mut pending, |chat_id| chat_id == "chat-b");
+        assert_eq!(pending, HashSet::from(["chat-b".to_string()]));
+        assert!(begin_interrupt(&mut pending, "chat-a"));
+    }
+
+    #[test]
+    fn interrupt_payload_keeps_the_captured_chat() {
+        let params = interrupt_params("chat-a");
+        assert_eq!(params["chatId"], "chat-a");
+        assert_eq!(params["command"]["kind"], "interrupt");
+    }
+
+    #[test]
+    fn escape_consumers_keep_completion_and_wizard_priority() {
+        assert!(escape_dismisses_completion("escape", true));
+        assert!(!escape_dismisses_completion("escape", false));
+        assert!(!escape_dismisses_completion("enter", true));
+
+        assert!(wizard_escape_goes_back("escape", false, false));
+        assert!(wizard_escape_goes_back("escape", true, true));
+        assert!(!wizard_escape_goes_back("escape", true, false));
+        assert!(!wizard_escape_goes_back("enter", false, true));
     }
 
     #[test]

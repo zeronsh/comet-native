@@ -1,7 +1,7 @@
 //! Settings → Shortcuts (feature-inventory §1.4): a table of the rebindable
 //! bindings — click a combo to record (Esc cancels), live conflict detection,
-//! per-row Reset and Restore defaults. Changes emit [`ShortcutsEvent::Changed`];
-//! the shell persists them and re-applies the app keymap.
+//! per-row Reset and Restore defaults. Changes emit [`ShortcutsEvent`]; the
+//! shell persists them and re-applies the app keymap.
 
 use gpui::{
     Context, Entity, EventEmitter, FocusHandle, KeyDownEvent, SharedString, Window, div,
@@ -36,12 +36,15 @@ pub fn record_key(key: &str, ctrl: bool, alt: bool, shift: bool, cmd: bool) -> R
 #[derive(Debug, Clone)]
 pub enum ShortcutsEvent {
     /// The keymap changed — persist + re-apply.
-    Changed(KeymapConfig),
+    KeymapChanged(KeymapConfig),
+    /// The Escape fallback changed — persist it locally.
+    EscapeStopsActiveAgentChanged(bool),
 }
 
 pub struct ShortcutsPage {
-    /// Working copy (kept in sync with the shell via `Changed` events).
+    /// Working copy (kept in sync with the shell via change events).
     keymap: KeymapConfig,
+    escape_stops_active_agent: bool,
     recording: Option<ShortcutId>,
     /// A rejected record attempt ("{Combo} is already assigned to {label}.") —
     /// conflicts never persist; they're refused at record time, as in zeron.
@@ -55,9 +58,15 @@ pub struct ShortcutsPage {
 impl EventEmitter<ShortcutsEvent> for ShortcutsPage {}
 
 impl ShortcutsPage {
-    pub fn new(state: Entity<AppState>, keymap: KeymapConfig, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: Entity<AppState>,
+        keymap: KeymapConfig,
+        escape_stops_active_agent: bool,
+        cx: &mut Context<Self>,
+    ) -> Self {
         Self {
             keymap,
+            escape_stops_active_agent,
             recording: None,
             conflict_notice: None,
             focus: cx.focus_handle(),
@@ -66,8 +75,16 @@ impl ShortcutsPage {
     }
 
     fn commit(&mut self, cx: &mut Context<Self>) {
-        cx.emit(ShortcutsEvent::Changed(self.keymap.clone()));
+        cx.emit(ShortcutsEvent::KeymapChanged(self.keymap.clone()));
         cx.notify();
+    }
+
+    fn set_escape_stops_active_agent(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.escape_stops_active_agent != enabled {
+            self.escape_stops_active_agent = enabled;
+            cx.emit(ShortcutsEvent::EscapeStopsActiveAgentChanged(enabled));
+            cx.notify();
+        }
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, cx: &mut Context<Self>) {
@@ -277,7 +294,40 @@ impl Render for ShortcutsPage {
         use crate::settings::widgets;
         let theme = Theme::of(cx).clone();
         let recording = self.recording;
-        let customized = self.keymap != KeymapConfig::default();
+        let escape_stops_active_agent = self.escape_stops_active_agent;
+        let customized = self.keymap != KeymapConfig::default() || escape_stops_active_agent;
+
+        let escape_behavior_row = widgets::section_card(&theme).child(
+            widgets::card_row(&theme, true)
+                .min_h(px(84.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .child(widgets::row_title(&theme, "Stop active agent with Escape"))
+                        .child(
+                            div()
+                                .mt(px(4.0))
+                                .max_w(px(430.0))
+                                .text_size(crate::typography::ui_rems(11.5))
+                                .line_height(px(17.0))
+                                .text_color(theme.text_muted.opacity(0.65))
+                                .child(SharedString::from(
+                                    "When no dialog, menu, picker, or terminal handles Escape, stop the agent in the active session.",
+                                )),
+                        ),
+                )
+                .child(
+                    widgets::toggle_switch(&theme, escape_stops_active_agent)
+                        .id("escape-stops-active-agent-toggle")
+                        .cursor_pointer()
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.set_escape_stops_active_agent(!escape_stops_active_agent, cx);
+                        })),
+                ),
+        );
 
         // One card per group, each under its small section label — the flat
         // 16-row table read as one undifferentiated wall. `ix` (the id's
@@ -363,6 +413,7 @@ impl Render for ShortcutsPage {
                                                 this.recording = None;
                                                 this.conflict_notice = None;
                                                 this.commit(cx);
+                                                this.set_escape_stops_active_agent(false, cx);
                                             }),
                                         )
                                     })
@@ -387,10 +438,13 @@ impl Render for ShortcutsPage {
                             .mt(px(12.0))
                             .px(px(4.0))
                             .min_h(px(20.0))
+                            .flex()
+                            .justify_center()
                             .text_size(crate::typography::ui_rems(12.0))
                             .text_color(theme.text_muted)
                             .child(helper),
-                    ),
+                    )
+                    .child(escape_behavior_row),
             )
     }
 }

@@ -2061,6 +2061,7 @@ impl Pickers {
             MenuKey::Escape => {
                 self.animate_close(cx);
                 cx.notify();
+                cx.stop_propagation();
             }
             MenuKey::Up | MenuKey::Down => {
                 let delta = if key == MenuKey::Up { -1 } else { 1 };

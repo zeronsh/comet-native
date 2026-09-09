@@ -843,6 +843,58 @@ impl SyncFlow {
                 | SyncFlow::ImportFailed { .. }
         )
     }
+
+    fn has_visible_overlay(self) -> bool {
+        match self {
+            SyncFlow::Idle
+            | SyncFlow::SwitchOffer { notice_open: false }
+            | SyncFlow::ImportFailed { notice_open: false }
+            | SyncFlow::RestartPending { notice_open: false }
+            | SyncFlow::SignedOutRestartRequired => false,
+            SyncFlow::Enabling
+            | SyncFlow::Canceling
+            | SyncFlow::SwitchOffer { notice_open: true }
+            | SyncFlow::Switching { .. }
+            | SyncFlow::Importing { .. }
+            | SyncFlow::ImportDone { .. }
+            | SyncFlow::ImportFailed { notice_open: true }
+            | SyncFlow::RestartPending { notice_open: true }
+            | SyncFlow::SignOutConfirm
+            | SyncFlow::SigningOut => true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ShellEscapeOutcome {
+    OtherKey,
+    Blocked,
+    InterruptChat(String),
+    Ignored,
+}
+
+fn resolve_shell_escape(
+    key: &str,
+    blocking_overlay: bool,
+    escape_stops_active_agent: bool,
+    route: Route,
+    selected_chat: Option<&str>,
+    indicator: Indicator,
+    interrupting: bool,
+) -> ShellEscapeOutcome {
+    if key != "escape" {
+        ShellEscapeOutcome::OtherKey
+    } else if blocking_overlay {
+        ShellEscapeOutcome::Blocked
+    } else if !escape_stops_active_agent || !matches!(route, Route::Chat) || interrupting {
+        ShellEscapeOutcome::Ignored
+    } else if matches!(indicator, Indicator::Working | Indicator::AwaitingInput) {
+        selected_chat
+            .map(|chat_id| ShellEscapeOutcome::InterruptChat(chat_id.to_owned()))
+            .unwrap_or(ShellEscapeOutcome::Ignored)
+    } else {
+        ShellEscapeOutcome::Ignored
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3241,14 +3293,22 @@ impl Shell {
                 if self.shortcuts_page.is_none() {
                     let state = self.state.clone();
                     let keymap = self.settings.keymap.clone();
-                    let page = cx.new(|cx| ShortcutsPage::new(state, keymap, cx));
-                    // Persist + re-apply the keymap whenever the page changes it.
+                    let escape_stops_active_agent = self.settings.escape_stops_active_agent;
+                    let page = cx
+                        .new(|cx| ShortcutsPage::new(state, keymap, escape_stops_active_agent, cx));
+                    // Persist shortcut preferences whenever the page changes them.
                     self.shortcuts_sub = Some(cx.subscribe(
                         &page,
                         |this: &mut Shell, _, event: &ShortcutsEvent, cx| {
-                            let ShortcutsEvent::Changed(keymap) = event;
-                            this.settings.keymap = keymap.clone();
-                            apply_keymap(cx, keymap);
+                            match event {
+                                ShortcutsEvent::KeymapChanged(keymap) => {
+                                    this.settings.keymap = keymap.clone();
+                                    apply_keymap(cx, keymap);
+                                }
+                                ShortcutsEvent::EscapeStopsActiveAgentChanged(enabled) => {
+                                    this.settings.escape_stops_active_agent = *enabled;
+                                }
+                            }
                             this.schedule_save(cx);
                             cx.notify();
                         },
@@ -5951,8 +6011,106 @@ impl Shell {
         Some(popover::modal("sync-lifecycle-dialog", viewport, card))
     }
 
-    /// Floating layers owned by the shell: context menus, edit dialogs, and
-    /// the local-to-synced account lifecycle.
+    fn active_changes(&self, cx: &App) -> Option<Entity<Changes>> {
+        if !self.right_pane_open(cx) {
+            return None;
+        }
+        let RightSurface::Diff(id) = self.resolved_right_active(cx) else {
+            return None;
+        };
+        self.diffs.get(&id).cloned()
+    }
+
+    /// Resolve shell-owned Escape surfaces in capture phase, before focused
+    /// descendants such as an integrated terminal can consume the key.
+    fn capture_escape_surface(&mut self, cx: &mut Context<Self>) -> bool {
+        // Modals and context menus sit above the rest of the shell. Preserve
+        // their existing behavior: only surfaces that already have a Cancel
+        // path close here; the others remain explicit blockers.
+        if self.sync_flow.has_visible_overlay()
+            || self.delete_confirm.is_some()
+            || self.delete_space_confirm.is_some()
+            || self.chat_menu.get().is_some()
+            || self.space_menu.get().is_some()
+            || self.user_menu.get().is_some()
+        {
+            return true;
+        }
+        if self.rename_dialog.is_some() {
+            self.rename_dialog = None;
+            cx.notify();
+            return true;
+        }
+        if self.rename_space_dialog.is_some() {
+            self.rename_space_dialog = None;
+            cx.notify();
+            return true;
+        }
+        if self.add_space.is_some() {
+            self.add_space = None;
+            cx.notify();
+            return true;
+        }
+        if self.spaces_menu.is_open() {
+            self.close_spaces_menu(cx);
+            return true;
+        }
+        if self.spaces_menu.get().is_some() {
+            return true;
+        }
+
+        if self.right_plus.is_open() {
+            self.close_right_plus(cx);
+            return true;
+        }
+        if self.right_plus.get().is_some() {
+            return true;
+        }
+        self.active_changes(cx)
+            .is_some_and(|changes| changes.update(cx, |changes, cx| changes.handle_escape(cx)))
+    }
+
+    fn on_key_down_capture(
+        &mut self,
+        event: &gpui::KeyDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if event.keystroke.key == "escape" && self.capture_escape_surface(cx) {
+            cx.stop_propagation();
+        }
+    }
+
+    fn on_key_down(&mut self, event: &gpui::KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        let selected_chat = self.state.read(cx).selected_chat.clone();
+        let indicator = selected_chat
+            .as_deref()
+            .map(|chat_id| self.state.read(cx).indicator_for(chat_id, Utc::now()))
+            .unwrap_or(Indicator::None);
+        let interrupting = selected_chat
+            .as_deref()
+            .is_some_and(|chat_id| self.composer.read(cx).is_interrupting(chat_id));
+        let escape_stops_active_agent = self.settings.escape_stops_active_agent;
+
+        match resolve_shell_escape(
+            &event.keystroke.key,
+            false,
+            escape_stops_active_agent,
+            self.route,
+            selected_chat.as_deref(),
+            indicator,
+            interrupting,
+        ) {
+            ShellEscapeOutcome::Blocked => cx.stop_propagation(),
+            ShellEscapeOutcome::InterruptChat(chat_id) => {
+                cx.stop_propagation();
+                self.composer
+                    .update(cx, |composer, cx| composer.interrupt_chat(chat_id, cx));
+            }
+            ShellEscapeOutcome::OtherKey | ShellEscapeOutcome::Ignored => {}
+        }
+    }
+
     fn render_overlays(
         &mut self,
         viewport: gpui::Size<Pixels>,
@@ -6140,6 +6298,7 @@ impl Shell {
                     if ev.keystroke.key == "escape" {
                         this.rename_dialog = None;
                         cx.notify();
+                        cx.stop_propagation();
                     }
                 }))
                 .child(popover::dialog_title(&theme, "Rename session"))
@@ -8450,6 +8609,8 @@ impl Render for Shell {
             .text_color(text)
             .font_family(font)
             .text_size(crate::typography::ui_rems(14.0))
+            .capture_key_down(cx.listener(Self::on_key_down_capture))
+            .on_key_down(cx.listener(Self::on_key_down))
             .on_drag_move(cx.listener(Self::on_sidebar_drag))
             .on_drag_move(cx.listener(Self::on_right_pane_drag))
             .on_drag_move(cx.listener(Self::on_terminal_drag))
@@ -8828,6 +8989,111 @@ mod tests {
     fn right_pane_takeover_consumes_the_chat_column() {
         assert_eq!(right_pane_takeover_width(1200.0, 256.0), 944.0);
         assert_eq!(1200.0 - 256.0 - 944.0, 0.0);
+    }
+
+    #[test]
+    fn escape_interrupts_only_the_active_live_chat() {
+        assert_eq!(
+            resolve_shell_escape(
+                "escape",
+                false,
+                true,
+                Route::Chat,
+                Some("chat-a"),
+                Indicator::Working,
+                false,
+            ),
+            ShellEscapeOutcome::InterruptChat("chat-a".to_owned())
+        );
+        assert_eq!(
+            resolve_shell_escape(
+                "escape",
+                false,
+                true,
+                Route::Chat,
+                Some("chat-b"),
+                Indicator::AwaitingInput,
+                false,
+            ),
+            ShellEscapeOutcome::InterruptChat("chat-b".to_owned())
+        );
+    }
+
+    #[test]
+    fn escape_ignores_non_live_or_ineligible_views() {
+        assert_eq!(
+            resolve_shell_escape(
+                "escape",
+                true,
+                true,
+                Route::Chat,
+                Some("chat-a"),
+                Indicator::Working,
+                false,
+            ),
+            ShellEscapeOutcome::Blocked
+        );
+        for (route, selected, indicator, interrupting) in [
+            (Route::Chat, Some("chat-a"), Indicator::None, false),
+            (Route::Chat, None, Indicator::Working, false),
+            (Route::Chat, Some("chat-a"), Indicator::Working, true),
+            (
+                Route::Settings(SettingsSection::Devices),
+                Some("chat-a"),
+                Indicator::Working,
+                false,
+            ),
+        ] {
+            assert_eq!(
+                resolve_shell_escape(
+                    "escape",
+                    false,
+                    true,
+                    route,
+                    selected,
+                    indicator,
+                    interrupting,
+                ),
+                ShellEscapeOutcome::Ignored
+            );
+        }
+        assert_eq!(
+            resolve_shell_escape(
+                "enter",
+                true,
+                true,
+                Route::Chat,
+                Some("chat-a"),
+                Indicator::Working,
+                false,
+            ),
+            ShellEscapeOutcome::OtherKey
+        );
+    }
+
+    #[test]
+    fn escape_interrupt_is_opt_in() {
+        assert_eq!(
+            resolve_shell_escape(
+                "escape",
+                false,
+                false,
+                Route::Chat,
+                Some("chat-a"),
+                Indicator::Working,
+                false,
+            ),
+            ShellEscapeOutcome::Ignored
+        );
+    }
+
+    #[test]
+    fn only_visible_sync_steps_block_escape() {
+        assert!(!SyncFlow::Idle.has_visible_overlay());
+        assert!(!SyncFlow::SwitchOffer { notice_open: false }.has_visible_overlay());
+        assert!(SyncFlow::SwitchOffer { notice_open: true }.has_visible_overlay());
+        assert!(SyncFlow::Importing { done: 1, total: 3 }.has_visible_overlay());
+        assert!(SyncFlow::SignOutConfirm.has_visible_overlay());
     }
 
     #[test]

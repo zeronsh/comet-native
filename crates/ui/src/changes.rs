@@ -2750,6 +2750,20 @@ impl Changes {
         }
     }
 
+    /// Handle Escape before focused descendants such as a terminal receive it.
+    /// A popup in its exit animation remains a blocker until it unmounts.
+    pub(crate) fn handle_escape(&mut self, cx: &mut Context<Self>) -> bool {
+        if self.ref_menu.is_open() {
+            self.close_ref_menu(cx);
+            return true;
+        }
+        if self.scope_menu.is_open() {
+            self.close_scope_menu(cx);
+            return true;
+        }
+        self.scope_menu.get().is_some() || self.ref_menu.get().is_some()
+    }
+
     fn open_ref_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // "PaletteSearch" context: ↑↓/⏎ stay unbound in the input and bubble
         // to the card's key handler.
@@ -2807,7 +2821,10 @@ impl Changes {
             event.keystroke.modifiers.control,
         );
         match key {
-            popover::MenuKey::Escape => self.close_ref_menu(cx),
+            popover::MenuKey::Escape => {
+                self.close_ref_menu(cx);
+                cx.stop_propagation();
+            }
             popover::MenuKey::Up | popover::MenuKey::Down => {
                 let count = self.ref_menu_rows(cx).len();
                 let delta = if key == popover::MenuKey::Up { -1 } else { 1 };
