@@ -3928,6 +3928,7 @@ pub struct Composer {
     pub(crate) queue_edit_focus_pending: bool,
     /// Live drag over the queue panel: which row, and where it would land.
     pub(crate) queue_drag: Option<crate::queue::QueueDragState>,
+    pub(crate) queue_scroll: gpui::ScrollHandle,
     /// Rows awaiting a host-authoritative removal acknowledgement. They stay
     /// visible but inert until the host wins the race against queue delivery.
     pub(crate) queue_removing: HashSet<String>,
@@ -4105,6 +4106,7 @@ impl Composer {
             queue_edit_renew_task: None,
             queue_edit_focus_pending: false,
             queue_drag: None,
+            queue_scroll: gpui::ScrollHandle::new(),
             queue_removing: HashSet::new(),
             queue_shortcut_revealed: false,
             expanded_mode: false,
@@ -6842,7 +6844,7 @@ impl Render for Composer {
                 self.staged_comments(cx).len(),
             );
         let container = container.when_some(
-            self.render_queue_panel(show_queue_head_shortcut, cx),
+            self.render_queue_panel(show_queue_head_shortcut, window, cx),
             |el, panel| {
                 el.child(motion::fade_quick(
                     "composer-queue",

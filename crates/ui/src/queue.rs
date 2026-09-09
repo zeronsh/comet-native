@@ -16,7 +16,7 @@ use gpui::{
 use zeron_doc::{QueueDeliveryGate, QueuedMessage};
 use zeron_rpc::methods;
 
-use crate::composer::{COMPOSER_RADIUS, Composer, QUEUE_COMPOSER_OVERLAP};
+use crate::composer::{Composer, QUEUE_COMPOSER_OVERLAP};
 use crate::icons::{self, icon};
 use crate::motion::{self, AnimationExt as _, TAB_SLIDE};
 use crate::settings::shortcuts::modifier_send_label;
@@ -73,11 +73,14 @@ impl Render for QueueActionTooltip {
 
 /// Compact, borderless rows inside the queue's single glass surface.
 const ROW_HEIGHT: f32 = 36.0;
+const QUEUE_TEXT_SIZE: f32 = 12.5;
 const ROW_GAP: f32 = 2.0;
 const ROW_SLOT: f32 = ROW_HEIGHT + ROW_GAP;
 const ROW_PAD_X: f32 = 8.0;
-const PANEL_RADIUS: f32 = COMPOSER_RADIUS;
-const PANEL_PAD_TOP: f32 = 6.0;
+const ROW_RADIUS: f32 = 8.0;
+const PANEL_PAD_X: f32 = 8.0;
+const PANEL_RADIUS: f32 = ROW_RADIUS + PANEL_PAD_X;
+const PANEL_PAD_TOP: f32 = PANEL_PAD_X;
 /// The custom 24px queue glyphs have quieter geometry than the legacy set, so
 /// render them slightly larger to preserve the previous optical weight.
 const QUEUE_ICON_SIZE: f32 = 13.0;
@@ -216,6 +219,45 @@ fn queue_visible_text(text: &str, attachments: &[String]) -> String {
     }
 }
 
+fn queue_panel_surface(theme: &Theme) -> gpui::Div {
+    div()
+        .occlude()
+        .rounded_t(px(PANEL_RADIUS))
+        .bg(theme.input_glass_bg())
+        .border_1()
+        .border_color(theme.border)
+        .when(!theme.is_frost(), |el| el.shadow_lg())
+        .px(px(PANEL_PAD_X))
+        .pt(px(PANEL_PAD_TOP))
+        .pb(px(QUEUE_COMPOSER_OVERLAP))
+        .flex()
+        .flex_col()
+}
+
+fn queue_rows(
+    scroll: &gpui::ScrollHandle,
+    max_height: gpui::Pixels,
+    rows: impl IntoIterator<Item = AnyElement>,
+) -> crate::edge_fade::EdgeFaded {
+    crate::edge_fade::edge_faded(
+        Theme::TRANSCRIPT_FADE_BAND,
+        true,
+        true,
+        div()
+            .id("message-queue-rows")
+            .max_h(max_height)
+            .overflow_y_scroll()
+            .track_scroll(scroll)
+            .flex()
+            .flex_col()
+            .gap(px(ROW_GAP))
+            .children(rows),
+    )
+    .fade_overflow_y(scroll)
+    // GPUI samples glyph fades at baseline + font size.
+    .outset_bottom(QUEUE_TEXT_SIZE)
+}
+
 impl Composer {
     /// The queue panel, or `None` when nothing is waiting. Like the composer,
     /// it is one frosted surface; rows use spacing and hover wash rather than
@@ -223,6 +265,7 @@ impl Composer {
     pub(crate) fn render_queue_panel(
         &mut self,
         show_head_shortcut: bool,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         // A drop outside the panel ends GPUI's active drag without invoking our
@@ -253,11 +296,10 @@ impl Composer {
 
         let list_chat = chat_id.clone();
         let drop_chat = chat_id.clone();
-        let rows = div()
-            .flex()
-            .flex_col()
-            .gap(px(ROW_GAP))
-            .children(items.iter().enumerate().map(|(ix, item)| {
+        let rows = queue_rows(
+            &self.queue_scroll,
+            window.viewport_size().height * 0.3,
+            items.iter().enumerate().map(|(ix, item)| {
                 self.queue_row(
                     &chat_id,
                     ix,
@@ -270,22 +312,10 @@ impl Composer {
                     &theme,
                     cx,
                 )
-            }));
+            }),
+        );
 
-        let panel = div()
-            .rounded_t(px(PANEL_RADIUS))
-            .bg(theme.input_glass_bg())
-            .border_1()
-            .border_color(theme.border)
-            .when(!theme.is_frost(), |el| el.shadow_lg())
-            .px(px(8.0))
-            .pt(px(PANEL_PAD_TOP))
-            // This padding sits behind the composer; keeping it equal to the
-            // overlap protects the final row while hiding the tray's bottom
-            // edge and corners.
-            .pb(px(QUEUE_COMPOSER_OVERLAP))
-            .flex()
-            .flex_col()
+        let panel = queue_panel_surface(&theme)
             // The complete glass surface is a drop target, including its
             // padding.
             .on_drag_move::<QueueDragPayload>(cx.listener(
@@ -295,7 +325,9 @@ impl Composer {
                         return;
                     }
                     let from = payload.from;
-                    let rel_y = f32::from(event.event.position.y) - f32::from(event.bounds.top());
+                    let rel_y = f32::from(event.event.position.y)
+                        - f32::from(event.bounds.top())
+                        - f32::from(this.queue_scroll.offset().y);
                     let over = queue_drop_index(rel_y, count);
                     this.update_queue_drag_over(from, over, cx);
                 },
@@ -452,7 +484,7 @@ impl Composer {
             .flex_row()
             .items_center()
             .gap(px(8.0))
-            .rounded(px(8.0))
+            .rounded(px(ROW_RADIUS))
             .when(being_edited, |el| el.bg(crate::theme::ink(0.06)))
             .when(!being_edited && !being_removed, |el| {
                 el.hover(|s| s.bg(crate::theme::ink(0.04)))
@@ -484,7 +516,7 @@ impl Composer {
                         .flex_1()
                         .min_w_0()
                         .truncate()
-                        .text_size(px(12.5))
+                        .text_size(px(QUEUE_TEXT_SIZE))
                         .text_color(theme.text.opacity(0.9))
                         .child(text),
                 )
@@ -494,7 +526,7 @@ impl Composer {
                     div()
                         .flex_1()
                         .min_w_0()
-                        .text_size(px(12.5))
+                        .text_size(px(QUEUE_TEXT_SIZE))
                         .text_color(theme.text_muted)
                         .child(if self.queue_edit_finishing {
                             "Saving…"
@@ -1502,5 +1534,86 @@ mod tests {
             queue_visible_text("literal user text", &paths),
             "literal user text"
         );
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::*;
+    use gpui::{AppContext, ScrollHandle, TestAppContext, point};
+
+    struct QueueScrollTestView {
+        queue: ScrollHandle,
+        transcript: ScrollHandle,
+        count: usize,
+    }
+
+    impl Render for QueueScrollTestView {
+        fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            div()
+                .size_full()
+                .child(
+                    div()
+                        .id("transcript-underlay")
+                        .absolute()
+                        .inset_0()
+                        .overflow_y_scroll()
+                        .track_scroll(&self.transcript)
+                        .child(div().h(px(2000.0))),
+                )
+                .child(
+                    div().absolute().bottom_0().w_full().child(
+                        queue_panel_surface(Theme::of(cx)).child(queue_rows(
+                            &self.queue,
+                            px(180.0),
+                            (0..self.count)
+                                .map(|_| div().h(px(ROW_HEIGHT)).flex_none().into_any_element()),
+                        )),
+                    ),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn queue_wheel_does_not_scroll_the_transcript_even_at_its_boundaries(cx: &mut TestAppContext) {
+        cx.update(|cx| cx.set_global(Theme::default()));
+        let (view, cx) = cx.add_window_view(|_, _| QueueScrollTestView {
+            queue: ScrollHandle::new(),
+            transcript: ScrollHandle::new(),
+            count: 24,
+        });
+        cx.simulate_resize(gpui::size(px(400.0), px(400.0)));
+        cx.run_until_parked();
+        let (queue, transcript) =
+            view.read_with(cx, |view, _| (view.queue.clone(), view.transcript.clone()));
+        for delta in [-80.0, -10_000.0, -80.0, 10_000.0, 80.0] {
+            cx.simulate_event(gpui::ScrollWheelEvent {
+                position: point(px(200.0), px(300.0)),
+                delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(delta))),
+                ..Default::default()
+            });
+            cx.run_until_parked();
+            assert_eq!(
+                transcript.offset().y,
+                px(0.0),
+                "queue wheel leaked to transcript"
+            );
+            if delta == -80.0 {
+                assert!(queue.offset().y < px(0.0), "the queue must still scroll");
+            }
+        }
+        view.update(cx, |view, cx| {
+            view.count = 2;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        cx.simulate_event(gpui::ScrollWheelEvent {
+            position: point(px(200.0), px(370.0)),
+            delta: gpui::ScrollDelta::Pixels(point(px(0.0), px(-80.0))),
+            ..Default::default()
+        });
+        cx.run_until_parked();
+        assert_eq!(transcript.offset().y, px(0.0));
+        assert_eq!(queue.max_offset().y, px(0.0));
     }
 }

@@ -254,16 +254,14 @@ struct ComposerView: View {
     @State private var showOptionPicker: ModelOptionInfo?
     /// Live catalog for the chat's harness from its space's device.
     @State private var catalogs: [String: [ModelInfo]] = [:]
-    /// The queued row being retyped in the box, if any.
-    @State private var editingQueuedId: String?
-    @State private var queueEditLease: QueueEditLease?
+    @State private var queueEdit: QueueComposerEdit?
+    private var editingQueuedId: String? { queueEdit?.lease.rowId }
+    private var queueEditLease: QueueEditLease? { queueEdit?.lease }
     @State private var queueEditBusy = false
     @State private var queueEditInstanceId = UUID().uuidString.lowercased()
     /// Distinguishes a live composer from an async acquire that completed
     /// after navigation removed this view.
     @State private var queueEditorVisible = false
-    /// Whatever was half-typed when that edit started, put back afterwards.
-    @State private var stashedDraft: String?
 
     private var harness: String { chat.config?.harness ?? "claude-code" }
 
@@ -335,11 +333,24 @@ struct ComposerView: View {
                            supportsActions: supportsQueueActions,
                            onAction: performQueueAction)
             }
+            if editingQueuedId != nil {
+                Button(queueEdit?.terminal == true ? "Copy edit and stop editing" : "Stop editing") {
+                    if queueEdit?.terminal == true {
+                        UIPasteboard.general.string = text
+                        finishLocalQueueEdit(.finished, failure: "")
+                    } else {
+                        Task { await cancelQueueEdit() }
+                    }
+                }
+                .buttonStyle(.plain)
+                .font(Theme.sans(12))
+                .foregroundStyle(Theme.textMuted)
+                .disabled(queueEditBusy)
+                .accessibilityHint(queueEdit?.terminal == true ? "Copies the edit and restores your previous draft" : "")
+            }
             ComposerShell(
                 draft: $text,
                 placeholder: editingQueuedId == nil ? "Message" : "Edit queued message",
-                // Saving an edit down to nothing is how a queued message is
-                // thrown away, so the button stays live on an empty box.
                 sendEnabled: true,
                 sendLabel: editingQueuedId != nil ? "Save queued message"
                     : (runLive && activeTurnBehavior == .queue ? "Queue message" : "Send message"),
@@ -350,8 +361,8 @@ struct ComposerView: View {
                 onSend: send,
                 onStop: { store.sendInterrupt() },
                 onAdvanceQueue: advanceQueue,
-                attachments: attachments,
-                onAttach: { showPicker = true },
+                attachments: editingQueuedId == nil ? attachments : [],
+                onAttach: editingQueuedId == nil ? { showPicker = true } : nil,
                 onRemoveAttachment: { id in attachments.removeAll { $0.id == id } },
                 autoFocus: model.launchFocusComposer
             ) {
@@ -437,8 +448,8 @@ struct ComposerView: View {
             guard !Task.isCancelled else { return }
             midTurnSteering = descriptors?.first(where: { $0.id == harness })?.midTurnSteering
         }
-        .task(id: queueEditLease?.leaseId) {
-            guard let lease = queueEditLease else { return }
+        .task(id: queueEdit?.terminal == true ? nil : queueEditLease?.leaseId) {
+            guard let lease = queueEditLease, queueEdit?.terminal != true else { return }
             while !Task.isCancelled, queueEditLease?.leaseId == lease.leaseId {
                 try? await Task.sleep(for: .seconds(20))
                 guard !Task.isCancelled else { return }
@@ -457,10 +468,8 @@ struct ComposerView: View {
         .onDisappear {
             queueEditorVisible = false
             guard let lease = queueEditLease else { return }
-            editingQueuedId = nil
-            queueEditLease = nil
-            text = stashedDraft ?? ""
-            stashedDraft = nil
+            text = queueEdit?.originalDraft ?? ""
+            queueEdit = nil
             queueEditBusy = false
             Task { _ = await store.finishQueuedEdit(lease, action: "cancel") }
         }
@@ -545,9 +554,8 @@ struct ComposerView: View {
                 _ = await store.finishQueuedEdit(lease, action: "cancel")
                 return
             }
-            stashedDraft = text
-            queueEditLease = lease
-            editingQueuedId = item.id
+            queueEdit = QueueComposerEdit(lease: lease, originalDraft: text,
+                                          hasAttachments: !item.attachments.isEmpty)
             text = MessageQueue.visibleText(lease.text, attachments: item.attachments)
             uploadError = nil
         case .locked:
@@ -568,35 +576,35 @@ struct ComposerView: View {
         finishLocalQueueEdit(result, failure: "Couldn't cancel the protected edit.")
     }
 
-    /// Save the retyped row. Saving it empty is how a queued message is thrown
-    /// away — nothing to send is a decision, not an error.
     @MainActor
     private func commitQueueEdit() async {
         guard let lease = queueEditLease, !queueEditBusy else { return }
-        let edited = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let edited = queueEdit?.textToCommit(text)
         queueEditBusy = true
-        let result = edited.isEmpty
-            ? await store.finishQueuedEdit(lease, action: "discard")
-            : await store.finishQueuedEdit(lease, action: "commit", text: edited)
+        let result: QueueEditFinishResult
+        if let edited {
+            result = await store.finishQueuedEdit(lease, action: "commit", text: edited)
+        } else {
+            result = await store.finishQueuedEdit(lease, action: "discard")
+        }
         queueEditBusy = false
         finishLocalQueueEdit(result, failure: "Couldn't save the protected edit.")
     }
 
     @MainActor
     private func finishLocalQueueEdit(_ result: QueueEditFinishResult, failure: String) {
+        queueEdit?.receive(result)
         switch result {
         case .finished:
-            editingQueuedId = nil
-            queueEditLease = nil
-            text = stashedDraft ?? ""
-            stashedDraft = nil
+            text = queueEdit?.originalDraft ?? ""
+            queueEdit = nil
             uploadError = nil
         case .conflict:
             uploadError = "This message changed on another device; your edit is still here."
         case .missing:
-            uploadError = "The queued message was removed; your edit is still here."
+            uploadError = "Message removed. Stop editing to copy your text and restore your draft."
         case .lost:
-            uploadError = "The edit lease changed; your text is still here."
+            uploadError = "Edit protection changed. Stop editing to copy your text and restore your draft."
         case .unavailable:
             uploadError = failure
         }

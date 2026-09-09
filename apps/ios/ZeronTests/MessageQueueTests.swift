@@ -7,6 +7,41 @@ import UIKit
 
 @MainActor
 final class MessageQueueTests: XCTestCase {
+    func testEmptyQueueEditPreservesAttachmentsAndDiscardsOnlyTextOnlyRows() {
+        XCTAssertEqual(MessageQueue.editedText("  \n", hasAttachments: true), attachmentOnlyText)
+        XCTAssertNil(MessageQueue.editedText("  \n", hasAttachments: false))
+        XCTAssertEqual(MessageQueue.editedText(" updated ", hasAttachments: true), "updated")
+        XCTAssertEqual(MessageQueue.editedText(" updated ", hasAttachments: false), "updated")
+    }
+
+    func testTerminalEditFailuresRetainBothDraftsAndAllowLocalRecovery() {
+        let lease = QueueEditLease(rowId: "row", leaseId: "lease", text: "queued",
+                                   baseTextHash: "hash", expiresAtMs: 60_000)
+        for result in [QueueEditFinishResult.missing, .lost] {
+            var edit = QueueComposerEdit(lease: lease, originalDraft: "unsent draft", hasAttachments: true)
+            edit.receive(result)
+            XCTAssertTrue(edit.terminal)
+            XCTAssertEqual(edit.originalDraft, "unsent draft")
+            XCTAssertEqual(edit.textToCommit("edited text"), "edited text")
+            XCTAssertEqual(edit.textToCommit(""), attachmentOnlyText)
+            edit.receive(.unavailable)
+            XCTAssertTrue(edit.terminal, "a later network failure must not remove the local escape")
+        }
+    }
+
+    func testRetryableEditFailuresKeepProtectionAndAttachmentPolicy() {
+        let lease = QueueEditLease(rowId: "row", leaseId: "lease", text: "queued",
+                                   baseTextHash: "hash", expiresAtMs: 60_000)
+        var edit = QueueComposerEdit(lease: lease, originalDraft: "draft", hasAttachments: false)
+        for result in [QueueEditFinishResult.conflict, .unavailable] {
+            edit.receive(result)
+            XCTAssertFalse(edit.terminal)
+            XCTAssertEqual(edit.lease, lease)
+            XCTAssertEqual(edit.originalDraft, "draft")
+        }
+        XCTAssertNil(edit.textToCommit(""))
+    }
+
     private func store() -> SessionStore {
         SessionStore(chatId: "chat-1", config: AppConfig(
             edgeURL: URL(string: "https://example.test")!,

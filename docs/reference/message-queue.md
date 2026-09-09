@@ -85,3 +85,5 @@ numbers. Older hosts retain the existing command-send path.
 - `apps/ios/ZeronTests/MessageQueueTests.swift` covers projection, policy,
   attachment text, action acknowledgements and keyboard submission. Run with
   the iOS Xcode test suite on macOS.
+
+Failed automatic dispatch pauses the queue before restoring its head, so the restore cannot trigger another delivery attempt. Fix the host configuration or connection, then explicitly send a queued row or a new prompt to resume. New queued turns use the current chat configuration.

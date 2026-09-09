@@ -55,7 +55,31 @@ enum QueueEditFinishResult: Sendable {
     case unavailable
 }
 
+struct QueueComposerEdit {
+    let lease: QueueEditLease
+    let originalDraft: String
+    let hasAttachments: Bool
+    private(set) var terminal = false
+
+    mutating func receive(_ result: QueueEditFinishResult) {
+        switch result {
+        case .missing, .lost: terminal = true
+        case .finished, .conflict, .unavailable: break
+        }
+    }
+
+    func textToCommit(_ text: String) -> String? {
+        MessageQueue.editedText(text, hasAttachments: hasAttachments)
+    }
+}
+
 enum MessageQueue {
+    static func editedText(_ text: String, hasAttachments: Bool) -> String? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return hasAttachments ? attachmentOnlyText : nil
+    }
+
     /// Queue text is user-editable and must not expose the attachment transport
     /// trailer. Strip it only for legacy rows whose parsed paths exactly match
     /// the separate attachments field.

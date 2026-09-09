@@ -2989,8 +2989,7 @@ impl DocHost {
             handle.publish_queue();
             if let Err(err) = self.dispatch_queued(handle, &item, send).await {
                 tracing::warn!(chat = %handle.chat_id, error = %err, "queued send failed");
-                // Back to the head it came from: a failed send must not reorder
-                // the queue behind the user's back.
+                handle.queue_paused.store(true, Ordering::Release);
                 let _ = handle.doc.insert_queued(0, &item);
                 handle.publish_queue();
                 return;
@@ -3060,9 +3059,17 @@ impl DocHost {
         if send == QueueSend::Interrupt && sessions.turn_in_flight(chat_id) {
             sessions.interrupt(chat_id).await?;
         }
-        let request = sessions
-            .last_request(chat_id)
-            .or_else(|| self.request_from_chat_row(chat_id, &prompt));
+        let previous = sessions.last_request(chat_id);
+        let request = self
+            .request_from_chat_row(chat_id, &prompt)
+            .map(|mut current| {
+                if let Some(previous) = &previous {
+                    current.auto_approve = previous.auto_approve;
+                    current.worktree = previous.worktree.clone();
+                }
+                current
+            })
+            .or(previous);
         let Some(mut request) = request else {
             return Err(EngineError::Other(
                 "no live run and no prior run config".into(),

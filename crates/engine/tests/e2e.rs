@@ -1857,7 +1857,9 @@ async fn empty_reasoning_deltas_are_heartbeats_not_journal_noise() {
         || {
             entries(&core)
                 .iter()
-                .any(|e| e.status == Some(MessageStatus::Complete))
+                .any(|e| {
+                    e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+                })
         },
         "run completes",
     )
