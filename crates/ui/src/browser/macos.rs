@@ -184,7 +184,7 @@ impl NativePage {
             .map_err(|error| error.to_string())?;
         // AppKit puts newly created webviews above older siblings. Every tab
         // must be placed below the single shared transparent GPUI plane.
-        if let Some(parent) = view.superview() {
+        if let Some(parent) = unsafe { view.superview() } {
             for sibling in parent.subviews() {
                 if sibling.class().name() == c"GPUIOverlayView" {
                     parent.addSubview_positioned_relativeTo(
@@ -518,7 +518,11 @@ impl NativePage {
         }
         let host = self.0.borrow();
         let window = host.view.window().unwrap();
-        let height = host.view.superview().unwrap().bounds().size.height;
+        let height = unsafe { host.view.superview() }
+            .unwrap()
+            .bounds()
+            .size
+            .height;
         let p = window.convertPointToScreen(objc2_foundation::NSPoint::new(x, height - y));
         let screen = objc2_app_kit::NSScreen::mainScreen(host.view.mtm()).unwrap();
         unsafe {
@@ -533,10 +537,8 @@ impl NativePage {
         (b.origin.x.into(), b.origin.y.into())
     }
     pub fn fixture_overlay_visible(&self) -> bool {
-        self.0
-            .borrow()
-            .view
-            .superview()
+        let host = self.0.borrow();
+        unsafe { host.view.superview() }
             .unwrap()
             .subviews()
             .iter()
@@ -554,7 +556,7 @@ impl NativePage {
     }
     pub fn fixture_overlay_at(&self, x: f64, y: f64) -> bool {
         let host = self.0.borrow();
-        let parent = host.view.superview().unwrap();
+        let parent = unsafe { host.view.superview() }.unwrap();
         let point = objc2_foundation::NSPoint::new(
             x,
             if parent.isFlipped() {
@@ -568,8 +570,9 @@ impl NativePage {
             .is_some_and(|hit| hit.class().name() == c"GPUIOverlayView")
     }
     pub fn fixture_click(&self, x: f64, y: f64) {
+        self.fixture_move_cursor(x, y);
         let host = self.0.borrow();
-        let parent = host.view.superview().unwrap();
+        let parent = unsafe { host.view.superview() }.unwrap();
         let window = host.view.window().unwrap();
         let point = objc2_foundation::NSPoint::new(x, parent.bounds().size.height - y);
         let app = objc2_app_kit::NSApplication::sharedApplication(host.view.mtm());
