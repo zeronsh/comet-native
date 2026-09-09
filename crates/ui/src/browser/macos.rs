@@ -8,7 +8,7 @@ use objc2::runtime::{AnyObject, ProtocolObject};
 use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
 use objc2_app_kit::{
     NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventMask, NSEventModifierFlags, NSImage,
-    NSView,
+    NSView, NSWindowOrderingMode,
 };
 use objc2_foundation::{
     NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNumber, NSObject,
@@ -154,6 +154,10 @@ pub(super) struct Host {
     snapshot: Rc<RefCell<Option<Arc<gpui::Image>>>>,
     snapshot_epoch: Rc<Cell<u64>>,
     tx: Sender,
+    #[cfg(feature = "browser-fixture")]
+    visibility_changes: Cell<u64>,
+    #[cfg(feature = "browser-fixture")]
+    captures: Cell<u64>,
 }
 
 impl NativePage {
@@ -175,6 +179,24 @@ impl NativePage {
             .build_as_child(window)
             .map_err(|e| e.to_string())?;
         let view = Retained::into_super(web.webview());
+        window
+            .enable_scene_overlay()
+            .map_err(|error| error.to_string())?;
+        // AppKit puts newly created webviews above older siblings. Every tab
+        // must be placed below the single shared transparent GPUI plane.
+        if let Some(parent) = view.superview() {
+            for sibling in parent.subviews() {
+                if sibling.class().name() == c"GPUIOverlayView" {
+                    parent.addSubview_positioned_relativeTo(
+                        &view,
+                        NSWindowOrderingMode::Below,
+                        Some(&sibling),
+                    );
+                    break;
+                }
+            }
+        }
+
         let observer = Observer::new(tx.clone(), mtm);
         unsafe {
             view.setNavigationDelegate(Some(ProtocolObject::from_ref(&*observer)));
@@ -252,6 +274,10 @@ impl NativePage {
             presentation: Presentation::Hidden,
             snapshot: Rc::new(RefCell::new(None)),
             snapshot_epoch: Rc::new(Cell::new(0)),
+            #[cfg(feature = "browser-fixture")]
+            visibility_changes: Cell::new(0),
+            #[cfg(feature = "browser-fixture")]
+            captures: Cell::new(0),
             tx,
         }))))
     }
@@ -384,6 +410,9 @@ impl Host {
             let _ = self.web.focus_parent();
         }
         if self.view.isHidden() == visible {
+            #[cfg(feature = "browser-fixture")]
+            self.visibility_changes
+                .set(self.visibility_changes.get() + 1);
             let _ = self.web.set_visible(visible);
         }
     }
@@ -407,6 +436,8 @@ impl Host {
         if self.view.isHidden() {
             return;
         }
+        #[cfg(feature = "browser-fixture")]
+        self.captures.set(self.captures.get() + 1);
         let epoch = self.snapshot_epoch.get();
         let generation = self.snapshot_epoch.clone();
         let output = self.snapshot.clone();
@@ -480,6 +511,76 @@ impl Drop for Host {
 
 #[cfg(feature = "browser-fixture")]
 impl NativePage {
+    pub fn fixture_move_cursor(&self, x: f64, y: f64) {
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGWarpMouseCursorPosition(point: objc2_foundation::NSPoint) -> i32;
+        }
+        let host = self.0.borrow();
+        let window = host.view.window().unwrap();
+        let height = host.view.superview().unwrap().bounds().size.height;
+        let p = window.convertPointToScreen(objc2_foundation::NSPoint::new(x, height - y));
+        let screen = objc2_app_kit::NSScreen::mainScreen(host.view.mtm()).unwrap();
+        unsafe {
+            CGWarpMouseCursorPosition(objc2_foundation::NSPoint::new(
+                p.x,
+                screen.frame().size.height - p.y,
+            ));
+        }
+    }
+    pub fn fixture_origin(&self) -> (f32, f32) {
+        let b = self.0.borrow().bounds.unwrap();
+        (b.origin.x.into(), b.origin.y.into())
+    }
+    pub fn fixture_overlay_visible(&self) -> bool {
+        self.0
+            .borrow()
+            .view
+            .superview()
+            .unwrap()
+            .subviews()
+            .iter()
+            .any(|v| v.class().name() == c"GPUIOverlayView" && !v.isHidden())
+    }
+    pub fn fixture_stats(&self) -> (u64, u64) {
+        let host = self.0.borrow();
+        (host.visibility_changes.get(), host.captures.get())
+    }
+    pub fn fixture_focus(&self) {
+        let _ = self.0.borrow().web.focus();
+    }
+    pub fn fixture_focused(&self) -> bool {
+        has_focus(&self.0.borrow().view)
+    }
+    pub fn fixture_overlay_at(&self, x: f64, y: f64) -> bool {
+        let host = self.0.borrow();
+        let parent = host.view.superview().unwrap();
+        let point = objc2_foundation::NSPoint::new(
+            x,
+            if parent.isFlipped() {
+                y
+            } else {
+                parent.bounds().size.height - y
+            },
+        );
+        parent
+            .hitTest(point)
+            .is_some_and(|hit| hit.class().name() == c"GPUIOverlayView")
+    }
+    pub fn fixture_click(&self, x: f64, y: f64) {
+        let host = self.0.borrow();
+        let parent = host.view.superview().unwrap();
+        let window = host.view.window().unwrap();
+        let point = objc2_foundation::NSPoint::new(x, parent.bounds().size.height - y);
+        let app = objc2_app_kit::NSApplication::sharedApplication(host.view.mtm());
+        for kind in [
+            objc2_app_kit::NSEventType::LeftMouseDown,
+            objc2_app_kit::NSEventType::LeftMouseUp,
+        ] {
+            let event = NSEvent::mouseEventWithType_location_modifierFlags_timestamp_windowNumber_context_eventNumber_clickCount_pressure(kind, point, NSEventModifierFlags::empty(), 0., window.windowNumber(), None, 0, 1, 1.).unwrap();
+            app.postEvent_atStart(&event, false);
+        }
+    }
     pub fn fixture_visible(&self) -> bool {
         !self.0.borrow().view.isHidden()
     }

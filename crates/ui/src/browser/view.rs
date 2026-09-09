@@ -11,15 +11,11 @@ fn button(
     glyph: &'static str,
     enabled: bool,
     theme: &Theme,
-    cx: &mut Context<BrowserSurface>,
+    _cx: &mut Context<BrowserSurface>,
 ) -> gpui::Stateful<gpui::Div> {
     // Match Files/History chrome, including focus-preserving mouse-down and
     // tooltips. Disabled controls have neither a pointer cursor nor a handler.
     crate::files::toolbar_button(id, label)
-        .on_hover(cx.listener(|this, hovered, _, cx| {
-            this.chrome_hovered = *hovered;
-            cx.emit(BrowserEvent::Changed);
-        }))
         .when(!enabled, |el| el.cursor_default().opacity(0.35))
         .child(
             icons::icon(glyph)

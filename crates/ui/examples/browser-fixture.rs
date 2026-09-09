@@ -168,6 +168,40 @@ fn main() -> anyhow::Result<()> {
                         anyhow::ensure!(std::time::Instant::now() < deadline, "same-document state did not update"); pause(cx, 50).await;
                     }
                 }
+                #[cfg(target_os = "macos")]
+                let mut recording;
+                #[cfg(target_os = "macos")]
+                {
+                    pause(cx, 400).await;
+                    let (left, top) = first.read_with(cx, |b, _| b.fixture_origin());
+                    first.read_with(cx, |b, _| b.fixture_focus());
+                    pause(cx, 100).await;
+                    first.read_with(cx, |b,_| b.fixture_eval("(() => { let live = document.createElement('div'); live.style='position:fixed;bottom:16px;right:16px;padding:8px 12px;background:#29483b;color:white;border-radius:8px;font:12px monospace;z-index:99999'; document.body.append(live); let start=performance.now(); function frame() { live.textContent='LIVE  '+((performance.now()-start)/1000).toFixed(2)+'s'; requestAnimationFrame(frame); } frame(); })()"));
+                    recording = std::process::Command::new("/usr/sbin/screencapture").args(["-v","-V","24","-C","-k","-D","1"]).arg(output.join("browser-hover.mov")).spawn()?;
+                    pause(cx, 1000).await;
+                    let before = first.read_with(cx, |b, _| b.fixture_stats());
+                    // Actual GPUI mouse dispatch exercises tab and toolbar hover
+                    // listeners and tooltip timers, including rapid cancellation.
+                    for _ in 0..12 {
+                        for (x,y) in [(left + 35.,20.), (left - 20.,100.), (left + 78.,56.)] {
+                            first.read_with(cx, |b,_| b.fixture_move_cursor(x as f64,y as f64));
+                            window.update(cx, |_, w, cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position:gpui::point(px(x),px(y)), pressed_button:None,modifiers:Default::default() }),cx); })?;
+                            pause(cx, 80).await;
+                            anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible() && b.fixture_stats() == before), "hover hid or snapshotted the live webview");
+                        }
+                    }
+                    // Dwell over Reload until its real GPUI tooltip paints above
+                    // the page; the passive overlay must leave native input alone.
+                    pause(cx, 1000).await;
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_visible()), "toolbar tooltip did not paint on the overlay plane");
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_focused() && !b.fixture_overlay_at((left+100.) as f64,(top+100.) as f64)), "tooltip stole native focus or page hit testing");
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_stats() == before && !b.fixture_snapshot()), "tooltip captured or hid the page");
+                    capture(&output, "browser-tooltip-dark")?;
+                    first.read_with(cx, |b,_| b.fixture_move_cursor((left-20.) as f64,150.));
+                    window.update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(left-20.),px(150.)),pressed_button:None,modifiers:Default::default()}),cx); })?;
+                    pause(cx, 400).await;
+                    anyhow::ensure!(!first.read_with(cx, |b,_| b.fixture_overlay_visible()), "dismissed tooltip left stale overlay pixels");
+                }
                 let (second_id, second) = window.update(cx, |shell, w, cx| shell.fixture_open_browser(None, w, cx))?;
                 pause(cx, 250).await;
                 anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "background page stayed visible");
@@ -192,12 +226,44 @@ fn main() -> anyhow::Result<()> {
                 drop(second);
                 window.update(cx, |shell, _, cx| shell.fixture_browser_menu(true, cx))?;
                 pause(cx, 700).await;
-                anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "page covered a menu");
                 #[cfg(target_os = "macos")]
-                anyhow::ensure!(first.read_with(cx, |b, _| b.fixture_snapshot()), "overlay did not capture the page snapshot");
-                capture(&output, "browser-menu-dark")?;
-                window.update(cx, |shell, _, cx| shell.fixture_browser_menu(false, cx))?;
+                {
+                    let (left, top) = first.read_with(cx, |b,_| b.fixture_origin());
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible() && !b.fixture_snapshot()), "menu froze or hid the live page");
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_at((left+100.) as f64,(top+150.) as f64)), "menu failed to intercept outside clicks above the browser");
+                    capture(&output, "browser-menu-dark")?;
+                    first.read_with(cx, |b,_| b.fixture_eval("document.addEventListener('click', () => { document.title = 'Unexpected page click'; })"));
+                    pause(cx, 100).await;
+                    first.read_with(cx, |b,_| b.fixture_click((left+100.) as f64,(top+150.) as f64));
+                    pause(cx, 600).await;
+                    anyhow::ensure!(first.read_with(cx, |b,_| !b.fixture_overlay_at((left+100.) as f64,(top+150.) as f64) && b.page.title != "Unexpected page click"), "outside click did not dismiss the menu cleanly, or leaked into the page");
+                    // The next native click must reach the page now that the
+                    // interactive overlay is gone.
+                    first.read_with(cx, |b,_| b.fixture_click((left+100.) as f64,(top+150.) as f64));
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while !first.read_with(cx, |b,_| b.page.title == "Unexpected page click") {
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "page mouse input was not restored after menu dismissal"); pause(cx,50).await;
+                    }
+                    first.read_with(cx, |b,_| b.fixture_eval("document.title = 'Fieldnotes'"));
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    capture(&output, "browser-menu-dark")?;
+                    window.update(cx, |shell, _, cx| shell.fixture_browser_menu(false, cx))?;
+                }
                 pause(cx, 500).await;
+                #[cfg(target_os = "macos")]
+                {
+                    // Finish the continuous screen recording while the page is
+                    // still live. This is not a montage of captured screenshots.
+                    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+                    loop {
+                        if let Some(status) = recording.try_wait()? { anyhow::ensure!(status.success(), "native screen recording failed"); break; }
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "screen recording did not finish");
+                        pause(cx, 100).await;
+                    }
+                    anyhow::ensure!(std::fs::metadata(output.join("browser-hover.mov"))?.len() > 10000, "screen recording is empty");
+                }
                 for width in [380., 640., 520.] {
                     window.update(cx, |shell, _, cx| shell.fixture_resize_browser(width, cx))?;
                     pause(cx, 150).await;
@@ -231,7 +297,7 @@ fn main() -> anyhow::Result<()> {
                 window.update(cx, |shell, w, cx| shell.fixture_close_browser(first_id, w, cx))?;
                 pause(cx, 200).await;
                 anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "closed tab retained its native view");
-                std::fs::write(output.join("result.txt"), "PASS: real shell browser fixture; address rejection, tab switching/close, overlays, resizing, takeover and appearance. On macOS: live DOM navigation, history, same-document state, native visibility and load failure.\n")?;
+                std::fs::write(output.join("result.txt"), "PASS: real shell browser fixture; address rejection, tab switching/close, overlays, resizing, takeover and appearance. On macOS: live DOM navigation, history, same-document state, native visibility, rapid hover/tooltip focus and hit testing, overlay outside-click isolation/restoration, and load failure.\n")?;
                 Ok(())
             }.await;
             if let Err(error) = run { eprintln!("Browser fixture failed: {error:#}"); *result.lock().unwrap() = Some(error.to_string()); }

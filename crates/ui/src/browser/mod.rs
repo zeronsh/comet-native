@@ -78,7 +78,6 @@ pub struct BrowserSurface {
     address_edited: bool,
     validation: Option<String>,
     remote: bool,
-    pub(crate) chrome_hovered: bool,
     presentation: Presentation,
     _input_sub: Subscription,
     #[cfg(target_os = "macos")]
@@ -147,7 +146,6 @@ impl BrowserSurface {
             address_edited: false,
             validation: None,
             remote,
-            chrome_hovered: false,
             presentation: Presentation::Hidden,
             _input_sub: input_sub,
             #[cfg(target_os = "macos")]
@@ -446,6 +444,38 @@ impl BrowserSurface {
     pub fn fixture_history(&mut self, forward: bool) {
         self.history(forward);
     }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_move_cursor(&self, x: f64, y: f64) {
+        self.native.as_ref().unwrap().fixture_move_cursor(x, y);
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_origin(&self) -> (f32, f32) {
+        self.native.as_ref().unwrap().fixture_origin()
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_overlay_visible(&self) -> bool {
+        self.native.as_ref().unwrap().fixture_overlay_visible()
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_stats(&self) -> (u64, u64) {
+        self.native.as_ref().unwrap().fixture_stats()
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_focus(&self) {
+        self.native.as_ref().unwrap().fixture_focus();
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_focused(&self) -> bool {
+        self.native.as_ref().unwrap().fixture_focused()
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_overlay_at(&self, x: f64, y: f64) -> bool {
+        self.native.as_ref().unwrap().fixture_overlay_at(x, y)
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_click(&self, x: f64, y: f64) {
+        self.native.as_ref().unwrap().fixture_click(x, y);
+    }
     pub fn fixture_native_visible(&self) -> bool {
         #[cfg(target_os = "macos")]
         {
@@ -499,9 +529,9 @@ mod tests {
         window
             .update(cx, |browser, window, cx| {
                 browser.page.url = Some("https://example.com/".into());
-                browser.address.update(cx, |input, cx| {
-                    input.set_text("javascript:alert(1)", cx)
-                });
+                browser
+                    .address
+                    .update(cx, |input, cx| input.set_text("javascript:alert(1)", cx));
                 browser.focus_address(window, cx);
             })
             .unwrap();

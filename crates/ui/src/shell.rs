@@ -1148,7 +1148,6 @@ pub struct Shell {
     browser_seq: u64,
     browser_context: crate::browser::BrowserContext,
     browser_profile: Option<String>,
-    browser_tabs_hovered: bool,
     /// Ordered surface tabs per panel key (drag-reorderable; stale entries —
     /// closed terminals/diffs — are skipped at read time).
     right_tabs: std::collections::HashMap<String, Vec<RightSurface>>,
@@ -1483,7 +1482,6 @@ impl Shell {
             browser_seq: 0,
             browser_context: crate::browser::BrowserContext::default(),
             browser_profile: None,
-            browser_tabs_hovered: false,
             right_tabs: std::collections::HashMap::new(),
             right_tab_drag: None,
             right_tab_scroll: gpui::ScrollHandle::new(),
@@ -7162,10 +7160,6 @@ impl Shell {
             .min_w_0()
             .overflow_x_scroll()
             .track_scroll(&self.right_tab_scroll)
-            .on_hover(cx.listener(|this, hovered, _, cx| {
-                this.browser_tabs_hovered = *hovered;
-                cx.notify();
-            }))
             .on_drag_move::<RightTabDrag>(cx.listener(
                 move |this, event: &gpui::DragMoveEvent<RightTabDrag>, _, cx| {
                     let payload = event.drag(cx);
@@ -8364,26 +8358,16 @@ impl Render for Shell {
             && !restart_required
             && matches!(self.route, Route::Chat)
             && self.right_pane_open(cx);
-        let browser_covered = self.right_plus.get().is_some()
-            || self.chat_menu.get().is_some()
-            || self.user_menu.get().is_some()
-            || self.spaces_menu.get().is_some()
-            || self.sidebar_view_menu.get().is_some()
-            || self.rename_dialog.is_some()
-            || self.delete_confirm.is_some()
-            || self.overlay_owns_keyboard(cx)
-            || self.pending_exit.is_some()
-            || self.sync_flow != SyncFlow::Idle
-            || self.tween_active(self.right_tween)
+        // Deferred GPUI menus, tooltips and prompts composite over the live
+        // page. Only transitions that clip/move the native body need snapshots.
+        let browser_covered = self.tween_active(self.right_tween)
             || self.tween_active(self.sidebar_tween)
-            || cx.has_active_drag()
-            || window.has_active_prompt()
-            || self.browser_tabs_hovered;
+            || cx.has_active_drag();
         let selected_surface = self.resolved_right_active(cx);
         for (id, browser) in &self.browsers {
             let presentation = crate::browser::model::presentation(
                 browser_active && selected_surface == RightSurface::Browser(*id),
-                browser_covered || browser.read(cx).chrome_hovered,
+                browser_covered,
             );
             browser.update(cx, |browser, cx| {
                 browser.set_shortcuts(&self.settings.keymap);
