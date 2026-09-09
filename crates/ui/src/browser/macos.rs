@@ -399,6 +399,14 @@ fn has_focus(view: &NSView) -> bool {
 
 impl Host {
     pub fn sync(&mut self, bounds: Bounds<Pixels>, mask: Bounds<Pixels>, dragging: bool) {
+        // WebKit may fill newly exposed tiles a frame after a viewport change.
+        // Match its page background beneath those tiles instead of exposing
+        // the application's dark window background at the resize edge.
+        unsafe {
+            let color = self.view.underPageBackgroundColor().CGColor();
+            let layer: *mut AnyObject = msg_send![&*self.clip, layer];
+            let _: () = msg_send![layer, setBackgroundColor: &*color];
+        }
         let visible = bounds.intersect(&mask);
         self.clip.ivars().set(dragging);
         if self.bounds != Some(bounds) || self.visible_bounds != Some(visible) {
