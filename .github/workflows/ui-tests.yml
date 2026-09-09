@@ -72,6 +72,8 @@ jobs:
         run: cargo build --release --locked -p zeron-ui --example browser-fixture --features browser-fixture
       - name: Native browser regression and screenshots
         timeout-minutes: 3
+        env:
+          RUST_BACKTRACE: 1
         run: |
           target/release/examples/browser-fixture "$RUNNER_TEMP/browser-captures"
           test -f "$RUNNER_TEMP/browser-captures/result.txt"

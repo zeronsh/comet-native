@@ -82,16 +82,15 @@ pub enum Presentation {
     #[default]
     Hidden,
     Live,
-    /// GPUI draws a temporary snapshot while a menu or a pane tween covers
-    /// the native child. The live page keeps its history and DOM state.
-    Covered,
+    /// Keep rendering while GPUI owns drag input.
+    Passthrough,
 }
 
-pub fn presentation(active: bool, covered: bool) -> Presentation {
+pub fn presentation(active: bool, dragging: bool) -> Presentation {
     if !active {
         Presentation::Hidden
-    } else if covered {
-        Presentation::Covered
+    } else if dragging {
+        Presentation::Passthrough
     } else {
         Presentation::Live
     }
@@ -137,7 +136,7 @@ mod tests {
     fn native_visibility_never_outlives_its_surface() {
         assert_eq!(presentation(false, false), Presentation::Hidden);
         assert_eq!(presentation(false, true), Presentation::Hidden);
-        assert_eq!(presentation(true, true), Presentation::Covered);
+        assert_eq!(presentation(true, true), Presentation::Passthrough);
         assert_eq!(presentation(true, false), Presentation::Live);
     }
     #[test]

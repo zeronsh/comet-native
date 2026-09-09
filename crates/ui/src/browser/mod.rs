@@ -195,12 +195,6 @@ impl BrowserSurface {
         if self.presentation == presentation {
             return;
         }
-        #[cfg(target_os = "macos")]
-        if presentation != Presentation::Covered {
-            if let Some(image) = self.native.as_ref().and_then(|native| native.snapshot()) {
-                cx.defer(move |cx| gpui::ImageSource::Image(image).evict(None, cx));
-            }
-        }
         self.presentation = presentation;
         #[cfg(target_os = "macos")]
         if let Some(native) = &mut self.native {
@@ -380,7 +374,6 @@ impl BrowserSurface {
                     });
                 }
             }
-            macos::NativeEvent::Snapshot => cx.notify(),
             macos::NativeEvent::Favicon { page, url } => {
                 if self.page.url.as_deref() != Some(&page) || !model::allowed_navigation(&url) {
                     return;
@@ -457,8 +450,8 @@ impl BrowserSurface {
         self.native.as_ref().unwrap().fixture_overlay_visible()
     }
     #[cfg(target_os = "macos")]
-    pub fn fixture_stats(&self) -> (u64, u64) {
-        self.native.as_ref().unwrap().fixture_stats()
+    pub fn fixture_visibility_changes(&self) -> u64 {
+        self.native.as_ref().unwrap().fixture_visibility_changes()
     }
     #[cfg(target_os = "macos")]
     pub fn fixture_focus(&self) {
@@ -488,17 +481,21 @@ impl BrowserSurface {
             false
         }
     }
-    pub fn fixture_snapshot(&self) -> bool {
-        #[cfg(target_os = "macos")]
-        {
-            self.native
-                .as_ref()
-                .is_some_and(|native| native.snapshot().is_some())
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            false
-        }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_backdrop_layers(&self) -> String {
+        self.native.as_ref().unwrap().fixture_backdrop_layers()
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_page_hit(&self, x: f64, y: f64) -> bool {
+        self.native.as_ref().unwrap().fixture_page_hit(x, y)
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_backdrops(&self) -> Vec<(f64, f64, f64, f64)> {
+        self.native.as_ref().unwrap().fixture_backdrops()
+    }
+    #[cfg(target_os = "macos")]
+    pub fn fixture_geometry(&self) -> (f32, f32, f32) {
+        self.native.as_ref().unwrap().fixture_geometry()
     }
     pub fn fixture_eval(&self, script: &str) {
         #[cfg(target_os = "macos")]
