@@ -25,12 +25,15 @@ the page live and preserve native focus and pointer input. Interactive overlays
 intercept input until dismissed. Every newly created native browser view is
 placed beneath this overlay plane.
 
-Snapshots remain only for pane animations and GPUI drags, where native children
-cannot follow GPUI clipping. Captures are bounded and released after the
-transition. If capture fails, the theme background is the temporary fallback.
-Ordinary window resizing updates the child from measured logical bounds. Manual
-pane dragging uses the same frozen snapshot fallback, rather than the live
-hit-test passthrough discussed in the original plan below.
+A native clipping view follows GPUI's paint mask while the live WebView retains
+its layout viewport. Pane drags update that viewport so the page reflows; pane
+animations clip it without stretching a frozen image. The clipping view passes
+pointer events back to GPUI during app drags. Closing animations retain page
+content until the pane finishes closing. No snapshot handoff is used.
+
+Native within-window backdrop effects sit below GPUI overlay content so frosted
+menus blur the live browser pixels. Their bounds and rounded corners follow the
+GPUI blur regions; opaque appearance and menu dismissal remove the effects.
 
 The browser accepts HTTP(S) addresses only and has no engine IPC bridge.
 Downloads and non-displayable responses are unsupported in the preview; users

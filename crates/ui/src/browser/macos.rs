@@ -5,23 +5,23 @@ use super::model::{PageState, Presentation, allowed_navigation};
 use gpui::{Bounds, Pixels, Window};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, ProtocolObject};
-use objc2::{AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send};
+use objc2::{
+    AnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, class, define_class, msg_send,
+};
 use objc2_app_kit::{
-    NSBitmapImageFileType, NSBitmapImageRep, NSEvent, NSEventMask, NSEventModifierFlags, NSImage,
-    NSView, NSWindowOrderingMode,
+    NSColor, NSEvent, NSEventMask, NSEventModifierFlags, NSView, NSWindowOrderingMode,
 };
 use objc2_foundation::{
-    NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSNumber, NSObject,
+    NSDictionary, NSError, NSKeyValueChangeKey, NSKeyValueObservingOptions, NSObject,
     NSObjectNSKeyValueObserverRegistration, NSObjectProtocol, NSString,
 };
 use objc2_web_kit::{
     WKNavigation, WKNavigationAction, WKNavigationActionPolicy, WKNavigationDelegate,
-    WKNavigationResponse, WKNavigationResponsePolicy, WKSnapshotConfiguration, WKWebView,
+    WKNavigationResponse, WKNavigationResponsePolicy, WKWebView,
 };
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    sync::Arc,
 };
 use wry::{WebView, WebViewBuilderExtMacos, WebViewExtMacOS};
 
@@ -45,7 +45,14 @@ impl BrowserData {
 }
 
 type Sender = tokio::sync::mpsc::Sender<NativeEvent>;
-const OBSERVED: [&str; 5] = ["URL", "title", "loading", "canGoBack", "canGoForward"];
+const OBSERVED: [&str; 6] = [
+    "URL",
+    "title",
+    "loading",
+    "canGoBack",
+    "canGoForward",
+    "underPageBackgroundColor",
+];
 
 pub(super) enum NativeEvent {
     Changed,
@@ -53,7 +60,6 @@ pub(super) enum NativeEvent {
     NewTab(String),
     Key(gpui::Keystroke),
     Favicon { page: String, url: String },
-    Snapshot,
 }
 
 struct ObserverState {
@@ -141,23 +147,50 @@ impl Observer {
     }
 }
 
+struct ClipState {
+    dragging: Cell<bool>,
+    region: Cell<objc2_foundation::NSRect>,
+}
+
+// Clips native content to GPUI's current paint mask. During app drags the
+// entire native subtree passes pointer events back to GPUI, without hiding it.
+define_class!(
+    #[unsafe(super(NSView))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ZeronBrowserClipView"]
+    #[ivars = ClipState]
+    struct BrowserClipView;
+    impl BrowserClipView {
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, point: objc2_foundation::NSPoint) -> *mut NSView {
+            let region = self.ivars().region.get();
+            if self.ivars().dragging.get()
+                || point.x < region.origin.x || point.x >= region.origin.x + region.size.width
+                || point.y < region.origin.y || point.y >= region.origin.y + region.size.height
+            { std::ptr::null_mut() }
+            else { unsafe { msg_send![super(self), hitTest: point] } }
+        }
+    }
+);
+
 pub(super) struct NativePage(Rc<RefCell<Host>>);
 
 pub(super) struct Host {
     web: WebView,
     view: Retained<WKWebView>,
     observer: Retained<Observer>,
+    clip: Retained<BrowserClipView>,
+    clip_mask: Retained<AnyObject>,
+    parent: Retained<NSView>,
+    visible_bounds: Option<Bounds<Pixels>>,
+    background_color: Option<Retained<NSColor>>,
     monitor: Option<Retained<AnyObject>>,
     shortcuts: Rc<RefCell<Vec<String>>>,
     bounds: Option<Bounds<Pixels>>,
     presentation: Presentation,
-    snapshot: Rc<RefCell<Option<Arc<gpui::Image>>>>,
-    snapshot_epoch: Rc<Cell<u64>>,
     tx: Sender,
     #[cfg(feature = "browser-fixture")]
     visibility_changes: Cell<u64>,
-    #[cfg(feature = "browser-fixture")]
-    captures: Cell<u64>,
 }
 
 impl NativePage {
@@ -182,20 +215,38 @@ impl NativePage {
         window
             .enable_scene_overlay()
             .map_err(|error| error.to_string())?;
-        // AppKit puts newly created webviews above older siblings. Every tab
-        // must be placed below the single shared transparent GPUI plane.
-        if let Some(parent) = unsafe { view.superview() } {
-            for sibling in parent.subviews() {
-                if sibling.class().name() == c"GPUIOverlayView" {
-                    parent.addSubview_positioned_relativeTo(
-                        &view,
-                        NSWindowOrderingMode::Below,
-                        Some(&sibling),
-                    );
-                    break;
-                }
+        let parent = unsafe { view.superview() }.ok_or("Browser parent is missing")?;
+        let clip: Retained<BrowserClipView> = unsafe {
+            let object = mtm.alloc().set_ivars(ClipState {
+                dragging: Cell::new(false),
+                region: Cell::new(objc2_foundation::NSRect::ZERO),
+            });
+            msg_send![super(object), initWithFrame: objc2_foundation::NSRect::ZERO]
+        };
+        clip.setWantsLayer(true);
+        clip.setAutoresizesSubviews(false);
+        let clip_mask: Retained<AnyObject> = unsafe { msg_send![class!(CALayer), new] };
+        unsafe {
+            let color = NSColor::blackColor().CGColor();
+            let _: () = msg_send![&*clip_mask, setBackgroundColor: &*color];
+            let layer: *mut AnyObject = msg_send![&*clip, layer];
+            let _: () = msg_send![layer, setMasksToBounds: true];
+            let _: () = msg_send![layer, setMask: &*clip_mask];
+        }
+        clip.setHidden(true);
+        parent.addSubview(&clip);
+        // Keep every native tab beneath the shared GPUI overlay plane.
+        for sibling in parent.subviews() {
+            if sibling.class().name() == c"GPUIOverlayView" {
+                parent.addSubview_positioned_relativeTo(
+                    &clip,
+                    NSWindowOrderingMode::Below,
+                    Some(&sibling),
+                );
+                break;
             }
         }
+        clip.addSubview(&view);
 
         let observer = Observer::new(tx.clone(), mtm);
         unsafe {
@@ -268,24 +319,22 @@ impl NativePage {
             web,
             view,
             observer,
+            clip,
+            clip_mask,
+            parent,
+            visible_bounds: None,
+            background_color: None,
             monitor,
             shortcuts,
             bounds: None,
             presentation: Presentation::Hidden,
-            snapshot: Rc::new(RefCell::new(None)),
-            snapshot_epoch: Rc::new(Cell::new(0)),
             #[cfg(feature = "browser-fixture")]
             visibility_changes: Cell::new(0),
-            #[cfg(feature = "browser-fixture")]
-            captures: Cell::new(0),
             tx,
         }))))
     }
     pub fn handle(&self) -> Rc<RefCell<Host>> {
         self.0.clone()
-    }
-    pub fn snapshot(&self) -> Option<Arc<gpui::Image>> {
-        self.0.borrow().snapshot.borrow().clone()
     }
     pub fn focus_chrome(&self) {
         let _ = self.0.borrow().web.focus_parent();
@@ -381,9 +430,57 @@ fn has_focus(view: &NSView) -> bool {
 }
 
 impl Host {
-    pub fn sync(&mut self, bounds: Bounds<Pixels>, _scale: f32) {
-        if self.bounds != Some(bounds) {
+    pub fn sync(&mut self, bounds: Bounds<Pixels>, mask: Bounds<Pixels>, dragging: bool) {
+        // WebKit may fill newly exposed tiles a frame after a viewport change.
+        // Match its page background beneath those tiles instead of exposing
+        // the application's dark window background at the resize edge.
+        unsafe {
+            let color = self.view.underPageBackgroundColor();
+            let unchanged = self
+                .background_color
+                .as_ref()
+                .is_some_and(|previous| msg_send![&**previous, isEqual: &*color]);
+            if !unchanged {
+                // WebKit's native backing otherwise uses controlBackgroundColor,
+                // independently of the CSS page background. Exposed resize tiles
+                // must use the page color while the remote content catches up.
+                let _: () = msg_send![&*self.view, _setBackgroundColor: &*color];
+                let cg_color = color.CGColor();
+                let layer: *mut AnyObject = msg_send![&*self.clip, layer];
+                let _: () = msg_send![layer, setBackgroundColor: &*cg_color];
+                self.background_color = Some(color);
+            }
+        }
+        let visible = bounds.intersect(&mask);
+        self.clip.ivars().dragging.set(dragging);
+        if self.bounds != Some(bounds) || self.visible_bounds != Some(visible) {
             self.bounds = Some(bounds);
+            self.visible_bounds = Some(visible);
+            let x = f64::from(f32::from(visible.origin.x));
+            let y = f64::from(f32::from(visible.origin.y));
+            let width = f64::from(f32::from(visible.size.width)).max(0.);
+            let height = f64::from(f32::from(visible.size.height)).max(0.);
+            let y = if self.parent.isFlipped() {
+                y
+            } else {
+                self.parent.bounds().size.height - y - height
+            };
+            let actions_disabled: bool = unsafe {
+                let previous = msg_send![class!(CATransaction), disableActions];
+                let _: () = msg_send![class!(CATransaction), setDisableActions: true];
+                previous
+            };
+            // Keep the host stationary. Moving it while WebKit updates its
+            // remote layer tree can combine the old origin with the new size.
+            self.clip.setFrame(self.parent.bounds());
+            let region = objc2_foundation::NSRect::new(
+                objc2_foundation::NSPoint::new(x, y),
+                objc2_foundation::NSSize::new(width, height),
+            );
+            self.clip.ivars().region.set(region);
+            unsafe {
+                let _: () = msg_send![&*self.clip_mask, setFrame: region];
+            }
             let rect = wry::Rect {
                 position: wry::dpi::LogicalPosition::new(
                     f64::from(f32::from(bounds.origin.x)),
@@ -397,16 +494,38 @@ impl Host {
                 .into(),
             };
             let _ = self.web.set_bounds(rect);
+            unsafe {
+                // Leave the implicit transaction open for the matching Metal
+                // presentation. Committing here would expose native geometry early.
+                let _: () = msg_send![class!(CATransaction), setDisableActions: actions_disabled];
+            }
+            #[cfg(feature = "browser-fixture")]
+            unsafe {
+                let layer: *mut AnyObject = msg_send![&*self.clip, layer];
+                let frame: objc2_foundation::NSRect = msg_send![layer, frame];
+                let presentation: *mut AnyObject = msg_send![layer, presentationLayer];
+                let presented: objc2_foundation::NSRect = if presentation.is_null() {
+                    frame
+                } else {
+                    msg_send![presentation, frame]
+                };
+                eprintln!(
+                    "Browser geometry: bounds={bounds:?} mask={mask:?} clip={:?} layer={frame:?} presented={presented:?} web={:?} background={:?}",
+                    self.clip.frame(),
+                    self.view.frame(),
+                    self.view.underPageBackgroundColor()
+                );
+            }
         }
         self.update_visibility();
     }
     fn update_visibility(&self) {
-        let visible = self.presentation == Presentation::Live
+        let visible = self.presentation != Presentation::Hidden
             && self.observer.ivars().error.borrow().is_none()
             && self
-                .bounds
-                .is_some_and(|b| f32::from(b.size.width) > 1.0 && f32::from(b.size.height) > 1.0);
-        if !visible && has_focus(&self.view) {
+                .visible_bounds
+                .is_some_and(|b| f32::from(b.size.width) > 0. && f32::from(b.size.height) > 0.);
+        if (!visible || self.presentation == Presentation::Passthrough) && has_focus(&self.view) {
             let _ = self.web.focus_parent();
         }
         if self.view.isHidden() == visible {
@@ -415,82 +534,20 @@ impl Host {
                 .set(self.visibility_changes.get() + 1);
             let _ = self.web.set_visible(visible);
         }
+        self.clip.setHidden(!visible);
     }
     fn present(&mut self, presentation: Presentation) {
-        if self.presentation != presentation {
-            self.snapshot_epoch
-                .set(self.snapshot_epoch.get().wrapping_add(1));
-            if presentation == Presentation::Covered && self.presentation == Presentation::Live {
-                self.capture();
-            } else {
-                self.snapshot.borrow_mut().take();
-            }
-            self.presentation = presentation;
-        }
+        self.presentation = presentation;
+        self.clip
+            .ivars()
+            .dragging
+            .set(presentation == Presentation::Passthrough);
         self.update_visibility();
-    }
-    fn capture(&self) {
-        let Some(bounds) = self.bounds else {
-            return;
-        };
-        if self.view.isHidden() {
-            return;
-        }
-        #[cfg(feature = "browser-fixture")]
-        self.captures.set(self.captures.get() + 1);
-        let epoch = self.snapshot_epoch.get();
-        let generation = self.snapshot_epoch.clone();
-        let output = self.snapshot.clone();
-        let tx = self.tx.clone();
-        let config = unsafe { WKSnapshotConfiguration::new(self.view.mtm()) };
-        // Limit both dimensions (and account for Retina's 2x output). A
-        // snapshot is a temporary overlay aid, not a screenshot archive.
-        let width = f64::from(f32::from(bounds.size.width));
-        let height = f64::from(f32::from(bounds.size.height));
-        let thumbnail_width = width.min(1024.0).min(1024.0 * width / height.max(1.0));
-        unsafe {
-            config.setSnapshotWidth(Some(&NSNumber::new_f64(thumbnail_width)));
-            config.setAfterScreenUpdates(false);
-        }
-        let completion = block2::RcBlock::new(move |image: *mut NSImage, error: *mut NSError| {
-            if generation.get() != epoch || !error.is_null() {
-                return;
-            }
-            let Some(image) = (unsafe { image.as_ref() }) else {
-                return;
-            };
-            let Some(data) = image.TIFFRepresentation() else {
-                return;
-            };
-            let Some(bitmap) = NSBitmapImageRep::initWithData(NSBitmapImageRep::alloc(), &data)
-            else {
-                return;
-            };
-            let png = unsafe {
-                bitmap.representationUsingType_properties(
-                    NSBitmapImageFileType::PNG,
-                    &NSDictionary::new(),
-                )
-            };
-            if let Some(png) = png.filter(|data| data.length() <= 16 * 1024 * 1024) {
-                *output.borrow_mut() = Some(Arc::new(gpui::Image::from_bytes(
-                    gpui::ImageFormat::Png,
-                    png.to_vec(),
-                )));
-                let _ = tx.try_send(NativeEvent::Snapshot);
-            }
-        });
-        unsafe {
-            self.view
-                .takeSnapshotWithConfiguration_completionHandler(Some(&config), &completion);
-        }
     }
 }
 
 impl Drop for Host {
     fn drop(&mut self) {
-        self.snapshot_epoch
-            .set(self.snapshot_epoch.get().wrapping_add(1));
         if has_focus(&self.view) {
             let _ = self.web.focus_parent();
         }
@@ -506,6 +563,7 @@ impl Drop for Host {
             self.view.stopLoading();
         }
         self.view.removeFromSuperview();
+        self.clip.removeFromSuperview();
     }
 }
 
@@ -518,11 +576,7 @@ impl NativePage {
         }
         let host = self.0.borrow();
         let window = host.view.window().unwrap();
-        let height = unsafe { host.view.superview() }
-            .unwrap()
-            .bounds()
-            .size
-            .height;
+        let height = host.parent.clone().bounds().size.height;
         let p = window.convertPointToScreen(objc2_foundation::NSPoint::new(x, height - y));
         let screen = objc2_app_kit::NSScreen::mainScreen(host.view.mtm()).unwrap();
         unsafe {
@@ -532,21 +586,83 @@ impl NativePage {
             ));
         }
     }
+    pub fn fixture_backdrop_layers(&self) -> String {
+        unsafe fn describe(layer: *mut AnyObject, depth: usize, out: &mut String) {
+            if layer.is_null() || depth > 8 {
+                return;
+            }
+            unsafe {
+                let desc: Retained<NSString> = msg_send![layer, description];
+                out.push_str(&format!("{}{}\n", " ".repeat(depth), desc));
+                let layers: *mut AnyObject = msg_send![layer, sublayers];
+                if !layers.is_null() {
+                    let count: usize = msg_send![layers, count];
+                    for i in 0..count.min(30) {
+                        let child: *mut AnyObject = msg_send![layers, objectAtIndex:i];
+                        describe(child, depth + 1, out);
+                    }
+                }
+            }
+        }
+        let host = self.0.borrow();
+        let mut out = String::new();
+        for view in host.parent.subviews() {
+            if view.class().name() == c"GPUIBackdropView" {
+                unsafe {
+                    let layer: *mut AnyObject = msg_send![&*view, layer];
+                    describe(layer, 0, &mut out);
+                }
+            }
+        }
+        out
+    }
+    pub fn fixture_page_hit(&self, x: f64, y: f64) -> bool {
+        let host = self.0.borrow();
+        let point = objc2_foundation::NSPoint::new(x, host.parent.bounds().size.height - y);
+        host.parent
+            .hitTest(point)
+            .is_some_and(|hit| hit.isDescendantOf(&host.clip))
+    }
+    pub fn fixture_backdrops(&self) -> Vec<(f64, f64, f64, f64)> {
+        let host = self.0.borrow();
+        host.parent
+            .subviews()
+            .iter()
+            .filter(|view| view.class().name() == c"GPUIBackdropView" && !view.isHidden())
+            .map(|view| {
+                let r = view.frame();
+                (
+                    r.origin.x,
+                    host.parent.bounds().size.height - r.origin.y - r.size.height,
+                    r.size.width,
+                    r.size.height,
+                )
+            })
+            .collect()
+    }
+    pub fn fixture_geometry(&self) -> (f32, f32, f32) {
+        let host = self.0.borrow();
+        (
+            host.bounds.unwrap().size.width.into(),
+            host.view.frame().size.width as f32,
+            host.visible_bounds.unwrap().size.width.into(),
+        )
+    }
     pub fn fixture_origin(&self) -> (f32, f32) {
         let b = self.0.borrow().bounds.unwrap();
         (b.origin.x.into(), b.origin.y.into())
     }
     pub fn fixture_overlay_visible(&self) -> bool {
         let host = self.0.borrow();
-        unsafe { host.view.superview() }
-            .unwrap()
+        host.parent
+            .clone()
             .subviews()
             .iter()
             .any(|v| v.class().name() == c"GPUIOverlayView" && !v.isHidden())
     }
-    pub fn fixture_stats(&self) -> (u64, u64) {
+    pub fn fixture_visibility_changes(&self) -> u64 {
         let host = self.0.borrow();
-        (host.visibility_changes.get(), host.captures.get())
+        host.visibility_changes.get()
     }
     pub fn fixture_focus(&self) {
         let _ = self.0.borrow().web.focus();
@@ -556,7 +672,7 @@ impl NativePage {
     }
     pub fn fixture_overlay_at(&self, x: f64, y: f64) -> bool {
         let host = self.0.borrow();
-        let parent = unsafe { host.view.superview() }.unwrap();
+        let parent = host.parent.clone();
         let point = objc2_foundation::NSPoint::new(
             x,
             if parent.isFlipped() {
@@ -572,7 +688,7 @@ impl NativePage {
     pub fn fixture_click(&self, x: f64, y: f64) {
         self.fixture_move_cursor(x, y);
         let host = self.0.borrow();
-        let parent = unsafe { host.view.superview() }.unwrap();
+        let parent = host.parent.clone();
         let window = host.view.window().unwrap();
         let point = objc2_foundation::NSPoint::new(x, parent.bounds().size.height - y);
         let app = objc2_app_kit::NSApplication::sharedApplication(host.view.mtm());
