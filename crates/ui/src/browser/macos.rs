@@ -499,6 +499,13 @@ impl NativePage {
             ));
         }
     }
+    pub fn fixture_page_hit(&self, x: f64, y: f64) -> bool {
+        let host = self.0.borrow();
+        let point = objc2_foundation::NSPoint::new(x, host.parent.bounds().size.height - y);
+        host.parent
+            .hitTest(point)
+            .is_some_and(|hit| hit.isDescendantOf(&host.clip))
+    }
     pub fn fixture_backdrops(&self) -> Vec<(f64, f64, f64, f64)> {
         let host = self.0.borrow();
         host.parent
@@ -536,9 +543,9 @@ impl NativePage {
             .iter()
             .any(|v| v.class().name() == c"GPUIOverlayView" && !v.isHidden())
     }
-    pub fn fixture_stats(&self) -> (u64, u64) {
+    pub fn fixture_visibility_changes(&self) -> u64 {
         let host = self.0.borrow();
-        (host.visibility_changes.get(), 0)
+        host.visibility_changes.get()
     }
     pub fn fixture_focus(&self) {
         let _ = self.0.borrow().web.focus();

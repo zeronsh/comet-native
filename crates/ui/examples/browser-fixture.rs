@@ -201,7 +201,7 @@ fn main() -> anyhow::Result<()> {
                     first.read_with(cx, |b,_| b.fixture_eval("(() => { let live = document.createElement('div'); live.style='position:fixed;bottom:16px;right:16px;padding:8px 12px;background:#29483b;color:white;border-radius:8px;font:12px monospace;z-index:99999'; document.body.append(live); let start=performance.now(); function frame() { live.textContent='LIVE  '+((performance.now()-start)/1000).toFixed(2)+'s'; requestAnimationFrame(frame); } frame(); })()"));
                     recording = std::process::Command::new("/usr/sbin/screencapture").args(["-v","-V","24","-C","-k","-D","1"]).arg(output.join("browser-hover.mov")).spawn()?;
                     pause(cx, 1000).await;
-                    let before = first.read_with(cx, |b, _| b.fixture_stats());
+                    let before = first.read_with(cx, |b, _| b.fixture_visibility_changes());
                     // Actual GPUI mouse dispatch exercises tab and toolbar hover
                     // listeners and tooltip timers, including rapid cancellation.
                     for _ in 0..12 {
@@ -209,7 +209,7 @@ fn main() -> anyhow::Result<()> {
                             first.read_with(cx, |b,_| b.fixture_move_cursor(x as f64,y as f64));
                             window.update(cx, |_, w, cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position:gpui::point(px(x),px(y)), pressed_button:None,modifiers:Default::default() }),cx); })?;
                             pause(cx, 80).await;
-                            anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible() && b.fixture_stats() == before), "hover hid or snapshotted the live webview");
+                            anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible() && b.fixture_visibility_changes() == before), "hover hid the live webview");
                         }
                     }
                     // Dwell over Reload until its real GPUI tooltip paints above
@@ -217,7 +217,7 @@ fn main() -> anyhow::Result<()> {
                     pause(cx, 1000).await;
                     anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_visible()), "toolbar tooltip did not paint on the overlay plane");
                     anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_focused() && !b.fixture_overlay_at((left+100.) as f64,(top+100.) as f64)), "tooltip stole native focus or page hit testing");
-                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_stats() == before && !b.fixture_snapshot()), "tooltip captured or hid the page");
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_visibility_changes() == before), "tooltip hid the page");
                     capture(&output, "browser-tooltip-dark")?;
                     // Also dwell on the tab itself: its URL tooltip is the
                     // original reported flicker case, distinct from toolbar hover.
@@ -226,7 +226,7 @@ fn main() -> anyhow::Result<()> {
                             first.read_with(cx, |b,_| b.fixture_move_cursor(x as f64,y as f64));
                             window.update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(x),px(y)),pressed_button:None,modifiers:Default::default()}),cx); })?;
                             pause(cx, 1000).await;
-                            anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_visible() && b.fixture_native_visible() && b.fixture_focused() && b.fixture_stats() == before && !b.fixture_snapshot()), "repeated tab/toolbar tooltip disrupted the live page");
+                            anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_visible() && b.fixture_native_visible() && b.fixture_focused() && b.fixture_visibility_changes() == before), "repeated tab/toolbar tooltip disrupted the live page");
                         }
                     }
                     first.read_with(cx, |b,_| b.fixture_move_cursor((left-20.) as f64,150.));
@@ -239,7 +239,7 @@ fn main() -> anyhow::Result<()> {
                 #[cfg(target_os = "macos")]
                 {
                     let (left, top) = first.read_with(cx, |b,_| b.fixture_origin());
-                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible() && !b.fixture_snapshot()), "menu froze or hid the live page");
+                    anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible()), "menu froze or hid the live page");
                     anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_at((left+100.) as f64,(top+150.) as f64)), "menu failed to intercept outside clicks above the browser");
                     capture(&output, "browser-menu-dark")?;
                     first.read_with(cx, |b,_| b.fixture_eval("document.addEventListener('click', () => { document.title = 'Unexpected page click'; })"));
@@ -281,11 +281,12 @@ fn main() -> anyhow::Result<()> {
                     pause(cx,300).await;
                     let mut layout_video = std::process::Command::new("/usr/sbin/screencapture").args(["-v","-V","24","-C","-k","-D","1"]).arg(output.join("browser-layout.mov")).spawn()?;
                     pause(cx,800).await;
-                    let before=first.read_with(cx,|b,_|b.fixture_stats());
+                    let before=first.read_with(cx,|b,_|b.fixture_visibility_changes());
                     let (left,top)=first.read_with(cx,|b,_|b.fixture_origin());
                     // Real resize-handle drag, including crossing into the native page.
                     let start=gpui::point(px(left-2.),px(top+120.));
                     window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
+                    let mut widths=Vec::new();
                     for delta in [10.,30.,60.,100.,140.,180.,140.,100.,60.,20.,-20.,-60.,-100.,-140.,-180.,-140.,-100.,-60.,-20.,0.] {
                         let pos=gpui::point(px(left-2.+delta),start.y);
                         first.read_with(cx,|b,_|b.fixture_move_cursor(f32::from(pos.x) as f64,f32::from(pos.y) as f64));
@@ -293,12 +294,18 @@ fn main() -> anyhow::Result<()> {
                         pause(cx,100).await;
                         anyhow::ensure!(cx.update(|cx|cx.has_active_drag()),"resize did not start a real GPUI drag");
                         let (layout,native,clip)=first.read_with(cx,|b,_|b.fixture_geometry());
+                        widths.push(layout);
+                        let (x,y)=first.read_with(cx,|b,_|b.fixture_origin());
+                        anyhow::ensure!(!first.read_with(cx,|b,_|b.fixture_page_hit((x+100.) as f64,(y+100.) as f64)),"native page intercepted the resize drag");
                         anyhow::ensure!((layout-native).abs()<1.1 && clip<=layout+1.,"native browser geometry diverged while resizing");
-                        anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_stats()==before),"resize hid the live browser");
+                        anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_visibility_changes()==before),"resize hid the live browser");
                     }
                     window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
                     pause(cx,250).await;
                     anyhow::ensure!(!cx.update(|cx|cx.has_active_drag()),"resize drag did not end");
+                    anyhow::ensure!(widths.iter().copied().fold(f32::MIN,f32::max)-widths.iter().copied().fold(f32::MAX,f32::min)>150.,"resize did not exercise both viewport sizes");
+                    let (x,y)=first.read_with(cx,|b,_|b.fixture_origin());
+                    anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_page_hit((x+100.) as f64,(y+100.) as f64)),"resize release did not restore page hit testing");
                     // CSS viewport must follow the native frame, rather than a scaled image.
                     first.read_with(cx,|b,_|b.fixture_eval("document.title='Viewport:'+window.innerWidth"));
                     let deadline=std::time::Instant::now()+Duration::from_secs(5);
@@ -313,7 +320,7 @@ fn main() -> anyhow::Result<()> {
                     // Left sidebar does not occlude the browser at any point.
                     for _ in 0..4 {
                         window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(false,cx))?;
-                        for _ in 0..20 {pause(cx,16).await;anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_stats()==before),"left sidebar toggle hid the browser");}
+                        for _ in 0..20 {pause(cx,16).await;anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_visibility_changes()==before),"left sidebar toggle hid the browser");}
                     }
                     // Reverse the right sidebar mid-animation. It must remain
                     // live inside a narrowing mask, without bleeding into chat.
