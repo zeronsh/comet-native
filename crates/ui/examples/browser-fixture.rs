@@ -168,6 +168,28 @@ fn main() -> anyhow::Result<()> {
                         anyhow::ensure!(std::time::Instant::now() < deadline, "same-document state did not update"); pause(cx, 50).await;
                     }
                 }
+                let (second_id, second) = window.update(cx, |shell, w, cx| shell.fixture_open_browser(None, w, cx))?;
+                pause(cx, 250).await;
+                anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "background page stayed visible");
+                #[cfg(target_os = "macos")]
+                {
+                    first.read_with(cx, |b, _| b.fixture_eval("document.cookie = 'browserfixture=shared; path=/'"));
+                    window.update(cx, |_, w, cx| second.update(cx, |b, cx| b.navigate(&_origin, w, cx)))?;
+                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+                    while !second.read_with(cx, |b, _| b.page.title == "Fieldnotes" && !b.page.loading) {
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "second page did not load"); pause(cx, 50).await;
+                    }
+                    second.read_with(cx, |b, _| b.fixture_eval("document.title = document.cookie.includes('browserfixture=shared') ? 'Shared login' : 'Missing cookie'"));
+                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+                    while !second.read_with(cx, |b, _| b.page.title == "Shared login") {
+                        anyhow::ensure!(std::time::Instant::now() < deadline, "tabs did not share ephemeral website data"); pause(cx, 50).await;
+                    }
+                    anyhow::ensure!(first.read_with(cx, |b, _| b.page.title == "Updated title"), "second tab replaced first tab state");
+                }
+                window.update(cx, |shell, _, cx| shell.fixture_select_browser(first_id, cx))?;
+                pause(cx, 250).await;
+                window.update(cx, |shell, w, cx| shell.fixture_close_browser(second_id, w, cx))?;
+                drop(second);
                 #[cfg(target_os = "macos")]
                 let mut recording;
                 #[cfg(target_os = "macos")]
@@ -202,28 +224,6 @@ fn main() -> anyhow::Result<()> {
                     pause(cx, 400).await;
                     anyhow::ensure!(!first.read_with(cx, |b,_| b.fixture_overlay_visible()), "dismissed tooltip left stale overlay pixels");
                 }
-                let (second_id, second) = window.update(cx, |shell, w, cx| shell.fixture_open_browser(None, w, cx))?;
-                pause(cx, 250).await;
-                anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "background page stayed visible");
-                #[cfg(target_os = "macos")]
-                {
-                    first.read_with(cx, |b, _| b.fixture_eval("document.cookie = 'browserfixture=shared; path=/'"));
-                    window.update(cx, |_, w, cx| second.update(cx, |b, cx| b.navigate(&_origin, w, cx)))?;
-                    let deadline = std::time::Instant::now() + Duration::from_secs(15);
-                    while !second.read_with(cx, |b, _| b.page.title == "Fieldnotes" && !b.page.loading) {
-                        anyhow::ensure!(std::time::Instant::now() < deadline, "second page did not load"); pause(cx, 50).await;
-                    }
-                    second.read_with(cx, |b, _| b.fixture_eval("document.title = document.cookie.includes('browserfixture=shared') ? 'Shared login' : 'Missing cookie'"));
-                    let deadline = std::time::Instant::now() + Duration::from_secs(5);
-                    while !second.read_with(cx, |b, _| b.page.title == "Shared login") {
-                        anyhow::ensure!(std::time::Instant::now() < deadline, "tabs did not share ephemeral website data"); pause(cx, 50).await;
-                    }
-                    anyhow::ensure!(first.read_with(cx, |b, _| b.page.title == "Updated title"), "second tab replaced first tab state");
-                }
-                window.update(cx, |shell, _, cx| shell.fixture_select_browser(first_id, cx))?;
-                pause(cx, 250).await;
-                window.update(cx, |shell, w, cx| shell.fixture_close_browser(second_id, w, cx))?;
-                drop(second);
                 window.update(cx, |shell, _, cx| shell.fixture_browser_menu(true, cx))?;
                 pause(cx, 700).await;
                 #[cfg(target_os = "macos")]
