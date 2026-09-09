@@ -1,5 +1,5 @@
 //! The composer: a hand-rolled multiline text input (adapted from gpui's
-//! `examples/input.rs`), the compact↔expanded flip, the Send/Steer/Stop morph,
+//! `examples/input.rs`), the compact↔expanded flip, the Send/Queue/Stop morph,
 //! optimistic send with failure recovery, per-chat drafts, and the question
 //! wizard that replaces the composer while a run awaits input.
 //!
@@ -34,7 +34,7 @@ use zeron_rpc::{RpcError, methods};
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::pickers::Pickers;
-use crate::settings::{ActiveTurnSendBehavior, ComposerSendBehavior, platform_combo};
+use crate::settings::{ComposerSendBehavior, platform_combo};
 use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
@@ -460,15 +460,15 @@ const QUEUED_ATTACHMENTS_MIN: (u64, u64, u64) = (0, 2, 12);
 pub enum SendButtonMode {
     /// No live run: plain send.
     Send,
-    /// Live steerable run with text typed: "Send (steers the current run)".
-    Steer,
+    /// Live run with text typed: queue for the next turn.
+    Queue,
     /// Live run, nothing typed: red stop square.
     Stop,
 }
 
 /// What the composer holds that a send could carry. A staged image or diff
 /// comment counts: both synthesize their own prompt body, so either alone is
-/// a legal send — and during a live run has to read as Steer, not Stop.
+/// a legal send — and during a live run has to read as Queue, not Stop.
 pub fn composer_has_content(text: &str, attachments: usize, comments: usize) -> bool {
     !text.trim().is_empty() || attachments > 0 || comments > 0
 }
@@ -490,7 +490,7 @@ fn modified_submit_target(has_content: bool) -> ModifiedSubmitTarget {
 pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
     match (run_live, has_text) {
         (false, _) => SendButtonMode::Send,
-        (true, true) => SendButtonMode::Steer,
+        (true, true) => SendButtonMode::Queue,
         (true, false) => SendButtonMode::Stop,
     }
 }
@@ -3832,9 +3832,7 @@ fn mention_error_message(err: &RpcError) -> SharedString {
             "The session's device runs an older zeron — update it to search its files".into()
         }
         RpcError::Transport(_) | RpcError::Closed => "The session's device is unreachable".into(),
-        RpcError::BadParams(_) | RpcError::Failed(_) => {
-            "File search failed".into()
-        }
+        RpcError::BadParams(_) | RpcError::Failed(_) => "File search failed".into(),
     }
 }
 
@@ -5392,11 +5390,8 @@ impl Composer {
             _ if no_content => {}
             _ if self.send_blocked(cx) => {}
             SendButtonMode::Send => self.send(text, false, cx),
-            // Busy: the message joins the queue rather than racing the turn.
-            // Whether it then steers straight into that turn or waits for the
-            // next one is the engine's call (`DocHost::drain_queue`) — the
-            // composer only says "here, take this".
-            SendButtonMode::Steer => self.send(text, true, cx),
+            // Busy: keep the message queued until the current turn ends.
+            SendButtonMode::Queue => self.send(text, true, cx),
         }
     }
 
@@ -5481,6 +5476,21 @@ impl Composer {
         };
         let space_id = space.as_ref().map(|s| s.id.clone());
         let space_path = space.as_ref().map(|s| s.path.clone());
+        if queue && !is_new {
+            let capability = if self.staged().is_empty() {
+                capabilities::MESSAGE_QUEUE_V1
+            } else {
+                capabilities::MESSAGE_QUEUE_ATTACHMENTS_V1
+            };
+            if !engine.engine_info().supports(capability)
+                || !self.state.read(cx).chat_host_supports(&chat_id, capability)
+            {
+                self.failure =
+                    Some("Update the chat's engine to queue messages during a response.".into());
+                cx.notify();
+                return;
+            }
+        }
         // Snapshot-and-clear NOW (use-attachments.ts takeAttachments): the
         // strip empties the instant you hit send; a failure hands the files
         // back into the chat's stash.
@@ -5504,22 +5514,9 @@ impl Composer {
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().timestamp_millis();
-        // New chats always start a Run. Existing busy chats use the personal
-        // cut's visible/editable message queue only when both the UI's engine
-        // and the chat host explicitly advertise it. Same-version upstream
-        // builds do not, so they retain the legacy durable Steer command.
-        let queue_requested = queue && !is_new;
-        let queue_capability = if staged.is_empty() {
-            capabilities::MESSAGE_QUEUE_V1
-        } else {
-            capabilities::MESSAGE_QUEUE_ATTACHMENTS_V1
-        };
-        let queue = queue_requested
-            && engine.engine_info().supports(queue_capability)
-            && self
-                .state
-                .read(cx)
-                .chat_host_supports(&chat_id, queue_capability);
+        // Existing busy chats always queue; compatibility was checked before
+        // taking the draft, attachments, or review comments.
+        let queue = queue && !is_new;
         let clean_queue_attachment_text = staged.is_empty()
             || (engine
                 .engine_info()
@@ -5528,7 +5525,6 @@ impl Composer {
                     &chat_id,
                     capabilities::MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1,
                 ));
-        let legacy_steer = queue_requested && !queue;
 
         // Queued-attachment flow (durable-by-design): stage the bytes on the
         // LOCAL engine, queue the command immediately with `pending://` refs,
@@ -5632,9 +5628,6 @@ impl Composer {
         };
         // A queued message is not in the transcript yet — the queue panel is
         // its echo, and it gets a real bubble when the host sends it.
-        let hold_for_turn_end = queue
-            && crate::settings::current(cx).active_turn_send_behavior
-                == ActiveTurnSendBehavior::Queue;
         self.state.update(cx, |s, cx| {
             if is_new {
                 s.select_chat(Some(chat_id.clone()), cx);
@@ -5934,7 +5927,7 @@ impl Composer {
                         "chatId": chat_id,
                         "text": queue_text,
                         "attachments": attachment_paths,
-                        "holdForTurnEnd": hold_for_turn_end,
+                        "holdForTurnEnd": true,
                     });
                     let reply = engine
                         .client()
@@ -5949,28 +5942,21 @@ impl Composer {
                     return Ok(Some(queue_id.to_string()));
                 }
 
-                let command = if legacy_steer {
-                    SessionCommandPayload::Steer {
+                let command = SessionCommandPayload::Run {
+                    request: RunRequest {
                         prompt: content.clone(),
-                        message_id: Some(message_id.clone()),
-                    }
-                } else {
-                    SessionCommandPayload::Run {
-                        request: RunRequest {
-                            prompt: content.clone(),
-                            harness: resolved.harness,
-                            model: resolved.model.clone(),
-                            reasoning: resolved.reasoning,
-                            model_options: resolved.model_options.clone(),
-                            cwd,
-                            sandbox: SandboxLevel::WorkspaceWrite,
-                            auto_approve: false,
-                            resume: None,
-                            attachments: attachment_paths,
-                            worktree: run_worktree,
-                        },
-                        message_id: message_id.clone(),
-                    }
+                        harness: resolved.harness,
+                        model: resolved.model.clone(),
+                        reasoning: resolved.reasoning,
+                        model_options: resolved.model_options.clone(),
+                        cwd,
+                        sandbox: SandboxLevel::WorkspaceWrite,
+                        auto_approve: false,
+                        resume: None,
+                        attachments: attachment_paths,
+                        worktree: run_worktree,
+                    },
+                    message_id: message_id.clone(),
                 };
                 let command = serde_json::to_value(&command)
                     .map_err(|e| format!("Send failed: {e}"))?;
@@ -6485,7 +6471,7 @@ impl Composer {
     ) -> gpui::AnyElement {
         let theme = Theme::of(cx);
         // Zeron composer-actions.tsx: a size-7 filled circle — up-arrow to
-        // send/steer, a dark rounded square on the same light circle to stop.
+        // send/queue, a dark rounded square on the same light circle to stop.
         match mode {
             SendButtonMode::Stop => div()
                 .id("composer-stop")
@@ -6501,7 +6487,7 @@ impl Composer {
                 .on_click(cx.listener(|this, _, _, cx| this.interrupt_selected(cx)))
                 .child(div().size(px(11.0)).rounded(px(3.0)).bg(theme.bg))
                 .into_any_element(),
-            SendButtonMode::Send | SendButtonMode::Steer => {
+            SendButtonMode::Send | SendButtonMode::Queue => {
                 // Dimmed and inert while no project is picked or no agent is
                 // runnable (`send_blocked` also gates `on_submit`, so Enter
                 // is a no-op too).
@@ -6806,26 +6792,6 @@ impl Render for Composer {
                         .child(div().min_w_0().truncate().child(notice)),
                 ))
             });
-
-        // Turn-boundary steering notice: for agents without mid-turn
-        // injection (Grok over ACP today), a "steer" is queued and applies
-        // when the current turn finishes. Without this hint the queue read
-        // as a dropped steer (user report: "my steer didn't apply until
-        // grok already finished").
-        let steer_queues = mode == SendButtonMode::Steer
-            && self.pickers.read(cx).resolved_steering_mode(cx)
-                == Some(zeron_proto::SteeringMode::TurnBoundary);
-        let container = container.when(steer_queues, |el| {
-            el.child(
-                div()
-                    .mt(px(6.0))
-                    .px(px(12.0))
-                    .text_size(crate::typography::ui_rems(11.0))
-                    .line_height(px(15.0))
-                    .text_color(theme.text_muted.opacity(0.8))
-                    .child("This agent can't be steered mid-turn — your message will be queued and sent when the current turn finishes."),
-            )
-        });
 
         if wizard_active {
             let wizard = self.render_wizard(cx);
@@ -8164,13 +8130,13 @@ mod tests {
     }
 
     #[test]
-    fn a_comment_only_stage_steers_a_live_run_instead_of_stopping_it() {
+    fn a_comment_only_stage_queues_during_a_live_run() {
         let live = true;
         let comment_only = composer_has_content("", 0, 2);
         assert_eq!(
             send_button_mode(live, comment_only),
-            SendButtonMode::Steer,
-            "comment-only submit must steer, not interrupt the run"
+            SendButtonMode::Queue,
+            "comment-only submit must queue without interrupting the run"
         );
         // Nothing staged at all is still the stop square.
         assert_eq!(
@@ -8183,7 +8149,7 @@ mod tests {
     fn send_button_morph() {
         assert_eq!(send_button_mode(false, false), SendButtonMode::Send);
         assert_eq!(send_button_mode(false, true), SendButtonMode::Send);
-        assert_eq!(send_button_mode(true, true), SendButtonMode::Steer);
+        assert_eq!(send_button_mode(true, true), SendButtonMode::Queue);
         assert_eq!(send_button_mode(true, false), SendButtonMode::Stop);
     }
 

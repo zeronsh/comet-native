@@ -114,25 +114,16 @@ enum MessageQueue {
     }
 }
 
-/// Preserve the phone's existing policy unless the user opts into steering.
-enum ActiveTurnSendBehavior: String, CaseIterable {
-    case queue, steer
-    var label: String { self == .queue ? "Queue" : "Steer" }
-    var holdForTurnEnd: Bool { self == .queue }
-}
-
 enum QueueAction: Equatable {
-    case steer, sendNow, remove
+    case sendNow, remove
     var method: String {
         switch self {
-        case .steer: return "SteerQueuedMessageNow"
         case .sendNow: return "SendQueuedMessageNow"
         case .remove: return "RemoveQueuedMessage"
         }
     }
     var label: String {
         switch self {
-        case .steer: return "Steer"
         case .sendNow: return "Send now"
         case .remove: return "Remove"
         }
@@ -148,10 +139,9 @@ struct QueueActionReply: Decodable {
 }
 
 extension MessageQueue {
-    static func primaryAction(for item: QueuedMessage, midTurnSteering: Bool?,
+    static func primaryAction(for item: QueuedMessage,
                               supportsActions: Bool, pending: Bool) -> QueueAction? {
-        guard supportsActions, !pending, item.deliveryGate == nil,
-              let midTurnSteering else { return nil }
-        return midTurnSteering && item.attachments.isEmpty ? .steer : .sendNow
+        guard supportsActions, !pending, item.deliveryGate == nil else { return nil }
+        return .sendNow
     }
 }

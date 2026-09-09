@@ -14,7 +14,6 @@ struct QueuePanel: View {
     var editingId: String?
     var onEdit: (QueuedMessage) -> Void
     var onCancelEdit: () -> Void
-    var midTurnSteering: Bool?
     var supportsActions: Bool
     var onAction: (QueuedMessage, QueueAction) -> Void
 
@@ -112,7 +111,7 @@ struct QueuePanel: View {
                           editing: Bool) -> some View {
         let pending = store.queueActionsPending.contains(item.id)
         let gated = item.deliveryGate != nil || pending
-        let primary = MessageQueue.primaryAction(for: item, midTurnSteering: midTurnSteering,
+        let primary = MessageQueue.primaryAction(for: item,
                                                  supportsActions: supportsActions, pending: pending)
         let lockedByOther: Bool = {
             if case .editing = item.deliveryGate { return !editing }
@@ -139,7 +138,7 @@ struct QueuePanel: View {
                 Button(primary.label) { onAction(item, primary) }
                     .font(Theme.sans(11, weight: .medium))
                     .buttonStyle(.plain)
-                    .accessibilityLabel(primary == .steer ? "Steer without interrupting" : "Send now, interrupting the response")
+                    .accessibilityLabel("Send now, interrupting the response")
             }
             iconButton("trash", label: "Remove", enabled: supportsActions && !pending,
                        tone: Theme.textFaint) {

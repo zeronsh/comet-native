@@ -1,8 +1,8 @@
 // Composer — the floating glass shell in the t3 mobile composer's shape: a
 // collapsed capsule (editor + send circle) that morphs into an expanded card
 // with a toolbar ROW below it (attach circle · scrolling chips · pinned send)
-// when the editor takes focus. Carries the desktop's Send→Steer→Stop
-// semantics: live run + text = steer (same up-arrow), live run + empty = stop.
+// when the editor takes focus. A live run plus text queues the message;
+// a live run with an empty composer offers Stop.
 //
 // Expansion is focus-driven like t3's, with the old deterministic content
 // triggers kept as a floor (attachments, newline, >26 chars) — content-size
@@ -240,8 +240,6 @@ struct ComposerView: View {
     let chat: Chat
     let runLive: Bool
 
-    @AppStorage("activeTurnSendBehavior") private var activeTurnBehavior: ActiveTurnSendBehavior = .queue
-    @State private var midTurnSteering: Bool?
     @State private var text = ""
     @State private var attachments: [StagedAttachment] = []
     @State private var pickerItems: [PhotosPickerItem] = []
@@ -329,7 +327,6 @@ struct ComposerView: View {
                            editingId: editingQueuedId,
                            onEdit: { item in Task { await beginQueueEdit(item) } },
                            onCancelEdit: { Task { await cancelQueueEdit() } },
-                           midTurnSteering: midTurnSteering,
                            supportsActions: supportsQueueActions,
                            onAction: performQueueAction)
             }
@@ -353,7 +350,7 @@ struct ComposerView: View {
                 placeholder: editingQueuedId == nil ? "Message" : "Edit queued message",
                 sendEnabled: true,
                 sendLabel: editingQueuedId != nil ? "Save queued message"
-                    : (runLive && activeTurnBehavior == .queue ? "Queue message" : "Send message"),
+                    : (runLive ? "Queue message" : "Send message"),
                 allowEmptySend: editingQueuedId != nil,
                 showStop: runLive,
                 busy: uploading || queueEditBusy,
@@ -372,20 +369,6 @@ struct ComposerView: View {
                 if let branch = chat.branch?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !branch.isEmpty {
                     BranchContextChip(branch: branch)
-                }
-                if model.hostSupportsMessageQueue(chat) {
-                    Menu {
-                        Picker("Messages during an active turn", selection: $activeTurnBehavior) {
-                            ForEach(ActiveTurnSendBehavior.allCases, id: \.self) { behavior in
-                                Text(behavior.label).tag(behavior)
-                            }
-                        }
-                    } label: {
-                        Text(activeTurnBehavior.label)
-                            .font(Theme.sans(12, weight: .medium))
-                            .foregroundStyle(Theme.textMuted)
-                    }
-                    .accessibilityLabel("Messages during an active turn: \(activeTurnBehavior.label)")
                 }
                 ComposerChip(label: currentModel.label, badgeHarness: harness) {
                     showModelPicker = true
@@ -441,12 +424,6 @@ struct ComposerView: View {
         .task(id: "\(chat.id)/\(harness)") {
             guard let space = model.space(for: chat) else { return }
             catalogs[harness] = await model.listModels(space: space, harness: harness)
-        }
-        .task(id: "\(chat.deviceId)/\(harness)/\(model.deviceOnline(chat.deviceId))") {
-            midTurnSteering = nil
-            let descriptors = await model.workspace?.listHarnesses(deviceId: chat.deviceId)
-            guard !Task.isCancelled else { return }
-            midTurnSteering = descriptors?.first(where: { $0.id == harness })?.midTurnSteering
         }
         .task(id: queueEdit?.terminal == true ? nil : queueEditLease?.leaseId) {
             guard let lease = queueEditLease, queueEdit?.terminal != true else { return }
@@ -620,6 +597,10 @@ struct ComposerView: View {
         let submittedText = text
         let prompt = submittedText.trimmingCharacters(in: .whitespacesAndNewlines)
         let staged = attachments
+        guard !runLive || model.hostSupportsMessageQueue(chat, attachments: !staged.isEmpty) else {
+            uploadError = "Update the chat's engine to queue messages during a response."
+            return
+        }
         guard !prompt.isEmpty || !staged.isEmpty else { return }
 
         if staged.isEmpty {
@@ -687,22 +668,12 @@ struct ComposerView: View {
     }
 
     private func deliver(content: String, paths: [String]) {
-        // Mid-turn, the message joins the queue rather than racing the turn:
-        // whether it then steers into this turn or waits for the next one is
-        // the host's call (DocHost::drain_queue). It sits in the panel above
-        // meanwhile, editable, which beats a bubble that looks sent.
+        // All active-turn messages wait in the shared queue.
         if runLive {
-            if model.hostSupportsMessageQueue(chat, attachments: !paths.isEmpty) {
-                let queueText = model.hostSupportsCleanQueueAttachmentText(chat)
-                    ? MessageQueue.visibleText(content, attachments: paths)
-                    : content
-                store.enqueueMessage(text: queueText, attachments: paths, holdForTurnEnd: activeTurnBehavior.holdForTurnEnd)
-            } else {
-                // Same-version upstream and older hosts retain the proven
-                // durable command path instead of receiving an unknown queue
-                // document shape or RPC.
-                store.sendSteer(prompt: content)
-            }
+            let queueText = model.hostSupportsCleanQueueAttachmentText(chat)
+                ? MessageQueue.visibleText(content, attachments: paths)
+                : content
+            store.enqueueMessage(text: queueText, attachments: paths, holdForTurnEnd: true)
         } else {
             store.sendRun(prompt: content, chat: chat, attachments: paths)
         }
@@ -716,7 +687,7 @@ struct ComposerView: View {
         guard editingQueuedId == nil, !queueEditBusy, !uploading,
               let head = store.queue.first,
               let action = MessageQueue.primaryAction(
-                for: head, midTurnSteering: midTurnSteering,
+                for: head,
                 supportsActions: supportsQueueActions,
                 pending: store.queueActionsPending.contains(head.id)) else { return }
         performQueueAction(head, action)

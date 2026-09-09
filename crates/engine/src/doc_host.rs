@@ -2910,8 +2910,7 @@ impl DocHost {
     /// put them.
     ///
     /// - Idle: send the head as the next turn (and loop — the agent is free).
-    /// - Working, agent takes mid-turn input: steer it in.
-    /// - Working, anything else: hold. The turn-end watcher comes back for it.
+    /// - Turn in flight: hold. The turn-end watcher comes back for it.
     ///
     /// One at a time by design: each send changes the status this reads.
     pub async fn drain_queue(&self, handle: &Arc<ChatDocHandle>) {
@@ -2966,21 +2965,10 @@ impl DocHost {
             // the turn too, and the composer queues on the same reading. Taking
             // `AwaitingInput` for idle would send the follow-up as a fresh turn
             // and abandon the question.
-            let busy = sessions.turn_in_flight(&handle.chat_id);
-            let send = if busy {
-                // Attachments never steer: the steer path carries a prompt and
-                // nothing else, so a message with files must wait for a turn
-                // that can inline them rather than lose them.
-                let steer_now = !head.hold_for_turn_end
-                    && head.attachments.is_empty()
-                    && sessions.steers_mid_turn(self.harness_for(&handle.chat_id));
-                if !steer_now {
-                    return; // held until the turn ends
-                }
-                QueueSend::Steer
-            } else {
-                QueueSend::NextTurn
-            };
+            if sessions.turn_in_flight(&handle.chat_id) {
+                return; // All queued messages wait, including rows from older clients.
+            }
+            let send = QueueSend::NextTurn;
             // Take it only once we know it is going out — a row that stays in
             // the queue on a failed send is recoverable; a vanished one is not.
             let Ok(Some(item)) = handle.doc.take_queued(&head.id) else {
@@ -2993,9 +2981,6 @@ impl DocHost {
                 let _ = handle.doc.insert_queued(0, &item);
                 handle.publish_queue();
                 return;
-            }
-            if busy {
-                return; // steered into a live turn; the rest waits for its end
             }
         }
     }
