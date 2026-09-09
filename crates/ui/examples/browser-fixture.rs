@@ -241,6 +241,7 @@ fn main() -> anyhow::Result<()> {
                     let (left, top) = first.read_with(cx, |b,_| b.fixture_origin());
                     anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible()), "menu froze or hid the live page");
                     anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_at((left+100.) as f64,(top+150.) as f64)), "menu failed to intercept outside clicks above the browser");
+                    std::fs::write(output.join("backdrop-layers.txt"),first.read_with(cx,|b,_|b.fixture_backdrop_layers()))?;
                     capture(&output, "browser-menu-dark")?;
                     first.read_with(cx, |b,_| b.fixture_eval("document.addEventListener('click', () => { document.title = 'Unexpected page click'; })"));
                     pause(cx, 100).await;
@@ -258,6 +259,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
+                    std::fs::write(output.join("backdrop-layers.txt"),first.read_with(cx,|b,_|b.fixture_backdrop_layers()))?;
                     capture(&output, "browser-menu-dark")?;
                     window.update(cx, |shell, _, cx| shell.fixture_browser_menu(false, cx))?;
                 }

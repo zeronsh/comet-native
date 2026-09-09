@@ -507,6 +507,36 @@ impl NativePage {
             ));
         }
     }
+    pub fn fixture_backdrop_layers(&self) -> String {
+        unsafe fn describe(layer: *mut AnyObject, depth: usize, out: &mut String) {
+            if layer.is_null() || depth > 8 {
+                return;
+            }
+            unsafe {
+                let desc: Retained<NSString> = msg_send![layer, description];
+                out.push_str(&format!("{}{}\n", " ".repeat(depth), desc));
+                let layers: *mut AnyObject = msg_send![layer, sublayers];
+                if !layers.is_null() {
+                    let count: usize = msg_send![layers, count];
+                    for i in 0..count.min(30) {
+                        let child: *mut AnyObject = msg_send![layers, objectAtIndex:i];
+                        describe(child, depth + 1, out);
+                    }
+                }
+            }
+        }
+        let host = self.0.borrow();
+        let mut out = String::new();
+        for view in host.parent.subviews() {
+            if view.class().name() == c"GPUIBackdropView" {
+                unsafe {
+                    let layer: *mut AnyObject = msg_send![&*view, layer];
+                    describe(layer, 0, &mut out);
+                }
+            }
+        }
+        out
+    }
     pub fn fixture_page_hit(&self, x: f64, y: f64) -> bool {
         let host = self.0.borrow();
         let point = objc2_foundation::NSPoint::new(x, host.parent.bounds().size.height - y);

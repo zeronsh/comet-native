@@ -482,6 +482,10 @@ impl BrowserSurface {
         }
     }
     #[cfg(target_os = "macos")]
+    pub fn fixture_backdrop_layers(&self) -> String {
+        self.native.as_ref().unwrap().fixture_backdrop_layers()
+    }
+    #[cfg(target_os = "macos")]
     pub fn fixture_page_hit(&self, x: f64, y: f64) -> bool {
         self.native.as_ref().unwrap().fixture_page_hit(x, y)
     }
