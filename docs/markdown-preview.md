@@ -12,6 +12,8 @@ Workspace-relative images are loaded from the device owning the checkout. HTTP(S
 
 Mermaid diagrams use the same fence frame, header metrics, border, background and code actions as ordinary fenced code blocks. Switching between diagram and source replaces the body inside that single frame.
 
+Source fences use the same interaction model as chat code blocks: long lines have an independent horizontal scroll plane and a hover scrollbar, Copy changes to a transient `Copied` confirmation, and the Fit content control wraps lines to the available width. The Fit content choice is the same device-level persisted setting used by chat, so changing it in either surface updates both; horizontal offsets remain local to each fence.
+
 ## Mermaid engine decision
 
 The embedded engine is `mermaid-rs-renderer` **0.3.1**, MIT licensed, with default CLI/PNG features disabled. Its interface is isolated in `markdown/mermaid.rs`. Generated SVG is consumed by GPUI's existing SVG renderer.
@@ -40,7 +42,7 @@ The implementation was checked on Linux with the following commands:
 
 | Command | Result |
 | --- | --- |
-| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 761 passed |
+| `cargo test --release --locked -p zeron-ui --lib -- --test-threads=1` | 762 passed |
 | `cargo test --release --locked -p zeron-engine --lib` | 161 passed |
 | `cargo test --release --locked -p zeron-proto -p zeron-rpc` | 47 passed, 1 previously ignored |
 | `cargo test --release --locked -p zeron-engine --test workspace_files` | 3 passed |

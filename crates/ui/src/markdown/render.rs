@@ -151,6 +151,123 @@ pub struct CodeScrollbarUi {
     pub release: ReleaseHandler,
 }
 
+#[derive(Default)]
+pub struct CodeFenceRuntime {
+    pub scroll: gpui::ScrollHandle,
+    pub scrollbar: crate::popover::HorizontalScrollbarState,
+}
+
+/// Build the interaction state shared by chat and file-preview code fences.
+/// The durable Fit choice is global; scroll and drag state stay with one fence.
+pub fn code_ui_for<V, F>(
+    key: SharedString,
+    fit_content: bool,
+    runtime: &mut CodeFenceRuntime,
+    entity: gpui::WeakEntity<V>,
+    runtimes: F,
+) -> CodeUi
+where
+    V: 'static,
+    F: Fn(&mut V) -> &mut HashMap<SharedString, CodeFenceRuntime> + Clone + 'static,
+{
+    let scroll = runtime.scroll.clone();
+    let scrollbar = (!fit_content)
+        .then(|| runtime.scrollbar.metrics(&scroll))
+        .flatten()
+        .filter(|_| runtime.scrollbar.visible())
+        .map(|metrics| CodeScrollbarUi {
+            metrics,
+            active: runtime.scrollbar.active(),
+            hover: {
+                let entity = entity.clone();
+                let key = key.clone();
+                let runtimes = runtimes.clone();
+                Rc::new(move |hovered, _, cx| {
+                    let _ = entity.update(cx, |owner, cx| {
+                        if runtimes(owner)
+                            .get_mut(&key)
+                            .is_some_and(|runtime| runtime.scrollbar.set_bar_hovered(hovered))
+                        {
+                            cx.notify();
+                        }
+                    });
+                })
+            },
+            press: {
+                let entity = entity.clone();
+                let key = key.clone();
+                let runtimes = runtimes.clone();
+                Rc::new(move |pointer_x, _, cx| {
+                    let _ = entity.update(cx, |owner, cx| {
+                        let Some(runtime) = runtimes(owner).get_mut(&key) else {
+                            return;
+                        };
+                        let scroll = runtime.scroll.clone();
+                        if runtime.scrollbar.begin_press(&scroll, pointer_x) {
+                            cx.stop_propagation();
+                            cx.notify();
+                        }
+                    });
+                })
+            },
+            release: {
+                let entity = entity.clone();
+                let key = key.clone();
+                let runtimes = runtimes.clone();
+                Rc::new(move |_, cx| {
+                    let _ = entity.update(cx, |owner, cx| {
+                        if let Some(runtime) = runtimes(owner).get_mut(&key) {
+                            runtime.scrollbar.end_press();
+                            cx.notify();
+                        }
+                    });
+                })
+            },
+        });
+
+    CodeUi {
+        key: key.clone(),
+        fit_content,
+        scroll,
+        scrollbar,
+        toggle_fit: Rc::new(move |_, cx| {
+            let fit = !crate::settings::current(cx).code_fences_fit_content;
+            crate::settings::update(crate::settings::SavePolicy::Immediate, cx, |settings| {
+                settings.code_fences_fit_content = fit
+            });
+            cx.refresh_windows();
+        }),
+        viewport_hover: {
+            let entity = entity.clone();
+            let key = key.clone();
+            let runtimes = runtimes.clone();
+            Rc::new(move |hovered, _, cx| {
+                let _ = entity.update(cx, |owner, cx| {
+                    if runtimes(owner)
+                        .get_mut(&key)
+                        .is_some_and(|runtime| runtime.scrollbar.set_viewport_hovered(hovered))
+                    {
+                        cx.notify();
+                    }
+                });
+            })
+        },
+        drag_move: {
+            Rc::new(move |pointer_x, _, cx| {
+                let _ = entity.update(cx, |owner, cx| {
+                    let Some(runtime) = runtimes(owner).get_mut(&key) else {
+                        return;
+                    };
+                    let scroll = runtime.scroll.clone();
+                    if runtime.scrollbar.drag_to(&scroll, pointer_x) {
+                        cx.notify();
+                    }
+                });
+            })
+        },
+    }
+}
+
 #[derive(Clone)]
 struct CodeScrollbarDrag {
     key: SharedString,

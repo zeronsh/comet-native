@@ -8,7 +8,7 @@ use crate::{
 };
 use gpui::{
     AnyElement, Context, FocusHandle, ListAlignment, ListOffset, ListSizingBehavior, ListState,
-    Render, Task, Window, div, list, prelude::*, px,
+    Render, SharedString, Task, Window, div, list, prelude::*, px,
 };
 use std::{
     cell::RefCell,
@@ -141,6 +141,10 @@ pub(super) struct MarkdownPreview {
     image_snapshot: Rc<HashMap<String, Result<super::markdown_media::MediaImage, String>>>,
     diagram_snapshot: Rc<HashMap<String, Result<super::markdown_media::MediaImage, String>>>,
     visible_rows: HashSet<gpui::SharedString>,
+    code_fences: HashMap<SharedString, render::CodeFenceRuntime>,
+    code_fences_generation: u64,
+    copied_code: Option<(SharedString, usize)>,
+    copied_clear: Option<Task<()>>,
     needs_focus: bool,
     suspended: bool,
     selection_pointer: Option<gpui::Point<gpui::Pixels>>,
@@ -330,6 +334,10 @@ impl MarkdownPreview {
             image_snapshot: Rc::default(),
             diagram_snapshot: Rc::default(),
             visible_rows: HashSet::new(),
+            code_fences: HashMap::new(),
+            code_fences_generation: crate::settings::code_fences_generation(cx),
+            copied_code: None,
+            copied_clear: None,
             needs_focus: true,
             suspended: false,
             selection_pointer: None,
@@ -378,6 +386,8 @@ impl MarkdownPreview {
         self.diagram_task = None;
         self.close_media_preview(cx);
         self.source_visible.clear();
+        self.copied_clear = None;
+        self.copied_code = None;
         let epoch = self.epoch;
         self.loading = self.tree.is_empty();
         self.truncated = truncated || clipped;
@@ -438,6 +448,21 @@ impl MarkdownPreview {
                     });
                 }
                 view.tree = tree;
+                let scope = view.scope.clone();
+                let active_code_fences: HashSet<SharedString> = view
+                    .tree
+                    .blocks
+                    .iter()
+                    .enumerate()
+                    .flat_map(move |(top_ix, top)| {
+                        let scope = scope.clone();
+                        render::code_block_indices(&top.block, top_ix)
+                            .into_iter()
+                            .map(move |ix| SharedString::from(format!("{scope}{top_ix}#code{ix}")))
+                    })
+                    .collect();
+                view.code_fences
+                    .retain(|key, _| active_code_fences.contains(key));
                 view.parsed_source = parsed_source;
                 view.block_lines = block_lines;
                 view.highlights = highlights;
@@ -671,6 +696,9 @@ impl MarkdownPreview {
         self.image_task = None;
         self.diagram_task = None;
         self.selection_task = None;
+        self.copied_clear = None;
+        self.copied_code = None;
+        self.code_fences.clear();
         self.close_media_preview(cx);
         self.image_snapshot = Rc::default();
         self.diagram_snapshot = Rc::default();
@@ -794,6 +822,70 @@ impl MarkdownPreview {
         }));
     }
 
+    fn copy_ui_for(&self, row_id: &SharedString, cx: &mut Context<Self>) -> render::CopyUi {
+        let copied_ix = self
+            .copied_code
+            .as_ref()
+            .filter(|(id, _)| id == row_id)
+            .map(|(_, ix)| *ix);
+        let row_key = row_id.clone();
+        let entity = cx.weak_entity();
+        let handler = Rc::new(
+            move |ix, code: SharedString, _window: &mut Window, cx: &mut gpui::App| {
+                cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.to_string()));
+                let row_key = row_key.clone();
+                let _ = entity.update(cx, |view, cx| {
+                    view.copied_code = Some((row_key, ix));
+                    view.copied_clear = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor()
+                            .timer(Duration::from_millis(1200))
+                            .await;
+                        let _ = this.update(cx, |view, cx| {
+                            view.copied_code = None;
+                            view.copied_clear = None;
+                            cx.notify();
+                        });
+                    }));
+                    cx.notify();
+                });
+            },
+        );
+        render::CopyUi { handler, copied_ix }
+    }
+
+    fn code_ui_for(
+        &mut self,
+        row_id: &SharedString,
+        block_ix: usize,
+        cx: &mut Context<Self>,
+    ) -> render::CodeUi {
+        let key: SharedString = format!("{row_id}#code{block_ix}").into();
+        let runtime = self.code_fences.entry(key.clone()).or_default();
+        render::code_ui_for(
+            key,
+            crate::settings::current(cx).code_fences_fit_content,
+            runtime,
+            cx.weak_entity(),
+            |view| &mut view.code_fences,
+        )
+    }
+
+    fn code_uis_for(
+        &mut self,
+        row_id: &SharedString,
+        block: &Block,
+        block_ix: usize,
+        cx: &mut Context<Self>,
+    ) -> Option<HashMap<usize, render::CodeUi>> {
+        let indices = render::code_block_indices(block, block_ix);
+        (!indices.is_empty()).then(|| {
+            indices
+                .into_iter()
+                .map(|ix| (ix, self.code_ui_for(row_id, ix, cx)))
+                .collect()
+        })
+    }
+
     fn media_element(
         loaded: &super::markdown_media::MediaImage,
         id: gpui::SharedString,
@@ -884,8 +976,9 @@ impl MarkdownPreview {
         };
         range
             .filter_map(|ix| {
-                let top = self.tree.blocks.get(ix)?;
+                let top = self.tree.blocks.get(ix)?.clone();
                 let mut opts = RenderOptions::settled(format!("{}{ix}", self.scope).into());
+                opts.code = self.code_uis_for(&opts.row_key, &top.block, ix, cx);
                 let editor = self.editor.as_ref().and_then(|editor| editor.upgrade());
                 let source = self.parsed_source.clone();
                 opts.tasks = Some(render::TaskUi {
@@ -1034,12 +1127,7 @@ impl MarkdownPreview {
                     }),
                 });
                 opts.link = Some(link.clone());
-                opts.copy = Some(render::CopyUi {
-                    handler: Rc::new(|_, code, _, cx| {
-                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(code.to_string()))
-                    }),
-                    copied_ix: None,
-                });
+                opts.copy = Some(self.copy_ui_for(&opts.row_key, cx));
                 let group: gpui::SharedString = format!("{}-comment-{ix}", self.scope).into();
                 let comment_line = self.block_lines.get(ix).copied().filter(|_| {
                     self.comment_owner.is_some()
@@ -1110,6 +1198,14 @@ impl MarkdownPreview {
 impl Render for MarkdownPreview {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let theme = Theme::of(cx).clone();
+        let code_fences_generation = crate::settings::code_fences_generation(cx);
+        if self.code_fences_generation != code_fences_generation {
+            self.code_fences_generation = code_fences_generation;
+            for runtime in self.code_fences.values() {
+                runtime.scroll.set_offset(gpui::Point::default());
+            }
+            self.list.remeasure();
+        }
         if self.needs_focus {
             self.needs_focus = false;
             window.focus(&self.focus, cx);
@@ -1269,6 +1365,117 @@ mod layout_tests {
                 .child(div().h(px(250.0)).child(self.preview.clone()))
                 .child(super::super::editor::editor_element(&self.editor))
         }
+    }
+
+    #[test]
+    fn code_fences_scroll_copy_and_share_persistent_fit_preference() {
+        gpui_platform::headless().run(|cx| {
+            let settings_dir = tempfile::tempdir().unwrap();
+            crate::settings::init(
+                crate::settings::UiSettings::default(),
+                settings_dir.path(),
+                cx,
+            );
+            cx.set_global(Theme::dark());
+            let code = format!("```text\n{}\n```", "long-line-".repeat(100));
+            let window = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(Bounds::new(
+                            Point::default(),
+                            gpui::size(px(600.0), px(400.0)),
+                        ))),
+                        ..Default::default()
+                    },
+                    |_, cx| {
+                        cx.new(|cx| {
+                            let mut view =
+                                MarkdownPreview::new("README.md".into(), Rc::new(|_, _| {}), cx);
+                            view.tree = parser::parse_full(&code);
+                            view.list.reset(1);
+                            view.diagram_style = crate::theme::style_generation();
+                            view
+                        })
+                    },
+                )
+                .unwrap();
+            let view = window.entity(cx).unwrap();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            assert!(
+                view.read(cx)
+                    .code_fences
+                    .values()
+                    .next()
+                    .unwrap()
+                    .scroll
+                    .max_offset()
+                    .x
+                    > px(0.0),
+                "nowrap fences expose a real horizontal scroll plane"
+            );
+
+            let row_key: SharedString = format!("{}0", view.read(cx).scope).into();
+            let ui = view.update(cx, |view, cx| view.code_ui_for(&row_key, 0, cx));
+            cx.update_window(window.into(), |_, window, cx| {
+                (ui.viewport_hover)(true, window, cx)
+            })
+            .unwrap();
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            let ui = view.update(cx, |view, cx| view.code_ui_for(&row_key, 0, cx));
+            assert!(
+                ui.scrollbar.is_some(),
+                "overflow thumb appears while hovered"
+            );
+
+            let copy = view.update(cx, |view, cx| view.copy_ui_for(&row_key, cx));
+            cx.update_window(window.into(), |_, window, cx| {
+                (copy.handler)(0, "copied source".into(), window, cx);
+            })
+            .unwrap();
+            assert_eq!(view.read(cx).copied_code, Some((row_key.clone(), 0)));
+            assert_eq!(
+                view.update(cx, |view, cx| view.copy_ui_for(&row_key, cx))
+                    .copied_ix,
+                Some(0),
+                "the next frame renders the Copied confirmation"
+            );
+            cx.update_window(window.into(), |_, window, cx| (ui.toggle_fit)(window, cx))
+                .unwrap();
+            assert!(crate::settings::current(cx).code_fences_fit_content);
+            cx.update_window(window.into(), |_, window, cx| {
+                window.refresh();
+                let _ = window.draw(cx);
+            })
+            .unwrap();
+            assert_eq!(
+                view.read(cx)
+                    .code_fences
+                    .values()
+                    .next()
+                    .unwrap()
+                    .scroll
+                    .offset(),
+                gpui::Point::default(),
+                "changing the persistent mode resets ephemeral offsets"
+            );
+            let second =
+                cx.new(|cx| MarkdownPreview::new("SECOND.md".into(), Rc::new(|_, _| {}), cx));
+            let second_row: SharedString = format!("{}0", second.read(cx).scope).into();
+            assert!(
+                second
+                    .update(cx, |view, cx| view.code_ui_for(&second_row, 0, cx))
+                    .fit_content
+            );
+            cx.spawn(async move |cx| cx.update(|cx| cx.quit())).detach();
+        });
     }
 
     #[test]
