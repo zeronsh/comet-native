@@ -17,7 +17,7 @@ Zeron also uses the following editor foundations from the pinned `zeronsh/gpui-c
 
 | Component | Version | License | Source |
 | --- | --- | --- | --- |
-| gpui-base | 0.5.2 (`c5dca15`) | Apache-2.0 | https://github.com/zeronsh/gpui-component |
+| gpui-base | 0.5.2 (`a340623`) | Apache-2.0 | https://github.com/zeronsh/gpui-component |
 | Ropey | 2.0.0-beta.1 | MIT | https://github.com/cessen/ropey |
 
 Zeron's own source code is licensed under the terms in `LICENSE`. Bundled third-party components retain their respective licenses and notices.
@@ -105,3 +105,8 @@ The macOS browser uses [Wry 0.56.0](https://github.com/tauri-apps/wry/tree/wry-v
 of bindings (MIT) and `block2` (MIT). Exact versions and transitive dependencies
 are pinned in `Cargo.lock`. The browser integration is independently written
 Zeron code; no GPL Waku application code is included.
+
+The Zui native overlay renderer adapts Apache-2.0 GPUI code from
+[Waku’s Zed fork at `57bd4fe`](https://github.com/egoist/zed/tree/57bd4fe181639797d395978d5de17bc9e10a6219/crates/gpui_macos).
+Attribution is retained in the pinned Zui dependency’s `NOTICE`. This does not
+include the separately licensed Waku application.

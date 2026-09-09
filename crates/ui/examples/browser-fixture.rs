@@ -219,6 +219,16 @@ fn main() -> anyhow::Result<()> {
                     anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_focused() && !b.fixture_overlay_at((left+100.) as f64,(top+100.) as f64)), "tooltip stole native focus or page hit testing");
                     anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_stats() == before && !b.fixture_snapshot()), "tooltip captured or hid the page");
                     capture(&output, "browser-tooltip-dark")?;
+                    // Also dwell on the tab itself: its URL tooltip is the
+                    // original reported flicker case, distinct from toolbar hover.
+                    for _ in 0..2 {
+                        for (x,y) in [(left+35.,20.), (left+78.,56.)] {
+                            first.read_with(cx, |b,_| b.fixture_move_cursor(x as f64,y as f64));
+                            window.update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(x),px(y)),pressed_button:None,modifiers:Default::default()}),cx); })?;
+                            pause(cx, 1000).await;
+                            anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_visible() && b.fixture_native_visible() && b.fixture_focused() && b.fixture_stats() == before && !b.fixture_snapshot()), "repeated tab/toolbar tooltip disrupted the live page");
+                        }
+                    }
                     first.read_with(cx, |b,_| b.fixture_move_cursor((left-20.) as f64,150.));
                     window.update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(left-20.),px(150.)),pressed_button:None,modifiers:Default::default()}),cx); })?;
                     pause(cx, 400).await;

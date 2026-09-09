@@ -19,9 +19,14 @@ its shared nonpersistent website data store. Hiding a tab does **not** promise
 to reclaim its WebKit memory; closing releases the host, while WebKit manages
 its shared process caches.
 
-V1 uses the snapshot fallback without changing Zui: native content is hidden
-beneath app overlays, toolbar/tab tooltips, pane animations and GPUI drags.
-Snapshots are captured on demand, bounded in size, and released after the
+Zui now renders deferred GPUI content on a transparent Metal view above
+WKWebView, sharing the main renderer’s device and sprite atlas. Tooltips leave
+the page live and preserve native focus and pointer input. Interactive overlays
+intercept input until dismissed. Every newly created native browser view is
+placed beneath this overlay plane.
+
+Snapshots remain only for pane animations and GPUI drags, where native children
+cannot follow GPUI clipping. Captures are bounded and released after the
 transition. If capture fails, the theme background is the temporary fallback.
 Ordinary window resizing updates the child from measured logical bounds. Manual
 pane dragging uses the same frozen snapshot fallback, rather than the live
@@ -37,7 +42,8 @@ Localhost addresses always refer to the UI device, with a hint for remote chats.
 loopback HTML server. It captures the empty state, live native page, an open menu,
 light appearance and a load failure. Native checks cover DOM navigation,
 back/forward availability, SPA URL/title updates, independent tabs, shared
-nonpersistent cookies, overlay snapshots, visibility, resizing/takeover and
+nonpersistent cookies, rapid hover, tooltip focus and hit testing, menu outside-click
+isolation and input restoration, visibility, resizing/takeover and
 teardown. It is gated behind an opt-in feature and is excluded from app builds.
 
 ```sh
