@@ -444,10 +444,11 @@ impl Host {
             } else {
                 self.parent.bounds().size.height - y - height
             };
-            unsafe {
-                let _: () = msg_send![class!(CATransaction), begin];
+            let actions_disabled: bool = unsafe {
+                let previous = msg_send![class!(CATransaction), disableActions];
                 let _: () = msg_send![class!(CATransaction), setDisableActions: true];
-            }
+                previous
+            };
             // Keep the host stationary. Moving it while WebKit updates its
             // remote layer tree can combine the old origin with the new size.
             self.clip.setFrame(self.parent.bounds());
@@ -473,7 +474,9 @@ impl Host {
             };
             let _ = self.web.set_bounds(rect);
             unsafe {
-                let _: () = msg_send![class!(CATransaction), commit];
+                // Leave the implicit transaction open for the matching Metal
+                // presentation. Committing here would expose native geometry early.
+                let _: () = msg_send![class!(CATransaction), setDisableActions: actions_disabled];
             }
             #[cfg(feature = "browser-fixture")]
             unsafe {
