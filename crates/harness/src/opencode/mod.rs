@@ -857,6 +857,10 @@ struct PendingSpawn {
 struct TurnState {
     /// A prompt is in flight (busy expected/observed; idle settles it).
     active: bool,
+    /// An idle belongs to this prompt only after its busy/retry transition,
+    /// or after we explicitly abort it. A trailing idle from the previous
+    /// turn must not settle a just-submitted boundary steer.
+    idle_ready: bool,
     /// Bus events about our session seen since the prompt was posted.
     saw_activity: bool,
     /// Renderable content (text/reasoning/tool) seen this turn.
@@ -875,6 +879,7 @@ impl TurnState {
     fn begin(stall: Option<Duration>) -> Self {
         Self {
             active: true,
+            idle_ready: false,
             saw_activity: false,
             saw_content: false,
             error: None,
@@ -1209,6 +1214,7 @@ async fn run_session(session: Session) {
             _ = interrupt.cancelled(), if !interrupt_requested => {
                 interrupt_requested = true;
                 if turn.active {
+                    turn.idle_ready = true;
                     let path = format!("/session/{session_id}/abort");
                     let abort = tokio::time::timeout(
                         Duration::from_secs(5),
@@ -1662,6 +1668,21 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         });
 
     let is_ours = event_session == Some(session_id);
+    let status = props
+        .get("status")
+        .and_then(|s| s.get("type"))
+        .and_then(Value::as_str);
+    if is_ours && (kind == "session.idle" || (kind == "session.status" && status == Some("idle"))) {
+        // OpenCode can emit both idle encodings for one completion. The first
+        // may submit a queued prompt before we consume the second. Until that
+        // prompt starts (or fails/gets aborted), the second is stale. It must
+        // neither complete the prompt nor disarm its startup watchdog.
+        return if turn.idle_ready || turn.error.is_some() {
+            BusOutcome::TurnIdle
+        } else {
+            BusOutcome::Continue
+        };
+    }
     if is_ours && turn.active {
         turn.note_activity();
     }
@@ -1670,8 +1691,9 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
         "session.status" if is_ours => {
             let status = props.get("status").unwrap_or(&Value::Null);
             match status.get("type").and_then(Value::as_str) {
-                Some("idle") => return BusOutcome::TurnIdle,
+                Some("busy") => turn.idle_ready = true,
                 Some("retry") => {
+                    turn.idle_ready = true;
                     let attempt = status.get("attempt").and_then(Value::as_u64).unwrap_or(0);
                     let message = status
                         .get("message")
@@ -1705,7 +1727,6 @@ async fn handle_bus_event(ctx: BusCtx<'_>) -> BusOutcome {
             }
             BusOutcome::Continue
         }
-        "session.idle" if is_ours => BusOutcome::TurnIdle,
         "session.error" => {
             // Errors are session-scoped but a missing id still concerns us
             // (global provider failures).
