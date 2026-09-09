@@ -26,13 +26,13 @@ pub fn page_column() -> gpui::Div {
         .flex_col()
 }
 
-/// Page headline row: `flex items-baseline gap-2.5` — `text-base font-semibold`
-/// title + `text-[13px]` count sharing a baseline (zeron settings.devices.tsx).
+/// Page headline row: `flex items-center gap-2.5` — `text-base font-semibold`
+/// title + `text-[13px]` count aligned by their visual centers.
 pub fn page_header(theme: &Theme, title: &str, count: Option<usize>) -> gpui::Div {
     div()
         .flex()
         .flex_row()
-        .items_baseline()
+        .items_center()
         .gap(px(10.0))
         .child(
             div()

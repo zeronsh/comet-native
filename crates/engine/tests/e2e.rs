@@ -13,17 +13,28 @@ use zeron_doc::{
     MessagePart, MessageRole, MessageStatus, SegmentWriter, SessionCommandEntry,
     SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry,
 };
-use zeron_engine::{EngineCore, HarnessRegistry, RunJournal};
+use zeron_engine::{
+    ChangeRequestError, EngineCore, EngineRpc, HarnessRegistry, OpenChangeRequestLookup, RunJournal,
+};
 use zeron_harness::mock::MockHarness;
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SessionStatus, SteeringMode, ToolCall,
+    AgentEvent, ChangeRequestListItem, ChangeRequestState, DoneStatus, HarnessId, Model,
+    ReasoningLevel, RunRequest, SandboxLevel, SessionStatus, SteeringMode, ToolCall,
 };
 use zeron_sync::DocsStore;
 
 const CHAT: &str = "chat-e2e";
 const VIEWER: &str = "viewer-device";
+
+struct FixedOpenChangeRequests(Vec<ChangeRequestListItem>);
+
+#[async_trait]
+impl OpenChangeRequestLookup for FixedOpenChangeRequests {
+    async fn list_authored_open(&self) -> Result<Vec<ChangeRequestListItem>, ChangeRequestError> {
+        Ok(self.0.clone())
+    }
+}
 
 fn run_request(prompt: &str) -> RunRequest {
     RunRequest {
@@ -646,9 +657,9 @@ async fn retry_reissues_a_swallowed_send() {
     .await;
     wait_for(
         || {
-            entries_now(&core)
-                .iter()
-                .any(|e| e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete))
+            entries_now(&core).iter().any(|e| {
+                e.role == MessageRole::Assistant && e.status == Some(MessageStatus::Complete)
+            })
         },
         "re-issued send runs to completion",
     )
@@ -859,6 +870,63 @@ async fn rpc_surface_over_in_memory_transport() {
             break;
         }
     }
+}
+
+#[tokio::test]
+async fn pull_request_list_dispatch_returns_provider_items() {
+    let dir = tempfile::tempdir().unwrap();
+    let core = assemble(
+        dir.path(),
+        Arc::new(MockHarness {
+            script: mock_script(),
+        }),
+    );
+    let item = ChangeRequestListItem {
+        provider: "github".into(),
+        repository: "acme/zeron".into(),
+        number: 123,
+        title: "Add dashboard".into(),
+        url: "https://github.com/acme/zeron/pull/123".into(),
+        state: ChangeRequestState::Open,
+        is_draft: false,
+        review_decision: zeron_proto::ChangeRequestReviewDecision::ChangesRequested,
+        additions: 42,
+        deletions: 7,
+        mergeability: zeron_proto::ChangeRequestMergeability::Mergeable,
+        created_at: chrono::DateTime::parse_from_rfc3339("2026-08-10T09:30:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+        updated_at: chrono::DateTime::parse_from_rfc3339("2026-08-19T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
+    };
+    let rpc = EngineRpc::new(
+        core.sessions.clone(),
+        core.doc_host.clone(),
+        core.workspace.clone(),
+        core.registry.clone(),
+        core.repos.clone(),
+        core.workspace_files.clone(),
+        core.terminals.clone(),
+        core.change_requests.clone(),
+        core.diff_sync.clone(),
+        core.uploads.clone(),
+        core.agent_accounts.clone(),
+        core.workspace_scope(),
+    )
+    .with_auth(core.auth())
+    .with_open_change_requests(Arc::new(FixedOpenChangeRequests(vec![item.clone()])));
+    let client = zeron_rpc::memory_client(Arc::new(rpc));
+
+    let listed: Vec<ChangeRequestListItem> = client
+        .call_as(
+            zeron_rpc::methods::LIST_OPEN_CHANGE_REQUESTS,
+            serde_json::json!({ "targetDeviceId": core.device_id }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(listed, vec![item]);
 }
 
 #[tokio::test]

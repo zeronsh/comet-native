@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""Deterministic-shape GitHub CLI fixture for the pull request dashboard demo."""
+
+from datetime import datetime, timedelta, timezone
+import json
+import sys
+
+
+TITLES = (
+    "Refine pull request dashboard responsive breakpoints",
+    "Preserve device selection during registry refresh",
+    "Cancel superseded unary RPC requests",
+    "Add keyboard navigation to the command palette",
+    "Reduce startup work for restored workspaces",
+    "Keep diff comments anchored after edits",
+    "Improve empty states for disconnected devices",
+    "Stream terminal output without duplicate frames",
+    "Restore sidebar width across application launches",
+    "Add compact rendering for large change counts",
+    "Protect pending uploads during reconnects",
+    "Render merge conflicts in pull request rows",
+    "Avoid stale repository badges after checkout",
+    "Polish the appearance settings preview",
+    "Cache syntax highlighting by content checksum",
+    "Report expired authentication sessions clearly",
+    "Make titlebar controls resilient at narrow widths",
+    "Reconcile archived chats after device handoff",
+    "Prevent duplicate worktrees on rapid retries",
+    "Improve focus restoration after closing dialogs",
+    "Add sortable columns to pull request lists",
+    "Keep review comments visible while streaming",
+    "Harden file preview decoding for binary content",
+    "Animate reordered pull request rows",
+    "Handle renamed branches in checkout metadata",
+    "Reduce layout churn while loading avatars",
+    "Expose repository context in session search",
+    "Fix stale unread markers after synchronization",
+    "Add graceful recovery for interrupted snapshots",
+    "Align pull request status icons with titles",
+    "Persist terminal tab order between sessions",
+    "Improve contrast for inactive navigation items",
+    "Debounce repository status refreshes",
+    "Keep composer attachments after failed sends",
+    "Add edge fades beneath sticky titlebars",
+    "Normalize remote URLs before provider lookup",
+    "Show relative time for pull request updates",
+    "Avoid blocking the UI during GitHub requests",
+    "Tighten spacing in dense history tables",
+    "Support large diffs in the changes panel",
+    "Make reconnect banners less visually intrusive",
+    "Retain selected files after diff refresh",
+    "Improve scroll ownership in dashboard routes",
+    "Guard against malformed provider responses",
+    "Add deterministic sorting for equal timestamps",
+    "Refresh pull requests on active-device changes",
+    "Unify hover motion across data tables",
+    "Surface rate-limit failures without losing data",
+    "Remove redundant author metadata from the dashboard",
+    "Polish loading transitions for pull requests",
+)
+
+REPOSITORIES = (
+    "zeron-demo-labs/comet",
+    "zeron-demo-labs/desktop",
+    "zeron-demo-labs/runtime",
+    "zeron-demo-labs/relay",
+    "zeron-demo-labs/design-system",
+    "zeron-demo-labs/observability",
+    "zeron-demo-labs/sync",
+    "zeron-demo-labs/cli",
+)
+
+
+def iso8601(value):
+    return value.replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def pull_requests():
+    now = datetime.now(timezone.utc)
+    items = []
+    for index, title in enumerate(TITLES):
+        repository = REPOSITORIES[index % len(REPOSITORIES)]
+        number = 181 + index * 3
+        items.append(
+            {
+                "number": number,
+                "title": title,
+                "url": f"https://github.com/{repository}/pull/{number}",
+                "state": "OPEN",
+                "isDraft": index % 9 == 4,
+                "reviewDecision": (
+                    "CHANGES_REQUESTED" if index % 7 == 1 else "REVIEW_REQUIRED"
+                ),
+                "mergeable": "CONFLICTING" if index % 5 == 0 else "MERGEABLE",
+                "createdAt": iso8601(
+                    now
+                    - timedelta(
+                        days=1 + (index * 7) % 240,
+                        hours=(index * 5) % 24,
+                    )
+                ),
+                "updatedAt": iso8601(
+                    now - timedelta(minutes=4 + index * 47)
+                ),
+                "additions": 18 + (index * 379) % 12_000,
+                "deletions": 3 + (index * 163) % 4_800,
+                "repository": {"nameWithOwner": repository},
+            }
+        )
+    return items
+
+
+def main():
+    if sys.argv[1:3] != ["api", "graphql"]:
+        print("pull request dashboard fixture only supports `gh api graphql`", file=sys.stderr)
+        return 1
+
+    print(json.dumps({"data": {"search": {"nodes": pull_requests()}}}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

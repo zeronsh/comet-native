@@ -388,7 +388,8 @@ impl Shell {
     /// Land in a just-added space: filter the sidebar to it and open the
     /// new-session canvas there.
     pub(super) fn land_in_space(&mut self, space_id: String, cx: &mut Context<Self>) {
-        self.route = Route::Chat;
+        self.set_route(Route::Chat, cx);
+        self.nav.push(NavEntry::Chat(String::new()));
         self.settings.space_filter = Some(space_id.clone());
         self.settings.last_space_id = Some(space_id.clone());
         self.state.update(cx, |s, cx| {

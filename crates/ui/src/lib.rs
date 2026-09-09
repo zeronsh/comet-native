@@ -34,6 +34,7 @@ pub mod motion;
 pub mod notify;
 pub mod pickers;
 pub mod popover;
+pub mod pull_requests;
 pub mod rail;
 pub mod settings;
 pub mod shell;

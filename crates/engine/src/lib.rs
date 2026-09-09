@@ -56,7 +56,7 @@ pub use sessions::{JournaledEvent, SessionsEngine, SteerOutcome};
 pub use source_control::{
     BranchHeadContext, ChangeRequestError, ChangeRequestProvider, ChangeRequestResolution,
     ChangeRequestResolver, CheckoutChangeRequestLookup, CheckoutSourceContext, GitHubCli,
-    GitRemote, parse_git_remote,
+    GitRemote, OpenChangeRequestLookup, parse_git_remote,
 };
 pub use spaces::SpacesSync;
 pub use terminals::Terminals;
