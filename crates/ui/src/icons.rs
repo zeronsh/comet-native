@@ -50,6 +50,8 @@ macro_rules! icon_assets {
 icon_assets![
     // Solar Icons (Linear), CC BY 4.0 — 480 Design.
     (MONITOR, "monitor"),
+    // Browser globe, drawn in the same linear weight as the toolbar family.
+    (GLOBE, "globe"),
     (LAPTOP, "laptop"),
     (PEN_NEW_SQUARE, "pen-new-square"),
     (SORT, "sort"),

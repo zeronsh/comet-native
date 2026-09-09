@@ -62,11 +62,26 @@ jobs:
           git -C frame-source-tests checkout --detach FETCH_HEAD
       - uses: Swatinem/rust-cache@v2
         with:
+          cache-on-failure: true
           workspaces: |
             .
             frame-source-tests
       - name: Check macOS application
         run: cargo check --release --locked -p zeron
+      - name: Build native browser fixture
+        run: cargo build --release --locked -p zeron-ui --example browser-fixture --features browser-fixture
+      - name: Native browser regression and screenshots
+        timeout-minutes: 3
+        run: |
+          target/release/examples/browser-fixture "$RUNNER_TEMP/browser-captures"
+          test -f "$RUNNER_TEMP/browser-captures/result.txt"
+      - name: Upload browser screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-macos-captures
+          path: ${{ runner.temp }}/browser-captures
+          if-no-files-found: ignore
       - name: Native frame-source recovery regression
         working-directory: frame-source-tests
         run: cargo test --release --locked -p gpui_macos --test frame_source_recovery
