@@ -1296,6 +1296,9 @@ pub struct Shell {
     /// Set by [`Shell::eval_tween`] when any tween is mid-flight this frame;
     /// render schedules the next animation frame off it.
     motion_active: std::cell::Cell<bool>,
+    /// All pane masks and chrome evaluate animation at the same frame time.
+    /// A slow render must not give the native page and its titlebar different widths.
+    render_time: Option<std::time::Instant>,
     splash: SplashPhase,
     splash_task: Option<Task<()>>,
     /// Focus fallback (registered on first paint — [`Shell::new`] has no
@@ -1555,6 +1558,7 @@ impl Shell {
             terminal_drag_anchor: None,
             reduced_motion: false,
             motion_active: std::cell::Cell::new(false),
+            render_time: None,
             splash: SplashPhase::Visible,
             splash_task: None,
             focus_sub: None,
@@ -1923,7 +1927,7 @@ impl Shell {
     }
 
     fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        let from = self.sidebar_target();
+        let from = self.eval_tween(self.sidebar_tween, self.sidebar_target());
         self.settings.sidebar_collapsed = !self.settings.sidebar_collapsed;
         self.sidebar_tween = Some(WidthTween::new(from, self.sidebar_target()));
         self.schedule_save(cx);
@@ -1931,8 +1935,8 @@ impl Shell {
     }
 
     fn toggle_right_pane(&mut self, cx: &mut Context<Self>) {
-        // No git gate: the pane hosts terminals too (see `right_pane_open`).
-        let from = self.right_target(cx);
+        // Reverse from the visible width when toggled during an animation.
+        let from = self.eval_tween(self.right_tween, self.right_target(cx));
         let sidebar_now = self.eval_tween(self.sidebar_tween, self.sidebar_target());
         let from_main = conversation_width(self.viewport_width, sidebar_now, from);
         let was_expanded = self.right_pane_expanded;
@@ -3999,7 +4003,13 @@ impl Shell {
 
     // ---- render pieces ----
 
-    /// Evaluate a width tween at "now" (manual drive — see [`WidthTween`]).
+    fn tween_elapsed(&self, started: std::time::Instant) -> Duration {
+        self.render_time
+            .unwrap_or_else(std::time::Instant::now)
+            .saturating_duration_since(started)
+    }
+
+    /// Evaluate a width tween at the frame time (see [`WidthTween`]).
     /// Mid-flight: eased 200ms lerp, and `motion_active` is flagged so render
     /// schedules the next animation frame. Finished, stale, absent, or under
     /// reduced motion: exactly `target`. Honors `ZERON_MOTION_SCALE`.
@@ -4011,7 +4021,7 @@ impl Shell {
             return target;
         }
         let total = RESIZE.total().mul_f32(motion::speed_scale());
-        let raw = started.elapsed().as_secs_f32() / total.as_secs_f32();
+        let raw = self.tween_elapsed(started).as_secs_f32() / total.as_secs_f32();
         if raw >= 1.0 {
             return target;
         }
@@ -4022,7 +4032,7 @@ impl Shell {
     fn tween_active(&self, tween: Option<WidthTween>) -> bool {
         tween.is_some_and(|tween| {
             !self.reduced_motion
-                && tween.started.elapsed() < RESIZE.total().mul_f32(motion::speed_scale())
+                && self.tween_elapsed(tween.started) < RESIZE.total().mul_f32(motion::speed_scale())
         })
     }
 
@@ -4030,7 +4040,8 @@ impl Shell {
         tween
             .filter(|transition| {
                 !self.reduced_motion
-                    && transition.started.elapsed() < RESIZE.total().mul_f32(motion::speed_scale())
+                    && self.tween_elapsed(transition.started)
+                        < RESIZE.total().mul_f32(motion::speed_scale())
             })
             .map(|transition| (transition.from, transition.to))
     }
@@ -6811,7 +6822,8 @@ impl Shell {
     fn render_right_pane(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let theme = Theme::of(cx).clone();
         let bg = theme.bg;
-        let content: AnyElement = if self.right_pane_open(cx) || self.tween_active(self.right_tween) {
+        let content: AnyElement = if self.right_pane_open(cx) || self.tween_active(self.right_tween)
+        {
             match self.resolved_right_active(cx) {
                 RightSurface::Files => {
                     let key = self.panel_key(cx);
@@ -8284,6 +8296,7 @@ fn header_icon_button(
 
 impl Render for Shell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.render_time = Some(std::time::Instant::now());
         if self.all_file_edits_flushed(cx)
             && let Some(action) = self.pending_exit.take()
         {
@@ -8789,8 +8802,11 @@ impl Render for Shell {
                 ),
             )
         };
-        root.children(self.render_windows_caption_controls(window, cx))
-            .children(self.render_linux_caption_controls(window, cx))
+        let root = root
+            .children(self.render_windows_caption_controls(window, cx))
+            .children(self.render_linux_caption_controls(window, cx));
+        self.render_time = None;
+        root
     }
 }
 
@@ -9577,6 +9593,77 @@ mod exit_regressions {
     use gpui::{AppContext, TestAppContext};
 
     #[gpui::test]
+    fn pane_geometry_uses_one_animation_time_per_frame(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        cx.update(|cx| {
+            settings::init(settings::UiSettings::default(), dir.path(), cx);
+            crate::history::init(
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                Default::default(),
+                cx,
+            );
+            gpui_base::init(cx);
+            cx.set_global(Theme::default());
+            crate::app_menus::init(cx);
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| AppState::new());
+            Shell::new(
+                state,
+                EngineBootConfig {
+                    data_dir: dir.path().into(),
+                    ipc_port: 0,
+                    edge_url: "http://127.0.0.1:1".into(),
+                    edge_token: None,
+                    org_id: None,
+                    workos_client_id: None,
+                    default_harness: zeron_proto::HarnessId::Mock,
+                },
+                cx,
+            )
+        });
+        window
+            .update(cx, |shell, _, cx| {
+                let duration = RESIZE.total().mul_f32(motion::speed_scale());
+                let started = std::time::Instant::now() - duration.mul_f32(2.);
+                let tween = Some(WidthTween {
+                    from: 520.,
+                    to: 0.,
+                    started,
+                });
+                shell.reduced_motion = false;
+                // The frame started halfway through the transition but rendering
+                // crossed its deadline. Every region must still use that frame.
+                shell.render_time = Some(started + duration.mul_f32(0.5));
+                assert!(shell.tween_active(tween));
+                assert_eq!(shell.active_tween_endpoints(tween), Some((520., 0.)));
+                let width = shell.eval_tween(tween, 0.);
+                assert!(width > 0. && width < 520.);
+                assert_eq!(shell.eval_tween(tween, 0.), width);
+                shell.active_chat = "preview".into();
+                shell.viewport_width = 1000.;
+                shell.right_tween = tween;
+                shell.toggle_right_pane(cx);
+                assert_eq!(
+                    shell.right_tween.unwrap().from,
+                    width,
+                    "reversing must not restart from zero"
+                );
+                shell.settings.sidebar_collapsed = true;
+                shell.sidebar_tween = tween;
+                shell.toggle_sidebar(cx);
+                assert_eq!(shell.sidebar_tween.unwrap().from, width);
+                shell.render_time = None;
+                assert!(!shell.tween_active(tween));
+                assert_eq!(shell.active_tween_endpoints(tween), None);
+                assert_eq!(shell.eval_tween(tween, 0.), 0.);
+            })
+            .unwrap();
+    }
+
+    #[gpui::test]
     fn browser_tabs_keep_session_ownership_and_release_on_close(cx: &mut TestAppContext) {
         let dir = tempfile::tempdir().unwrap();
         cx.update(|cx| {
@@ -9779,7 +9866,11 @@ impl Shell {
         cx.notify();
     }
     pub fn fixture_toggle_sidebar(&mut self, right: bool, cx: &mut Context<Self>) {
-        if right { self.toggle_right_pane(cx); } else { self.toggle_sidebar(cx); }
+        if right {
+            self.toggle_right_pane(cx);
+        } else {
+            self.toggle_sidebar(cx);
+        }
     }
     pub fn fixture_resize_browser(&mut self, width: f32, cx: &mut Context<Self>) {
         self.settings.right_pane_width = width;
