@@ -312,11 +312,14 @@ impl Render for BrowserSurface {
                     gpui::canvas(
                         |_, _, _| (),
                         move |bounds, _, window, cx| {
-                            native.borrow_mut().sync(
-                                bounds,
-                                window.content_mask().bounds,
-                                cx.has_active_drag(),
-                            );
+                            let native = std::rc::Rc::downgrade(&native);
+                            let mask = window.content_mask().bounds;
+                            let dragging = cx.has_active_drag();
+                            window.on_present(move || {
+                                if let Some(native) = native.upgrade() {
+                                    native.borrow_mut().sync(bounds, mask, dragging);
+                                }
+                            });
                         },
                     )
                     .absolute()
