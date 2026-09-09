@@ -292,19 +292,6 @@ pub enum ComposerSendBehavior {
     ModEnter,
 }
 
-/// What Enter does with a message while the selected agent has a live turn.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum ActiveTurnSendBehavior {
-    /// Preserve the historical behavior: steer immediately when the harness
-    /// supports it, otherwise leave the message queued for the next turn.
-    #[default]
-    Steer,
-    /// Keep the message visible and editable in the queue until the turn ends
-    /// or the user explicitly chooses the row's Steer / Send now action.
-    Queue,
-}
-
 /// Persist the latest revision. Safe to call at shutdown.
 pub fn flush(cx: &mut App) {
     if !cx.has_global::<SettingsStore>() {
@@ -357,8 +344,6 @@ pub enum SidebarSort {
 pub struct UiSettings {
     /// Submit using Enter or the platform modifier plus Enter.
     pub composer_send_behavior: ComposerSendBehavior,
-    /// Steer immediately when supported or hold until the active turn ends.
-    pub active_turn_send_behavior: ActiveTurnSendBehavior,
     pub sidebar_width: f32,
     pub sidebar_collapsed: bool,
     /// Legacy: the grouped-by-project toggle predates spaces (which group by
@@ -483,7 +468,6 @@ impl Default for UiSettings {
             terminal_open: false,
             keymap: KeymapConfig::default(),
             composer_send_behavior: ComposerSendBehavior::default(),
-            active_turn_send_behavior: ActiveTurnSendBehavior::default(),
             appearance: crate::appearance::AppearanceMode::default(),
             git_history_columns: GitHistoryColumns::default(),
             git_history_column_widths: GitHistoryColumnWidths::default(),
@@ -1086,18 +1070,18 @@ mod tests {
     }
 
     #[test]
-    fn active_turn_send_behavior_preserves_automatic_steering_for_old_settings() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            UiSettings::path(dir.path()),
-            r#"{"sidebarWidth": 300, "soundEnabled": false}"#,
+    fn obsolete_steering_preference_does_not_reset_other_settings() {
+        let loaded: UiSettings = serde_json::from_str(
+            r#"{"activeTurnSendBehavior":"steer","sidebarWidth":300,"soundEnabled":false}"#,
         )
         .unwrap();
-
-        let loaded = UiSettings::load(dir.path());
-        assert_eq!(
-            loaded.active_turn_send_behavior,
-            ActiveTurnSendBehavior::Steer
+        assert_eq!(loaded.sidebar_width, 300.0);
+        assert!(!loaded.sound_enabled);
+        assert!(
+            serde_json::to_value(&loaded)
+                .unwrap()
+                .get("activeTurnSendBehavior")
+                .is_none()
         );
     }
 
@@ -1133,7 +1117,6 @@ mod tests {
                 ..KeymapConfig::default()
             },
             composer_send_behavior: ComposerSendBehavior::ModEnter,
-            active_turn_send_behavior: ActiveTurnSendBehavior::Queue,
             appearance: crate::appearance::AppearanceMode::Light,
             git_history_columns: GitHistoryColumns {
                 author: false,

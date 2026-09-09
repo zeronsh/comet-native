@@ -3257,16 +3257,8 @@ impl Shell {
                     let state = self.state.clone();
                     let keymap = self.settings.keymap.clone();
                     let composer_send_behavior = self.settings.composer_send_behavior;
-                    let active_turn_send_behavior = self.settings.active_turn_send_behavior;
-                    let page = cx.new(|cx| {
-                        ShortcutsPage::new(
-                            state,
-                            keymap,
-                            composer_send_behavior,
-                            active_turn_send_behavior,
-                            cx,
-                        )
-                    });
+                    let page =
+                        cx.new(|cx| ShortcutsPage::new(state, keymap, composer_send_behavior, cx));
                     // Persist + re-apply shortcut preferences whenever the page changes them.
                     self.shortcuts_sub = Some(cx.subscribe(
                         &page,
@@ -3277,9 +3269,6 @@ impl Shell {
                                 }
                                 ShortcutsEvent::ComposerSendBehaviorChanged(behavior) => {
                                     this.settings.composer_send_behavior = *behavior;
-                                }
-                                ShortcutsEvent::ActiveTurnSendBehaviorChanged(behavior) => {
-                                    this.settings.active_turn_send_behavior = *behavior;
                                 }
                             }
                             apply_keymap(

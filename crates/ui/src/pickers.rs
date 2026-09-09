@@ -772,32 +772,6 @@ impl Pickers {
         }
     }
 
-    /// The fully-resolved config the composer threads into the Run request and
-    /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
-    /// loaded (no "engine picks a default" passthrough).
-    /// The resolved harness's steering mode, from the loaded descriptor list.
-    /// `None` while the catalog is loading (callers should assume the common
-    /// StepBoundary case and show nothing).
-    pub fn resolved_steering_mode(&self, cx: &App) -> Option<zeron_proto::SteeringMode> {
-        let harness = self.effective_harness(cx)?;
-        self.harnesses
-            .ready()
-            .and_then(|list| list.iter().find(|d| d.id == harness))
-            .map(|d| d.steering_mode)
-    }
-
-    /// Whether the selected harness can accept a prompt inside the current
-    /// turn. This is deliberately stricter than `supports_steering`: a
-    /// turn-boundary harness cannot fulfil the queue row's non-interrupting
-    /// `Steer` action.
-    pub fn resolved_mid_turn_steering(&self, cx: &App) -> Option<bool> {
-        let harness = self.effective_harness(cx)?;
-        self.harnesses
-            .ready()
-            .and_then(|list| list.iter().find(|d| d.id == harness))
-            .map(HarnessDescriptor::steers_mid_turn)
-    }
-
     /// The catalog is loaded and offers nothing runnable — the no-agents
     /// state (every enabled harness is missing its CLI, or nothing is
     /// enabled). False while the catalog is still loading or failed
@@ -808,6 +782,9 @@ impl Pickers {
             .is_some_and(|list| offered_harnesses(list).is_empty())
     }
 
+    /// The fully-resolved config the composer threads into the Run request and
+    /// `Mutate createChat`: concrete model + reasoning whenever the catalog is
+    /// loaded (no "engine picks a default" passthrough).
     pub fn resolved(&self, cx: &App) -> ResolvedRunConfig {
         ResolvedRunConfig {
             harness: self.effective_harness(cx),
