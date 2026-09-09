@@ -7,6 +7,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/**'
+      - 'apps/ios/**'
       - '.github/workflows/ui-tests.yml'
   push:
     branches: [main]
@@ -15,6 +16,7 @@ on:
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
       - 'crates/**'
+      - 'apps/ios/**'
       - '.github/workflows/ui-tests.yml'
   workflow_dispatch:
 
@@ -87,3 +89,35 @@ jobs:
       - name: Native frame-source recovery regression
         working-directory: frame-source-tests
         run: cargo test --release --locked -p gpui_macos --test frame_source_recovery
+
+  ios-tests:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select an available iPhone simulator
+        run: |
+          python3 - <<'PYTHON'
+          import json, os, subprocess
+          devices = json.loads(subprocess.check_output(["xcrun", "simctl", "list", "devices", "available", "--json"]))["devices"]
+          iphones = [device for runtime, group in devices.items() if "iOS" in runtime
+                     for device in group if device["name"].startswith("iPhone")]
+          if not iphones:
+              raise SystemExit("No iPhone simulator is installed")
+          with open(os.environ["GITHUB_ENV"], "a") as env:
+              env.write("IOS_SIMULATOR_ID=" + iphones[0]["udid"] + "\n")
+          PYTHON
+      - name: Run iOS unit tests
+        working-directory: apps/ios
+        run: |
+          xcodebuild -project Zeron.xcodeproj -scheme Zeron \
+            -destination "platform=iOS Simulator,id=$IOS_SIMULATOR_ID" \
+            -resultBundlePath "$RUNNER_TEMP/ios-tests.xcresult" \
+            -only-testing:ZeronTests CODE_SIGNING_ALLOWED=NO test
+      - name: Upload iOS test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-test-results
+          path: ${{ runner.temp }}/ios-tests.xcresult
+          if-no-files-found: ignore
