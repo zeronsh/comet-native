@@ -144,6 +144,9 @@ pub mod methods {
     /// Current pull request for one checkout, resolved on the checkout's host device.
     pub const WATCH_CHECKOUT_CHANGE_REQUEST: &str = "WatchCheckoutChangeRequest";
     pub const GET_CHECKOUT_DIFF: &str = "GetCheckoutDiff";
+    /// Permanently restore one chat-owned checkout to its current HEAD and
+    /// remove only its untracked, non-ignored paths.
+    pub const DISCARD_WORKING_TREE: &str = "DiscardWorkingTree";
     pub const GET_CHECKOUT_FILE_DIFF_TEXT: &str = "GetCheckoutFileDiffText";
     // Agent accounts (ControlRpc, relay-forwardable — CLI logins are per-device).
     pub const LIST_AGENT_ACCOUNTS: &str = "ListAgentAccounts";

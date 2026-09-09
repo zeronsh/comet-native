@@ -1582,9 +1582,21 @@ pub struct Changes {
 }
 
 /// Events the host (the right pane's surface strip) listens for.
+#[derive(Debug, Clone)]
+pub struct DiscardWorkingTreeRequest {
+    pub chat_id: String,
+    pub checkout_id: String,
+    pub expected_checksum: String,
+    pub target_device_id: Option<String>,
+    pub file_count: usize,
+}
+
 pub enum ChangesEvent {
     /// A History row was clicked — open this commit as its own diff tab.
     OpenCommit(GitHistoryCommit),
+    /// The working-tree trash button was clicked. The shell owns the global
+    /// confirmation dialog and only then dispatches the destructive RPC.
+    DiscardWorkingTree(DiscardWorkingTreeRequest),
 }
 
 impl gpui::EventEmitter<ChangesEvent> for Changes {}
@@ -1818,6 +1830,24 @@ impl Changes {
             DiffScope::Branch | DiffScope::LatestTurn | DiffScope::Commit => self.scoped.clone(),
             DiffScope::History => None,
         }
+    }
+
+    fn discard_request(&self, cx: &App) -> Option<DiscardWorkingTreeRequest> {
+        if self.scope != DiffScope::WorkingTree {
+            return None;
+        }
+        let diff = self.resolved(cx)?;
+        if diff.truncated || (diff.files.is_empty() && diff.patch.trim().is_empty()) {
+            return None;
+        }
+        let chat = self.state.read(cx).selected_chat_row()?;
+        Some(DiscardWorkingTreeRequest {
+            chat_id: chat.id.clone(),
+            checkout_id: diff.checkout_id,
+            expected_checksum: diff.checksum,
+            target_device_id: self.desired_target(cx),
+            file_count: diff.files.len(),
+        })
     }
 
     /// Scope discriminant folded into the parse key, so a scope or base
@@ -3685,11 +3715,28 @@ impl Changes {
                 )
                 .into_any_element()
         } else {
+            let discard = self.discard_request(cx);
+            let discard_enabled = discard.is_some();
+            let discard_button = Self::header_button(
+                "changes-discard-working-tree",
+                crate::icons::TRASH_BIN_MINIMALISTIC,
+                &theme,
+            )
+            .when(!discard_enabled, |button| button.opacity(0.35))
+            .when_some(discard, |button, request| {
+                button.on_click(cx.listener(move |_, _, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(ChangesEvent::DiscardWorkingTree(request.clone()));
+                }))
+            });
             div()
                 .flex_none()
                 .flex()
                 .items_center()
                 .gap(px(crate::surface_chrome::CONTROL_GAP))
+                .when(scope == DiffScope::WorkingTree, |element| {
+                    element.child(discard_button)
+                })
                 .child(self.split_toggle(&theme, cx))
                 .child(self.wrap_toggle(&theme, cx))
                 .child(

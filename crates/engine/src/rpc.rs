@@ -161,6 +161,14 @@ struct DeleteWorktreeParams {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct DiscardWorkingTreeParams {
+    chat_id: String,
+    checkout_id: String,
+    expected_checksum: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ListFoldersParams {
     #[serde(default)]
     path: Option<String>,
@@ -869,6 +877,7 @@ fn forwardable(method: &str) -> bool {
             | methods::WATCH_CHECKOUT_DIFFS
             | methods::WATCH_CHECKOUT_CHANGE_REQUEST
             | methods::GET_CHECKOUT_DIFF
+            | methods::DISCARD_WORKING_TREE
             | methods::GET_CHECKOUT_FILE_DIFF_TEXT
             // Terminals live on the chat's host device.
             | methods::OPEN_TERMINAL
@@ -1388,6 +1397,86 @@ impl RpcService for EngineRpc {
                         checksum: snapshot.checksum,
                         updated_at: chrono::Utc::now(),
                     })
+                })
+                .await
+            }
+            methods::DISCARD_WORKING_TREE => {
+                // This destructive branch performs several nested filesystem
+                // futures. Box it so unrelated RPC calls do not inherit that
+                // state in the already-large dispatcher stack frame.
+                Box::pin(async move {
+                    let p: DiscardWorkingTreeParams = parse_params(params)?;
+                    let chat = self
+                        .workspace
+                        .chat(&p.chat_id)
+                        .map_err(|e| RpcError::Failed(e.to_string()))?
+                        .ok_or_else(|| RpcError::Failed("chat not found".into()))?;
+                    if chat.device_id != self.doc_host.device_id() {
+                        return Err(RpcError::Failed("chat is not hosted by this device".into()));
+                    }
+                    let cwd = chat
+                        .cwd
+                        .as_deref()
+                        .ok_or_else(|| RpcError::Failed("chat has no checkout".into()))?;
+                    let identity = self
+                        .repos
+                        .checkout_identity(std::path::Path::new(cwd))
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    if identity.id != p.checkout_id {
+                        return Err(RpcError::Failed(
+                            "chat checkout changed since the confirmation was opened".into(),
+                        ));
+                    }
+
+                    // Refuse the mutation when any local chat on this exact
+                    // checkout has a live run. We never interrupt an agent as a
+                    // side effect of discarding files.
+                    let chats = self.workspace.watch_chats().borrow().clone();
+                    for candidate in chats {
+                        if candidate.device_id != self.doc_host.device_id() {
+                            continue;
+                        }
+                        let same_checkout =
+                            if candidate.checkout_id.as_deref() == Some(identity.id.as_str()) {
+                                true
+                            } else if let Some(candidate_cwd) = candidate.cwd.as_deref() {
+                                self.repos
+                                    .checkout_identity(std::path::Path::new(candidate_cwd))
+                                    .await
+                                    .is_ok_and(|candidate_identity| {
+                                        candidate_identity.id == identity.id
+                                    })
+                            } else {
+                                false
+                            };
+                        if same_checkout
+                            && self
+                                .sessions
+                                .session_status(&candidate.id)
+                                .is_some_and(|session| {
+                                    matches!(
+                                        session.status,
+                                        zeron_proto::SessionStatus::Working
+                                            | zeron_proto::SessionStatus::AwaitingInput
+                                    )
+                                })
+                        {
+                            return Err(RpcError::Failed(
+                                "an agent is active in this working tree".into(),
+                            ));
+                        }
+                    }
+
+                    let snapshot = self
+                        .diff_sync
+                        .discard_working_tree(&identity.id, &p.expected_checksum)
+                        .await
+                        .map_err(|e| RpcError::Failed(e.to_string()))?;
+                    RpcReply::value(&serde_json::json!({
+                        "ok": true,
+                        "checksum": snapshot.checksum,
+                    }))
                 })
                 .await
             }
@@ -2018,6 +2107,7 @@ mod tests {
         assert!(forwardable(methods::RESOLVE_GIT_AVATARS));
         assert!(forwardable(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
         assert!(is_stream_method(methods::WATCH_CHECKOUT_CHANGE_REQUEST));
+        assert!(forwardable(methods::DISCARD_WORKING_TREE));
         assert!(forwardable(methods::LIST_WORKSPACE_DIRECTORY));
         assert!(forwardable(methods::SEARCH_WORKSPACE_FILES));
         assert!(forwardable(methods::READ_WORKSPACE_FILE));

@@ -43,7 +43,7 @@ pub use change_requests::{ChangeRequestCacheKey, CheckoutChangeRequests};
 pub use diff_sync::{
     CheckoutDiffSync, DiffFileTextPair, DiffSidecar, DiffSnapshot, TurnSnapshot,
     capture_commit_diff, capture_diff, capture_diff_against, capture_turn_diff, merge_base,
-    read_diff_file_text, snapshot_tree, working_diff_base,
+    discard_working_tree, read_diff_file_text, snapshot_tree, working_diff_base,
 };
 pub use doc_host::{ChatDocHandle, DocHost, DocHostConfig, EdgeConfig};
 pub use instance_lock::InstanceLock;
