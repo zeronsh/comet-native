@@ -159,7 +159,6 @@ pub fn run_app(config: UiConfig) {
             ui_settings.git_history_author_display,
             cx,
         );
-        composer::init(cx);
         terminal::panel::init(cx);
         app_menus::init(cx);
         cx.register_url_scheme("zeron").detach();

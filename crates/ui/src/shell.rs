@@ -44,10 +44,10 @@ use crate::settings::harnesses::HarnessesPage;
 use crate::settings::notifications::{NotificationsEvent, NotificationsPage};
 use crate::settings::shortcuts::{ShortcutsEvent, ShortcutsPage};
 use crate::settings::{
-    self, CHAT_PANEL_MIN, JUMP_SLOTS, KeymapConfig, RIGHT_PANE_DEFAULT, RIGHT_PANE_MIN,
-    SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, SavePolicy, ShortcutId, SidebarOrganization,
-    SidebarSort, TERMINAL_DEFAULT_HEIGHT, UiSettings, badge_combo, jump_hints_visible,
-    platform_combo,
+    self, CHAT_PANEL_MIN, ComposerSendBehavior, JUMP_SLOTS, KeymapConfig, RIGHT_PANE_DEFAULT,
+    RIGHT_PANE_MIN, SIDEBAR_DEFAULT, SIDEBAR_MAX, SIDEBAR_MIN, SavePolicy, ShortcutId,
+    SidebarOrganization, SidebarSort, TERMINAL_DEFAULT_HEIGHT, UiSettings, badge_combo,
+    jump_hints_visible, platform_combo,
 };
 use crate::state::{
     AppState, ConnectionStatus, EngineBootConfig, EngineMode, GatePhase, Indicator, OrgRow,
@@ -261,7 +261,11 @@ pub fn cluster_clearance(
 /// (Re-)apply the whole app keymap: clears every binding, restores the composer
 /// map, then binds the customizable shortcuts from `keymap` (feature-inventory
 /// §1.4). Invalid persisted combos fall back to that shortcut's default.
-pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
+pub fn apply_keymap(
+    cx: &mut App,
+    keymap: &KeymapConfig,
+    composer_send_behavior: ComposerSendBehavior,
+) {
     fn valid_or_default(combo: &str, fallback: &str) -> String {
         let candidate = platform_combo(combo);
         if Keystroke::parse(&candidate).is_ok() {
@@ -277,7 +281,7 @@ pub fn apply_keymap(cx: &mut App, keymap: &KeymapConfig) {
     // rebuilding Zeron's bindings so Backspace, navigation, selection, undo,
     // and the rest of the editor keymap continue to reach focused inputs.
     gpui_base::init(cx);
-    crate::composer::init(cx);
+    crate::composer::init(cx, composer_send_behavior);
     // Fixed app-level shortcuts (Settings on every platform; ⌘Q quit, ⌘W
     // close, ⌘M minimize, ⌘H hide on macOS) — these back the native menu
     // key equivalents and must survive keymap re-application.
@@ -1392,7 +1396,7 @@ impl Shell {
             state.set_change_requests_visible(settings.sidebar_show_pull_request, cx)
         });
         // Bind the customizable shortcuts from the persisted keymap.
-        apply_keymap(cx, &settings.keymap);
+        apply_keymap(cx, &settings.keymap, settings.composer_send_behavior);
         // Dev/testing knob: `ZERON_OPEN_ROUTE=settings[/<section>]` boots
         // straight into a settings section — these pages have no deep link and
         // synthetic input can't reach them on headless compositors.
@@ -3241,14 +3245,26 @@ impl Shell {
                 if self.shortcuts_page.is_none() {
                     let state = self.state.clone();
                     let keymap = self.settings.keymap.clone();
-                    let page = cx.new(|cx| ShortcutsPage::new(state, keymap, cx));
+                    let composer_send_behavior = self.settings.composer_send_behavior;
+                    let page =
+                        cx.new(|cx| ShortcutsPage::new(state, keymap, composer_send_behavior, cx));
                     // Persist + re-apply the keymap whenever the page changes it.
                     self.shortcuts_sub = Some(cx.subscribe(
                         &page,
                         |this: &mut Shell, _, event: &ShortcutsEvent, cx| {
-                            let ShortcutsEvent::Changed(keymap) = event;
-                            this.settings.keymap = keymap.clone();
-                            apply_keymap(cx, keymap);
+                            match event {
+                                ShortcutsEvent::KeymapChanged(keymap) => {
+                                    this.settings.keymap = keymap.clone();
+                                }
+                                ShortcutsEvent::ComposerSendBehaviorChanged(behavior) => {
+                                    this.settings.composer_send_behavior = *behavior;
+                                }
+                            }
+                            apply_keymap(
+                                cx,
+                                &this.settings.keymap,
+                                this.settings.composer_send_behavior,
+                            );
                             this.schedule_save(cx);
                             cx.notify();
                         },
