@@ -22,14 +22,16 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError, Weak};
 
 use base64::Engine as _;
+use serde::Serialize;
+use sha2::{Digest as _, Sha256};
 use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
 use zeron_doc::{
     COMMAND_DEFAULT_TTL_MS, CommandBasedOn, CommandDisposition, DocError, EvaluationContext,
-    MessagePart, MessageRole, MessageStatus, SessionCommandEntry, SessionCommandPayload,
-    SessionCommandStatus, SessionDoc, SessionMessageEntry, evaluate_command,
+    MessagePart, MessageRole, MessageStatus, QueueDeliveryGate, QueuedMessage, SessionCommandEntry,
+    SessionCommandPayload, SessionCommandStatus, SessionDoc, SessionMessageEntry, evaluate_command,
     join_continuation_entries,
 };
 use zeron_proto::{ConversationSourceContext, HarnessId, UserInputAnswer, UserInputQuestion};
@@ -41,6 +43,11 @@ use crate::{EngineError, new_id, now_ms};
 
 /// Debounce window for local snapshot saves after a doc change.
 const SNAPSHOT_DEBOUNCE_MS: u64 = 1_000;
+
+/// An edit client renews every 20s. Sixty seconds tolerates two missed
+/// heartbeats without turning a vanished client into an invisible permanent
+/// lock. Expiry fails closed into ReviewRequired rather than releasing.
+pub const QUEUE_EDIT_LEASE_MS: i64 = 60_000;
 
 /// Warm-doc LRU: how many unwatched, run-less docs stay fully open. Everything
 /// beyond this (and beyond [`zeron_doc::DOC_LRU_BYTE_BUDGET`]) is evicted
@@ -367,12 +374,130 @@ pub struct DocHost {
     inner: Arc<DocHostInner>,
 }
 
+/// How a taken queue row reaches the agent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QueueSend {
+    /// Nothing is running: start a turn with it.
+    NextTurn,
+    /// Something is running and can take input mid-turn: steer it in.
+    Steer,
+    /// The user said now: stop what is running first.
+    Interrupt,
+}
+
+const ATTACHMENT_ONLY_PROMPT: &str = "See the attached image(s).";
+const ATTACHMENT_PROMPT_HEADER: &str = "Attached images (local files — open them to view):";
+
+/// Queue rows keep the user's editable text separate from attachment paths.
+/// Rebuild the transcript/harness transport only when the row is dispatched.
+///
+/// Older clients stored the already-expanded prompt in `text`; recognize the
+/// exact trailer implied by `attachments` so those rows are not expanded a
+/// second time after an upgrade.
+fn queued_message_prompt(text: &str, attachments: &[String]) -> String {
+    if attachments.is_empty() {
+        return text.to_string();
+    }
+    let refs = attachments
+        .iter()
+        .map(|path| format!("- {path}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let trailer = format!("\n\n{ATTACHMENT_PROMPT_HEADER}\n{refs}");
+    let body = text.strip_suffix(&trailer).unwrap_or(text);
+    let body = if body.trim().is_empty() {
+        ATTACHMENT_ONLY_PROMPT
+    } else {
+        body
+    };
+    format!("{body}{trailer}")
+}
+
+fn queue_text_hash(text: &str) -> String {
+    format!("{:x}", Sha256::digest(text.as_bytes()))
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum BeginQueueEditOutcome {
+    Acquired {
+        lease_id: String,
+        text: String,
+        attachments: Vec<String>,
+        base_text_hash: String,
+        expires_at_ms: i64,
+    },
+    Locked {
+        owner_device_id: String,
+        expires_at_ms: i64,
+    },
+    Missing,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RenewQueueEditOutcome {
+    Renewed { expires_at_ms: i64 },
+    Lost,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FinishQueueEditAction {
+    Commit,
+    Cancel,
+    Discard,
+    ReleaseUnchanged,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(
+    tag = "outcome",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum FinishQueueEditOutcome {
+    Committed,
+    Cancelled,
+    Discarded,
+    Released,
+    Conflict { current_text: String },
+    Lost,
+    Missing,
+}
+
 /// One open chat doc: the `SessionDoc`, its change plumbing, and the room client.
 pub struct ChatDocHandle {
     chat_id: String,
     device_id: String,
     doc: Arc<SessionDoc>,
     messages_tx: watch::Sender<Arc<Vec<SessionMessageEntry>>>,
+    /// Pending-message queue watch (WatchQueue). Cheap to rebuild — a handful
+    /// of short rows — so unlike the transcript mirror it publishes on every
+    /// change without a dirty flag.
+    queue_tx: watch::Sender<Vec<QueuedMessage>>,
+    /// Serializes everything that TAKES from the queue. Both the doc-change
+    /// task and the turn-end status watcher call `drain_queue`, and nothing
+    /// keeps those two apart: without this they interleave across the
+    /// `dispatch` await, each taking a different head and each sending, so a
+    /// queue meant to release one message releases all of them.
+    ///
+    /// It also covers the gap a send-now's interrupt opens — between stopping
+    /// the turn and starting its own the chat reads Idle, and an idle chat with
+    /// a queue is exactly what the flush drains.
+    drain_lock: tokio::sync::Mutex<()>,
+    /// An explicit user interrupt freezes automatic queue delivery. The next
+    /// explicit prompt or queue send resumes it; incidental doc/status changes
+    /// must not turn Cancel into "send the next row".
+    queue_paused: AtomicBool,
     /// True when the doc changed while nobody watched: the mirror rebuild is
     /// deferred to the next `watch_messages` attach instead of paid per commit.
     mirror_dirty: AtomicBool,
@@ -447,6 +572,32 @@ impl ChatDocHandle {
             self.publish_messages();
         }
         rx
+    }
+
+    /// Queue watch — the composer's held messages, re-sent on every doc change.
+    pub fn watch_queue(&self) -> watch::Receiver<Vec<QueuedMessage>> {
+        self.touch();
+        let rx = self.queue_tx.subscribe();
+        self.publish_queue();
+        rx
+    }
+
+    fn publish_queue(&self) {
+        match self.doc.read_queue() {
+            Ok(items) => {
+                self.queue_tx.send_if_modified(|slot| {
+                    if *slot == items {
+                        false
+                    } else {
+                        *slot = items;
+                        true
+                    }
+                });
+            }
+            Err(err) => {
+                tracing::warn!(chat = %self.chat_id, error = %err, "queue read failed");
+            }
+        }
     }
 
     fn touch(&self) {
@@ -615,6 +766,7 @@ impl DocHost {
 
     /// Wire the sessions engine (engine assembly; see `SessionsEngine::set_doc_host`).
     pub fn set_sessions(&self, sessions: SessionsEngine) {
+        let statuses = sessions.watch_sessions();
         {
             // First set wins (the OnceLock contract this slot replaced).
             let mut slot = lock(&self.inner.sessions);
@@ -626,8 +778,29 @@ impl DocHost {
         let handles: Vec<_> = lock(&self.inner.handles).values().cloned().collect();
         for handle in handles {
             let host = self.clone();
-            self.spawn_worker(async move { host.drain_commands(&handle).await });
+            self.spawn_worker(async move {
+                host.drain_commands(&handle).await;
+                host.drain_queue(&handle).await;
+            });
         }
+        self.spawn_queue_flush_watcher(statuses);
+    }
+
+    /// The turn-end hook for held messages. Doc changes drive `drain_queue` for
+    /// everything else, but a turn ENDING is not a doc change the queue can
+    /// see — so watch session status instead and re-drain every warm chat.
+    /// `drain_queue` is a cheap no-op for empty queues and busy agents, which
+    /// is why this can afford to be indiscriminate.
+    fn spawn_queue_flush_watcher(&self, mut statuses: watch::Receiver<Vec<zeron_proto::Session>>) {
+        let host = self.clone();
+        self.spawn_worker(async move {
+            while statuses.changed().await.is_ok() {
+                let handles: Vec<_> = lock(&host.inner.handles).values().cloned().collect();
+                for handle in handles {
+                    host.drain_queue(&handle).await;
+                }
+            }
+        });
     }
 
     /// Retire this host's workers (runtime replacement, e.g. sign-out): cancel
@@ -647,6 +820,17 @@ impl DocHost {
         lock(&self.inner.seeding).clear();
         lock(&self.inner.seed_waiting).clear();
         lock(&self.inner.sessions).take();
+    }
+
+    /// Freeze every open queue before settling live runs during shutdown.
+    /// Interrupting a run publishes Idle, which normally wakes the turn-end
+    /// queue drainer; without this barrier quitting the host could promote a
+    /// queued row in the narrow window before workers are retired.
+    pub fn pause_all_queues(&self) {
+        let handles: Vec<_> = lock(&self.inner.handles).values().cloned().collect();
+        for handle in handles {
+            handle.queue_paused.store(true, Ordering::Release);
+        }
     }
 
     /// Test-only retirement sentinel: reports true once the doc-host graph
@@ -1020,12 +1204,23 @@ impl DocHost {
         // drains, nudges) never watch the transcript, and the first
         // watch_messages attach materializes it on demand.
         let (messages_tx, _) = watch::channel(Arc::default());
+        let initial_queue = doc.read_queue().unwrap_or_default();
+        // A queue already present when a handle is materialized came from a
+        // persisted snapshot (or a synced checkpoint), not from a prompt the
+        // user submitted to this live engine. Keep that recovered work frozen
+        // until an explicit prompt / Send now / Steer action thaws it. Rows
+        // appended after the handle exists retain the normal automatic drain.
+        let recovered_queue_pending = !initial_queue.is_empty();
+        let (queue_tx, _) = watch::channel(initial_queue);
 
         let handle = Arc::new(ChatDocHandle {
             chat_id: chat_id.to_string(),
             device_id: self.inner.config.device_id.clone(),
             doc: doc.clone(),
             messages_tx,
+            queue_tx,
+            drain_lock: tokio::sync::Mutex::new(()),
+            queue_paused: AtomicBool::new(recovered_queue_pending),
             mirror_dirty: AtomicBool::new(true),
             last_access: AtomicI64::new(now_ms()),
             snapshot_bytes: AtomicUsize::new(snapshot_len),
@@ -1044,6 +1239,10 @@ impl DocHost {
             }
             handles.insert(chat_id.to_string(), handle.clone());
         }
+        // Snapshot recovery may restore several independently edited rows.
+        // Each row needs its own checked expiry wake; otherwise a non-head
+        // edit could remain displayed as live indefinitely.
+        self.arm_existing_queue_edit_expiries(&handle);
 
         // Edge room join — offline-tolerant AND supervised. `ChatClient` only
         // self-reconnects AFTER a first successful join; a one-shot attempt
@@ -2131,16 +2330,7 @@ impl DocHost {
         // again, so the LWW row flips back to active on every device. Best-
         // effort — the command itself is durable regardless.
         if is_message {
-            if let Some(workspace) = self.workspace() {
-                match workspace.chat(chat_id) {
-                    Ok(Some(chat)) if chat.archived => {
-                        if let Err(err) = workspace.set_chat_archived(chat_id, false) {
-                            tracing::warn!(chat = %chat_id, error = %err, "unarchive on send failed");
-                        }
-                    }
-                    _ => {}
-                }
-            }
+            self.unarchive_on_send(chat_id);
         }
         // §7 durable delivery: when another device hosts this chat, nudge its device
         // room so a cold host opens the doc and drains the queue. Fire-and-forget —
@@ -2149,6 +2339,749 @@ impl DocHost {
         self.nudge_remote_host(chat_id);
         self.spawn_command_delivery(chat_id, entry, transfers);
         Ok(id)
+    }
+
+    /// A send revives an archived chat on every device (best-effort).
+    fn unarchive_on_send(&self, chat_id: &str) {
+        let Some(workspace) = self.workspace() else {
+            return;
+        };
+        match workspace.chat(chat_id) {
+            Ok(Some(chat)) if chat.archived => {
+                if let Err(err) = workspace.set_chat_archived(chat_id, false) {
+                    tracing::warn!(chat = %chat_id, error = %err, "unarchive on send failed");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Hold a message for later: append it to the doc's queue. Any device may
+    /// write here (unlike `messages`), and the change subscription kicks
+    /// [`Self::drain_queue`], so a queue that lands while the agent is already
+    /// idle goes straight out instead of waiting for a turn that never comes.
+    pub fn queue_message(
+        &self,
+        chat_id: &str,
+        text: &str,
+        attachments: Vec<String>,
+    ) -> Result<String, EngineError> {
+        self.queue_message_with_behavior(chat_id, text, attachments, false)
+    }
+
+    /// Append a message while preserving the submitter's active-turn policy
+    /// on the synchronized row. This matters when another device hosts the
+    /// chat: the host, not the submitting UI, decides when to drain it.
+    pub fn queue_message_with_behavior(
+        &self,
+        chat_id: &str,
+        text: &str,
+        attachments: Vec<String>,
+        hold_for_turn_end: bool,
+    ) -> Result<String, EngineError> {
+        let handle = self.open(chat_id)?;
+        let id = new_id();
+        handle.doc.push_queued(&QueuedMessage {
+            id: id.clone(),
+            text: text.to_string(),
+            attachments,
+            hold_for_turn_end,
+            issued_by: self.inner.config.device_id.clone(),
+            issued_at: now_ms(),
+            edited_at: None,
+            delivery_gate: None,
+        })?;
+        handle.publish_queue();
+        // Same reasoning as a command: the user is acting in this chat again.
+        self.unarchive_on_send(chat_id);
+        self.nudge_remote_host(chat_id);
+        Ok(id)
+    }
+
+    /// Retype a queued message. Empty text deletes the row — emptying the box
+    /// is how you say "drop it". `false` when the row is already gone.
+    pub fn update_queued_message(
+        &self,
+        chat_id: &str,
+        id: &str,
+        text: &str,
+    ) -> Result<bool, EngineError> {
+        let handle = self.open(chat_id)?;
+        let changed = handle.doc.set_queued_text(id, text, now_ms())?;
+        if changed {
+            handle.publish_queue();
+        }
+        Ok(changed)
+    }
+
+    /// Reorder a queued message (drag, or the up/down buttons).
+    pub fn move_queued_message(
+        &self,
+        chat_id: &str,
+        id: &str,
+        to_index: usize,
+    ) -> Result<bool, EngineError> {
+        let handle = self.open(chat_id)?;
+        let changed = handle.doc.move_queued(id, to_index)?;
+        if changed {
+            handle.publish_queue();
+        }
+        Ok(changed)
+    }
+
+    /// Cancel one queued message at the chat host. Removal shares the same
+    /// lock as automatic and explicit delivery, so the acknowledgement is the
+    /// linearization point: `true` guarantees this host did not take the row.
+    pub async fn remove_queued_message(
+        &self,
+        chat_id: &str,
+        id: &str,
+    ) -> Result<bool, EngineError> {
+        if !self.is_host(chat_id) {
+            return Err(EngineError::Other(format!(
+                "device {} does not host chat {chat_id}",
+                self.inner.config.device_id
+            )));
+        }
+        let handle = self.open(chat_id)?;
+        let _drain = handle.drain_lock.lock().await;
+        let removed = handle.doc.remove_queued(id)?;
+        if removed {
+            handle.publish_queue();
+        }
+        Ok(removed)
+    }
+
+    /// Acquire the host-side right to edit one queued row. This operation and
+    /// every queue take share `drain_lock`, making the ACK the linearization
+    /// point: after Acquired the row cannot race into the agent.
+    pub async fn begin_queued_message_edit(
+        &self,
+        chat_id: &str,
+        id: &str,
+        owner_device_id: &str,
+        owner_instance_id: &str,
+    ) -> Result<BeginQueueEditOutcome, EngineError> {
+        if !self.is_host(chat_id) {
+            return Err(EngineError::Other(format!(
+                "device {} does not host chat {chat_id}",
+                self.inner.config.device_id
+            )));
+        }
+        let handle = self.open(chat_id)?;
+        let _drain = handle.drain_lock.lock().await;
+        let now = now_ms();
+        let Some(item) = handle
+            .doc
+            .read_queue()?
+            .into_iter()
+            .find(|item| item.id == id)
+        else {
+            return Ok(BeginQueueEditOutcome::Missing);
+        };
+        if let Some(QueueDeliveryGate::Editing {
+            owner_device_id,
+            expires_at_ms,
+            ..
+        }) = &item.delivery_gate
+            && *expires_at_ms > now
+        {
+            return Ok(BeginQueueEditOutcome::Locked {
+                owner_device_id: owner_device_id.clone(),
+                expires_at_ms: *expires_at_ms,
+            });
+        }
+
+        let lease_id = new_id();
+        let expires_at_ms = now + QUEUE_EDIT_LEASE_MS;
+        let gate = QueueDeliveryGate::Editing {
+            lease_id: lease_id.clone(),
+            owner_device_id: owner_device_id.to_string(),
+            owner_instance_id: owner_instance_id.to_string(),
+            acquired_at_ms: now,
+            expires_at_ms,
+            base_text_hash: queue_text_hash(&item.text),
+        };
+        let base_text_hash = queue_text_hash(&item.text);
+        if !handle.doc.set_queued_delivery_gate(id, Some(&gate))? {
+            return Ok(BeginQueueEditOutcome::Missing);
+        }
+        handle.publish_queue();
+        // A crash immediately after the client sees Acquired must not reopen
+        // the row as sendable from a pre-lease snapshot.
+        self.save_snapshot(&handle);
+        self.arm_queue_edit_expiry(&handle, id, &lease_id, expires_at_ms);
+        Ok(BeginQueueEditOutcome::Acquired {
+            lease_id,
+            text: item.text,
+            attachments: item.attachments,
+            base_text_hash,
+            expires_at_ms,
+        })
+    }
+
+    /// Extend an edit lease. An already-expired generation is never revived;
+    /// it remains blocked and will be surfaced as ReviewRequired.
+    pub async fn renew_queued_message_edit(
+        &self,
+        chat_id: &str,
+        id: &str,
+        lease_id: &str,
+    ) -> Result<RenewQueueEditOutcome, EngineError> {
+        if !self.is_host(chat_id) {
+            return Err(EngineError::Other(format!(
+                "device {} does not host chat {chat_id}",
+                self.inner.config.device_id
+            )));
+        }
+        let handle = self.open(chat_id)?;
+        let _drain = handle.drain_lock.lock().await;
+        let now = now_ms();
+        let Some(item) = handle
+            .doc
+            .read_queue()?
+            .into_iter()
+            .find(|item| item.id == id)
+        else {
+            return Ok(RenewQueueEditOutcome::Missing);
+        };
+        let QueueDeliveryGate::Editing {
+            lease_id: current,
+            owner_device_id,
+            owner_instance_id,
+            acquired_at_ms,
+            expires_at_ms,
+            base_text_hash,
+        } = item
+            .delivery_gate
+            .unwrap_or(QueueDeliveryGate::ReviewRequired {
+                previous_lease_id: String::new(),
+                owner_device_id: String::new(),
+                since_ms: now,
+                base_text_hash: String::new(),
+            })
+        else {
+            return Ok(RenewQueueEditOutcome::Lost);
+        };
+        if current != lease_id || expires_at_ms <= now {
+            if current == lease_id && expires_at_ms <= now {
+                let review = QueueDeliveryGate::ReviewRequired {
+                    previous_lease_id: current,
+                    owner_device_id,
+                    since_ms: now,
+                    base_text_hash,
+                };
+                let _ = handle.doc.set_queued_delivery_gate(id, Some(&review));
+                handle.publish_queue();
+                self.save_snapshot(&handle);
+            }
+            return Ok(RenewQueueEditOutcome::Lost);
+        }
+        let expires_at_ms = now + QUEUE_EDIT_LEASE_MS;
+        let renewed = QueueDeliveryGate::Editing {
+            lease_id: current,
+            owner_device_id,
+            owner_instance_id,
+            acquired_at_ms,
+            expires_at_ms,
+            base_text_hash,
+        };
+        if !handle.doc.set_queued_delivery_gate(id, Some(&renewed))? {
+            return Ok(RenewQueueEditOutcome::Missing);
+        }
+        handle.publish_queue();
+        self.arm_queue_edit_expiry(&handle, id, lease_id, expires_at_ms);
+        Ok(RenewQueueEditOutcome::Renewed { expires_at_ms })
+    }
+
+    /// Resolve an edit lease. A late finish may still resolve the matching
+    /// ReviewRequired generation, but can never affect a newer lease.
+    pub async fn finish_queued_message_edit(
+        &self,
+        chat_id: &str,
+        id: &str,
+        lease_id: &str,
+        action: FinishQueueEditAction,
+        text: Option<&str>,
+        expected_text_hash: Option<&str>,
+    ) -> Result<FinishQueueEditOutcome, EngineError> {
+        self.finish_queued_message_edit_with_attachments(
+            chat_id,
+            id,
+            lease_id,
+            action,
+            text,
+            expected_text_hash,
+            None,
+        )
+        .await
+    }
+
+    pub async fn finish_queued_message_edit_with_attachments(
+        &self,
+        chat_id: &str,
+        id: &str,
+        lease_id: &str,
+        action: FinishQueueEditAction,
+        text: Option<&str>,
+        expected_text_hash: Option<&str>,
+        attachments: Option<&[String]>,
+    ) -> Result<FinishQueueEditOutcome, EngineError> {
+        if !self.is_host(chat_id) {
+            return Err(EngineError::Other(format!(
+                "device {} does not host chat {chat_id}",
+                self.inner.config.device_id
+            )));
+        }
+        if action == FinishQueueEditAction::Commit
+            && (text.is_none() || expected_text_hash.is_none())
+        {
+            return Err(EngineError::Other(
+                "commit requires text and expectedTextHash".into(),
+            ));
+        }
+        let handle = self.open(chat_id)?;
+        let outcome = {
+            let _drain = handle.drain_lock.lock().await;
+            let Some(item) = handle
+                .doc
+                .read_queue()?
+                .into_iter()
+                .find(|item| item.id == id)
+            else {
+                return Ok(FinishQueueEditOutcome::Missing);
+            };
+            let (current_lease, base_text_hash) = match &item.delivery_gate {
+                Some(QueueDeliveryGate::Editing {
+                    lease_id,
+                    base_text_hash,
+                    ..
+                }) => (lease_id, base_text_hash),
+                Some(QueueDeliveryGate::ReviewRequired {
+                    previous_lease_id,
+                    base_text_hash,
+                    ..
+                }) => (previous_lease_id, base_text_hash),
+                None => return Ok(FinishQueueEditOutcome::Lost),
+            };
+            if current_lease != lease_id {
+                return Ok(FinishQueueEditOutcome::Lost);
+            }
+            if action == FinishQueueEditAction::Commit
+                && (expected_text_hash != Some(base_text_hash.as_str())
+                    || queue_text_hash(&item.text) != *base_text_hash)
+            {
+                return Ok(FinishQueueEditOutcome::Conflict {
+                    current_text: item.text,
+                });
+            }
+
+            let replacement = match action {
+                FinishQueueEditAction::Commit => Some(text.unwrap_or_default()),
+                FinishQueueEditAction::Cancel | FinishQueueEditAction::ReleaseUnchanged => None,
+                FinishQueueEditAction::Discard => Some(""),
+            };
+            if !handle.doc.finish_queued_edit_with_attachments(
+                id,
+                replacement,
+                if action == FinishQueueEditAction::Commit {
+                    attachments
+                } else {
+                    None
+                },
+                now_ms(),
+            )? {
+                return Ok(FinishQueueEditOutcome::Missing);
+            }
+            handle.publish_queue();
+            self.save_snapshot(&handle);
+            match action {
+                FinishQueueEditAction::Commit => FinishQueueEditOutcome::Committed,
+                FinishQueueEditAction::Cancel => FinishQueueEditOutcome::Cancelled,
+                FinishQueueEditAction::Discard => FinishQueueEditOutcome::Discarded,
+                FinishQueueEditAction::ReleaseUnchanged => FinishQueueEditOutcome::Released,
+            }
+        };
+        // Turn-end may already have happened while the edit was open.
+        self.drain_queue(&handle).await;
+        Ok(outcome)
+    }
+
+    fn arm_existing_queue_edit_expiries(&self, handle: &Arc<ChatDocHandle>) {
+        let Ok(queue) = handle.doc.read_queue() else {
+            return;
+        };
+        for item in queue {
+            if let Some(QueueDeliveryGate::Editing {
+                lease_id,
+                expires_at_ms,
+                ..
+            }) = item.delivery_gate
+            {
+                self.arm_queue_edit_expiry(handle, &item.id, &lease_id, expires_at_ms);
+            }
+        }
+    }
+
+    fn arm_queue_edit_expiry(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        id: &str,
+        lease_id: &str,
+        expires_at_ms: i64,
+    ) {
+        let delay_ms = expires_at_ms.saturating_sub(now_ms()).max(0) as u64;
+        let host = self.clone();
+        let handle = handle.clone();
+        let id = id.to_string();
+        let lease_id = lease_id.to_string();
+        self.spawn_worker(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            host.expire_queued_message_edit(&handle, &id, &lease_id, expires_at_ms)
+                .await;
+        });
+    }
+
+    /// Expire exactly the lease generation that scheduled this wake. A stale
+    /// timer from before a renewal observes a different deadline and no-ops;
+    /// timers for other rows are completely independent.
+    async fn expire_queued_message_edit(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        id: &str,
+        lease_id: &str,
+        scheduled_expires_at_ms: i64,
+    ) {
+        let changed = {
+            let _drain = handle.drain_lock.lock().await;
+            let Ok(queue) = handle.doc.read_queue() else {
+                return;
+            };
+            let Some(item) = queue.into_iter().find(|item| item.id == id) else {
+                return;
+            };
+            let Some(QueueDeliveryGate::Editing {
+                lease_id: current_lease_id,
+                owner_device_id,
+                expires_at_ms,
+                base_text_hash,
+                ..
+            }) = item.delivery_gate
+            else {
+                return;
+            };
+            if current_lease_id != lease_id
+                || expires_at_ms != scheduled_expires_at_ms
+                || expires_at_ms > now_ms()
+            {
+                return;
+            }
+            let review = QueueDeliveryGate::ReviewRequired {
+                previous_lease_id: current_lease_id,
+                owner_device_id,
+                since_ms: now_ms(),
+                base_text_hash,
+            };
+            let Ok(changed) = handle.doc.set_queued_delivery_gate(id, Some(&review)) else {
+                return;
+            };
+            if changed {
+                handle.publish_queue();
+                self.save_snapshot(handle);
+            }
+            changed
+        };
+        if changed {
+            // If this was the head, the drain now observes ReviewRequired. If
+            // it was not, publishing still updates every client's row state.
+            self.drain_queue(handle).await;
+        }
+    }
+
+    /// "Send this one now": take it out of the queue and put it in front of the
+    /// agent, interrupting whatever is running. Deliberately blunt — it is the
+    /// explicit override. The empty-composer Enter gesture reaches this path
+    /// only when the selected provider cannot steer the row. `false` when
+    /// another device already took it.
+    pub async fn send_queued_now(&self, chat_id: &str, id: &str) -> Result<bool, EngineError> {
+        if !self.is_host(chat_id) {
+            return Err(EngineError::Other(format!(
+                "device {} does not host chat {chat_id}",
+                self.inner.config.device_id
+            )));
+        }
+        let handle = self.open(chat_id)?;
+        // Sending one now sends ONE: the lock keeps the flush out of the idle
+        // window the interrupt opens, and out of the take itself.
+        let _drain = handle.drain_lock.lock().await;
+        let Some(candidate) = handle
+            .doc
+            .read_queue()?
+            .into_iter()
+            .find(|item| item.id == id)
+        else {
+            return Ok(false);
+        };
+        if candidate.delivery_gate.is_some() {
+            return Err(EngineError::Other(
+                "queued message is blocked for editing or review".into(),
+            ));
+        }
+        let Some(item) = handle.doc.take_queued(id)? else {
+            return Ok(false);
+        };
+        let was_paused = handle.queue_paused.swap(false, Ordering::AcqRel);
+        handle.publish_queue();
+        if let Err(err) = self
+            .dispatch_queued(&handle, &item, QueueSend::Interrupt)
+            .await
+        {
+            if was_paused {
+                handle.queue_paused.store(true, Ordering::Release);
+            }
+            // Put it back rather than swallowing what the user typed — at the
+            // head, because the user just said this one was the urgent one.
+            let _ = handle.doc.insert_queued(0, &item);
+            handle.publish_queue();
+            return Err(err);
+        }
+        Ok(true)
+    }
+
+    /// Promote one held row without ever interrupting a turn. A live,
+    /// steerable turn receives it as steering; if that turn has already ended,
+    /// it starts normally as the next turn. Unsupported harnesses and
+    /// attachment-bearing rows stay untouched.
+    pub async fn steer_queued_now(&self, chat_id: &str, id: &str) -> Result<bool, EngineError> {
+        if !self.is_host(chat_id) {
+            return Err(EngineError::Other(format!(
+                "device {} does not host chat {chat_id}",
+                self.inner.config.device_id
+            )));
+        }
+        let handle = self.open(chat_id)?;
+        let _drain = handle.drain_lock.lock().await;
+        let Some(sessions) = self.sessions() else {
+            return Err(EngineError::Other("sessions engine not wired".into()));
+        };
+        if !sessions.steers_mid_turn(self.harness_for(chat_id)) {
+            return Err(EngineError::Other(
+                "the selected agent cannot accept mid-turn steering".into(),
+            ));
+        }
+        let Some(candidate) = handle
+            .doc
+            .read_queue()?
+            .into_iter()
+            .find(|item| item.id == id)
+        else {
+            return Ok(false);
+        };
+        if !candidate.attachments.is_empty() {
+            return Err(EngineError::Other(
+                "messages with attachments cannot be steered mid-turn".into(),
+            ));
+        }
+        if candidate.delivery_gate.is_some() {
+            return Err(EngineError::Other(
+                "queued message is blocked for editing or review".into(),
+            ));
+        }
+        let Some(item) = handle.doc.take_queued(id)? else {
+            return Ok(false);
+        };
+        let was_paused = handle.queue_paused.swap(false, Ordering::AcqRel);
+        handle.publish_queue();
+        // Always attempt the non-interrupting path first. If no turn exists,
+        // `dispatch_queued` falls through to NextTurn; if a new turn appeared
+        // after our capability check, the prompt steers that turn instead.
+        if let Err(err) = self.dispatch_queued(&handle, &item, QueueSend::Steer).await {
+            if was_paused {
+                handle.queue_paused.store(true, Ordering::Release);
+            }
+            let _ = handle.doc.insert_queued(0, &item);
+            handle.publish_queue();
+            return Err(err);
+        }
+        Ok(true)
+    }
+
+    /// Host-only: hand queued messages to the agent when there is somewhere to
+    /// put them.
+    ///
+    /// - Idle: send the head as the next turn (and loop — the agent is free).
+    /// - Working, agent takes mid-turn input: steer it in.
+    /// - Working, anything else: hold. The turn-end watcher comes back for it.
+    ///
+    /// One at a time by design: each send changes the status this reads.
+    pub async fn drain_queue(&self, handle: &Arc<ChatDocHandle>) {
+        let Some(sessions) = self.sessions() else {
+            return; // executor not wired yet; the set_sessions kick re-drains
+        };
+        if !self.is_host(&handle.chat_id) {
+            return;
+        }
+        // One drain at a time per chat. Waiters are cheap: whoever takes the
+        // lock next re-reads the queue and the status, so a drain that became
+        // unnecessary while it waited simply finds nothing to do.
+        let _drain = handle.drain_lock.lock().await;
+        if handle.queue_paused.load(Ordering::Acquire) {
+            return;
+        }
+        loop {
+            let Ok(Some(head)) = handle.doc.read_queue().map(|q| q.into_iter().next()) else {
+                return;
+            };
+            match &head.delivery_gate {
+                Some(QueueDeliveryGate::Editing {
+                    lease_id,
+                    owner_device_id,
+                    expires_at_ms,
+                    base_text_hash,
+                    ..
+                }) if *expires_at_ms <= now_ms() => {
+                    let review = QueueDeliveryGate::ReviewRequired {
+                        previous_lease_id: lease_id.clone(),
+                        owner_device_id: owner_device_id.clone(),
+                        since_ms: now_ms(),
+                        base_text_hash: base_text_hash.clone(),
+                    };
+                    let _ = handle.doc.set_queued_delivery_gate(&head.id, Some(&review));
+                    handle.publish_queue();
+                    self.save_snapshot(handle);
+                    return;
+                }
+                Some(QueueDeliveryGate::Editing {
+                    lease_id,
+                    expires_at_ms,
+                    ..
+                }) => {
+                    self.arm_queue_edit_expiry(handle, &head.id, lease_id, *expires_at_ms);
+                    return;
+                }
+                Some(QueueDeliveryGate::ReviewRequired { .. }) => return,
+                None => {}
+            }
+            // In flight, not just Working: an agent parked on a question owns
+            // the turn too, and the composer queues on the same reading. Taking
+            // `AwaitingInput` for idle would send the follow-up as a fresh turn
+            // and abandon the question.
+            let busy = sessions.turn_in_flight(&handle.chat_id);
+            let send = if busy {
+                // Attachments never steer: the steer path carries a prompt and
+                // nothing else, so a message with files must wait for a turn
+                // that can inline them rather than lose them.
+                let steer_now = !head.hold_for_turn_end
+                    && head.attachments.is_empty()
+                    && sessions.steers_mid_turn(self.harness_for(&handle.chat_id));
+                if !steer_now {
+                    return; // held until the turn ends
+                }
+                QueueSend::Steer
+            } else {
+                QueueSend::NextTurn
+            };
+            // Take it only once we know it is going out — a row that stays in
+            // the queue on a failed send is recoverable; a vanished one is not.
+            let Ok(Some(item)) = handle.doc.take_queued(&head.id) else {
+                return;
+            };
+            handle.publish_queue();
+            if let Err(err) = self.dispatch_queued(handle, &item, send).await {
+                tracing::warn!(chat = %handle.chat_id, error = %err, "queued send failed");
+                handle.queue_paused.store(true, Ordering::Release);
+                let _ = handle.doc.insert_queued(0, &item);
+                handle.publish_queue();
+                return;
+            }
+            if busy {
+                return; // steered into a live turn; the rest waits for its end
+            }
+        }
+    }
+
+    /// Stop the active turn without treating the resulting Idle transition as
+    /// permission to release the next queued message. The same lock used by
+    /// drains closes the race between clicking Cancel and the status watcher.
+    async fn interrupt_and_pause_queue(
+        &self,
+        sessions: &SessionsEngine,
+        handle: &Arc<ChatDocHandle>,
+    ) -> Result<bool, EngineError> {
+        let _drain = handle.drain_lock.lock().await;
+        if !sessions.turn_in_flight(&handle.chat_id) {
+            return Ok(false);
+        }
+        handle.queue_paused.store(true, Ordering::Release);
+        match sessions.interrupt(&handle.chat_id).await {
+            Ok(true) => Ok(true),
+            Ok(false) => {
+                handle.queue_paused.store(false, Ordering::Release);
+                Ok(false)
+            }
+            Err(err) => {
+                handle.queue_paused.store(false, Ordering::Release);
+                Err(err)
+            }
+        }
+    }
+
+    /// Send one taken queue row.
+    async fn dispatch_queued(
+        &self,
+        handle: &Arc<ChatDocHandle>,
+        item: &QueuedMessage,
+        send: QueueSend,
+    ) -> Result<(), EngineError> {
+        let Some(sessions) = self.sessions() else {
+            return Err(EngineError::Other("sessions engine not wired".into()));
+        };
+        let chat_id = &handle.chat_id;
+        // Keep the queue row's identity when it becomes a real user message.
+        // The submitting viewport learns this id from QueueMessage and can
+        // therefore wait without disturbing the active turn's runway, then
+        // anchor the prompt only once this exact row reaches the transcript.
+        let message_id = item.id.clone();
+        let prompt = queued_message_prompt(&item.text, &item.attachments);
+        if send == QueueSend::Steer {
+            match sessions
+                .steer(chat_id, &prompt, Some(message_id.clone()))
+                .await?
+            {
+                SteerOutcome::Accepted => return Ok(()),
+                // The run died under us between the status read and the send;
+                // fall through and start a fresh turn with it.
+                SteerOutcome::NotSteerable => {}
+            }
+        }
+        // Same reading of "busy" as the drain: a turn parked on a question is
+        // still a turn, and it has to be stopped before this one starts.
+        if send == QueueSend::Interrupt && sessions.turn_in_flight(chat_id) {
+            sessions.interrupt(chat_id).await?;
+        }
+        let previous = sessions.last_request(chat_id);
+        let request = self
+            .request_from_chat_row(chat_id, &prompt)
+            .map(|mut current| {
+                if let Some(previous) = &previous {
+                    current.auto_approve = previous.auto_approve;
+                    current.worktree = previous.worktree.clone();
+                }
+                current
+            })
+            .or(previous);
+        let Some(mut request) = request else {
+            return Err(EngineError::Other(
+                "no live run and no prior run config".into(),
+            ));
+        };
+        request.prompt = prompt;
+        request.resume = None; // dispatch re-derives the harness session
+        request.attachments = item.attachments.clone();
+        let harness = self.harness_for_request(chat_id, &request);
+        self.dispatch_with_source_context(&sessions, chat_id, harness, request, Some(message_id))
+            .await?;
+        Ok(())
     }
 
     /// POST `{edge}/device/{host}/nudge {chatId}` when the chat's workspace row names
@@ -3175,61 +4108,24 @@ impl DocHost {
                     Some(message_id.clone()),
                 )
                 .await?;
+                // A fresh user-authored turn is the deliberate action that
+                // thaws a queue frozen by Cancel. Clear only after dispatch
+                // succeeds so a failed send cannot silently unfreeze it.
+                handle.queue_paused.store(false, Ordering::Release);
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::Steer { prompt, message_id } => {
-                // Same `pending://` → absolute rewrite as the Run arm.
-                let prompt = &self.resolve_prompt_attachments(prompt);
-                // Same send-time canonicalization as the Run arm.
-                if let Some(message_id) = message_id
-                    && let Err(err) =
-                        handle.write_user_message(message_id, prompt, entry.issued_at.min(now_ms()))
-                {
-                    tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
-                }
-                match sessions.steer(chat_id, prompt, message_id.clone()).await? {
-                    SteerOutcome::Accepted => Ok((SessionCommandStatus::Applied, None)),
-                    SteerOutcome::NotSteerable => {
-                        // No live steerable run: the durable command still delivers —
-                        // run it as the next turn (zeron's fallback, executor-side).
-                        // After an engine restart `last_request` is empty too, so
-                        // rebuild the run config from the chat's workspace row
-                        // (zeron derived dispatch config from the chat row the
-                        // same way — sessions.ts:601-620); dispatch's engine-owned
-                        // resume then reattaches the prior harness conversation.
-                        let request = sessions
-                            .last_request(chat_id)
-                            .or_else(|| self.request_from_chat_row(chat_id, prompt));
-                        let Some(mut request) = request else {
-                            return Ok((
-                                SessionCommandStatus::Rejected,
-                                Some("no live run and no prior run config".into()),
-                            ));
-                        };
-                        request.prompt = prompt.clone();
-                        request.resume = None; // dispatch re-derives the harness session
-                        // A reused config must not re-inline the PREVIOUS
-                        // turn's images; this steer's own refs (if any) already
-                        // ride the prompt text.
-                        request.attachments = Vec::new();
-                        let harness = self.harness_for_request(chat_id, &request);
-                        self.dispatch_with_source_context(
-                            sessions,
-                            chat_id,
-                            harness,
-                            request,
-                            message_id.clone(),
-                        )
-                        .await?;
-                        Ok((
-                            SessionCommandStatus::Applied,
-                            Some("queued as new turn".into()),
-                        ))
-                    }
-                }
+                self.deliver_prompt(
+                    sessions,
+                    handle,
+                    prompt,
+                    message_id.clone(),
+                    entry.issued_at,
+                )
+                .await
             }
             SessionCommandPayload::Interrupt {} => {
-                sessions.interrupt(chat_id).await?;
+                self.interrupt_and_pause_queue(sessions, handle).await?;
                 Ok((SessionCommandStatus::Applied, None))
             }
             SessionCommandPayload::RespondInput {
@@ -3300,6 +4196,116 @@ impl DocHost {
                 ))
             }
         }
+    }
+
+    /// Put a typed prompt in front of a live agent: steer it in, or — with no
+    /// live steerable run — deliver the durable command as the next turn.
+    /// After an engine restart `last_request` is empty too, so rebuild the run
+    /// config from the chat's workspace row (zeron derived dispatch config from
+    /// the chat row the same way — sessions.ts:601-620); dispatch's engine-owned
+    /// resume then reattaches the prior harness conversation.
+    ///
+    /// A working agent that only takes prompts at a turn boundary is the
+    /// exception: see [`Self::held_until_turn_end`].
+    async fn deliver_prompt(
+        &self,
+        sessions: &SessionsEngine,
+        handle: &Arc<ChatDocHandle>,
+        prompt: &str,
+        message_id: Option<String>,
+        issued_at: i64,
+    ) -> Result<(SessionCommandStatus, Option<String>), EngineError> {
+        let chat_id = &handle.chat_id;
+        // Keep upstream's queued-attachment rewrite and send-time canonical
+        // history while preserving the personal cut's turn-boundary queue.
+        let prompt = self.resolve_prompt_attachments(prompt);
+        if self.held_until_turn_end(sessions, chat_id, &prompt, message_id.as_deref())? {
+            return Ok((
+                SessionCommandStatus::Applied,
+                Some("held until the turn ends".into()),
+            ));
+        }
+        if let Some(message_id) = message_id.as_deref()
+            && let Err(err) =
+                handle.write_user_message(message_id, &prompt, issued_at.min(now_ms()))
+        {
+            tracing::warn!(chat = %chat_id, error = %err, "canonical user-message write failed");
+        }
+        match sessions.steer(chat_id, &prompt, message_id.clone()).await? {
+            SteerOutcome::Accepted => {
+                handle.queue_paused.store(false, Ordering::Release);
+                Ok((SessionCommandStatus::Applied, None))
+            }
+            SteerOutcome::NotSteerable => {
+                let request = sessions
+                    .last_request(chat_id)
+                    .or_else(|| self.request_from_chat_row(chat_id, &prompt));
+                let Some(mut request) = request else {
+                    return Ok((
+                        SessionCommandStatus::Rejected,
+                        Some("no live run and no prior run config".into()),
+                    ));
+                };
+                request.prompt = prompt;
+                request.resume = None; // dispatch re-derives the harness session
+                // A reused config must not re-inline the PREVIOUS turn's
+                // images; this prompt's own refs (if any) ride its text.
+                request.attachments = Vec::new();
+                let harness = self.harness_for_request(chat_id, &request);
+                self.dispatch_with_source_context(sessions, chat_id, harness, request, message_id)
+                    .await?;
+                handle.queue_paused.store(false, Ordering::Release);
+                Ok((
+                    SessionCommandStatus::Applied,
+                    Some("queued as new turn".into()),
+                ))
+            }
+        }
+    }
+
+    /// Put `prompt` in the pending-message queue instead of a run mailbox when
+    /// the agent is working and takes prompts only between turns. `true` when it
+    /// was queued.
+    ///
+    /// A turn-boundary agent has no mid-turn mailbox: what it has is a next
+    /// prompt. Posting into the run's mailbox anyway made delivery depend on how
+    /// the turn ended — a turn that was interrupted or errored discarded the
+    /// mailbox, and the message sat in the transcript looking sent, unread. The
+    /// queue is the honest home: shown as pending rather than sent, editable,
+    /// and flushed by the turn-end watcher, which is where [`Self::drain_queue`]
+    /// already sends a typed message for exactly this agent. `steers_mid_turn`
+    /// is a catalog lookup — no spawn, no probe.
+    fn held_until_turn_end(
+        &self,
+        sessions: &SessionsEngine,
+        chat_id: &str,
+        prompt: &str,
+        message_id: Option<&str>,
+    ) -> Result<bool, EngineError> {
+        // A persistent session parked BETWEEN turns DOES take the next prompt
+        // through its mailbox (the warm-child fast path), so the question is
+        // whether a turn is in flight — including one parked on a question,
+        // which is the state a question's own follow-up arrives in. An empty
+        // prompt is no message to queue.
+        if !sessions.turn_in_flight(chat_id)
+            || prompt.trim().is_empty()
+            || sessions.steers_mid_turn(self.harness_for(chat_id))
+        {
+            return Ok(false);
+        }
+        let handle = self.open(chat_id)?;
+        handle.doc.push_queued(&QueuedMessage {
+            id: message_id.map(str::to_string).unwrap_or_else(new_id),
+            text: prompt.to_string(),
+            attachments: Vec::new(),
+            hold_for_turn_end: false,
+            issued_by: self.inner.config.device_id.clone(),
+            issued_at: now_ms(),
+            edited_at: None,
+            delivery_gate: None,
+        })?;
+        handle.publish_queue();
+        Ok(true)
     }
 
     async fn capture_source_context(&self, cwd: &str) -> Option<ConversationSourceContext> {
@@ -3689,6 +4695,36 @@ mod part_segment_tests {
     }
 }
 
+#[cfg(test)]
+mod queued_message_prompt_tests {
+    use super::{ATTACHMENT_ONLY_PROMPT, ATTACHMENT_PROMPT_HEADER, queued_message_prompt};
+
+    #[test]
+    fn dispatch_adds_the_attachment_transport_to_visible_queue_text() {
+        let paths = vec!["/tmp/image.png".to_string()];
+        assert_eq!(
+            queued_message_prompt("inspect this", &paths),
+            format!("inspect this\n\n{ATTACHMENT_PROMPT_HEADER}\n- /tmp/image.png")
+        );
+    }
+
+    #[test]
+    fn legacy_expanded_rows_are_not_expanded_twice() {
+        let paths = vec!["/tmp/image.png".to_string()];
+        let legacy = format!("inspect this\n\n{ATTACHMENT_PROMPT_HEADER}\n- /tmp/image.png");
+        assert_eq!(queued_message_prompt(&legacy, &paths), legacy);
+    }
+
+    #[test]
+    fn attachment_only_rows_get_a_non_empty_prompt_body() {
+        let paths = vec!["/tmp/image.png".to_string()];
+        assert_eq!(
+            queued_message_prompt("", &paths),
+            format!("{ATTACHMENT_ONLY_PROMPT}\n\n{ATTACHMENT_PROMPT_HEADER}\n- /tmp/image.png")
+        );
+    }
+}
+
 /// Per-chat background task: reacts to doc changes (local commits and remote imports)
 /// by re-publishing the transcript watch, draining commands, and debouncing snapshots.
 /// Holds only a weak handle so a dropped host tears the task down.
@@ -3698,6 +4734,7 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
     {
         let Some(handle) = weak.upgrade() else { return };
         host.drain_commands(&handle).await;
+        host.drain_queue(&handle).await;
     }
     let mut save_deadline: Option<tokio::time::Instant> = None;
     loop {
@@ -3709,7 +4746,9 @@ async fn chat_task(host: DocHost, weak: Weak<ChatDocHandle>, mut changed_rx: wat
                 }
                 let Some(handle) = weak.upgrade() else { break };
                 handle.publish_messages_if_watched();
+                handle.publish_queue();
                 host.drain_commands(&handle).await;
+                host.drain_queue(&handle).await;
                 if save_deadline.is_none() {
                     save_deadline = Some(
                         tokio::time::Instant::now()

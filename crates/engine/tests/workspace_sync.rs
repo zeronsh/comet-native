@@ -632,6 +632,7 @@ async fn legacy_workspace_doc_migrates_instantly_on_first_boot() {
                 last_seen_at: Some(now),
                 created_at: Some(now),
                 version: Some("0.1.17".into()),
+                capabilities: Vec::new(),
             })
             .unwrap();
         legacy

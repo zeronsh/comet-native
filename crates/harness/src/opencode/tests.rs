@@ -1,5 +1,198 @@
 use super::*;
 
+/// Real HTTP/SSE transport with explicitly ordered turn events. No provider or
+/// installed CLI is involved, so duplicate completion frames are reproducible.
+struct TurnWire {
+    bus: mpsc::UnboundedSender<Value>,
+    requests: mpsc::UnboundedReceiver<String>,
+    events: mpsc::Receiver<Result<AgentEvent, HarnessError>>,
+    interrupt: tokio_util::sync::CancellationToken,
+    server: tokio::task::JoinHandle<()>,
+    run: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for TurnWire {
+    fn drop(&mut self) {
+        self.interrupt.cancel();
+        self.run.abort();
+        self.server.abort();
+    }
+}
+
+impl TurnWire {
+    async fn start(queued: bool) -> Self {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (bus, bus_rx) = mpsc::unbounded_channel::<Value>();
+        let bus_rx = Arc::new(tokio::sync::Mutex::new(Some(bus_rx)));
+        let (request_tx, requests) = mpsc::unbounded_channel();
+        let server = tokio::spawn(async move {
+            let mut connections = tokio::task::JoinSet::new();
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let bus_rx = bus_rx.clone();
+                let request_tx = request_tx.clone();
+                connections.spawn(async move {
+                    let mut request = Vec::new();
+                    let mut buf = [0; 4096];
+                    let header_end = loop {
+                        let n = socket.read(&mut buf).await.unwrap();
+                        if n == 0 { return; }
+                        request.extend_from_slice(&buf[..n]);
+                        if let Some(end) = request.windows(4).position(|w| w == b"\r\n\r\n") {
+                            break end + 4;
+                        }
+                    };
+                    let header = String::from_utf8_lossy(&request[..header_end]);
+                    let path = header.lines().next().unwrap().split_whitespace().nth(1).unwrap().to_owned();
+                    let length = header.lines().find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+                    }).unwrap_or(0);
+                    while request.len() < header_end + length {
+                        let n = socket.read(&mut buf).await.unwrap();
+                        if n == 0 { return; }
+                        request.extend_from_slice(&buf[..n]);
+                    }
+                    if path == "/global/event" {
+                        socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n: connected\n\n").await.unwrap();
+                        let mut events = bus_rx.lock().await.take().unwrap();
+                        while let Some(event) = events.recv().await {
+                            if socket.write_all(format!("data: {event}\n\n").as_bytes()).await.is_err() { break; }
+                        }
+                        return;
+                    }
+                    let body = match path.as_str() {
+                        "/session" => r#"{"id":"fixture"}"#,
+                        "/command" => "[]",
+                        _ => "{}",
+                    };
+                    socket.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                    if path.ends_with("/prompt_async") || path.ends_with("/abort") {
+                        let _ = request_tx.send(path);
+                    }
+                });
+            }
+        });
+        let (event_tx, events) = mpsc::channel(64);
+        let (steer_tx, steering) = mpsc::channel(4);
+        if queued {
+            steer_tx
+                .send(crate::SteerMessage {
+                    prompt: "second".into(),
+                    message_id: None,
+                })
+                .await
+                .unwrap();
+        }
+        drop(steer_tx);
+        let interrupt = tokio_util::sync::CancellationToken::new();
+        let run = tokio::spawn(run_session(Session {
+            server: Server::attached(base),
+            event_tx,
+            controls: RunControls {
+                request_input: Box::new(|_| panic!("fixture must not ask for input")),
+                steering,
+                interrupt: interrupt.clone(),
+            },
+            request: serde_json::from_value(
+                json!({"prompt":"first", "cwd":"", "sandbox":"workspace-write"}),
+            )
+            .unwrap(),
+            interrupt_grace: Duration::from_secs(2),
+            kill_grace: Duration::from_millis(50),
+            known_commands: Some(vec![]),
+        }));
+        Self {
+            bus,
+            requests,
+            events,
+            interrupt,
+            server,
+            run,
+        }
+    }
+
+    async fn request(&mut self, suffix: &str) {
+        let path = tokio::time::timeout(Duration::from_secs(5), self.requests.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(path.ends_with(suffix), "unexpected request: {path}");
+    }
+
+    fn status(&self, status: &str) {
+        self.bus.send(json!({"type":"session.status", "properties":{"sessionID":"fixture", "status":{"type":status}}})).unwrap();
+    }
+
+    fn idle(&self) {
+        self.bus
+            .send(json!({"type":"session.idle", "properties":{"sessionID":"fixture"}}))
+            .unwrap();
+    }
+
+    async fn done(&mut self) -> (DoneStatus, String) {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut text = String::new();
+            loop {
+                match self.events.recv().await.unwrap().unwrap() {
+                    AgentEvent::TextDelta { text: delta } => text.push_str(&delta),
+                    AgentEvent::Done { status, .. } => return (status, text),
+                    _ => {}
+                }
+            }
+        })
+        .await
+        .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn queued_turn_ignores_previous_turn_duplicate_idle() {
+    for status_first in [true, false] {
+        let mut wire = TurnWire::start(true).await;
+        wire.request("/prompt_async").await;
+        wire.status("busy");
+        // Both completion encodings belong to the first turn. The first frame
+        // submits the queued prompt; the second must not finish that new turn.
+        if status_first {
+            wire.status("idle");
+            wire.idle();
+        } else {
+            wire.idle();
+            wire.status("idle");
+        }
+        wire.request("/prompt_async").await;
+        wire.status("busy");
+        wire.bus.send(json!({"type":"message.updated", "properties":{"info":{"id":"answer", "sessionID":"fixture", "role":"assistant"}}})).unwrap();
+        wire.bus.send(json!({"type":"message.part.updated", "properties":{"part":{"id":"text", "messageID":"answer", "sessionID":"fixture", "type":"text", "text":"SECOND_OK"}}})).unwrap();
+        wire.status("idle");
+        let (status, text) = wire.done().await;
+        assert_eq!(status, DoneStatus::Completed);
+        assert_eq!(
+            text, "SECOND_OK",
+            "queued turn was completed before its response"
+        );
+    }
+}
+
+#[tokio::test]
+async fn prompt_error_and_interrupt_before_busy_still_settle() {
+    let mut wire = TurnWire::start(false).await;
+    wire.request("/prompt_async").await;
+    wire.bus.send(json!({"type":"session.error", "properties":{"sessionID":"fixture", "error":{"name":"ProviderError", "data":{"message":"bad model"}}}})).unwrap();
+    wire.idle();
+    assert_eq!(wire.done().await.0, DoneStatus::Errored);
+
+    let mut wire = TurnWire::start(false).await;
+    wire.request("/prompt_async").await;
+    wire.interrupt.cancel();
+    wire.request("/abort").await;
+    wire.idle();
+    assert_eq!(wire.done().await.0, DoneStatus::Interrupted);
+}
+
 #[tokio::test]
 async fn catalog_decodes_fragmented_http_without_retaining_unused_fields() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

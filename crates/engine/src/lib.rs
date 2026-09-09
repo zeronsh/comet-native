@@ -460,6 +460,10 @@ impl EngineCore {
     /// kill live PTYs, stamp our workspace `lastSeenAt`, and flush every open doc
     /// snapshot.
     pub async fn shutdown(&self) {
+        // A run interruption transitions its chat to Idle, and Idle normally
+        // releases the next queued row. Freeze first so quitting never starts
+        // recovered work while the engine is being torn down.
+        self.doc_host.pause_all_queues();
         self.sessions.shutdown().await;
         self.terminals.shutdown();
         self.agent_accounts.shutdown();
@@ -665,6 +669,7 @@ impl Engine {
         Ok(EngineInfo {
             device_id: load_or_create_device_id(&config.data_dir)?,
             workspace_scope,
+            capabilities: zeron_proto::capabilities::current(),
         })
     }
 

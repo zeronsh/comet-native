@@ -20,6 +20,7 @@ pub fn edge_faded(band: f32, top: bool, bottom: bool, child: impl IntoElement) -
         band_top: None,
         band_bottom: None,
         inset_top: 0.0,
+        outset_bottom: 0.0,
         top,
         bottom,
         left: false,
@@ -36,6 +37,7 @@ pub struct EdgeFaded {
     band_top: Option<f32>,
     band_bottom: Option<f32>,
     inset_top: f32,
+    outset_bottom: f32,
     top: bool,
     bottom: bool,
     left: bool,
@@ -109,6 +111,11 @@ impl EdgeFaded {
         self.inset_top = px;
         self
     }
+
+    pub fn outset_bottom(mut self, px: f32) -> Self {
+        self.outset_bottom = px;
+        self
+    }
 }
 
 impl Element for EdgeFaded {
@@ -179,6 +186,7 @@ impl Element for EdgeFaded {
             let inset = px(self.inset_top).min(bounds.size.height);
             bounds.origin.y += inset;
             bounds.size.height -= inset;
+            bounds.size.height += px(self.outset_bottom);
             EdgeFade {
                 bounds,
                 band: px(self.band),

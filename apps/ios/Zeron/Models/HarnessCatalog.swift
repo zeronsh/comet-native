@@ -9,6 +9,13 @@ import Foundation
 struct HarnessInfo: Identifiable, Hashable {
     let id: String
     let label: String
+    var supportsSteering: Bool? = nil
+    var steeringMode: String? = nil
+
+    var midTurnSteering: Bool? {
+        guard let supportsSteering, let steeringMode else { return nil }
+        return supportsSteering && steeringMode == "step-boundary"
+    }
 }
 
 struct ModelOptionChoiceInfo: Identifiable, Hashable {

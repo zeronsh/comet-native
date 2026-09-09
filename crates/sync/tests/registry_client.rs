@@ -24,6 +24,7 @@ fn device(id: &str) -> Device {
         last_seen_at: Some(ts(1_000)),
         created_at: Some(ts(500)),
         version: Some("0.1.0".into()),
+        capabilities: Vec::new(),
     }
 }
 
