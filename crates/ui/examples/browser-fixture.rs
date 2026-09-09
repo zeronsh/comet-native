@@ -207,7 +207,7 @@ fn main() -> anyhow::Result<()> {
                     for _ in 0..12 {
                         for (x,y) in [(left + 35.,20.), (left - 20.,100.), (left + 78.,56.)] {
                             first.read_with(cx, |b,_| b.fixture_move_cursor(x as f64,y as f64));
-                            window.update(cx, |_, w, cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position:gpui::point(px(x),px(y)), pressed_button:None,modifiers:Default::default() }),cx); })?;
+                            gpui::AnyWindowHandle::from(window).update(cx, |_, w, cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent { position:gpui::point(px(x),px(y)), pressed_button:None,modifiers:Default::default() }),cx); })?;
                             pause(cx, 80).await;
                             anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_native_visible() && b.fixture_visibility_changes() == before), "hover hid the live webview");
                         }
@@ -224,13 +224,13 @@ fn main() -> anyhow::Result<()> {
                     for _ in 0..2 {
                         for (x,y) in [(left+35.,20.), (left+78.,56.)] {
                             first.read_with(cx, |b,_| b.fixture_move_cursor(x as f64,y as f64));
-                            window.update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(x),px(y)),pressed_button:None,modifiers:Default::default()}),cx); })?;
+                            gpui::AnyWindowHandle::from(window).update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(x),px(y)),pressed_button:None,modifiers:Default::default()}),cx); })?;
                             pause(cx, 1000).await;
                             anyhow::ensure!(first.read_with(cx, |b,_| b.fixture_overlay_visible() && b.fixture_native_visible() && b.fixture_focused() && b.fixture_visibility_changes() == before), "repeated tab/toolbar tooltip disrupted the live page");
                         }
                     }
                     first.read_with(cx, |b,_| b.fixture_move_cursor((left-20.) as f64,150.));
-                    window.update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(left-20.),px(150.)),pressed_button:None,modifiers:Default::default()}),cx); })?;
+                    gpui::AnyWindowHandle::from(window).update(cx, |_,w,cx| { w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {position:gpui::point(px(left-20.),px(150.)),pressed_button:None,modifiers:Default::default()}),cx); })?;
                     pause(cx, 400).await;
                     anyhow::ensure!(!first.read_with(cx, |b,_| b.fixture_overlay_visible()), "dismissed tooltip left stale overlay pixels");
                 }
@@ -284,13 +284,14 @@ fn main() -> anyhow::Result<()> {
                     let before=first.read_with(cx,|b,_|b.fixture_visibility_changes());
                     let (left,top)=first.read_with(cx,|b,_|b.fixture_origin());
                     // Real resize-handle drag, including crossing into the native page.
+                    eprintln!("Browser fixture: starting resize drag");
                     let start=gpui::point(px(left-2.),px(top+120.));
-                    window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
+                    gpui::AnyWindowHandle::from(window).update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseDown(gpui::MouseDownEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
                     let mut widths=Vec::new();
                     for delta in [10.,30.,60.,100.,140.,180.,140.,100.,60.,20.,-20.,-60.,-100.,-140.,-180.,-140.,-100.,-60.,-20.,0.] {
                         let pos=gpui::point(px(left-2.+delta),start.y);
                         first.read_with(cx,|b,_|b.fixture_move_cursor(f32::from(pos.x) as f64,f32::from(pos.y) as f64));
-                        window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent{position:pos,pressed_button:Some(gpui::MouseButton::Left),modifiers:Default::default()}),cx);})?;
+                        gpui::AnyWindowHandle::from(window).update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent{position:pos,pressed_button:Some(gpui::MouseButton::Left),modifiers:Default::default()}),cx);})?;
                         pause(cx,100).await;
                         anyhow::ensure!(cx.update(|cx|cx.has_active_drag()),"resize did not start a real GPUI drag");
                         let (layout,native,clip)=first.read_with(cx,|b,_|b.fixture_geometry());
@@ -300,7 +301,7 @@ fn main() -> anyhow::Result<()> {
                         anyhow::ensure!((layout-native).abs()<1.1 && clip<=layout+1.,"native browser geometry diverged while resizing");
                         anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_visibility_changes()==before),"resize hid the live browser");
                     }
-                    window.update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
+                    gpui::AnyWindowHandle::from(window).update(cx,|_,w,cx| {w.dispatch_event(gpui::PlatformInput::MouseUp(gpui::MouseUpEvent{position:start,button:gpui::MouseButton::Left,click_count:1,..Default::default()}),cx);})?;
                     pause(cx,250).await;
                     anyhow::ensure!(!cx.update(|cx|cx.has_active_drag()),"resize drag did not end");
                     anyhow::ensure!(widths.iter().copied().fold(f32::MIN,f32::max)-widths.iter().copied().fold(f32::MAX,f32::min)>150.,"resize did not exercise both viewport sizes");
@@ -317,11 +318,13 @@ fn main() -> anyhow::Result<()> {
                         anyhow::ensure!(std::time::Instant::now()<deadline,"viewport measurement timed out");pause(cx,50).await;
                     }
                     capture(&output,"browser-resize-dark")?;
+                    eprintln!("Browser fixture: resize drag and CSS viewport passed");
                     // Left sidebar does not occlude the browser at any point.
                     for _ in 0..4 {
                         window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(false,cx))?;
                         for _ in 0..20 {pause(cx,16).await;anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_native_visible() && b.fixture_visibility_changes()==before),"left sidebar toggle hid the browser");}
                     }
+                    eprintln!("Browser fixture: left sidebar transitions passed");
                     // Reverse the right sidebar mid-animation. It must remain
                     // live inside a narrowing mask, without bleeding into chat.
                     for _ in 0..3 {
@@ -339,6 +342,7 @@ fn main() -> anyhow::Result<()> {
                     window.update(cx,|s,_,cx|s.fixture_toggle_sidebar(true,cx))?;
                     pause(cx,350).await;
                     first.read_with(cx,|b,_|b.fixture_eval("document.title='Fieldnotes'"));
+                    eprintln!("Browser fixture: right sidebar transitions passed");
                     capture(&output,"browser-blur-baseline-dark")?;
                     window.update(cx,|s,_,cx|s.fixture_browser_menu(true,cx))?;
                     pause(cx,1000).await;
@@ -394,7 +398,7 @@ fn main() -> anyhow::Result<()> {
                 window.update(cx, |shell, w, cx| shell.fixture_close_browser(first_id, w, cx))?;
                 pause(cx, 200).await;
                 anyhow::ensure!(!first.read_with(cx, |b, _| b.fixture_native_visible()), "closed tab retained its native view");
-                std::fs::write(output.join("result.txt"), "PASS: real shell browser fixture; address rejection, tab switching/close, overlays, resizing, takeover and appearance. On macOS: live DOM navigation, history, same-document state, native visibility, rapid hover/tooltip focus and hit testing, overlay outside-click isolation/restoration, and load failure.\n")?;
+                std::fs::write(output.join("result.txt"), "PASS: real shell browser fixture; address rejection, tab switching/close, overlays, resizing, takeover and appearance. On macOS: live DOM navigation, history, same-document state, native visibility, rapid hover/tooltip focus and hit testing, overlay outside-click isolation/restoration, live resize/CSS reflow/native drag hit testing, interrupted sidebar clipping, frosted/light/opaque backdrop cleanup, and load failure.\n")?;
                 Ok(())
             }.await;
             if let Err(error) = run { eprintln!("Browser fixture failed: {error:#}"); *result.lock().unwrap() = Some(error.to_string()); }
