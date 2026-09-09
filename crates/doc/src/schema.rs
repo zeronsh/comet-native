@@ -6,6 +6,8 @@
 //!   id, role, parts: LoroList<part map>, createdAt, deviceId, status?, continuationOf? }
 //! - `commands`: LoroList of LoroMap {
 //!   id, kind, payload(json), issuedBy, issuedAt, basedOn?, expiresAt?, status, resolution? }
+//! - `queue`:    LoroMovableList of LoroMap {
+//!   id, text, attachments?, issuedBy, issuedAt, editedAt? }        (any device writes)
 //!
 //! Part maps: { id, kind: "text"|"reasoning"|"tool"|"input"|"error", text?: LoroText,
 //! reasoning?: LoroText, call?: json, isError?, questions?: json, resolved?, message? }.
@@ -1149,7 +1151,7 @@ fn update_part_fields(map: &LoroMap, part: &MessagePart) -> Result<(), DocError>
     Ok(())
 }
 
-fn loro_value_from_json(v: &serde_json::Value) -> LoroValue {
+pub(crate) fn loro_value_from_json(v: &serde_json::Value) -> LoroValue {
     LoroValue::from(v.clone())
 }
 

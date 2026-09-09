@@ -108,8 +108,31 @@ see [mobile polish and simulator coverage](../../docs/mobile-polish.md).
 
 - Workspace doc: its own device row, chat creates (host = the space's owning
   device), `archived`/`title`/`lastSeenAt` LWW sets, presence heartbeats.
-- Session docs: command ledger appends only (`run`/`steer`/`interrupt`/
-  `respondInput`), with client-minted message ids for optimistic echo. The
-  host writes all transcript entries and command outcomes.
+- Session docs: append commands (`run`/`steer`/`interrupt`/`respondInput`)
+  with client-minted message ids for optimistic echo; add and reorder shared
+  queue rows. Queue edits and removals require host acknowledgement. The host
+  writes all transcript entries and command outcomes.
 - After queuing a command it POSTs `/device/{host}/nudge` so a cold host
   opens the doc and drains — delivery stays durable in the doc regardless.
+
+### Shared message queue
+
+Messages submitted during an active turn use the host's shared queue when it
+advertises support. The composer toolbar's **Queue / Steer** menu persists the
+phone's preference; **Queue** remains the default. Steer allows automatic
+mid-turn delivery when the provider supports it. Attachments wait for a turn
+that can accept files.
+
+Rows offer **Steer** for a host-advertised mid-turn provider and text-only
+messages, or **Send now** (interrupt) otherwise. Unknown provider capabilities
+leave delivery actions unavailable. Edits require a host lease; removal waits
+for the host's acknowledgement and keeps the row inert while pending. Failed
+or unconfirmed actions show an error above the composer and trigger sync repair.
+Deleting an actively edited row discards it without first releasing its lease.
+
+With an external keyboard, **Command+Return** submits the draft (including
+attachment-only drafts), saves an active queue edit, or activates the first
+queued row when the composer is empty. It never skips a blocked head or stops
+the agent merely because the draft is empty.
+
+Queue editing on iOS changes text only and preserves queued attachments, including when the text is cleared. Draft photos are hidden and the attachment picker is unavailable during editing. If the row disappears or its lease is superseded, **Copy edit and stop editing** saves the edited text to the clipboard and restores the original draft and photos.

@@ -11,6 +11,7 @@
 pub mod commands;
 pub mod constants;
 pub mod parts;
+pub mod queue;
 pub mod rebuild;
 pub mod registry;
 pub mod schema;
@@ -20,6 +21,7 @@ pub mod workspace;
 pub use commands::*;
 pub use constants::*;
 pub use parts::*;
+pub use queue::*;
 pub use rebuild::*;
 pub use registry::*;
 pub use schema::*;

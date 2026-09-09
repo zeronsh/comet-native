@@ -245,6 +245,7 @@ fn device(id: &str, name: &str) -> Device {
         last_seen_at: Some(ts(1_000)),
         created_at: Some(ts(500)),
         version: Some("0.1.0".into()),
+        capabilities: Vec::new(),
     }
 }
 
@@ -344,13 +345,15 @@ fn server_round(
 #[test]
 fn rows_round_trip_and_upsert_refreshes() {
     let mut doc = RegistryDoc::new("dev-a");
-    doc.upsert_device(&device("dev-a", "laptop")).unwrap();
+    let mut device = device("dev-a", "laptop");
+    device.capabilities = vec![zeron_proto::capabilities::MESSAGE_QUEUE_V1.into()];
+    doc.upsert_device(&device).unwrap();
     doc.upsert_chat(&chat("chat-1", "dev-a")).unwrap();
     doc.upsert_session(&session("chat-1", "dev-a", SessionStatus::Working))
         .unwrap();
 
     let state = doc.read_all().unwrap();
-    assert_eq!(state.devices, vec![device("dev-a", "laptop")]);
+    assert_eq!(state.devices, vec![device]);
     assert_eq!(state.chats, vec![chat("chat-1", "dev-a")]);
     assert_eq!(
         state.sessions,

@@ -58,7 +58,7 @@ fn main() -> anyhow::Result<()> {
             theme_library::init(data.clone(), cx);
             appearance::init(appearance::AppearanceMode::Dark, settings.theme_selection,
                 settings.accent, settings.surface, cx);
-            composer::init(cx);
+            composer::init(cx, zeron_ui::settings::ComposerSendBehavior::default());
             terminal::panel::init(cx);
             app_menus::init(cx);
             let state = cx.new(|_| {

@@ -516,7 +516,7 @@ mod tests {
     ) {
         cx.update(|cx| {
             gpui_base::init(cx);
-            crate::composer::init(cx);
+            crate::composer::init(cx, Default::default());
             cx.set_global(crate::theme::Theme::default());
             bind_keys(cx, &crate::settings::KeymapConfig::default());
         });

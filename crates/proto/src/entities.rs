@@ -23,6 +23,16 @@ pub struct Device {
     /// glance (Devices page). Optional so pre-existing docs stay readable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Protocol/document features supported by the engine currently owning
+    /// this device row. Missing on older builds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub capabilities: Vec<String>,
+}
+
+impl Device {
+    pub fn supports(&self, capability: &str) -> bool {
+        self.capabilities.iter().any(|value| value == capability)
+    }
 }
 
 /// A synced (device, folder) pair — the unit of organization in the sidebar.

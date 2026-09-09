@@ -85,6 +85,11 @@ extension JSONValue {
         return nil
     }
 
+    var arrayValue: [JSONValue]? {
+        if case .array(let v) = self { return v }
+        return nil
+    }
+
     var isNull: Bool { self == .null }
 
     /// Bridge an Encodable (e.g. ChatConfig) into a field value.

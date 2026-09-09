@@ -1025,3 +1025,166 @@ async fn remote_target_without_links_fails_clearly() {
     );
     core.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queue_watch_and_single_consumption_route_to_the_remote_chat_host() {
+    let (relay_url, _relay) = fake_device_room().await;
+    let dirs = tempfile::tempdir().expect("tempdir");
+
+    // Seed B's session doc while the workspace temporarily names A as host.
+    // That keeps B's automatic drain from consuming the fixture before the
+    // remote client has subscribed to it.
+    let core_b = assemble(&dirs.path().join("b"), "device-b");
+    core_b
+        .workspace
+        .create_chat("chat-queue-remote", None, Some("device-a"), None, None)
+        .expect("create remote queue chat");
+    core_b
+        .workspace
+        .rename_chat("chat-queue-remote", "Pre-titled")
+        .expect("avoid auto-title run");
+    let first_id = core_b
+        .doc_host
+        .queue_message_with_behavior(
+            "chat-queue-remote",
+            "first from the shared queue",
+            Vec::new(),
+            true,
+        )
+        .expect("seed held queue row");
+    let _host = core_b.start_host_relay(&relay_url);
+
+    let core_a = assemble(&dirs.path().join("a"), "device-a");
+    let mut link_config =
+        LinkCacheConfig::new(relay_url, Arc::new(StaticToken("test-user".into())));
+    link_config.probe_timeout = Duration::from_secs(5);
+    core_a.set_links(LinkCache::new(link_config));
+    let remote_client = zeron_rpc::memory_client(core_a.rpc_service());
+    let local_client = zeron_rpc::memory_client(core_b.rpc_service());
+
+    // The opening stream frame is the authoritative whole-list snapshot a
+    // remote Desktop/iOS client uses to repair or initialize its queue.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut queue_stream = loop {
+        match remote_client
+            .subscribe_checked(
+                methods::WATCH_QUEUE,
+                serde_json::json!({
+                    "chatId": "chat-queue-remote",
+                    "targetDeviceId": "device-b",
+                }),
+            )
+            .await
+        {
+            Ok(stream) => break stream,
+            Err(error) => {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "relay never came up: {error}"
+                );
+                tokio::time::sleep(Duration::from_millis(200)).await;
+            }
+        }
+    };
+    let initial = tokio::time::timeout(Duration::from_secs(5), queue_stream.recv())
+        .await
+        .expect("remote queue frame before timeout")
+        .expect("remote queue stream alive");
+    assert_eq!(initial["items"][0]["id"], first_id);
+    assert_eq!(initial["items"][0]["holdForTurnEnd"], true);
+
+    // Re-home the chat to B without touching the session doc, then execute the
+    // row explicitly through A. Only B may take it or run the harness.
+    core_b
+        .workspace
+        .set_chat_host("chat-queue-remote", "device-b")
+        .expect("re-home chat to B");
+    let sent = remote_client
+        .call(
+            methods::SEND_QUEUED_MESSAGE_NOW,
+            serde_json::json!({
+                "chatId": "chat-queue-remote",
+                "id": first_id,
+                "targetDeviceId": "device-b",
+            }),
+        )
+        .await
+        .expect("remote send-now reaches B");
+    assert_eq!(sent["sent"], true);
+    assert!(
+        core_b
+            .doc_host
+            .open("chat-queue-remote")
+            .expect("B chat")
+            .doc()
+            .read_queue()
+            .expect("B queue")
+            .is_empty()
+    );
+    assert!(
+        core_a
+            .doc_host
+            .open("chat-queue-remote")
+            .expect("A chat")
+            .doc()
+            .read_entries()
+            .expect("A transcript")
+            .is_empty(),
+        "the forwarding engine must not execute the queued prompt"
+    );
+
+    // Two clients racing the same synchronized row still produce exactly one
+    // consumer. The loser gets `sent: false` and can reconcile its projection.
+    core_b
+        .workspace
+        .set_chat_host("chat-queue-remote", "device-a")
+        .expect("pause B drain");
+    let second_id = core_b
+        .doc_host
+        .queue_message_with_behavior("chat-queue-remote", "consume me once", Vec::new(), true)
+        .expect("seed contested row");
+    // Let the doc-change drain observe the temporary non-host assignment
+    // before flipping the workspace row back. Otherwise the scheduler can
+    // process the queue commit only after the flip and legitimately drain it.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(
+        core_b
+            .doc_host
+            .open("chat-queue-remote")
+            .expect("B chat")
+            .doc()
+            .read_queue()
+            .expect("contested queue")
+            .len(),
+        1
+    );
+    core_b
+        .workspace
+        .set_chat_host("chat-queue-remote", "device-b")
+        .expect("restore B host");
+    let remote_params = serde_json::json!({
+        "chatId": "chat-queue-remote",
+        "id": second_id,
+        "targetDeviceId": "device-b",
+    });
+    let local_params = serde_json::json!({
+        "chatId": "chat-queue-remote",
+        "id": second_id,
+    });
+    let (remote_result, local_result) = tokio::join!(
+        remote_client.call(methods::SEND_QUEUED_MESSAGE_NOW, remote_params),
+        local_client.call(methods::SEND_QUEUED_MESSAGE_NOW, local_params),
+    );
+    let acknowledgements = [
+        remote_result.expect("remote contender")["sent"] == true,
+        local_result.expect("local contender")["sent"] == true,
+    ];
+    assert_eq!(
+        acknowledgements.into_iter().filter(|sent| *sent).count(),
+        1,
+        "the host must atomically take a queue row once"
+    );
+
+    core_a.shutdown().await;
+    core_b.shutdown().await;
+}

@@ -268,6 +268,7 @@ impl WorkspaceHost {
             // Every boot restamps the running binary's version (fleet staleness
             // on the Devices page; workspace version — same for every crate).
             version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            capabilities: zeron_proto::capabilities::current(),
         })?;
 
         let state = doc.read_all()?;

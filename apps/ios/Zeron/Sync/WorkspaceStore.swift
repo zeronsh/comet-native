@@ -304,6 +304,10 @@ final class WorkspaceStore {
         return v >= min
     }
 
+    func deviceSupports(_ deviceId: String, _ capability: String) -> Bool {
+        devices.first(where: { $0.id == deviceId })?.supports(capability) ?? false
+    }
+
     // MARK: Projection (rows → typed entities)
 
     private func project() {
@@ -315,7 +319,9 @@ final class WorkspaceStore {
                              platform: f["platform"]?.stringValue ?? "",
                              lastSeenAt: f["lastSeenAt"]?.int64Value,
                              createdAt: f["createdAt"]?.int64Value,
-                             version: f["version"]?.stringValue)
+                             version: f["version"]?.stringValue,
+                             capabilities: (f["capabilities"]?.arrayValue ?? [])
+                                .compactMap(\.stringValue))
         }.sorted { $0.name < $1.name }
 
         spaces = doc.overlayRows(kind: "spaces").compactMap { row in
@@ -554,6 +560,8 @@ final class WorkspaceStore {
             var name: String
             var installed: Bool?
             var enabled: Bool?
+            var supportsSteering: Bool?
+            var steeringMode: String?
         }
         let wire: [WireHarness]? = try? await relay(for: deviceId)
             .call(method: "ListHarnesses", params: [:])
@@ -563,7 +571,8 @@ final class WorkspaceStore {
                     && (h.installed ?? true)
                     && (h.enabled ?? ["claude-code", "codex"].contains(h.id))
             }
-            .map { HarnessInfo(id: $0.id, label: $0.name) }
+            .map { HarnessInfo(id: $0.id, label: $0.name,
+                               supportsSteering: $0.supportsSteering, steeringMode: $0.steeringMode) }
         }
     }
 

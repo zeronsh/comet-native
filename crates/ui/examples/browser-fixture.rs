@@ -161,7 +161,7 @@ fn main() -> anyhow::Result<()> {
         appearance::init(appearance::AppearanceMode::Dark, settings.theme_selection, settings.accent, settings.surface, cx);
         history::init(settings.git_history_columns, settings.git_history_column_widths,
             settings.git_history_column_order, settings.git_history_author_display, cx);
-        composer::init(cx); terminal::panel::init(cx); app_menus::init(cx);
+        composer::init(cx, settings.composer_send_behavior); terminal::panel::init(cx); app_menus::init(cx);
         let state = cx.new(|_| {
             let mut s = state::AppState::new();
             s.connection = zeron_proto::view::ConnectionStatus::Ready;

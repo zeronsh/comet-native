@@ -27,13 +27,14 @@ use unicode_segmentation::UnicodeSegmentation;
 use zeron_doc::{MessagePart, MessageRole, SessionCommandPayload, SessionMessageEntry};
 use zeron_proto::{
     FileSearchMatch, HarnessId, RunRequest, SandboxLevel, SlashCommand, UserInputAnswer,
-    UserInputQuestion,
+    UserInputQuestion, capabilities,
 };
 use zeron_rpc::{RpcError, methods};
 
 use crate::attachments::{self, StagedAttachment};
 use crate::motion;
 use crate::pickers::Pickers;
+use crate::settings::{ActiveTurnSendBehavior, ComposerSendBehavior, platform_combo};
 use crate::state::{AppState, Indicator};
 use crate::theme::Theme;
 
@@ -56,6 +57,8 @@ pub const TEXTAREA_MAX: f32 = 260.0;
 pub const ACTIONS_ROW_HEIGHT: f32 = 46.0;
 /// The pill's 1px hairline, top + bottom (`rounded-[26px] border`).
 pub const PILL_BORDER_V: f32 = 2.0;
+/// Corner radius shared by the composer and the queue tray behind it.
+pub(crate) const COMPOSER_RADIUS: f32 = 26.0;
 /// Expanded composer bounds, border-box: 76 + 46 + 2 = 124 when empty (the
 /// new-chat canvas), 260 + 46 + 2 = 308 at the content cap.
 pub const COMPOSER_MIN_HEIGHT: f32 = TEXTAREA_MIN + ACTIONS_ROW_HEIGHT + PILL_BORDER_V;
@@ -66,6 +69,11 @@ pub const COMPOSER_MAX_HEIGHT: f32 = TEXTAREA_MAX + ACTIONS_ROW_HEIGHT + PILL_BO
 pub const COMPACT_TOTAL_HEIGHT: f32 = 49.0;
 /// `max-w-3xl`: stable outer width of the centered composer column.
 const COMPOSER_MAX_WIDTH: f32 = 768.0;
+/// The queue reads as a narrower tray emerging from behind the composer.
+const QUEUE_SIDE_INSET: f32 = 16.0;
+/// The composer covers the tray's lower padding so the queue reads as emerging
+/// from behind it instead of as a separate rounded pill.
+pub(crate) const QUEUE_COMPOSER_OVERLAP: f32 = 18.0;
 /// Ignore subpixel noise when the shell reports the conversation width.
 const COMPOSER_WIDTH_EPSILON: f32 = 0.5;
 /// Below this pill input width the composer always expands.
@@ -465,12 +473,55 @@ pub fn composer_has_content(text: &str, attachments: usize, comments: usize) -> 
     !text.trim().is_empty() || attachments > 0 || comments > 0
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ModifiedSubmitTarget {
+    SubmitContent,
+    ActivateQueueHead,
+}
+
+fn modified_submit_target(has_content: bool) -> ModifiedSubmitTarget {
+    if has_content {
+        ModifiedSubmitTarget::SubmitContent
+    } else {
+        ModifiedSubmitTarget::ActivateQueueHead
+    }
+}
+
 pub fn send_button_mode(run_live: bool, has_text: bool) -> SendButtonMode {
     match (run_live, has_text) {
         (false, _) => SendButtonMode::Send,
         (true, true) => SendButtonMode::Steer,
         (true, false) => SendButtonMode::Stop,
     }
+}
+
+/// Queue rows are represented by the queue panel until the host promotes them
+/// into the transcript. They must never publish (or refresh) a local echo.
+fn should_publish_optimistic_echo(queue: bool) -> bool {
+    !queue
+}
+
+fn begin_interrupt(pending: &mut HashSet<String>, chat_id: &str) -> bool {
+    pending.insert(chat_id.to_string())
+}
+
+fn retain_live_interrupts(pending: &mut HashSet<String>, mut is_live: impl FnMut(&str) -> bool) {
+    pending.retain(|chat_id| is_live(chat_id));
+}
+
+fn interrupt_params(chat_id: &str) -> serde_json::Value {
+    serde_json::json!({
+        "chatId": chat_id,
+        "command": { "kind": "interrupt" },
+    })
+}
+
+fn escape_dismisses_completion(key: &str, completion_open: bool) -> bool {
+    key == "escape" && completion_open
+}
+
+fn wizard_escape_goes_back(key: &str, input_focused: bool, input_empty: bool) -> bool {
+    key == "escape" && (!input_focused || input_empty)
 }
 
 /// Find the unresolved input request the panel should serve, if any: an
@@ -705,11 +756,12 @@ actions!(
         Cut,
         Paste,
         Newline,
+        MessageNewlineOrAccept,
+        ModifiedSubmit,
         Submit,
         Undo,
         Redo,
         MentionTab,
-        MentionEscape,
     ]
 );
 
@@ -1209,13 +1261,78 @@ enum EditKind {
     Delete,
 }
 
-/// Bind the composer keymap. Call once at app boot.
-pub fn init(cx: &mut App) {
-    let ctx = Some("Composer");
+const GENERIC_COMPOSER_CONTEXT: &str = "Composer";
+const MESSAGE_COMPOSER_CONTEXT: &str = "MessageComposer";
+const PALETTE_SEARCH_CONTEXT: &str = "PaletteSearch";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MessageEnterBindingAction {
+    Submit,
+    ModifiedSubmit,
+    NewlineOrAccept,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MessageEnterBinding {
+    keystroke: String,
+    action: MessageEnterBindingAction,
+}
+
+fn message_enter_bindings(
+    behavior: ComposerSendBehavior,
+    modifier_combo: &str,
+) -> Vec<MessageEnterBinding> {
+    match behavior {
+        ComposerSendBehavior::Enter => vec![
+            MessageEnterBinding {
+                keystroke: "enter".into(),
+                action: MessageEnterBindingAction::Submit,
+            },
+            MessageEnterBinding {
+                keystroke: modifier_combo.into(),
+                action: MessageEnterBindingAction::ModifiedSubmit,
+            },
+        ],
+        ComposerSendBehavior::ModEnter => vec![
+            MessageEnterBinding {
+                keystroke: "enter".into(),
+                action: MessageEnterBindingAction::NewlineOrAccept,
+            },
+            MessageEnterBinding {
+                keystroke: modifier_combo.into(),
+                action: MessageEnterBindingAction::ModifiedSubmit,
+            },
+        ],
+    }
+}
+
+fn message_input_context(wizard_active: bool) -> &'static str {
+    if wizard_active {
+        GENERIC_COMPOSER_CONTEXT
+    } else {
+        MESSAGE_COMPOSER_CONTEXT
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EnterOutcome {
+    AcceptCompletion,
+    Submit,
+    Newline,
+}
+
+fn enter_outcome(has_completion: bool, fallback: EnterOutcome) -> EnterOutcome {
+    if has_completion {
+        EnterOutcome::AcceptCompletion
+    } else {
+        fallback
+    }
+}
+
+fn input_bindings(context: &'static str) -> Vec<KeyBinding> {
+    let ctx = Some(context);
     let mut bindings = vec![
-        KeyBinding::new("enter", Submit, ctx),
         KeyBinding::new("tab", MentionTab, ctx),
-        KeyBinding::new("escape", MentionEscape, ctx),
         KeyBinding::new("shift-enter", Newline, ctx),
         KeyBinding::new("backspace", Backspace, ctx),
         KeyBinding::new("delete", Delete, ctx),
@@ -1291,12 +1408,50 @@ pub fn init(cx: &mut App) {
         bindings.push(KeyBinding::new(&format!("{prefix}-x"), Cut, ctx));
         bindings.push(KeyBinding::new(&format!("{prefix}-v"), Paste, ctx));
     }
+    bindings
+}
+
+/// Bind the composer keymap. Call once at app boot.
+pub fn init(cx: &mut App, send_behavior: ComposerSendBehavior) {
+    let mut generic_bindings = input_bindings(GENERIC_COMPOSER_CONTEXT);
+    generic_bindings.push(KeyBinding::new(
+        "enter",
+        Submit,
+        Some(GENERIC_COMPOSER_CONTEXT),
+    ));
+
+    let mut message_bindings = input_bindings(MESSAGE_COMPOSER_CONTEXT);
+    for binding in message_enter_bindings(send_behavior, &platform_combo("mod-enter")) {
+        match binding.action {
+            MessageEnterBindingAction::Submit => message_bindings.push(KeyBinding::new(
+                &binding.keystroke,
+                Submit,
+                Some(MESSAGE_COMPOSER_CONTEXT),
+            )),
+            MessageEnterBindingAction::ModifiedSubmit => message_bindings.push(KeyBinding::new(
+                &binding.keystroke,
+                ModifiedSubmit,
+                Some(MESSAGE_COMPOSER_CONTEXT),
+            )),
+            MessageEnterBindingAction::NewlineOrAccept => message_bindings.push(KeyBinding::new(
+                &binding.keystroke,
+                MessageNewlineOrAccept,
+                Some(MESSAGE_COMPOSER_CONTEXT),
+            )),
+        }
+    }
+
+    let word_edit_prefix = if cfg!(target_os = "macos") {
+        "alt"
+    } else {
+        "ctrl"
+    };
     // Palette-search context: TEXT-EDITING keys only. gpui dispatches matched
     // keybindings BEFORE raw key listeners (window.rs `dispatch_key_event`),
     // so anything bound here can never reach a palette's `on_key_down` —
     // navigation keys (up/down/left/right/enter) are deliberately unbound and
     // bubble to the palette frame instead.
-    let palette = Some("PaletteSearch");
+    let palette = Some(PALETTE_SEARCH_CONTEXT);
     let mut palette_bindings = vec![
         KeyBinding::new("backspace", Backspace, palette),
         KeyBinding::new("delete", Delete, palette),
@@ -1351,13 +1506,15 @@ pub fn init(cx: &mut App) {
         palette_bindings.push(KeyBinding::new(&format!("shift-{prefix}-z"), Redo, palette));
     }
     cx.bind_keys(palette_bindings);
-    cx.bind_keys(bindings);
+    cx.bind_keys(generic_bindings);
+    cx.bind_keys(message_bindings);
 }
 
 /// Events the composer wrapper listens for.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ComposerInputEvent {
     Submitted,
+    ModifiedSubmitted,
     Edited,
     CursorMoved,
     ViewportChanged,
@@ -1394,6 +1551,7 @@ pub struct ComposerInput {
     accessibility_role: Role,
     focus_handle: FocusHandle,
     content: String,
+    pub(crate) read_only: bool,
     placeholder: SharedString,
     selected_range: Range<usize>,
     selection_reversed: bool,
@@ -1473,7 +1631,7 @@ pub struct ComposerInput {
 
 impl ComposerInput {
     pub fn new(placeholder: impl Into<SharedString>, cx: &mut Context<Self>) -> Self {
-        Self::with_context(placeholder, "Composer", cx)
+        Self::with_context(placeholder, GENERIC_COMPOSER_CONTEXT, cx)
     }
 
     /// An input in a custom KEY context — palettes use `"PaletteSearch"`,
@@ -1489,6 +1647,7 @@ impl ComposerInput {
             accessibility_role: Role::MultilineTextInput,
             focus_handle: cx.focus_handle(),
             content: String::new(),
+            read_only: false,
             placeholder: placeholder.into(),
             selected_range: 0..0,
             selection_reversed: false,
@@ -1547,6 +1706,13 @@ impl ComposerInput {
         self.line_height = px(line_height);
         self.content_height = line_height;
         self
+    }
+
+    fn set_key_context(&mut self, key_context: &'static str, cx: &mut Context<Self>) {
+        if self.key_context != key_context {
+            self.key_context = key_context;
+            cx.notify();
+        }
     }
 
     pub fn with_accessibility_role(mut self, role: Role) -> Self {
@@ -1626,6 +1792,9 @@ impl ComposerInput {
         is_dir: bool,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         self.invalidate_mention_tooltip();
         let path = local_file_link(path, is_dir);
         let next = self.content[range.end..].chars().next();
@@ -1654,6 +1823,9 @@ impl ComposerInput {
     /// uses the same strict local Markdown transport and projected chip as an
     /// `@` mention selected from completion.
     fn insert_dropped_mention(&mut self, path: &str, is_dir: bool, cx: &mut Context<Self>) -> bool {
+        if self.read_only {
+            return false;
+        }
         let range = self.selected_range.clone();
         let Some((inserted, cursor_advance)) =
             dropped_file_mention(&self.content, range.clone(), path, is_dir)
@@ -1684,6 +1856,9 @@ impl ComposerInput {
         replacement: &str,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let next = self.content[range.end..].chars().next();
         let existing_separator = next.filter(|ch| ch.is_whitespace() && *ch != '\n' && *ch != '\r');
         let inserted = if existing_separator.is_some() {
@@ -1955,6 +2130,9 @@ impl ComposerInput {
     }
 
     fn undo(&mut self, _: &Undo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let Some(previous) = self.undo_stack.pop() else {
             return;
         };
@@ -1963,6 +2141,9 @@ impl ComposerInput {
     }
 
     fn redo(&mut self, _: &Redo, _: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         let Some(next) = self.redo_stack.pop() else {
             return;
         };
@@ -2285,6 +2466,9 @@ impl ComposerInput {
     }
 
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
+        if self.read_only {
+            return;
+        }
         if !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
@@ -2329,12 +2513,33 @@ impl ComposerInput {
         self.replace_text_in_range(None, "\n", window, cx);
     }
 
+    fn message_newline_or_accept(
+        &mut self,
+        _: &MessageNewlineOrAccept,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match enter_outcome(self.mention_has_selection, EnterOutcome::Newline) {
+            EnterOutcome::AcceptCompletion => cx.emit(ComposerInputEvent::MentionAccept),
+            EnterOutcome::Newline => self.replace_text_in_range(None, "\n", window, cx),
+            EnterOutcome::Submit => unreachable!("newline action cannot submit"),
+        }
+    }
+
     fn submit(&mut self, _: &Submit, _: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(if self.mention_has_selection {
-            ComposerInputEvent::MentionAccept
-        } else {
-            ComposerInputEvent::Submitted
-        });
+        match enter_outcome(self.mention_has_selection, EnterOutcome::Submit) {
+            EnterOutcome::AcceptCompletion => cx.emit(ComposerInputEvent::MentionAccept),
+            EnterOutcome::Submit => cx.emit(ComposerInputEvent::Submitted),
+            EnterOutcome::Newline => unreachable!("submit action cannot insert a newline"),
+        }
+    }
+
+    fn modified_submit(&mut self, _: &ModifiedSubmit, _: &mut Window, cx: &mut Context<Self>) {
+        match enter_outcome(self.mention_has_selection, EnterOutcome::Submit) {
+            EnterOutcome::AcceptCompletion => cx.emit(ComposerInputEvent::MentionAccept),
+            EnterOutcome::Submit => cx.emit(ComposerInputEvent::ModifiedSubmitted),
+            EnterOutcome::Newline => unreachable!("submit action cannot insert a newline"),
+        }
     }
 
     fn mention_tab(&mut self, _: &MentionTab, _: &mut Window, cx: &mut Context<Self>) {
@@ -2345,11 +2550,10 @@ impl ComposerInput {
         }
     }
 
-    fn mention_escape(&mut self, _: &MentionEscape, _: &mut Window, cx: &mut Context<Self>) {
-        if self.mention_open {
+    fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
+        if escape_dismisses_completion(&event.keystroke.key, self.mention_open) {
             cx.emit(ComposerInputEvent::MentionDismiss);
-        } else {
-            cx.propagate();
+            cx.stop_propagation();
         }
     }
 
@@ -2914,6 +3118,9 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -2948,6 +3155,9 @@ impl EntityInputHandler for ComposerInput {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.read_only {
+            return;
+        }
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -3427,7 +3637,6 @@ impl Render for ComposerInput {
             .on_action(cx.listener(Self::word_left))
             .on_action(cx.listener(Self::word_right))
             .on_action(cx.listener(Self::mention_tab))
-            .on_action(cx.listener(Self::mention_escape))
             .on_action(cx.listener(Self::select_word_left))
             .on_action(cx.listener(Self::select_word_right))
             .on_action(cx.listener(Self::delete_word_left))
@@ -3438,16 +3647,19 @@ impl Render for ComposerInput {
             .on_action(cx.listener(Self::cut))
             .on_action(cx.listener(Self::paste))
             .on_action(cx.listener(Self::newline))
+            .on_action(cx.listener(Self::message_newline_or_accept))
+            .on_action(cx.listener(Self::modified_submit))
             .on_action(cx.listener(Self::submit))
             .on_action(cx.listener(Self::undo))
             .on_action(cx.listener(Self::redo))
+            .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_mouse_up))
             .on_scroll_wheel(cx.listener(Self::on_scroll_wheel))
             .w_full()
             .text_size(crate::typography::ui_rems(self.text_size))
-            .line_height(px(self.configured_line_height))
+            .line_height(crate::typography::ui_rems(self.configured_line_height))
             .text_color(text_color)
             .font_family(theme.font_sans.clone())
             .child({
@@ -3497,6 +3709,10 @@ pub enum ComposerEvent {
     /// identity so it can anchor the prompt at the top with the reply's
     /// reserved space below it.
     Sent { chat_id: String, message_id: String },
+    /// A locally-authored queue row was accepted. It is not a transcript send
+    /// yet: the transcript remembers the stable id and promotes it to an
+    /// own-turn anchor only when the host materializes the matching bubble.
+    Queued { chat_id: String, message_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3616,7 +3832,9 @@ fn mention_error_message(err: &RpcError) -> SharedString {
             "The session's device runs an older zeron — update it to search its files".into()
         }
         RpcError::Transport(_) | RpcError::Closed => "The session's device is unreachable".into(),
-        RpcError::BadParams(_) | RpcError::Failed(_) => "File search failed".into(),
+        RpcError::BadParams(_) | RpcError::Failed(_) => {
+            "File search failed".into()
+        }
     }
 }
 
@@ -3634,8 +3852,10 @@ fn slash_error_message(err: &RpcError) -> SharedString {
 }
 
 pub struct Composer {
-    state: Entity<AppState>,
-    input: Entity<ComposerInput>,
+    pub(crate) state: Entity<AppState>,
+    pub(crate) input: Entity<ComposerInput>,
+    /// Draft displaced while a queued message occupies the composer.
+    pub(crate) queue_edit_draft: Option<(String, Vec<StagedAttachment>)>,
     /// Composer actions row: repo/branch/harness-model/traits (§1.7).
     /// Shared with the shell's new-session canvas, which renders the
     /// device/project target selectors ([`Pickers::render_target_selectors`]).
@@ -3644,7 +3864,7 @@ pub struct Composer {
     drafts: HashMap<String, String>,
     /// Staged-but-unsent attachments per chat key (use-attachments.ts `stash`):
     /// navigating away and back restores them; memory-only, like the original.
-    attachments: HashMap<String, Vec<StagedAttachment>>,
+    pub(crate) attachments: HashMap<String, Vec<StagedAttachment>>,
     /// The staged attachment being viewed full-size (click a thumbnail).
     preview: Option<attachments::PreviewImage>,
     /// Focused while the lightbox is open so Escape reaches it; the input
@@ -3670,9 +3890,9 @@ pub struct Composer {
     /// Shared scrollbar hover/drag state for both popups' floating rails —
     /// they never show at once (mutually exclusive by token shape).
     popup_bar: crate::popover::MenuScrollbarState,
-    current_key: String,
+    pub(crate) current_key: String,
     sending: bool,
-    failure: Option<SharedString>,
+    pub(crate) failure: Option<SharedString>,
     /// The chat key `failure` belongs to (`None` = global, e.g. "Engine not
     /// connected"). Chat-scoped failures survive navigation and render only
     /// under their own chat — a blanket clear-on-switch erased the one
@@ -3685,6 +3905,36 @@ pub struct Composer {
     answered_requests: HashSet<String>,
     advance_task: Option<Task<()>>,
     send_task: Option<Task<()>>,
+    /// Chats whose durable Interrupt command has been accepted or is still
+    /// being queued. Kept independently so stopping one chat cannot replace
+    /// another chat's request when the user navigates quickly.
+    interrupting: HashSet<String>,
+    interrupt_tasks: HashMap<String, Task<()>>,
+    /// The queued message being edited in the composer (see
+    /// [`Composer::begin_queue_edit`]).
+    pub(crate) editing_queued: Option<String>,
+    /// Host-issued generation protecting `editing_queued` from automatic
+    /// delivery. The text buffer is kept until Finish receives an ACK.
+    pub(crate) queue_edit_lease_id: Option<String>,
+    pub(crate) queue_edit_base_text_hash: Option<String>,
+    pub(crate) queue_edit_chat_id: Option<String>,
+    pub(crate) queue_edit_host_device_id: Option<String>,
+    pub(crate) queue_edit_instance_id: String,
+    pub(crate) queue_edit_pending_id: Option<String>,
+    pub(crate) queue_edit_finishing: bool,
+    pub(crate) queue_edit_task: Option<Task<()>>,
+    pub(crate) queue_edit_renew_task: Option<Task<()>>,
+    /// Apply focus on the next render after opening or closing an edit.
+    pub(crate) queue_edit_focus_pending: bool,
+    /// Live drag over the queue panel: which row, and where it would land.
+    pub(crate) queue_drag: Option<crate::queue::QueueDragState>,
+    pub(crate) queue_scroll: gpui::ScrollHandle,
+    /// Rows awaiting a host-authoritative removal acknowledgement. They stay
+    /// visible but inert until the host wins the race against queue delivery.
+    pub(crate) queue_removing: HashSet<String>,
+    /// Whether the modifier overlay should currently reveal the queue hint.
+    /// The shell owns modifier tracking and clears this on window deactivation.
+    queue_shortcut_revealed: bool,
     /// Interrupt/answer commands get their own slot: assigning `send_task`
     /// DROPPED an in-flight send future mid-upload — no banner, no cleanup,
     /// `sending` stuck true forever (2026-08-19 incident, "press Stop while
@@ -3752,9 +4002,17 @@ impl Composer {
         }
     }
 
+    pub(crate) fn set_queue_shortcut_revealed(&mut self, revealed: bool, cx: &mut Context<Self>) {
+        if self.queue_shortcut_revealed != revealed {
+            self.queue_shortcut_revealed = revealed;
+            cx.notify();
+        }
+    }
+
     pub fn new(state: Entity<AppState>, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| {
-            let mut input = ComposerInput::new("Do anything…", cx);
+            let mut input =
+                ComposerInput::with_context("Do anything…", MESSAGE_COMPOSER_CONTEXT, cx);
             input.enable_mentions();
             input
         });
@@ -3766,6 +4024,7 @@ impl Composer {
         let observe = cx.observe(&state, |this: &mut Self, _, cx| this.on_state_changed(cx));
         let input_events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
             ComposerInputEvent::Submitted => this.on_submit(cx),
+            ComposerInputEvent::ModifiedSubmitted => this.on_modified_submit(cx),
             ComposerInputEvent::Edited | ComposerInputEvent::CursorMoved => {
                 this.on_input_edited(cx)
             }
@@ -3807,6 +4066,7 @@ impl Composer {
         let mut composer = Self {
             state,
             input,
+            queue_edit_draft: None,
             pickers,
             drafts: HashMap::new(),
             attachments: HashMap::new(),
@@ -3832,6 +4092,23 @@ impl Composer {
             action_task: None,
             advance_task: None,
             send_task: None,
+            interrupting: HashSet::new(),
+            interrupt_tasks: HashMap::new(),
+            editing_queued: None,
+            queue_edit_lease_id: None,
+            queue_edit_base_text_hash: None,
+            queue_edit_chat_id: None,
+            queue_edit_host_device_id: None,
+            queue_edit_instance_id: uuid::Uuid::new_v4().to_string(),
+            queue_edit_pending_id: None,
+            queue_edit_finishing: false,
+            queue_edit_task: None,
+            queue_edit_renew_task: None,
+            queue_edit_focus_pending: false,
+            queue_drag: None,
+            queue_scroll: gpui::ScrollHandle::new(),
+            queue_removing: HashSet::new(),
+            queue_shortcut_revealed: false,
             expanded_mode: false,
             flip_epoch: 0,
             compact_capacity: 0.0,
@@ -3898,10 +4175,14 @@ impl Composer {
         self.sending
     }
 
+    pub(crate) fn can_edit_queue_in_composer(&self) -> bool {
+        !self.sending && self.wizard.is_none()
+    }
+
     // ---- attachment staging (use-attachments.ts) ----
 
     /// Staged attachments for the chat the composer is showing.
-    fn staged(&self) -> &[StagedAttachment] {
+    pub(crate) fn staged(&self) -> &[StagedAttachment] {
         self.attachments
             .get(&self.current_key)
             .map(|v| v.as_slice())
@@ -3909,6 +4190,9 @@ impl Composer {
     }
 
     fn add_staged(&mut self, staged: Vec<StagedAttachment>, cx: &mut Context<Self>) {
+        if self.queue_edit_finishing {
+            return;
+        }
         if staged.is_empty() {
             return;
         }
@@ -3963,6 +4247,9 @@ impl Composer {
     }
 
     fn remove_attachment(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.queue_edit_finishing {
+            return;
+        }
         if let Some(list) = self.attachments.get_mut(&self.current_key) {
             list.retain(|a| a.id != id);
             if list.is_empty() {
@@ -4898,13 +5185,61 @@ impl Composer {
     }
 
     fn on_state_changed(&mut self, cx: &mut Context<Self>) {
-        let (key, pending) = {
+        {
+            let state = self.state.read(cx);
+            let now = chrono::Utc::now();
+            retain_live_interrupts(&mut self.interrupting, |chat_id| {
+                matches!(
+                    state.indicator_for(chat_id, now),
+                    Indicator::Working | Indicator::AwaitingInput
+                )
+            });
+            self.queue_removing
+                .retain(|id| state.queue.iter().any(|item| item.id == *id));
+        }
+        self.interrupt_tasks
+            .retain(|chat_id, _| self.interrupting.contains(chat_id));
+
+        let editing_id = self.editing_queued.clone();
+        let (key, pending, edited_row_exists) = {
             let s = self.state.read(cx);
             (
                 s.selected_chat.clone().unwrap_or_default(),
                 pending_input_request(&s.transcript),
+                editing_id
+                    .as_ref()
+                    .is_none_or(|id| s.queue.iter().any(|item| item.id == *id)),
             )
         };
+
+        // A queue edit belongs to exactly one visible row. Navigation or a
+        // remote drain/removal cancels it instead of leaving a focused but
+        // unmounted editor entity behind.
+        if key != self.current_key && self.editing_queued.is_some() {
+            self.clear_queue_edit(cx);
+        } else if !edited_row_exists && self.editing_queued.is_some() && !self.queue_edit_finishing
+        {
+            self.failure =
+                Some("The queued message was removed; your edit remains in the composer".into());
+            // Recover both drafts when another device removes the reserved row.
+            if let Some((draft, mut attachments)) = self.queue_edit_draft.take() {
+                let edited = self.input.read(cx).text().to_string();
+                let text = [draft, edited]
+                    .into_iter()
+                    .filter(|text| !text.is_empty())
+                    .collect::<Vec<_>>()
+                    .join("\n\n");
+                self.input.update(cx, |input, cx| input.set_text(text, cx));
+                attachments.extend(
+                    self.attachments
+                        .remove(&self.current_key)
+                        .unwrap_or_default(),
+                );
+                self.attachments
+                    .insert(self.current_key.clone(), attachments);
+            }
+            self.clear_queue_edit(cx);
+        }
 
         // Draft swap on chat navigation — the input entity itself survives.
         if key != self.current_key {
@@ -4939,6 +5274,11 @@ impl Composer {
             self.input.update(cx, |input, cx| input.set_text(draft, cx));
         }
 
+        // A pending agent question must not take over an active queue edit.
+        if self.editing_queued.is_some() {
+            cx.notify();
+            return;
+        }
         // Question panel lifecycle (wizard state cached per request id).
         match pending {
             Some((request_id, questions)) if !self.answered_requests.contains(&request_id) => {
@@ -4980,10 +5320,13 @@ impl Composer {
                 }
             }
         }
+        let input_context = message_input_context(self.wizard.is_some());
+        self.input
+            .update(cx, |input, cx| input.set_key_context(input_context, cx));
         cx.notify();
     }
 
-    fn run_live(&self, cx: &App) -> bool {
+    pub(crate) fn run_live(&self, cx: &App) -> bool {
         let s = self.state.read(cx);
         let Some(chat_id) = s.selected_chat.as_deref() else {
             return false;
@@ -4999,6 +5342,9 @@ impl Composer {
     /// project-less `~`-cwd sessions are no longer mintable from the canvas.
     /// Existing chats carry their own project, so they always send.
     fn send_blocked(&self, cx: &App) -> bool {
+        if self.queue_edit_finishing {
+            return true;
+        }
         let state = self.state.read(cx);
         if state.review_comment_flush_pending(&self.current_key) {
             return true;
@@ -5014,6 +5360,9 @@ impl Composer {
     }
 
     fn button_mode(&self, cx: &App) -> SendButtonMode {
+        if self.editing_queued.is_some() {
+            return SendButtonMode::Send;
+        }
         let has_text = composer_has_content(
             self.input.read(cx).text(),
             self.staged().len(),
@@ -5023,6 +5372,9 @@ impl Composer {
     }
 
     fn on_submit(&mut self, cx: &mut Context<Self>) {
+        if self.commit_queue_edit(cx) {
+            return;
+        }
         if self.wizard.is_some() {
             // Enter inside the panel's free-text input submits the page.
             let typed = self.input.read(cx).text().trim().to_string();
@@ -5036,19 +5388,42 @@ impl Composer {
         let no_content =
             !composer_has_content(&text, self.staged().len(), self.staged_comments(cx).len());
         match self.button_mode(cx) {
-            SendButtonMode::Stop => self.interrupt(cx),
+            SendButtonMode::Stop => self.interrupt_selected(cx),
             _ if no_content => {}
             _ if self.send_blocked(cx) => {}
             SendButtonMode::Send => self.send(text, false, cx),
+            // Busy: the message joins the queue rather than racing the turn.
+            // Whether it then steers straight into that turn or waits for the
+            // next one is the engine's call (`DocHost::drain_queue`) — the
+            // composer only says "here, take this".
             SendButtonMode::Steer => self.send(text, true, cx),
         }
     }
 
-    /// Queue a Run (or Steer) doc command with an optimistic echo. New chats
+    /// Cmd/Ctrl+Enter remains an ordinary submit while the composer carries
+    /// content. With a truly empty composer it instead advances the queue's
+    /// first actionable row, and never turns an empty chord into Stop.
+    fn on_modified_submit(&mut self, cx: &mut Context<Self>) {
+        if self.commit_queue_edit(cx) {
+            return;
+        }
+        let has_content = composer_has_content(
+            self.input.read(cx).text(),
+            self.staged().len(),
+            self.staged_comments(cx).len(),
+        );
+        match modified_submit_target(has_content) {
+            ModifiedSubmitTarget::SubmitContent => self.on_submit(cx),
+            ModifiedSubmitTarget::ActivateQueueHead => self.queue_pop_head(cx),
+        }
+    }
+
+    /// Queue a Run doc command with an optimistic echo — or, with the agent
+    /// busy, park the message on the chat's pending queue instead. New chats
     /// thread the picked config in: worktree creation (when the isolated toggle
     /// is on), `Mutate createChat` with the `ChatConfig` + cwd, and the model /
     /// reasoning / options on the Run request itself (§1.7).
-    fn send(&mut self, text: String, steer: bool, cx: &mut Context<Self>) {
+    fn send(&mut self, text: String, queue: bool, cx: &mut Context<Self>) {
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             self.failure = Some("Engine not connected".into());
             self.failure_key = None; // global — meaningful on every chat
@@ -5129,6 +5504,31 @@ impl Composer {
         self.preview = None;
         let message_id = uuid::Uuid::new_v4().to_string();
         let created_at = chrono::Utc::now().timestamp_millis();
+        // New chats always start a Run. Existing busy chats use the personal
+        // cut's visible/editable message queue only when both the UI's engine
+        // and the chat host explicitly advertise it. Same-version upstream
+        // builds do not, so they retain the legacy durable Steer command.
+        let queue_requested = queue && !is_new;
+        let queue_capability = if staged.is_empty() {
+            capabilities::MESSAGE_QUEUE_V1
+        } else {
+            capabilities::MESSAGE_QUEUE_ATTACHMENTS_V1
+        };
+        let queue = queue_requested
+            && engine.engine_info().supports(queue_capability)
+            && self
+                .state
+                .read(cx)
+                .chat_host_supports(&chat_id, queue_capability);
+        let clean_queue_attachment_text = staged.is_empty()
+            || (engine
+                .engine_info()
+                .supports(capabilities::MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1)
+                && self.state.read(cx).chat_host_supports(
+                    &chat_id,
+                    capabilities::MESSAGE_QUEUE_CLEAN_ATTACHMENT_TEXT_V1,
+                ));
+        let legacy_steer = queue_requested && !queue;
 
         // Queued-attachment flow (durable-by-design): stage the bytes on the
         // LOCAL engine, queue the command immediately with `pending://` refs,
@@ -5142,7 +5542,9 @@ impl Composer {
         let host_is_remote = host_device_id
             .as_deref()
             .is_some_and(|id| local_device_id.as_deref() != Some(id));
-        let queued_flow = !staged.is_empty() && {
+        // Queue rows do not carry upstream's attachment-transfer escort, so
+        // they retain the proven host-upload path and store absolute refs.
+        let queued_flow = !queue && !staged.is_empty() && {
             let state = self.state.read(cx);
             let local_ok = local_device_id
                 .as_deref()
@@ -5228,15 +5630,22 @@ impl Composer {
             status: None,
             continuation_of: None,
         };
+        // A queued message is not in the transcript yet — the queue panel is
+        // its echo, and it gets a real bubble when the host sends it.
+        let hold_for_turn_end = queue
+            && crate::settings::current(cx).active_turn_send_behavior
+                == ActiveTurnSendBehavior::Queue;
         self.state.update(cx, |s, cx| {
             if is_new {
                 s.select_chat(Some(chat_id.clone()), cx);
             }
-            s.push_echo(&chat_id, echo);
-            // Working overlay until the host executes the queued command —
-            // without it a remote send flashed Completed (and could ring the
-            // done-chime) in the queue→drain→sync gap.
-            s.begin_pending_send(&chat_id, &message_id, chrono::Utc::now());
+            if should_publish_optimistic_echo(queue) {
+                s.push_echo(&chat_id, echo);
+                // Working overlay until the host executes the queued command —
+                // without it a remote send flashed Completed (and could ring
+                // the done-chime) in the queue→drain→sync gap.
+                s.begin_pending_send(&chat_id, &message_id, chrono::Utc::now());
+            }
             cx.notify();
         });
 
@@ -5244,18 +5653,22 @@ impl Composer {
         self.drafts.remove(&self.current_key);
         self.failure = None;
         self.sending = true;
-        cx.emit(ComposerEvent::Sent {
-            chat_id: chat_id.clone(),
-            message_id: message_id.clone(),
-        });
+        // A queued row is represented by the queue panel, not the transcript.
+        // Claiming an own-turn anchor for it here would replace the live
+        // turn's runway with an id that has no transcript row yet.
+        if should_publish_optimistic_echo(queue) {
+            cx.emit(ComposerEvent::Sent {
+                chat_id: chat_id.clone(),
+                message_id: message_id.clone(),
+            });
+        }
         cx.notify();
 
-        let steer_cmd = steer && !is_new;
         let restore_text = typed;
         let err_chat_id = chat_id.clone();
         let err_message_id = message_id.clone();
         self.send_task = Some(cx.spawn(async move |this, cx| {
-            let result: Result<(), String> = async {
+            let result: Result<Option<String>, String> = async {
                 // Attachments stage FIRST — before the chat row or anything
                 // else exists. Staging is chat-independent (keyed by
                 // uploadId), and ordering it first makes a new-chat send
@@ -5356,30 +5769,33 @@ impl Composer {
                         }
                     }
                     content = attachments::with_attachments(&text, &attachment_paths);
-                    // Refresh the echo in place with the attachment refs
-                    // (same id, same clock — the bubble grows its thumbnails
-                    // without flickering).
-                    let refreshed = SessionMessageEntry {
-                        id: message_id.clone(),
-                        role: zeron_doc::MessageRole::User,
-                        parts: vec![MessagePart::Text {
-                            id: "t0".into(),
-                            text: content.clone(),
-                        }],
-                        created_at,
-                        device_id: "local".into(),
-                        status: None,
-                        continuation_of: None,
-                    };
-                    let echo_chat_id = chat_id.clone();
-                    this.update(cx, |composer, cx| {
-                        composer.state.update(cx, |s, cx| {
-                            s.remove_echo(&echo_chat_id, &message_id);
-                            s.push_echo(&echo_chat_id, refreshed);
-                            cx.notify();
-                        });
-                    })
-                    .ok();
+                    // A normal send already has an optimistic echo: refresh it
+                    // in place with the uploaded refs so its thumbnails never
+                    // flicker. A queued message has no transcript echo at all;
+                    // its queue row is the only representation until dispatch.
+                    if should_publish_optimistic_echo(queue) {
+                        let refreshed = SessionMessageEntry {
+                            id: message_id.clone(),
+                            role: zeron_doc::MessageRole::User,
+                            parts: vec![MessagePart::Text {
+                                id: "t0".into(),
+                                text: content.clone(),
+                            }],
+                            created_at,
+                            device_id: "local".into(),
+                            status: None,
+                            continuation_of: None,
+                        };
+                        let echo_chat_id = chat_id.clone();
+                        this.update(cx, |composer, cx| {
+                            composer.state.update(cx, |s, cx| {
+                                s.remove_echo(&echo_chat_id, &message_id);
+                                s.push_echo(&echo_chat_id, refreshed);
+                                cx.notify();
+                            });
+                        })
+                        .ok();
+                    }
                 }
 
                 // Resolve the working directory: existing chats keep theirs;
@@ -5438,7 +5854,7 @@ impl Composer {
                                     base.clone().unwrap_or_else(|| "HEAD".to_string());
                                 run_worktree = Some(zeron_proto::WorktreeSpec {
                                     repo_path: repo_path.clone(),
-                                    base,
+                                    base: base.clone(),
                                 });
                             }
                         }
@@ -5503,7 +5919,37 @@ impl Composer {
                     }
                 }
 
-                let command = if steer_cmd {
+                if queue {
+                    // A queue row is editable UI state, so its text must stay
+                    // free of the internal attachment-path trailer. The host
+                    // rebuilds that transport when it promotes the row.
+                    let queue_text = if !clean_queue_attachment_text {
+                        content.as_str()
+                    } else if text.trim().is_empty() && !attachment_paths.is_empty() {
+                        attachments::ATTACHMENT_ONLY_TEXT
+                    } else {
+                        text.as_str()
+                    };
+                    let params = serde_json::json!({
+                        "chatId": chat_id,
+                        "text": queue_text,
+                        "attachments": attachment_paths,
+                        "holdForTurnEnd": hold_for_turn_end,
+                    });
+                    let reply = engine
+                        .client()
+                        .call(methods::QUEUE_MESSAGE, params)
+                        .await
+                        .map_err(|e| format!("Send failed: {e}"))?;
+                    let queue_id = reply
+                        .get("id")
+                        .and_then(serde_json::Value::as_str)
+                        .filter(|id| !id.is_empty())
+                        .ok_or_else(|| "Send failed: queue did not return an id".to_string())?;
+                    return Ok(Some(queue_id.to_string()));
+                }
+
+                let command = if legacy_steer {
                     SessionCommandPayload::Steer {
                         prompt: content.clone(),
                         message_id: Some(message_id.clone()),
@@ -5544,7 +5990,7 @@ impl Composer {
                 )
                 .await
                 .map_err(|e| format!("Send failed: {e}"))?;
-                Ok(())
+                Ok(None)
             }
             .await;
             if result.is_err() && is_new {
@@ -5568,6 +6014,12 @@ impl Composer {
                 composer
                     .state
                     .update(cx, |s, _| s.end_upload_progress());
+                if let Ok(Some(message_id)) = &result {
+                    cx.emit(ComposerEvent::Queued {
+                        chat_id: err_chat_id.clone(),
+                        message_id: message_id.clone(),
+                    });
+                }
                 if let Err(message) = result {
                     // Failure: red banner, echo removed, prompt back in the
                     // draft, staged files back in the stash. A failed NEW
@@ -5631,31 +6083,36 @@ impl Composer {
         }));
     }
 
-    fn interrupt(&mut self, cx: &mut Context<Self>) {
-        let Some(engine) = self.state.read(cx).engine().cloned() else {
-            return;
-        };
+    pub(crate) fn interrupt_selected(&mut self, cx: &mut Context<Self>) {
         let Some(chat_id) = self.state.read(cx).selected_chat.clone() else {
             return;
         };
+        self.interrupt_chat(chat_id, cx);
+    }
+
+    pub(crate) fn interrupt_chat(&mut self, chat_id: String, cx: &mut Context<Self>) {
+        let Some(engine) = self.state.read(cx).engine().cloned() else {
+            return;
+        };
+        if !begin_interrupt(&mut self.interrupting, &chat_id) {
+            return;
+        }
+        let params = interrupt_params(&chat_id);
+        let task_chat_id = chat_id.clone();
         let failure_chat = chat_id.clone();
-        let params = serde_json::json!({
-            "chatId": chat_id,
-            "command": { "kind": "interrupt" },
-        });
-        // `action_task`, NOT `send_task`: a Stop pressed while a send is in
-        // flight must not drop the send future on the floor.
-        self.action_task = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             let result = engine.client().call(methods::QUEUE_COMMAND, params).await;
             if let Err(err) = result {
                 this.update(cx, |composer, cx| {
+                    composer.interrupting.remove(&task_chat_id);
                     composer.failure = Some(format!("Stop failed: {err}").into());
                     composer.failure_key = Some(failure_chat);
                     cx.notify();
                 })
                 .ok();
             }
-        }));
+        });
+        self.interrupt_tasks.insert(chat_id, task);
     }
 
     // ---- wizard glue ----
@@ -5726,6 +6183,7 @@ impl Composer {
             input.set_text("", cx);
             // The panel borrowed the composer input; hand back its identity.
             input.set_placeholder("Do anything…", cx);
+            input.set_key_context(MESSAGE_COMPOSER_CONTEXT, cx);
         });
         let Some(engine) = self.state.read(cx).engine().cloned() else {
             return;
@@ -5802,8 +6260,10 @@ impl Composer {
                 self.wizard_advance(cx);
                 cx.stop_propagation();
             }
-        } else if key == "escape" && (!input_focused || input_empty) {
-            self.wizard_back(cx);
+        } else if key == "escape" {
+            if wizard_escape_goes_back(key, input_focused, input_empty) {
+                self.wizard_back(cx);
+            }
             cx.stop_propagation();
         }
     }
@@ -5906,7 +6366,7 @@ impl Composer {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 this.on_wizard_key(event, window, cx)
             }))
-            .rounded(px(26.0))
+            .rounded(px(COMPOSER_RADIUS))
             .border_1()
             .border_color(theme.border)
             .bg(theme.input_glass_bg())
@@ -6038,7 +6498,7 @@ impl Composer {
                 .justify_center()
                 .cursor_pointer()
                 .hover(|s| s.opacity(0.85))
-                .on_click(cx.listener(|this, _, _, cx| this.interrupt(cx)))
+                .on_click(cx.listener(|this, _, _, cx| this.interrupt_selected(cx)))
                 .child(div().size(px(11.0)).rounded(px(3.0)).bg(theme.bg))
                 .into_any_element(),
             SendButtonMode::Send | SendButtonMode::Steer => {
@@ -6082,6 +6542,11 @@ impl Focusable for Composer {
 
 impl Render for Composer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.queue_edit_focus_pending {
+            self.queue_edit_focus_pending = false;
+            let focus = self.input.focus_handle(cx);
+            window.focus(&focus, cx);
+        }
         let theme = Theme::of(cx).clone();
         let wizard_active = self.wizard.is_some();
         if self.mention.token.is_some()
@@ -6367,6 +6832,46 @@ impl Render for Composer {
             return container.child(motion::fade_quick("composer-wizard", div().child(wizard)));
         }
 
+        // What is waiting to be sent, stacked directly above the box it was
+        // typed in — the queue is a property of this composer, not a panel
+        // somewhere else.
+        let show_queue_head_shortcut = self.queue_shortcut_revealed
+            && self.editing_queued.is_none()
+            && !self.pickers.read(cx).is_open()
+            && !composer_has_content(
+                self.input.read(cx).text(),
+                self.staged().len(),
+                self.staged_comments(cx).len(),
+            );
+        let container = container.when_some(
+            self.render_queue_panel(show_queue_head_shortcut, window, cx),
+            |el, panel| {
+                el.child(motion::fade_quick(
+                    "composer-queue",
+                    div()
+                        .mx(px(QUEUE_SIDE_INSET))
+                        // Cancel the column gap, then tuck the tray one pixel
+                        // behind the composer painted after it.
+                        .mb(px(-(Theme::SPACE_SM + QUEUE_COMPOSER_OVERLAP)))
+                        .child(panel),
+                ))
+            },
+        );
+        // Escape backs out of a queue-row edit (the row keeps its old text).
+        // Bound here rather than in the input: the input's own Escape belongs
+        // to the mention/slash popups, which outrank this while they're open.
+        let container = container.when(self.editing_queued.is_some(), |el| {
+            el.on_key_down(cx.listener(|this, event: &KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape"
+                    && this.mention.token.is_none()
+                    && this.slash.token.is_none()
+                    && this.cancel_queue_edit(cx)
+                {
+                    cx.stop_propagation();
+                }
+            }))
+        });
+
         // New chats always use the expanded layout: the repo/branch pickers
         // need the full-width actions row (zeron composer-actions.tsx
         // `mustExpand = isNew || …`).
@@ -6495,7 +7000,7 @@ impl Render for Composer {
         // shows through as an inner glow (theme.rs's card_selected_shadows
         // lesson; user report).
         let pill = div()
-            .rounded(px(26.0))
+            .rounded(px(COMPOSER_RADIUS))
             .bg(pill_bg)
             .border_1()
             .border_color(theme.border)
@@ -6650,7 +7155,7 @@ impl Render for Composer {
             div()
                 .relative()
                 .child(crate::frost::frosted(
-                    26.0,
+                    COMPOSER_RADIUS,
                     16.0,
                     motion::fade_quick("composer-input", body),
                 ))
@@ -6734,6 +7239,86 @@ mod tests {
         assert!(press_intent(1, false).arms_drag());
         assert!(press_intent(1, true).arms_drag());
         assert!(!press_intent(2, false).arms_drag());
+    }
+
+    #[test]
+    fn message_enter_bindings_cover_both_platform_modifiers() {
+        assert_eq!(
+            message_enter_bindings(ComposerSendBehavior::Enter, "cmd-enter"),
+            vec![
+                MessageEnterBinding {
+                    keystroke: "enter".into(),
+                    action: MessageEnterBindingAction::Submit,
+                },
+                MessageEnterBinding {
+                    keystroke: "cmd-enter".into(),
+                    action: MessageEnterBindingAction::ModifiedSubmit,
+                },
+            ]
+        );
+        assert_eq!(
+            message_enter_bindings(ComposerSendBehavior::ModEnter, "cmd-enter"),
+            vec![
+                MessageEnterBinding {
+                    keystroke: "enter".into(),
+                    action: MessageEnterBindingAction::NewlineOrAccept,
+                },
+                MessageEnterBinding {
+                    keystroke: "cmd-enter".into(),
+                    action: MessageEnterBindingAction::ModifiedSubmit,
+                },
+            ]
+        );
+        assert_eq!(
+            message_enter_bindings(ComposerSendBehavior::ModEnter, "ctrl-enter"),
+            vec![
+                MessageEnterBinding {
+                    keystroke: "enter".into(),
+                    action: MessageEnterBindingAction::NewlineOrAccept,
+                },
+                MessageEnterBinding {
+                    keystroke: "ctrl-enter".into(),
+                    action: MessageEnterBindingAction::ModifiedSubmit,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn message_enter_never_adds_extra_modifier_bindings() {
+        let bindings = message_enter_bindings(ComposerSendBehavior::ModEnter, "cmd-enter");
+        assert!(!bindings.iter().any(|binding| {
+            matches!(
+                binding.keystroke.as_str(),
+                "ctrl-enter" | "shift-cmd-enter" | "alt-cmd-enter"
+            )
+        }));
+    }
+
+    #[test]
+    fn enter_accepts_a_completion_before_submit_or_newline() {
+        assert_eq!(
+            enter_outcome(true, EnterOutcome::Submit),
+            EnterOutcome::AcceptCompletion
+        );
+        assert_eq!(
+            enter_outcome(true, EnterOutcome::Newline),
+            EnterOutcome::AcceptCompletion
+        );
+        assert_eq!(
+            enter_outcome(false, EnterOutcome::Submit),
+            EnterOutcome::Submit
+        );
+        assert_eq!(
+            enter_outcome(false, EnterOutcome::Newline),
+            EnterOutcome::Newline
+        );
+    }
+
+    #[test]
+    fn wizard_borrows_the_generic_enter_context_only_while_active() {
+        assert_eq!(message_input_context(false), MESSAGE_COMPOSER_CONTEXT);
+        assert_eq!(message_input_context(true), GENERIC_COMPOSER_CONTEXT);
     }
 
     #[test]
@@ -7559,6 +8144,26 @@ mod tests {
     }
 
     #[test]
+    fn modified_submit_sends_content_and_advances_only_when_empty() {
+        assert_eq!(
+            modified_submit_target(composer_has_content("message", 0, 0)),
+            ModifiedSubmitTarget::SubmitContent
+        );
+        assert_eq!(
+            modified_submit_target(composer_has_content("", 1, 0)),
+            ModifiedSubmitTarget::SubmitContent
+        );
+        assert_eq!(
+            modified_submit_target(composer_has_content("", 0, 1)),
+            ModifiedSubmitTarget::SubmitContent
+        );
+        assert_eq!(
+            modified_submit_target(composer_has_content("  ", 0, 0)),
+            ModifiedSubmitTarget::ActivateQueueHead
+        );
+    }
+
+    #[test]
     fn a_comment_only_stage_steers_a_live_run_instead_of_stopping_it() {
         let live = true;
         let comment_only = composer_has_content("", 0, 2);
@@ -7580,6 +8185,48 @@ mod tests {
         assert_eq!(send_button_mode(false, true), SendButtonMode::Send);
         assert_eq!(send_button_mode(true, true), SendButtonMode::Steer);
         assert_eq!(send_button_mode(true, false), SendButtonMode::Stop);
+    }
+
+    #[test]
+    fn queued_submit_does_not_publish_an_optimistic_transcript_echo() {
+        assert!(should_publish_optimistic_echo(false));
+        assert!(!should_publish_optimistic_echo(true));
+    }
+
+    #[test]
+    fn interrupt_tracking_is_idempotent_per_chat() {
+        let mut pending = HashSet::new();
+        assert!(begin_interrupt(&mut pending, "chat-a"));
+        assert!(!begin_interrupt(&mut pending, "chat-a"));
+        assert!(begin_interrupt(&mut pending, "chat-b"));
+        assert_eq!(pending.len(), 2);
+    }
+
+    #[test]
+    fn interrupt_tracking_releases_only_settled_chats() {
+        let mut pending = HashSet::from(["chat-a".to_string(), "chat-b".to_string()]);
+        retain_live_interrupts(&mut pending, |chat_id| chat_id == "chat-b");
+        assert_eq!(pending, HashSet::from(["chat-b".to_string()]));
+        assert!(begin_interrupt(&mut pending, "chat-a"));
+    }
+
+    #[test]
+    fn interrupt_payload_keeps_the_captured_chat() {
+        let params = interrupt_params("chat-a");
+        assert_eq!(params["chatId"], "chat-a");
+        assert_eq!(params["command"]["kind"], "interrupt");
+    }
+
+    #[test]
+    fn escape_consumers_keep_completion_and_wizard_priority() {
+        assert!(escape_dismisses_completion("escape", true));
+        assert!(!escape_dismisses_completion("escape", false));
+        assert!(!escape_dismisses_completion("enter", true));
+
+        assert!(wizard_escape_goes_back("escape", false, false));
+        assert!(wizard_escape_goes_back("escape", true, true));
+        assert!(!wizard_escape_goes_back("escape", true, false));
+        assert!(!wizard_escape_goes_back("enter", false, true));
     }
 
     #[test]
