@@ -1,0 +1,10 @@
+classDiagram
+    class Documento {
+        +String path
+        +int revision
+        +preview()
+    }
+    class Preview {
+        +render()
+    }
+    Documento "1" --> "1" Preview : representa

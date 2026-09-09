@@ -106,6 +106,14 @@ pub fn drag_anchor(key: &str) -> Option<usize> {
     (sel.dragging && sel.anchor_key == key).then_some(sel.anchor_ix)
 }
 
+pub(crate) fn anchor_key() -> Option<String> {
+    state()
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.anchor_key.clone())
+}
+
 /// Whether a markdown selection drag is currently in flight.
 pub fn is_dragging() -> bool {
     state()

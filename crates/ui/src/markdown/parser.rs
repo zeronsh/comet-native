@@ -29,6 +29,24 @@ pub struct InlineStyle {
     pub strikethrough: bool,
     /// Destination URL when inside a link.
     pub link: Option<String>,
+    pub image: Option<InlineImage>,
+    pub task: Option<TaskMarker>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskMarker {
+    pub checked: bool,
+    /// Byte range of `[ ]`, `[x]` or `[X]` in the original document.
+    pub range: Range<usize>,
+}
+
+/// An image remains inline in the AST; hosts can opt in to visual media.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineImage {
+    pub source: String,
+    pub alt: String,
+    pub title: String,
+    pub link: Option<String>,
 }
 
 /// One run of identically-styled inline text.
@@ -113,8 +131,13 @@ fn options() -> Options {
 
 /// Parse a whole source into a [`BlockTree`].
 pub fn parse_full(source: &str) -> BlockTree {
+    parse_at(source, 0)
+}
+
+fn parse_at(source: &str, offset: usize) -> BlockTree {
     let events: Vec<(Event, Range<usize>)> = Parser::new_ext(source, options())
         .into_offset_iter()
+        .map(|(event, range)| (event, range.start + offset..range.end + offset))
         .collect();
     let mut cur = Cursor {
         events: &events,
@@ -388,6 +411,7 @@ fn parse_inline_container(cur: &mut Cursor, style: &InlineStyle) -> Vec<InlineRu
 }
 
 fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &InlineStyle) {
+    let range = cur.peek().map(|(_, range)| range.clone());
     let Some(event) = cur.next_event() else {
         return;
     };
@@ -406,11 +430,18 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
         Event::SoftBreak => push(runs, " ".into(), style.clone()),
         Event::HardBreak => push(runs, "\n".into(), style.clone()),
         Event::Html(t) | Event::InlineHtml(t) => push(runs, t.into_string(), style.clone()),
-        Event::TaskListMarker(done) => push(
-            runs,
-            if done { "[x] ".into() } else { "[ ] ".into() },
-            style.clone(),
-        ),
+        Event::TaskListMarker(done) => {
+            let mut style = style.clone();
+            style.task = Some(TaskMarker {
+                checked: done,
+                range: range.unwrap(),
+            });
+            push(
+                runs,
+                if done { "[x] ".into() } else { "[ ] ".into() },
+                style,
+            );
+        }
         Event::FootnoteReference(t) => push(runs, format!("[{t}]"), style.clone()),
         Event::Start(tag) => {
             let mut inner = style.clone();
@@ -418,7 +449,27 @@ fn parse_inline_event(cur: &mut Cursor, runs: &mut Vec<InlineRun>, style: &Inlin
                 Tag::Emphasis => inner.italic = true,
                 Tag::Strong => inner.bold = true,
                 Tag::Strikethrough => inner.strikethrough = true,
-                Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. } => {
+                Tag::Image {
+                    dest_url, title, ..
+                } => {
+                    let alt: String = parse_inline_container(cur, style)
+                        .iter()
+                        .map(|run| run.text.as_str())
+                        .collect();
+                    inner.image = Some(InlineImage {
+                        source: dest_url.to_string(),
+                        alt: alt.clone(),
+                        title: title.to_string(),
+                        link: style.link.clone(),
+                    });
+                    inner.link = Some(dest_url.into_string());
+                    runs.push(InlineRun {
+                        text: alt,
+                        style: inner,
+                    });
+                    return;
+                }
+                Tag::Link { dest_url, .. } => {
                     inner.link = Some(dest_url.into_string());
                 }
                 _ => {}
@@ -530,7 +581,9 @@ fn merge_runs(runs: Vec<InlineRun>) -> Vec<InlineRun> {
     let mut out: Vec<InlineRun> = Vec::with_capacity(runs.len());
     for run in runs {
         match out.last_mut() {
-            Some(last) if last.style == run.style => last.text.push_str(&run.text),
+            Some(last) if last.style == run.style && run.style.image.is_none() => {
+                last.text.push_str(&run.text)
+            }
             _ => out.push(run),
         }
     }
@@ -676,14 +729,11 @@ impl IncrementalParser {
             .map(|i| i + 1)
             .unwrap_or(0);
 
-        let tail = parse_full(&self.source[boundary..]);
+        let tail = parse_at(&self.source[boundary..], boundary);
         self.last_parse_bytes = self.source.len() - boundary;
         self.tree.blocks.retain(|b| b.range.start < boundary);
         self.stable_prefix_blocks = self.tree.blocks.len();
-        for mut top in tail.blocks {
-            let block = Arc::make_mut(&mut top);
-            block.range.start += boundary;
-            block.range.end += boundary;
+        for top in tail.blocks {
             self.tree.blocks.push(top);
         }
         self.remend();
@@ -715,13 +765,12 @@ impl IncrementalParser {
         // Count toward the O(tail) instrumentation — this is real parse work,
         // in the same bound as the reparse that produced the block.
         self.last_parse_bytes += mended.len();
-        let mut tail = parse_full(&mended).blocks;
+        let mut tail = parse_at(&mended, start).blocks;
         for top in &mut tail {
             let top = Arc::make_mut(top);
             // Display ranges point back into the unmended source; synthetic
             // closers at the end clamp away.
-            top.range.start += start;
-            top.range.end = (top.range.end + start).min(self.source.len());
+            top.range.end = top.range.end.min(self.source.len());
         }
         self.display_tail = Some(tail);
     }
@@ -739,6 +788,44 @@ fn has_link_defs(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_ranges_survive_nested_lists_unicode_crlf_and_streaming() {
+        let source = "Título 🦀\r\n\r\nIntro\r\n\r\n- [ ] repetida\r\n  - [X] repetida\r\n\r\n> - [x] citada\r\n\r\n```md\r\n- [ ] literal\r\n```\r\n";
+        fn collect(block: &Block, tasks: &mut Vec<TaskMarker>) {
+            match block {
+                Block::Paragraph { runs } => {
+                    tasks.extend(runs.iter().filter_map(|run| run.style.task.clone()))
+                }
+                Block::List { items, .. } => items
+                    .iter()
+                    .flatten()
+                    .for_each(|block| collect(block, tasks)),
+                Block::BlockQuote { children } => {
+                    children.iter().for_each(|block| collect(block, tasks))
+                }
+                _ => {}
+            }
+        }
+        let tree = parse_full(source);
+        let mut tasks = Vec::new();
+        for top in &tree.blocks {
+            collect(&top.block, &mut tasks);
+        }
+        assert_eq!(tasks.len(), 3);
+        assert_eq!(
+            tasks
+                .iter()
+                .map(|task| &source[task.range.clone()])
+                .collect::<Vec<_>>(),
+            ["[ ]", "[X]", "[x]"]
+        );
+        let mut stream = IncrementalParser::new();
+        for ch in source.chars() {
+            stream.append(&ch.to_string());
+            assert_eq!(stream.tree(), &parse_full(stream.source()));
+        }
+    }
 
     #[test]
     fn display_snapshots_share_stable_blocks_without_mutating_old_frames() {
@@ -1216,5 +1303,26 @@ mod closing_quote_blocks {
         for (a, b) in p.tree().blocks.iter().zip(full.blocks.iter()) {
             assert_eq!(a.range, b.range);
         }
+    }
+}
+
+#[cfg(test)]
+mod image_model_tests {
+    use super::*;
+    #[test]
+    fn images_preserve_alt_title_position_links_and_empty_alt() {
+        let tree =
+            parse_full("Before [![**alt**](a.png \"Title\")](next.md) after ![](b.png) ![](b.png)");
+        let Block::Paragraph { runs } = &tree.blocks[0].block else {
+            panic!("paragraph");
+        };
+        let images: Vec<_> = runs.iter().filter_map(|r| r.style.image.as_ref()).collect();
+        assert_eq!(images.len(), 3);
+        assert_eq!(images[0].alt, "alt");
+        assert_eq!(images[0].title, "Title");
+        assert_eq!(images[0].link.as_deref(), Some("next.md"));
+        assert_eq!(images[1].source, "b.png");
+        assert!(images[1].alt.is_empty());
+        assert_eq!(runs.first().unwrap().text, "Before ");
     }
 }

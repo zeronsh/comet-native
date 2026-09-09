@@ -669,7 +669,7 @@ dependencies = [
  "bitflags 2.13.1",
  "cexpr",
  "clang-sys",
- "itertools 0.11.0",
+ "itertools 0.12.1",
  "log",
  "prettyplease",
  "proc-macro2",
@@ -3679,6 +3679,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "json5"
+version = "1.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "733a844dbd6fef128e98cb4487b887cb55454d92cd9994b1bafe004fabbe670c"
+dependencies = [
+ "serde",
+ "ucd-trie",
+]
+
+[[package]]
 name = "khronos-egl"
 version = "6.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4249,6 +4259,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "488016bfae457b036d996092f6cb448677611ce4449e970ceaf42695203f218a"
 dependencies = [
  "autocfg",
+]
+
+[[package]]
+name = "mermaid-rs-renderer"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cb5b469222ce6b9896edf0a969cf68464f5a028ef394fd6643f00bd943df117"
+dependencies = [
+ "anyhow",
+ "fontdb",
+ "json5 1.3.1",
+ "once_cell",
+ "regex",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "ttf-parser",
 ]
 
 [[package]]
@@ -9771,7 +9798,7 @@ version = "0.2.49"
 dependencies = [
  "anyhow",
  "clap",
- "json5",
+ "json5 0.4.1",
  "plist",
  "serde",
  "serde_json",
@@ -9795,6 +9822,8 @@ dependencies = [
  "gpui-base",
  "gpui_platform",
  "gpui_tokio",
+ "image",
+ "mermaid-rs-renderer",
  "mimalloc",
  "objc",
  "pulldown-cmark",
@@ -9810,6 +9839,7 @@ dependencies = [
  "ttf-parser",
  "unicode-segmentation",
  "unicode-width",
+ "usvg",
  "uuid",
  "zeron-doc",
  "zeron-engine",

@@ -1,0 +1,9 @@
+flowchart LR
+    subgraph Cliente
+        A[Inicio] --> B{¿Hay cambios?}
+    end
+    B -->|Sí| C[Guardar documento]
+    B -->|No| D[Vista previa]
+    C --> D
+    D --> E[Renderizar etiquetas largas sin perder contenido]
+    style C fill:#dbeafe,stroke:#2563eb,color:#172554

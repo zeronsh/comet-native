@@ -1,0 +1,7 @@
+stateDiagram-v2
+    [*] --> Cargando
+    Cargando --> Listo: éxito
+    Cargando --> Error: fallo
+    Error --> Cargando: reintentar
+    Listo --> Cargando: editar
+    Listo --> [*]

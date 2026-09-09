@@ -600,6 +600,18 @@ impl Render for FileEditorTooltip {
 
 impl FilesSurface {
     pub(crate) fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(view) = self
+            .preview
+            .active
+            .as_ref()
+            .and_then(|path| self.preview.documents.get(path))
+            .filter(|d| d.show_markdown)
+            .and_then(|d| d.markdown.clone())
+        {
+            let focus = view.read(cx).focus.clone();
+            window.defer(cx, move |window, cx| focus.focus(window, cx));
+            return;
+        }
         let Some(editor) = self
             .preview
             .active
@@ -808,8 +820,18 @@ impl FilesSurface {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let placeholder = if self
+            .preview
+            .documents
+            .get(&path)
+            .is_some_and(|d| d.show_markdown)
+        {
+            "Request a change…"
+        } else {
+            "Add a comment…"
+        };
         let input = cx.new(|cx| {
-            ComposerInput::new("Add a comment…", cx)
+            ComposerInput::new(placeholder, cx)
                 .with_text_metrics(12.0, crate::composer::INPUT_LINE_HEIGHT)
         });
         let events = cx.subscribe(&input, |this: &mut Self, _, event, cx| match event {
@@ -830,13 +852,13 @@ impl FilesSurface {
         cx.notify();
     }
 
-    fn cancel_editor_comment(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn cancel_editor_comment(&mut self, cx: &mut Context<Self>) {
         self.preview.comment_draft = None;
         self.trim_document_cache(cx);
         cx.notify();
     }
 
-    fn commit_editor_comment(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn commit_editor_comment(&mut self, cx: &mut Context<Self>) {
         let Some(draft) = self.preview.comment_draft.take() else {
             return;
         };
@@ -872,7 +894,7 @@ impl FilesSurface {
         cx.notify();
     }
 
-    fn remove_editor_comment(&mut self, id: &str, cx: &mut Context<Self>) {
+    pub(super) fn remove_editor_comment(&mut self, id: &str, cx: &mut Context<Self>) {
         let key = self.chat_id.clone();
         let removed_path = self
             .state
@@ -907,6 +929,30 @@ impl FilesSurface {
         cx.notify();
     }
 
+    pub(super) fn open_markdown_comment(
+        &mut self,
+        path: String,
+        line: u32,
+        source: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(editor) = self
+            .preview
+            .documents
+            .get(&path)
+            .and_then(|d| d.editor.as_ref())
+        else {
+            return;
+        };
+        if !editor.read(cx).context_menu_capabilities().is_editable()
+            || editor.read(cx).value().as_ref() != source
+        {
+            return;
+        }
+        self.open_editor_comment_draft(path, line, window, cx);
+    }
+
     fn toggle_editor_comment(&mut self, id: String, cx: &mut Context<Self>) {
         if self.preview.active_comment.as_deref() == Some(id.as_str()) {
             self.preview.active_comment = None;
@@ -918,6 +964,23 @@ impl FilesSurface {
     }
 
     pub(super) fn open_file(&mut self, path: String, cx: &mut Context<Self>) {
+        if self
+            .preview
+            .active
+            .as_ref()
+            .is_some_and(|active| active != &path)
+        {
+            if let Some(view) = self
+                .preview
+                .active
+                .as_ref()
+                .and_then(|active| self.preview.documents.get(active))
+                .and_then(|d| d.markdown.clone())
+            {
+                view.update(cx, |view, cx| view.suspend(cx));
+            }
+        }
+
         let leaving_reload_confirmation = self
             .preview
             .reload_confirmation
@@ -1571,6 +1634,18 @@ impl FilesSurface {
         }
     }
 
+    pub(super) fn invalidate_markdown_images(
+        &mut self,
+        path: Option<&str>,
+        cx: &mut Context<Self>,
+    ) {
+        for document in self.preview.documents.values() {
+            if let Some(view) = &document.markdown {
+                view.update(cx, |view, cx| view.invalidate_images(path, cx));
+            }
+        }
+    }
+
     pub(super) fn mark_document_deleted(&mut self, path: &str, cx: &mut Context<Self>) {
         let mut changed = false;
         for (document_path, document) in &mut self.preview.documents {
@@ -1989,6 +2064,12 @@ impl FilesSurface {
         theme: &Theme,
         cx: &mut Context<Self>,
     ) -> AnyElement {
+        let markdown = super::markdown_preview::is_markdown(path);
+        let showing_markdown = self
+            .preview
+            .documents
+            .get(path)
+            .is_some_and(|d| d.show_markdown);
         let parts = path.split('/').collect::<Vec<_>>();
         let reveal_path = path.to_string();
         let tooltip_path: SharedString = path.to_string().into();
@@ -2077,6 +2158,50 @@ impl FilesSurface {
         toolbar(theme)
             .pr(px(crate::surface_chrome::CONTROL_GAP))
             .child(crumbs)
+            .when(markdown, |element| {
+                element.child(
+                    toolbar_button(
+                        "files-toggle-markdown",
+                        if showing_markdown {
+                            "Show Markdown code"
+                        } else {
+                            "Preview Markdown"
+                        },
+                    )
+                    .when(showing_markdown, |el| el.bg(crate::theme::wash(0.1)))
+                    .on_click(cx.listener(|this, _, window, cx| {
+                        let Some(path) = this.preview.active.clone() else {
+                            return;
+                        };
+                        if let Some(document) = this.preview.documents.get_mut(&path) {
+                            document.show_markdown = !document.show_markdown;
+                            if !document.show_markdown {
+                                if let Some(view) = &document.markdown {
+                                    view.update(cx, |view, cx| view.suspend(cx));
+                                }
+                            }
+                        }
+                        if this
+                            .preview
+                            .documents
+                            .get(&path)
+                            .is_some_and(|d| !d.show_markdown)
+                        {
+                            this.focus_editor(window, cx);
+                        }
+                        cx.notify();
+                    }))
+                    .child(
+                        icon(if showing_markdown {
+                            icons::FILE_CODE
+                        } else {
+                            icons::EYE
+                        })
+                        .size(px(crate::surface_chrome::ICON_SIZE))
+                        .text_color(theme.text_muted),
+                    ),
+                )
+            })
             .when_some(save_status, |element, (label, color, retry, detail)| {
                 element.child(
                     div()
@@ -2166,6 +2291,109 @@ impl FilesSurface {
             .into_any_element()
     }
 
+    fn prepare_markdown_preview(
+        &mut self,
+        path: &str,
+        editor: Option<&Entity<super::editor::FileEditorState>>,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<super::markdown_preview::MarkdownPreview>> {
+        if !self.preview.documents.get(path).is_some_and(|d| {
+            d.show_markdown
+                && !matches!(d.phase, DocumentPhase::Loading | DocumentPhase::Error(_))
+                && d.file.as_ref().is_some_and(|f| f.text.is_some())
+        }) {
+            return None;
+        }
+        let document = self.preview.documents.get_mut(path).unwrap();
+        let version = (
+            document.generation,
+            document.revision,
+            document.loaded_hash.clone(),
+        );
+        let view = document
+            .markdown
+            .get_or_insert_with(|| {
+                let owner = cx.weak_entity();
+                cx.new(|cx| {
+                    super::markdown_preview::MarkdownPreview::new(
+                        path.to_string(),
+                        Rc::new(move |path, cx| {
+                            let _ =
+                                owner.update(cx, |surface, cx| surface.open_tree_file(path, cx));
+                        }),
+                        cx,
+                    )
+                })
+            })
+            .clone();
+        let media_client = self
+            .request_context
+            .clone()
+            .zip(self.state.read(cx).engine().cloned())
+            .map(|(context, engine)| {
+                (
+                    WorkspaceFilesClient::new(engine, context),
+                    document.file.as_ref().unwrap().checkout_id.clone(),
+                )
+            });
+        let location = (
+            self.request_context
+                .as_ref()
+                .and_then(|context| context.target_device_id.clone()),
+            document.file.as_ref().unwrap().checkout_id.clone(),
+        );
+        view.update(cx, |view, cx| {
+            view.media_client = media_client;
+            view.editor = editor.map(|editor| editor.downgrade());
+            view.activate(path, &location, cx);
+        });
+        if view.read(cx).version.as_ref() != Some(&version) {
+            let source = editor
+                .map(|editor| editor.read(cx).value().to_string())
+                .unwrap_or_else(|| {
+                    document
+                        .file
+                        .as_ref()
+                        .and_then(|f| f.text.clone())
+                        .unwrap_or_default()
+                });
+            let truncated = document.file.as_ref().is_some_and(|f| f.truncated);
+            view.update(cx, |view, cx| {
+                view.version = Some(version);
+                view.set_source(source, truncated, cx);
+            });
+        }
+        self.sync_markdown_comments(path, cx);
+        Some(view)
+    }
+
+    pub(super) fn sync_active_markdown_comments(&mut self, cx: &mut Context<Self>) {
+        if let Some(path) = self.preview.active.clone() {
+            self.sync_markdown_comments(&path, cx);
+        }
+    }
+
+    fn sync_markdown_comments(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(view) = self
+            .preview
+            .documents
+            .get(path)
+            .filter(|document| document.show_markdown)
+            .and_then(|document| document.markdown.clone())
+        else {
+            return;
+        };
+        let comments = self.staged_file_comments(path, cx);
+        let draft = self
+            .preview
+            .comment_draft
+            .as_ref()
+            .filter(|draft| draft.path == path && draft.key == self.chat_id)
+            .map(|draft| (draft.line, draft.input.clone()));
+        let owner = cx.weak_entity();
+        view.update(cx, |view, cx| view.set_comments(owner, comments, draft, cx));
+    }
+
     fn render_document_body(
         &mut self,
         path: &str,
@@ -2175,6 +2403,13 @@ impl FilesSurface {
     ) -> AnyElement {
         self.apply_pending_external_reload(path, window, cx);
         let editor = self.ensure_editor(path, theme, window, cx);
+        if let Some(editor) = &editor {
+            self.sync_editor_comment_anchors(path, editor, cx);
+        }
+        if let Some(view) = self.prepare_markdown_preview(path, editor.as_ref(), cx) {
+            return view.into_any_element();
+        }
+
         let Some(document) = self.preview.documents.get(path) else {
             return gpui::Empty.into_any_element();
         };
@@ -2188,7 +2423,6 @@ impl FilesSurface {
             editor.update(cx, |state, _| {
                 state.set_editor_style(super::editor_adapter::editor_style(theme));
             });
-            self.sync_editor_comment_anchors(path, &editor, cx);
             let overlays = self.render_editor_comment_overlays(path, &editor, theme, cx);
             return div()
                 .id("files-editor-body")
@@ -2546,13 +2780,16 @@ impl FilesSurface {
             return None;
         }
         let text = document.file.as_ref()?.text.clone()?;
+        let focus_editor = !document.show_markdown;
         let editor =
             super::editor::new_file_editor(text, path, self.preview.word_wrap, theme, window, cx);
         let event_path = path.to_string();
         let editor_events = super::editor::subscribe_to_changes(&editor, event_path, cx);
         let editor_observer = cx.observe(&editor, |_, _, cx| cx.notify());
-        let focus = editor.focus_handle(cx);
-        window.defer(cx, move |window, cx| focus.focus(window, cx));
+        if focus_editor {
+            let focus = editor.focus_handle(cx);
+            window.defer(cx, move |window, cx| focus.focus(window, cx));
+        }
         let document = self.preview.documents.get_mut(path)?;
         document.editor = Some(editor.clone());
         document.editor_events = Some(editor_events);
@@ -3284,5 +3521,335 @@ impl FilesSurface {
             DocumentPhase::Saving
         };
         self.preview.documents.insert("test.rs".into(), document);
+    }
+}
+
+#[cfg(test)]
+mod markdown_buffer_tests {
+    use super::*;
+    use gpui::{AppContext, TestAppContext};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn markdown_inline_comments_use_file_review_workflow() {
+        struct Harness {
+            owner: Entity<FilesSurface>,
+            view: Entity<super::super::markdown_preview::MarkdownPreview>,
+            _observer: Subscription,
+        }
+        impl gpui::Render for Harness {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                self.owner.update(cx, |owner, cx| {
+                    let editor = owner.preview.documents["README.md"].editor.clone();
+                    owner.prepare_markdown_preview("README.md", editor.as_ref(), cx);
+                });
+                div().size_full().child(self.view.clone())
+            }
+        }
+        fn click(window: &mut Window, position: gpui::Point<gpui::Pixels>, cx: &mut App) {
+            window.dispatch_event(
+                gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+                    position,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            window.refresh();
+            let _ = window.draw(cx);
+            window.dispatch_event(
+                gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                    position,
+                    button: gpui::MouseButton::Left,
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            );
+            window.dispatch_event(
+                gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                    position,
+                    button: gpui::MouseButton::Left,
+                    click_count: 1,
+                    ..Default::default()
+                }),
+                cx,
+            );
+        }
+        gpui_platform::headless().run(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+            let source =
+                "# Título 🦀\n\nUn párrafo para revisar.\n\n- Primera tarea\n- Segunda tarea\n";
+            let window = cx
+                .open_window(
+                    gpui::WindowOptions {
+                        window_bounds: Some(gpui::WindowBounds::Windowed(gpui::Bounds::new(
+                            gpui::Point::default(),
+                            gpui::size(px(1100.0), px(600.0)),
+                        ))),
+                        ..Default::default()
+                    },
+                    |window, cx| {
+                        let state = cx.new(|_| crate::state::AppState::new());
+                        let owner = cx.new(|cx| {
+                            let mut owner = FilesSurface::new(
+                                state,
+                                "chat".into(),
+                                false,
+                                1000,
+                                13.0,
+                                false,
+                                false,
+                                cx,
+                            );
+                            let mut document = FileDocument::loading(DocumentKey {
+                                chat_id: "chat".into(),
+                                checkout_id: Some("checkout".into()),
+                                path: "README.md".into(),
+                            });
+                            document.set_loaded(zeron_proto::WorkspaceFileText {
+                                checkout_id: "checkout".into(),
+                                path: "README.md".into(),
+                                text: Some(source.into()),
+                                content_hash: Some("hash".into()),
+                                size: source.len() as u64,
+                                modified_at: None,
+                                encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
+                                line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                                read_only_reason: None,
+                                truncated: false,
+                            });
+                            let theme = Theme::of(cx).clone();
+                            document.editor = Some(super::super::editor::new_file_editor(
+                                source,
+                                "README.md",
+                                false,
+                                &theme,
+                                window,
+                                cx,
+                            ));
+                            document.show_markdown = true;
+                            owner.preview.active = Some("README.md".into());
+                            owner.preview.documents.insert("README.md".into(), document);
+                            owner
+                        });
+                        let view = owner.update(cx, |owner, cx| {
+                            let editor = owner.preview.documents["README.md"].editor.clone();
+                            owner
+                                .prepare_markdown_preview("README.md", editor.as_ref(), cx)
+                                .unwrap()
+                        });
+                        cx.new(|cx| Harness {
+                            _observer: cx.observe(&owner, |_, _, cx| cx.notify()),
+                            owner,
+                            view,
+                        })
+                    },
+                )
+                .unwrap();
+            let root = window.entity(cx).unwrap();
+            let owner = root.read(cx).owner.clone();
+            let view = root.read(cx).view.clone();
+            cx.spawn(async move |cx| {
+                cx.background_executor()
+                    .timer(Duration::from_millis(300))
+                    .await;
+                cx.update(|cx| {
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        let bounds = view.read(cx).test_block_bounds(1);
+                        let gutter = ((bounds.size.width - px(900.0)) / 2.0).max(px(24.0));
+                        click(
+                            window,
+                            gpui::point(bounds.left() + gutter - px(12.0), bounds.top() + px(11.0)),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    let input = owner
+                        .read(cx)
+                        .preview
+                        .comment_draft
+                        .as_ref()
+                        .expect("plus opens draft")
+                        .input
+                        .clone();
+                    assert_eq!(
+                        owner.read(cx).preview.comment_draft.as_ref().unwrap().line,
+                        3
+                    );
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        assert!(input.read(cx).focus_handle(cx).is_focused(window));
+                        input.update(cx, |input, cx| input.set_text("Clarify this paragraph", cx));
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        let bounds = view.read(cx).test_block_bounds(1);
+                        assert!(bounds.size.height > px(comments::DRAFT_CARD_HEIGHT));
+                        let gutter = ((bounds.size.width - px(900.0)) / 2.0).max(px(24.0));
+                        click(
+                            window,
+                            gpui::point(
+                                bounds.right() - gutter - px(45.0),
+                                bounds.bottom() - px(36.0),
+                            ),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    assert!(
+                        owner.read(cx).preview.comment_draft.is_none(),
+                        "Comment commits the draft"
+                    );
+                    let staged = owner.read(cx).staged_file_comments("README.md", cx);
+                    assert_eq!(staged.len(), 1);
+                    assert_eq!(staged[0].line, 3);
+                    assert_eq!(staged[0].body, "Clarify this paragraph");
+                    assert!(staged[0].is_file());
+                    let editor = owner.read(cx).preview.documents["README.md"]
+                        .editor
+                        .clone()
+                        .unwrap();
+                    assert_eq!(editor.read(cx).value().as_ref(), source);
+                    assert!(!owner.read(cx).preview.documents["README.md"].is_dirty());
+                    cx.update_window(window.into(), |_, window, cx| {
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        let bounds = view.read(cx).test_block_bounds(1);
+                        let gutter = ((bounds.size.width - px(900.0)) / 2.0).max(px(24.0));
+                        // The stored card uses the same remove action as a diff card.
+                        click(
+                            window,
+                            gpui::point(
+                                bounds.right() - gutter - px(24.0),
+                                bounds.bottom()
+                                    - px(12.0)
+                                    - px(comments::card_height("Clarify this paragraph"))
+                                    + px(21.0),
+                            ),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    assert!(
+                        owner
+                            .read(cx)
+                            .staged_file_comments("README.md", cx)
+                            .is_empty()
+                    );
+                    cx.update_window(window.into(), |_, window, cx| {
+                        owner.update(cx, |owner, cx| {
+                            owner.open_markdown_comment(
+                                "README.md".into(),
+                                3,
+                                "outdated buffer",
+                                window,
+                                cx,
+                            );
+                            assert!(owner.preview.comment_draft.is_none());
+                            owner.open_markdown_comment("README.md".into(), 3, source, window, cx);
+                        });
+                        window.refresh();
+                        let _ = window.draw(cx);
+                        window.dispatch_event(
+                            gpui::PlatformInput::KeyDown(gpui::KeyDownEvent {
+                                keystroke: gpui::Keystroke::parse("escape").unwrap(),
+                                is_held: false,
+                                prefer_character_input: false,
+                            }),
+                            cx,
+                        );
+                    })
+                    .unwrap();
+                    assert!(
+                        owner.read(cx).preview.comment_draft.is_none(),
+                        "Escape cancels without staging a comment"
+                    );
+                    cx.quit();
+                });
+            })
+            .detach();
+        });
+    }
+
+    #[gpui::test]
+    fn preview_reads_unsaved_buffer_without_starting_a_save(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_base::init(cx);
+            cx.set_global(Theme::dark());
+        });
+        let window = cx.add_window(|_, cx| {
+            let state = cx.new(|_| crate::state::AppState::new());
+            FilesSurface::new(state, "chat".into(), false, 1000, 13.0, false, false, cx)
+        });
+        let preview = window
+            .update(cx, |surface, window, cx| {
+                let mut document = FileDocument::loading(DocumentKey {
+                    chat_id: "chat".into(),
+                    checkout_id: Some("checkout".into()),
+                    path: "README.md".into(),
+                });
+                document.set_loaded(zeron_proto::WorkspaceFileText {
+                    checkout_id: "checkout".into(),
+                    path: "README.md".into(),
+                    text: Some("# Disk".into()),
+                    content_hash: Some("disk-hash".into()),
+                    size: 6,
+                    modified_at: None,
+                    encoding: zeron_proto::WorkspaceTextEncoding::Utf8,
+                    line_ending: Some(zeron_proto::WorkspaceLineEnding::Lf),
+                    read_only_reason: None,
+                    truncated: false,
+                });
+                let theme = Theme::of(cx).clone();
+                document.editor = Some(super::super::editor::new_file_editor(
+                    "# Unsaved",
+                    "README.md",
+                    false,
+                    &theme,
+                    window,
+                    cx,
+                ));
+                document.mark_user_edit();
+                document.show_markdown = true;
+                surface.preview.active = Some("README.md".into());
+                surface
+                    .preview
+                    .documents
+                    .insert("README.md".into(), document);
+                let editor = surface.preview.documents["README.md"].editor.clone();
+                surface
+                    .prepare_markdown_preview("README.md", editor.as_ref(), cx)
+                    .unwrap();
+                let document = &surface.preview.documents["README.md"];
+                assert!(document.is_dirty());
+                assert!(document.save_task.is_none());
+                assert!(document.autosave_task.is_none());
+                document.markdown.clone().unwrap()
+            })
+            .unwrap();
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_secs(1));
+        cx.run_until_parked();
+        preview.read_with(cx, |preview, _| {
+            let crate::markdown::parser::Block::Heading { runs, .. } =
+                &preview.test_tree().blocks[0].block
+            else {
+                panic!("missing heading");
+            };
+            assert_eq!(runs[0].text, "Unsaved");
+        });
+        let weak = preview.downgrade();
+        drop(preview);
+        window
+            .update(cx, |surface, _, cx| {
+                surface.preview.documents.clear();
+                cx.notify();
+            })
+            .unwrap();
+        cx.run_until_parked();
+        assert!(weak.upgrade().is_none());
     }
 }

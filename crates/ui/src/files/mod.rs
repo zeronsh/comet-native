@@ -21,6 +21,8 @@ pub mod client;
 pub mod document;
 pub mod editor;
 pub mod editor_adapter;
+pub(crate) mod markdown_media;
+mod markdown_preview;
 pub mod model;
 pub mod preview;
 pub mod search;
@@ -516,6 +518,7 @@ impl FilesSurface {
             if this.sync_target(cx) {
                 this.ensure_loaded(cx);
             }
+            this.sync_active_markdown_comments(cx);
         });
         let mut surface = Self {
             state,

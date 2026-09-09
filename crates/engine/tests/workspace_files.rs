@@ -117,6 +117,19 @@ async fn workspace_file_rpcs_list_search_read_write_and_watch() {
     let read: WorkspaceFileText = serde_json::from_value(read).expect("typed read");
     assert_eq!(read.text.as_deref(), Some("hello\n"));
     let original_hash = read.content_hash.expect("content hash");
+    let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20"><rect width="20" height="20"/></svg>"#;
+    std::fs::write(repo.join("example.svg"), svg).unwrap();
+    let image = client.call(methods::READ_WORKSPACE_IMAGE, serde_json::json!({ "chatId": "chat-files", "path": "example.svg", "expectedCheckoutId": read.checkout_id, "offset": 0 })).await.expect("workspace image");
+    assert_eq!(image["mimeType"], "image/svg+xml");
+    assert_eq!(image["done"], true);
+    assert_eq!(image["size"], svg.len());
+    for (path, checkout) in [
+        ("example.svg", "wrong-checkout"),
+        ("../example.svg", read.checkout_id.as_str()),
+        (".git/config", read.checkout_id.as_str()),
+    ] {
+        assert!(client.call(methods::READ_WORKSPACE_IMAGE, serde_json::json!({ "chatId": "chat-files", "path": path, "expectedCheckoutId": checkout, "offset": 0 })).await.is_err());
+    }
 
     let mut watch = client
         .subscribe(
