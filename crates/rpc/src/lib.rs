@@ -40,6 +40,7 @@ pub mod methods {
     pub const LIST_MODELS: &str = "ListModels";
     pub const LIST_COMMANDS: &str = "ListCommands";
     pub const QUEUE_COMMAND: &str = "QueueCommand";
+    pub const TAKE_PROJECT_ACTION_SETUP: &str = "TakeProjectActionSetup";
     /// Peer-to-peer delivery fallback: the SENDER's engine forwards a queued
     /// command entry (client-minted id and all) straight over the device-room
     /// link when its chat2 rows can't reach the edge but the host's peer link
@@ -132,6 +133,11 @@ pub mod methods {
     pub const WATCH_WORKSPACE_FILES: &str = "WatchWorkspaceFiles";
     pub const CREATE_WORKTREE: &str = "CreateWorktree";
     pub const DELETE_WORKTREE: &str = "DeleteWorktree";
+    // Project Actions are private state on the device that owns the project.
+    pub const LIST_PROJECT_ACTIONS: &str = "ListProjectActions";
+    pub const UPSERT_PROJECT_ACTION: &str = "UpsertProjectAction";
+    pub const DELETE_PROJECT_ACTION: &str = "DeleteProjectAction";
+    pub const RUN_PROJECT_ACTION: &str = "RunProjectAction";
     // Terminals (ControlRpc, relay-forwardable; SubscribeTerminal streams).
     pub const OPEN_TERMINAL: &str = "OpenTerminal";
     pub const SUBSCRIBE_TERMINAL: &str = "SubscribeTerminal";

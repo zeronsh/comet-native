@@ -58,6 +58,7 @@ use crate::theme::Theme;
 use crate::transcript::{self, Transcript, TranscriptEvent};
 use crate::workspace_links::resolve_workspace_file_link;
 
+mod actions_ui;
 mod spaces;
 mod tabs;
 
@@ -1120,6 +1121,8 @@ pub struct Shell {
     right_terminal: Option<Entity<TerminalPanel>>,
     /// The surface-tab strip's `+` menu (Files / Terminal / Diffs / History rows).
     right_plus: popover::Popup<()>,
+    /// Host-owned project Actions cached per (device, space).
+    project_actions: crate::project_actions::ProjectActionsController,
     /// Diff surfaces by id — each tab its own [`Changes`] viewer with its own
     /// scope/base pick and diff watch (multiple diff panels, user request).
     diffs: std::collections::HashMap<u64, Entity<Changes>>,
@@ -1339,7 +1342,7 @@ impl Shell {
         // reply's space below it (notes-app parity).
         let composer_events = cx.subscribe(&composer, {
             let transcript = transcript.clone();
-            move |_this: &mut Shell, _, event: &ComposerEvent, cx| match event {
+            move |this: &mut Shell, _, event: &ComposerEvent, cx| match event {
                 ComposerEvent::Sent {
                     chat_id,
                     message_id,
@@ -1348,6 +1351,18 @@ impl Shell {
                         t.on_own_send(chat_id.clone(), message_id.clone(), cx)
                     });
                 }
+                ComposerEvent::WorktreeSetup {
+                    chat_id,
+                    setup_action,
+                    setup_error,
+                    target_device_id,
+                } => this.attach_worktree_setup(
+                    chat_id.clone(),
+                    setup_action.clone(),
+                    setup_error.clone(),
+                    target_device_id.clone(),
+                    cx,
+                ),
             }
         });
         // Spawn chips open their subagent's transcript as a right-pane tab.
@@ -1463,6 +1478,7 @@ impl Shell {
             terminal: None,
             right_terminal: None,
             right_plus: popover::Popup::default(),
+            project_actions: crate::project_actions::ProjectActionsController::default(),
             diffs: std::collections::HashMap::new(),
             files: std::collections::HashMap::new(),
             files_subs: std::collections::HashMap::new(),
@@ -6177,6 +6193,9 @@ impl Shell {
 
         overlays.extend(self.render_space_overlays(viewport, window, cx));
         if let Some(overlay) = self.render_add_space_overlay(viewport, window, cx) {
+            overlays.push(overlay);
+        }
+        if let Some(overlay) = self.render_project_action_overlay(viewport, window, cx) {
             overlays.push(overlay);
         }
 

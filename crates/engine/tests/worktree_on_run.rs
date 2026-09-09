@@ -18,8 +18,8 @@ use zeron_doc::{MessageRole, MessageStatus, SessionCommandPayload, SessionMessag
 use zeron_engine::{EngineCore, HarnessRegistry};
 use zeron_harness::{Harness, HarnessError, RunControls};
 use zeron_proto::{
-    AgentEvent, DoneStatus, HarnessId, Model, ReasoningLevel, RunRequest, SandboxLevel,
-    SteeringMode, WorktreeSpec,
+    AgentEvent, DoneStatus, HarnessId, Model, ProjectActionDraft, ProjectActionIcon,
+    ReasoningLevel, RunRequest, SandboxLevel, SteeringMode, WorktreeSpec,
 };
 
 const CHAT: &str = "chat-worktree-run";
@@ -105,7 +105,7 @@ fn complete_assistant_count(core: &EngineCore) -> usize {
         .count()
 }
 
-fn run_payload(message_id: &str, repo_path: &str) -> SessionCommandPayload {
+fn run_payload(message_id: &str, repo_path: &str, space_id: Option<&str>) -> SessionCommandPayload {
     SessionCommandPayload::Run {
         request: RunRequest {
             prompt: "isolated please".into(),
@@ -122,6 +122,7 @@ fn run_payload(message_id: &str, repo_path: &str) -> SessionCommandPayload {
             worktree: Some(WorktreeSpec {
                 repo_path: repo_path.into(),
                 base: "main".into(),
+                space_id: space_id.map(str::to_string),
             }),
         },
         message_id: message_id.into(),
@@ -170,6 +171,28 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
         None,
     )
     .expect("engine core assembles");
+    core.workspace
+        .create_space(
+            "space-worktree-run",
+            &core.device_id,
+            &repo_path,
+            Some("Repo".into()),
+            true,
+        )
+        .expect("create project");
+    core.project_actions
+        .upsert(
+            "space-worktree-run",
+            &repo_dir,
+            None,
+            ProjectActionDraft {
+                name: "Setup".into(),
+                command: "printf setup > setup-marker".into(),
+                icon: ProjectActionIcon::Configure,
+                run_on_worktree_create: true,
+            },
+        )
+        .expect("save setup Action");
 
     // Mirror the composer: createChat lands first (cwd-less; the engine
     // resolves the project folder), then the queued Run carries the spec.
@@ -190,8 +213,12 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
         .rename_chat(CHAT, "Pre-titled")
         .expect("rename chat");
 
-    core.doc_host
-        .queue_command(CHAT, run_payload("msg-wt-1", &repo_path))
+    let first_command = core
+        .doc_host
+        .queue_command(
+            CHAT,
+            run_payload("msg-wt-1", &repo_path, Some("space-worktree-run")),
+        )
         .expect("queue run command");
     wait_for(|| complete_assistant_count(&core) == 1, "first turn").await;
 
@@ -209,6 +236,13 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
         first.join(".git").is_file(),
         "a linked worktree has a .git FILE"
     );
+    wait_for(|| first.join("setup-marker").is_file(), "setup Action").await;
+    let setup = core
+        .project_actions
+        .take_setup_handoff(&first_command, CHAT)
+        .expect("fresh worktree setup handoff");
+    assert!(setup.setup_action.is_some());
+    assert!(setup.setup_error.is_none());
 
     // The chat row follows: cwd repointed at the worktree, branch stamped
     // with the actual zeron/<name> (the composer only knew the base).
@@ -225,8 +259,12 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
     );
 
     // A duplicate spec-carrying Run (client retry) REUSES the checkout.
-    core.doc_host
-        .queue_command(CHAT, run_payload("msg-wt-2", &repo_path))
+    let second_command = core
+        .doc_host
+        .queue_command(
+            CHAT,
+            run_payload("msg-wt-2", &repo_path, Some("space-worktree-run")),
+        )
         .expect("queue second run");
     wait_for(|| complete_assistant_count(&core) == 2, "second turn").await;
     let second_cwd = cwds.lock().unwrap().get(1).cloned().expect("second run");
@@ -238,6 +276,12 @@ async fn run_with_worktree_spec_materializes_on_host_and_reuses() {
         .map(|entries| entries.count())
         .unwrap_or(0);
     assert_eq!(minted, 1, "exactly one worktree minted for the chat");
+    let reused = core
+        .project_actions
+        .take_setup_handoff(&second_command, CHAT)
+        .expect("reuse completion handoff");
+    assert!(reused.setup_action.is_none(), "setup must not run on reuse");
+    assert!(reused.setup_error.is_none());
 
     core.shutdown().await;
 }

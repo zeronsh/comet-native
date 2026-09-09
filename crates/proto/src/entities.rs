@@ -817,6 +817,67 @@ pub struct AgentUsageWindow {
     pub resets_at: Option<DateTime<Utc>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ProjectActionIcon {
+    Play,
+    Test,
+    Lint,
+    Configure,
+    Build,
+    Debug,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectAction {
+    pub id: String,
+    pub name: String,
+    pub command: String,
+    pub icon: ProjectActionIcon,
+    pub run_on_worktree_create: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectActionDraft {
+    pub name: String,
+    pub command: String,
+    pub icon: ProjectActionIcon,
+    #[serde(default)]
+    pub run_on_worktree_create: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectActionsSnapshot {
+    pub space_id: String,
+    pub actions: Vec<ProjectAction>,
+    pub importable_actions: Vec<ProjectActionDraft>,
+    pub project_file_issue: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectActionRun {
+    pub action_id: String,
+    pub action_name: String,
+    pub terminal: TerminalSession,
+}
+
+/// Result of creating a worktree. The worktree remains flattened so this is
+/// wire-compatible with both legacy callers and legacy engine replies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWorktreeOutcome {
+    #[serde(flatten)]
+    pub worktree: Worktree,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_action: Option<ProjectActionRun>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_error: Option<String>,
+}
+
 /// An open PTY session on the owning device (`OpenTerminal` reply).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -969,6 +1030,28 @@ mod tests {
             serde_json::from_value::<GetCheckoutFileDiffTextRequest>(value).unwrap(),
             request
         );
+    }
+
+    #[test]
+    fn create_worktree_outcome_accepts_legacy_reply_and_stays_flattened() {
+        let legacy = serde_json::json!({
+            "repoPath": "/repo",
+            "path": "/worktree",
+            "branch": "zeron/branch",
+            "name": "branch",
+            "checkoutId": "checkout",
+        });
+        let outcome: CreateWorktreeOutcome = serde_json::from_value(legacy.clone()).unwrap();
+        assert_eq!(outcome.worktree.path, "/worktree");
+        assert!(outcome.setup_action.is_none());
+        assert!(outcome.setup_error.is_none());
+
+        let encoded = serde_json::to_value(outcome).unwrap();
+        assert_eq!(encoded["path"], legacy["path"]);
+        assert!(encoded.get("worktree").is_none());
+        assert!(encoded.get("setupAction").is_none());
+        assert!(encoded.get("setupError").is_none());
+        assert!(serde_json::from_value::<Worktree>(encoded).is_ok());
     }
 
     #[test]

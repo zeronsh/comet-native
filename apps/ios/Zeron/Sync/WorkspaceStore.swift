@@ -620,10 +620,13 @@ final class WorkspaceStore {
 
     /// CreateWorktree — a fresh isolated worktree off the base ref; returns
     /// its path.
-    func createWorktree(deviceId: String, repoPath: String, branch: String) async -> String? {
+    func createWorktree(deviceId: String, spaceId: String,
+                        repoPath: String, branch: String) async -> String? {
         struct Reply: Decodable { var path: String }
         let reply: Reply? = try? await relay(for: deviceId)
-            .call(method: "CreateWorktree", params: ["repoPath": repoPath, "branch": branch])
+            .call(method: "CreateWorktree", params: ["repoPath": repoPath,
+                                                       "branch": branch,
+                                                       "spaceId": spaceId])
         return reply?.path
     }
 

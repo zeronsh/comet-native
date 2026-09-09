@@ -174,7 +174,8 @@ impl Shell {
         // the pane itself would sit under the drag region and never see a
         // click. Closed, it is just the stable open/close toggle. Hidden on
         // the new-session canvas (user request) — nothing to diff yet.
-        let takeover = !on_canvas && self.right_pane_open(cx) && self.right_pane_expanded;
+        let right_pane_open = !on_canvas && self.right_pane_open(cx);
+        let takeover = right_pane_open && self.right_pane_expanded;
         // In takeover the title hides and the strip owns the whole band, so
         // the row's left inset pulls back to the sidebar seam — the title
         // inset would push the scope dropdown off the pane's own left gutter
@@ -200,10 +201,26 @@ impl Shell {
         } else {
             content_left
         };
+        let row_gap = 8.0;
+        let right_pad = self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET);
+        let open_trailing_width = right_pane_open.then(|| {
+            let right_now = self.eval_tween(self.right_tween, self.right_target(cx));
+            let gap_budget = if takeover { row_gap } else { row_gap * 3.0 };
+            let avail = self.viewport_width - row_left - right_pad - gap_budget;
+            let animated_width = ((right_now - right_pad).min(avail) - 28.0).max(0.0);
+            animated_width + 28.0
+        });
+        let trailing_width = if on_canvas {
+            0.0
+        } else {
+            open_trailing_width.unwrap_or(28.0)
+        };
+        let available_titlebar_width =
+            (self.viewport_width - row_left - right_pad - trailing_width - row_gap * 3.0).max(0.0);
+
         let trailing: Option<gpui::AnyElement> = if on_canvas {
             None
-        } else {
-            let right_open = self.right_pane_open(cx);
+        } else if let Some(trailing_width) = open_trailing_width {
             let mut controls = div()
                 .id("right-titlebar-controls")
                 .flex_none()
@@ -211,58 +228,37 @@ impl Shell {
                 .flex()
                 .flex_row()
                 .items_center();
-            if right_open {
-                let right_now = self.eval_tween(self.right_tween, self.right_target(cx));
-                let pr = self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET);
-                // The row's own left padding is part of its content box: a strip
-                // wider than what's left after it overflows and clips at the right
-                // edge (flex_none never shrinks) — cap to the available width. The
-                // row's 8px child gaps sit OUTSIDE the strip's width (one before
-                // the strip in takeover, two with the title row present): without
-                // budgeting them the capped strip overflows by exactly one gap and
-                // the buttons slide right on expand (user report).
-                let gap_budget = if takeover { 8.0 } else { 16.0 };
-                let avail = self.viewport_width - row_left - pr - gap_budget;
-                // The right pane's SURFACE TABS (t3 RightPanelTabs) — the diff
-                // options that used to live here moved into the pane's own
-                // second row; expand stays in this band (user request).
-                let tabs = self.render_right_tab_strip(cx);
-                // The toggle is the fixed right-edge anchor, like the left
-                // sidebar control. Only the tabs + expand section reveals to
-                // its left; including the toggle in this animated width
-                // compressed both icons into the same clipped box at open.
-                let animated_width = ((right_now - pr).min(avail) - 28.0).max(0.0);
-                controls = controls.child(
-                    div()
-                        .w(px(animated_width))
-                        .h_full()
-                        .flex_none()
-                        .flex()
-                        .flex_row()
-                        .items_center()
-                        .gap(px(4.0))
-                        .overflow_hidden()
-                        // 8 + the trigger's own 8px pad = the pane's 16px
-                        // text gutter. The 4px right padding is the stable
-                        // gap before the fixed toggle.
-                        .pl(px(8.0))
-                        .pr(px(4.0))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .h_full()
-                                .overflow_hidden()
-                                .child(tabs),
-                        )
-                        .child(header_icon_button(
-                            "expand-changes",
-                            right_pane_expand_icon(self.right_pane_expanded),
-                            &theme,
-                            cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
-                        )),
-                );
-            }
+            let tabs = self.render_right_tab_strip(cx);
+            controls = controls.child(
+                div()
+                    .w(px((trailing_width - 28.0).max(0.0)))
+                    .h_full()
+                    .flex_none()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(4.0))
+                    .overflow_hidden()
+                    // 8 + the trigger's own 8px pad = the pane's 16px
+                    // text gutter. The 4px right padding is the stable
+                    // gap before the fixed toggle.
+                    .pl(px(8.0))
+                    .pr(px(4.0))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .child(tabs),
+                    )
+                    .child(header_icon_button(
+                        "expand-changes",
+                        right_pane_expand_icon(self.right_pane_expanded),
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.toggle_right_pane_expand(cx)),
+                    )),
+            );
             // Keep the trigger mounted at one fixed position while the pane
             // controls reveal to its left.
             Some(
@@ -275,16 +271,36 @@ impl Shell {
                     ))
                     .into_any_element(),
             )
+        } else {
+            Some(
+                div()
+                    .id("right-titlebar-controls")
+                    .flex_none()
+                    .h_full()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .child(header_icon_button(
+                        "toggle-changes",
+                        icons::SIDEBAR_MINIMALISTIC,
+                        &theme,
+                        cx.listener(|this, _, _, cx| this.toggle_right_pane(cx)),
+                    ))
+                    .into_any_element(),
+            )
         };
 
+        let actions = (!takeover && !on_canvas)
+            .then(|| self.render_project_actions_control(available_titlebar_width, cx))
+            .flatten();
         let inner = div()
             .size_full()
             .flex()
             .items_center()
             .pt(px(Theme::TITLEBAR_TOP_PAD))
-            .gap(px(8.0))
+            .gap(px(row_gap))
             .pl(px(row_left))
-            .pr(px(self.titlebar_right_pad(TITLEBAR_ACTION_EDGE_INSET)))
+            .pr(px(right_pad))
             // In panel takeover the header strip spans the whole band — the
             // title would sit UNDER it (both flex_none, the row overflows and
             // paint order stacks them), so it hides for the duration.
@@ -292,6 +308,7 @@ impl Shell {
                 el.child(
                     div()
                         .min_w_0()
+                        .overflow_hidden()
                         .flex()
                         .flex_row()
                         .items_center()
@@ -323,7 +340,8 @@ impl Shell {
                         .when_some(target, |el, target| {
                             el.child(
                                 div()
-                                    .flex_none()
+                                    .min_w_0()
+                                    .truncate()
                                     .text_size(crate::typography::ui_rems(12.0))
                                     .text_color(theme.text_muted.opacity(0.5))
                                     .child(target),
@@ -332,6 +350,7 @@ impl Shell {
                 )
             })
             .child(div().flex_1())
+            .children(actions)
             .children(trailing);
 
         // The unified window titlebar: full-width on the glass shell, ABOVE

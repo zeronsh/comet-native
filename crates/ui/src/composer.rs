@@ -3497,6 +3497,15 @@ pub enum ComposerEvent {
     /// identity so it can anchor the prompt at the top with the reply's
     /// reserved space below it.
     Sent { chat_id: String, message_id: String },
+    /// A new worktree's host-side setup attempt completed after its chat id
+    /// was minted. The shell attaches an already-open terminal to that exact
+    /// chat, even when the user has selected another chat in the meantime.
+    WorktreeSetup {
+        chat_id: String,
+        setup_action: Option<zeron_proto::ProjectActionRun>,
+        setup_error: Option<String>,
+        target_device_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5439,6 +5448,7 @@ impl Composer {
                                 run_worktree = Some(zeron_proto::WorktreeSpec {
                                     repo_path: repo_path.clone(),
                                     base,
+                                    space_id: space_id.clone(),
                                 });
                             }
                         }
@@ -5503,6 +5513,10 @@ impl Composer {
                     }
                 }
 
+                let expects_setup_handoff = run_worktree
+                    .as_ref()
+                    .and_then(|spec| spec.space_id.as_ref())
+                    .is_some();
                 let command = if steer_cmd {
                     SessionCommandPayload::Steer {
                         prompt: content.clone(),
@@ -5533,9 +5547,8 @@ impl Composer {
                     params["transfers"] = serde_json::Value::Array(transfers);
                 }
                 // Deadline-bounded: QueueCommand is a local write (in-process
-                // or IPC), but a deferred engine handle can park forever —
-                // the send task must never grind silently (2026-08-19).
-                attachments::call_with_timeout(
+                // or IPC), but a deferred engine handle can park forever.
+                let queued = attachments::call_with_timeout(
                     &engine,
                     cx.background_executor(),
                     methods::QUEUE_COMMAND,
@@ -5544,6 +5557,77 @@ impl Composer {
                 )
                 .await
                 .map_err(|e| format!("Send failed: {e}"))?;
+                if expects_setup_handoff
+                    && let Some(command_id) = queued
+                        .get("commandId")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                {
+                    let poll_engine = engine.clone();
+                    let poll_chat_id = chat_id.clone();
+                    let poll_target_device_id = host_device_id.clone();
+                    this.update(cx, |_, cx| {
+                        cx.spawn(async move |this, cx| {
+                            for _ in 0..480 {
+                                let mut params = serde_json::json!({
+                                    "chatId": poll_chat_id,
+                                    "commandId": command_id,
+                                });
+                                if let (Some(target), Some(object)) =
+                                    (&poll_target_device_id, params.as_object_mut())
+                                {
+                                    object.insert(
+                                        "targetDeviceId".into(),
+                                        serde_json::Value::String(target.clone()),
+                                    );
+                                }
+                                match attachments::call_with_timeout(
+                                    &poll_engine,
+                                    cx.background_executor(),
+                                    methods::TAKE_PROJECT_ACTION_SETUP,
+                                    params,
+                                    std::time::Duration::from_secs(10),
+                                )
+                                .await
+                                {
+                                    Ok(value) if value.get("ready").and_then(|v| v.as_bool()) == Some(true) => {
+                                        let setup_action = value
+                                            .get("setupAction")
+                                            .cloned()
+                                            .filter(|value| !value.is_null())
+                                            .and_then(|value| serde_json::from_value(value).ok());
+                                        let setup_error = value
+                                            .get("setupError")
+                                            .and_then(|value| value.as_str())
+                                            .map(str::to_string);
+                                        this.update(cx, |_, cx| {
+                                            cx.emit(ComposerEvent::WorktreeSetup {
+                                                chat_id: poll_chat_id.clone(),
+                                                setup_action,
+                                                setup_error,
+                                                target_device_id: poll_target_device_id.clone(),
+                                            });
+                                        })
+                                        .ok();
+                                        return;
+                                    }
+                                    Err(error) if error.starts_with("unknown method: ") => return,
+                                    Ok(_) | Err(_) => {}
+                                }
+                                cx.background_executor()
+                                    .timer(Duration::from_millis(250))
+                                    .await;
+                            }
+                            tracing::warn!(
+                                chat = %poll_chat_id,
+                                command = %command_id,
+                                "worktree setup handoff timed out"
+                            );
+                        })
+                        .detach();
+                    })
+                    .ok();
+                }
                 Ok(())
             }
             .await;

@@ -138,7 +138,18 @@ impl Terminals {
     /// Open a login shell in `cwd`. The PTY outlives every subscriber; it dies on
     /// [`Self::close`], shell exit + TTL, or engine shutdown.
     pub fn open(&self, cwd: &str, cols: u16, rows: u16) -> Result<TerminalSession, EngineError> {
-        self.open_with_shell(cwd, cols, rows, None)
+        self.open_with_environment(cwd, cols, rows, &HashMap::new())
+    }
+
+    /// Open a login shell with host-resolved environment overrides.
+    pub fn open_with_environment(
+        &self,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        environment: &HashMap<String, String>,
+    ) -> Result<TerminalSession, EngineError> {
+        self.open_with_shell_and_environment(cwd, cols, rows, None, environment)
     }
 
     /// Explicit shell override (tests use `/bin/sh`).
@@ -148,6 +159,18 @@ impl Terminals {
         cols: u16,
         rows: u16,
         shell: Option<&str>,
+    ) -> Result<TerminalSession, EngineError> {
+        self.open_with_shell_and_environment(cwd, cols, rows, shell, &HashMap::new())
+    }
+
+    /// Explicit shell and environment override for focused integration tests.
+    pub fn open_with_shell_and_environment(
+        &self,
+        cwd: &str,
+        cols: u16,
+        rows: u16,
+        shell: Option<&str>,
+        environment: &HashMap<String, String>,
     ) -> Result<TerminalSession, EngineError> {
         if lock(&self.inner.sessions).len() >= MAX_TERMINALS {
             return Err(EngineError::Other(format!(
@@ -178,6 +201,9 @@ impl Terminals {
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
         cmd.env("TERM_PROGRAM", "Zeron");
+        for (name, value) in environment {
+            cmd.env(name, value);
+        }
         let mut child = pair
             .slave
             .spawn_command(cmd)
@@ -263,6 +289,11 @@ impl Terminals {
         let bytes = BASE64
             .decode(data)
             .unwrap_or_else(|_| data.as_bytes().to_vec());
+        self.write_bytes(terminal_id, &bytes)
+    }
+
+    /// Write trusted host-side bytes without applying the RPC base64 decoder.
+    pub fn write_bytes(&self, terminal_id: &str, bytes: &[u8]) -> Result<(), EngineError> {
         if bytes.len() > MAX_INPUT_BYTES {
             return Err(EngineError::Other("Terminal input is too large".into()));
         }
