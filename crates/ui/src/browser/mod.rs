@@ -482,6 +482,10 @@ impl BrowserSurface {
         }
     }
     #[cfg(target_os = "macos")]
+    pub fn fixture_backdrops(&self) -> Vec<(f64, f64, f64, f64)> {
+        self.native.as_ref().unwrap().fixture_backdrops()
+    }
+    #[cfg(target_os = "macos")]
     pub fn fixture_geometry(&self) -> (f32, f32, f32) {
         self.native.as_ref().unwrap().fixture_geometry()
     }

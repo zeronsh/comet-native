@@ -499,6 +499,23 @@ impl NativePage {
             ));
         }
     }
+    pub fn fixture_backdrops(&self) -> Vec<(f64, f64, f64, f64)> {
+        let host = self.0.borrow();
+        host.parent
+            .subviews()
+            .iter()
+            .filter(|view| view.class().name() == c"GPUIBackdropView" && !view.isHidden())
+            .map(|view| {
+                let r = view.frame();
+                (
+                    r.origin.x,
+                    host.parent.bounds().size.height - r.origin.y - r.size.height,
+                    r.size.width,
+                    r.size.height,
+                )
+            })
+            .collect()
+    }
     pub fn fixture_geometry(&self) -> (f32, f32, f32) {
         let host = self.0.borrow();
         (

@@ -276,6 +276,7 @@ fn main() -> anyhow::Result<()> {
                 }
                 #[cfg(target_os = "macos")]
                 {
+                    cx.update(|cx|appearance::set_surface(zeron_theme::SurfacePreference::Frosted,cx));
                     first.read_with(cx, |b,_| b.fixture_eval("(() => {let grid=document.createElement('div'); grid.style='height:140px;background:repeating-conic-gradient(#172f25 0% 25%,#f5f0df 0% 50%) 0 0/16px 16px'; document.body.prepend(grid);})()"));
                     pause(cx,300).await;
                     let mut layout_video = std::process::Command::new("/usr/sbin/screencapture").args(["-v","-V","24","-C","-k","-D","1"]).arg(output.join("browser-layout.mov")).spawn()?;
@@ -334,9 +335,21 @@ fn main() -> anyhow::Result<()> {
                     capture(&output,"browser-blur-baseline-dark")?;
                     window.update(cx,|s,_,cx|s.fixture_browser_menu(true,cx))?;
                     pause(cx,1000).await;
+                    let regions=first.read_with(cx,|b,_|b.fixture_backdrops());
+                    anyhow::ensure!(!regions.is_empty(),"menu has no native browser backdrop");
+                    std::fs::write(output.join("blur-regions.json"),serde_json::to_string(&regions)?)?;
                     capture(&output,"browser-blur-dark")?;
+                    cx.update(|cx|appearance::set_mode(appearance::AppearanceMode::Light,cx));
+                    pause(cx,700).await;
+                    capture(&output,"browser-blur-light")?;
+                    cx.update(|cx|appearance::set_surface(zeron_theme::SurfacePreference::Opaque,cx));
+                    pause(cx,500).await;
+                    anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_backdrops().is_empty()),"opaque appearance retained native blur");
+                    capture(&output,"browser-menu-opaque")?;
+                    cx.update(|cx| {appearance::set_mode(appearance::AppearanceMode::Dark,cx);appearance::set_surface(zeron_theme::SurfacePreference::Frosted,cx);});
                     window.update(cx,|s,_,cx|s.fixture_browser_menu(false,cx))?;
                     pause(cx,500).await;
+                    anyhow::ensure!(first.read_with(cx,|b,_|b.fixture_backdrops().is_empty()),"dismissed menu retained native blur");
                     let deadline=std::time::Instant::now()+Duration::from_secs(30);
                     loop {if let Some(status)=layout_video.try_wait()? {anyhow::ensure!(status.success(),"layout recording failed");break;}anyhow::ensure!(std::time::Instant::now()<deadline,"layout recording timed out");pause(cx,100).await;}
                     anyhow::ensure!(std::fs::metadata(output.join("browser-layout.mov"))?.len()>10000,"layout recording is empty");
