@@ -1361,14 +1361,16 @@ async fn drive_run(
     // that loses a turn's Done — the adapter never settles `session/prompt`
     // even though the agent finished — strands Working forever: the live
     // heartbeat above keeps the row fresh, and there is no per-turn timeout
-    // by design. This is NOT that stall timeout: it never ends the run or
-    // errors anything. When the stream has been silent past the window AND
-    // the fold shows completed output with nothing in flight (no unresolved
-    // tool, no open question), the turn parks exactly like a Done would —
-    // segment finalized Complete, status Idle, child and mailbox warm. A
-    // false trip (the agent was quietly waiting on something invisible)
-    // costs a status dip: the parked-resume path below re-arms Working the
-    // moment output flows again, and nothing is lost. `ZERON_TURN_QUIESCE_MS`
+    // by design. This is NOT that stall timeout: it never ends the run.
+    // When the stream has been silent past the window AND the fold shows
+    // completed output with nothing in flight (no unresolved tool, no open
+    // question), the turn parks: child and mailbox stay warm so a false
+    // trip re-arms Working the moment output flows again. A self-continued
+    // turn (no prompt behind it) has no other settle path — that park is
+    // Idle, same as today. A prompt or steer turn that goes quiet is a
+    // forced settle, not a clean finish: the segment gets an ErrorChip
+    // ("Turn settled — agent went quiet.") and the sidebar reads Failed
+    // until the user looks or the agent speaks again. `ZERON_TURN_QUIESCE_MS`
     // overrides the window; 0 disables.
     // RETIRED for native drivers: a harness whose every turn shape ends with
     // a deterministic wire Done (claude/codex/cursor native) needs no
@@ -1536,9 +1538,21 @@ async fn drive_run(
                 tracing::warn!(
                     chat = %chat_id,
                     quiet_ms = quiesce_after.unwrap_or_default().as_millis() as u64,
+                    self_continued = self_continued_turn,
                     "turn quiesced: stream silent after completed output with no \
                      turn-end; parking (suspected missing harness Done)"
                 );
+                // Prompt/steer turns that go quiet are a forced settle, not a
+                // clean finish. Self-continued turns have no Done coming — that
+                // park stays a silent Idle (the watchdog is their only end).
+                if !self_continued_turn {
+                    fold_event_into_parts(
+                        &mut folded,
+                        &AgentEvent::Error {
+                            message: "Turn settled — agent went quiet.".into(),
+                        },
+                    );
+                }
                 if !folded.is_empty() || writer.is_some() {
                     if let Err(err) = finish_segment(
                         doc_ref,
@@ -1558,8 +1572,13 @@ async fn drive_run(
                 entry_id = new_id();
                 segment_started = now_ms();
                 idle_since = Some(tokio::time::Instant::now());
+                let parked = if self_continued_turn {
+                    SessionStatus::Idle
+                } else {
+                    SessionStatus::Errored
+                };
                 self_continued_turn = false;
-                inner.set_status(&chat_id, SessionStatus::Idle, false);
+                inner.set_status(&chat_id, parked, false);
                 continue;
             }
         };

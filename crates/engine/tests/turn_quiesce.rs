@@ -14,8 +14,10 @@
 //!
 //! The fixes under test: parked sessions RESUME on self-continued output
 //! (fold it, show Working), and the quiesce watchdog settles any turn whose
-//! stream goes silent after completed output with nothing in flight —
-//! without ending the run, so a false trip costs a status dip, not content.
+//! stream goes silent after completed output with nothing in flight.
+//! Self-continued parks stay Idle. A prompt or steer turn that goes quiet
+//! is a forced settle: Failed in the sidebar and an ErrorChip in the
+//! transcript, not a clean Completed finish.
 
 use std::sync::{Arc, Once};
 use std::time::Duration;
@@ -305,6 +307,49 @@ async fn parked_self_continuation_folds_and_requiesces() {
     rig.core.sessions.shutdown().await;
 }
 
+/// A first-prompt turn that streams then goes silent (no Done) must not look
+/// like a clean finish. The watchdog parks Failed and stamps the quiet chip.
+#[tokio::test]
+async fn first_prompt_quiet_settle_is_visible() {
+    let rig = assemble("ship the connecting-state fix");
+    rig.core
+        .sessions
+        .dispatch(
+            CHAT,
+            HarnessId::Mock,
+            run_request("ship the connecting-state fix"),
+            None,
+        )
+        .await
+        .expect("dispatch");
+
+    rig.feed.send(session_started()).unwrap();
+    rig.feed.send(text("Working on it.")).unwrap();
+
+    wait_for(
+        || status(&rig.core) == Some(SessionStatus::Errored),
+        "first-prompt quiet settle is Failed, not Idle",
+    )
+    .await;
+    assert!(
+        entries(&rig.core).iter().any(|e| {
+            e.role == MessageRole::Assistant
+                && e.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::Error { message, .. }
+                            if message == "Turn settled — agent went quiet."
+                    )
+                })
+        }),
+        "forced settle must stamp the quiet ErrorChip, got {:#?}",
+        entries(&rig.core)
+    );
+
+    rig.core.sessions.shutdown().await;
+}
+
+
 /// Step 3 of the incident: a steer becomes the next turn, the agent answers,
 /// and the turn-end reply is LOST. The session must not read Working forever
 /// — the watchdog settles it, and the answer text survives in the doc.
@@ -350,9 +395,10 @@ async fn missing_turn_end_settles_instead_of_working_forever() {
     rig.feed.send(text("Done — here are the results.")).unwrap();
 
     // Old behavior: Working forever (heartbeat keeps the row fresh; no
-    // turn timeout). New behavior: the watchdog settles the turn.
+    // turn timeout). New behavior: the watchdog settles the turn as a
+    // visible failure, not a clean Idle/Completed finish.
     wait_for(
-        || status(&rig.core) == Some(SessionStatus::Idle),
+        || status(&rig.core) == Some(SessionStatus::Errored),
         "watchdog settles the turn whose Done was lost",
     )
     .await;
@@ -362,6 +408,20 @@ async fn missing_turn_end_settles_instead_of_working_forever() {
             t.contains("here are the results") && *s == Some(MessageStatus::Complete)
         }),
         "the lost-Done turn's answer must still finalize in the doc, got {texts:#?}"
+    );
+    assert!(
+        entries(&rig.core).iter().any(|e| {
+            e.role == MessageRole::Assistant
+                && e.parts.iter().any(|p| {
+                    matches!(
+                        p,
+                        MessagePart::Error { message, .. }
+                            if message == "Turn settled — agent went quiet."
+                    )
+                })
+        }),
+        "forced settle must stamp the quiet ErrorChip, got {:#?}",
+        entries(&rig.core)
     );
 
     rig.core.sessions.shutdown().await;
